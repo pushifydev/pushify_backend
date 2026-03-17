@@ -12,7 +12,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc --noEmit && tsup src/index.ts --format esm --dts",
+    "build": "tsc --noEmit && tsup src/index.ts --format esm --dts --external dotenv",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/",
