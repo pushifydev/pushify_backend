@@ -108,6 +108,10 @@ const approveRoute = createRoute({
       description: 'Approved',
       content: { 'application/json': { schema: z.object({ message: z.string() }) } },
     },
+    400: {
+      description: 'Invalid or expired code',
+      content: { 'application/json': { schema: z.object({ message: z.string() }) } },
+    },
   },
 });
 
