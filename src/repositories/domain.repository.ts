@@ -1,0 +1,143 @@
+import { eq, and } from 'drizzle-orm';
+import { db } from '../db';
+import { domains, type NginxSettings } from '../db/schema/projects';
+
+interface CreateDomainInput {
+  projectId: string;
+  domain: string;
+  isPrimary?: boolean;
+  sslStatus?: 'pending' | 'configuring' | 'active' | 'failed';
+}
+
+interface UpdateDomainInput {
+  isPrimary?: boolean;
+  sslStatus?: 'pending' | 'active' | 'failed';
+  verifiedAt?: Date | null;
+}
+
+export const domainRepository = {
+  /**
+   * Find domain by ID
+   */
+  async findById(id: string) {
+    const result = await db
+      .select()
+      .from(domains)
+      .where(eq(domains.id, id))
+      .limit(1);
+    return result[0] || null;
+  },
+
+  /**
+   * Find domain by domain name
+   */
+  async findByDomain(domain: string) {
+    const result = await db
+      .select()
+      .from(domains)
+      .where(eq(domains.domain, domain))
+      .limit(1);
+    return result[0] || null;
+  },
+
+  /**
+   * Find all domains for a project
+   */
+  async findByProject(projectId: string) {
+    return db
+      .select()
+      .from(domains)
+      .where(eq(domains.projectId, projectId))
+      .orderBy(domains.createdAt);
+  },
+
+  /**
+   * Find primary domain for a project
+   */
+  async findPrimaryByProject(projectId: string) {
+    const result = await db
+      .select()
+      .from(domains)
+      .where(and(eq(domains.projectId, projectId), eq(domains.isPrimary, true)))
+      .limit(1);
+    return result[0] || null;
+  },
+
+  /**
+   * Create new domain
+   */
+  async create(input: CreateDomainInput) {
+    const result = await db
+      .insert(domains)
+      .values({
+        projectId: input.projectId,
+        domain: input.domain,
+        isPrimary: input.isPrimary ?? false,
+        sslStatus: 'pending',
+      })
+      .returning();
+    return result[0];
+  },
+
+  /**
+   * Update domain
+   */
+  async update(id: string, input: UpdateDomainInput) {
+    const result = await db
+      .update(domains)
+      .set(input)
+      .where(eq(domains.id, id))
+      .returning();
+    return result[0] || null;
+  },
+
+  /**
+   * Set domain as primary (and unset others)
+   */
+  async setPrimary(projectId: string, domainId: string) {
+    // First, unset all primary flags for this project
+    await db
+      .update(domains)
+      .set({ isPrimary: false })
+      .where(eq(domains.projectId, projectId));
+
+    // Then set the new primary
+    const result = await db
+      .update(domains)
+      .set({ isPrimary: true })
+      .where(eq(domains.id, domainId))
+      .returning();
+    return result[0] || null;
+  },
+
+  /**
+   * Delete domain
+   */
+  async delete(id: string) {
+    await db.delete(domains).where(eq(domains.id, id));
+  },
+
+  /**
+   * Update SSL status
+   */
+  async updateSslStatus(id: string, sslStatus: 'pending' | 'configuring' | 'active' | 'failed') {
+    const result = await db
+      .update(domains)
+      .set({ sslStatus })
+      .where(eq(domains.id, id))
+      .returning();
+    return result[0] || null;
+  },
+
+  /**
+   * Update Nginx settings
+   */
+  async updateNginxSettings(id: string, nginxSettings: NginxSettings) {
+    const result = await db
+      .update(domains)
+      .set({ nginxSettings, updatedAt: new Date() })
+      .where(eq(domains.id, id))
+      .returning();
+    return result[0] || null;
+  },
+};

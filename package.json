@@ -1,0 +1,62 @@
+{
+  "name": "pushify-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pushify cloud deployment platform — API server",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pushify-dev/pushify",
+    "directory": "pushify_backend"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc --noEmit && tsup src/index.ts --format esm --dts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/",
+    "test": "vitest",
+    "test:coverage": "vitest --coverage",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.79.0",
+    "@hono/node-server": "^1.13.0",
+    "@hono/node-ws": "^1.3.0",
+    "@hono/swagger-ui": "^0.5.3",
+    "@hono/zod-openapi": "^1.2.0",
+    "argon2": "^0.41.1",
+    "bullmq": "^5.67.2",
+    "drizzle-orm": "^0.35.0",
+    "hono": "^4.6.0",
+    "ioredis": "^5.9.2",
+    "jose": "^5.9.0",
+    "nodemailer": "^7.0.13",
+    "otplib": "^13.2.1",
+    "pg": "^8.13.0",
+    "pino": "^9.4.0",
+    "qrcode": "^1.5.4",
+    "redis": "^4.7.0",
+    "ssh2": "^1.17.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "@types/nodemailer": "^7.0.9",
+    "@types/pg": "^8.11.10",
+    "@types/qrcode": "^1.5.6",
+    "@types/ssh2": "^1.15.5",
+    "dotenv": "^16.4.5",
+    "drizzle-kit": "^0.26.0",
+    "eslint": "^9.10.0",
+    "pino-pretty": "^11.2.2",
+    "tsup": "^8.2.4",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  }
+}

@@ -1,0 +1,1 @@
+ALTER TYPE "public"."activity_action" ADD VALUE 'domain.nginx_updated' BEFORE 'apikey.created';

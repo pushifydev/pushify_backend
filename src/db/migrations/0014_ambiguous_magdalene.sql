@@ -1,0 +1,1 @@
+ALTER TABLE "databases" ADD COLUMN "external_access" boolean DEFAULT false NOT NULL;

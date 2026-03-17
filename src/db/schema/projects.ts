@@ -1,0 +1,122 @@
+import { pgTable, uuid, varchar, timestamp, boolean, integer, text, pgEnum, jsonb } from 'drizzle-orm/pg-core';
+import { relations } from 'drizzle-orm';
+import { organizations } from './organizations';
+import { servers } from './servers';
+
+// Enums
+export const projectStatusEnum = pgEnum('project_status', ['active', 'paused', 'deleted']);
+export const environmentEnum = pgEnum('environment', ['production', 'staging', 'development', 'preview']);
+
+export const projects = pgTable('projects', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'cascade' }),
+  serverId: uuid('server_id').references(() => servers.id, { onDelete: 'set null' }), // Deployment server (optional)
+  name: varchar('name', { length: 255 }).notNull(),
+  slug: varchar('slug', { length: 100 }).notNull(),
+  description: text('description'),
+
+  // Git configuration
+  gitRepoUrl: varchar('git_repo_url', { length: 500 }),
+  gitBranch: varchar('git_branch', { length: 100 }).default('main'),
+  gitProvider: varchar('git_provider', { length: 50 }), // github, gitlab, bitbucket
+
+  // Build configuration
+  buildCommand: varchar('build_command', { length: 500 }),
+  startCommand: varchar('start_command', { length: 500 }),
+  rootDirectory: varchar('root_directory', { length: 255 }).default('/'),
+  dockerfilePath: varchar('dockerfile_path', { length: 255 }),
+
+  // Runtime configuration
+  port: integer('port').default(3000),
+  autoDeploy: boolean('auto_deploy').default(true).notNull(),
+
+  // Webhook configuration
+  webhookSecret: varchar('webhook_secret', { length: 64 }), // For verifying GitHub webhooks
+
+  // Status
+  status: projectStatusEnum('status').default('active').notNull(),
+
+  // Metadata
+  settings: jsonb('settings').default({}).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const environmentVariables = pgTable('environment_variables', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id')
+    .notNull()
+    .references(() => projects.id, { onDelete: 'cascade' }),
+  environment: environmentEnum('environment').default('production').notNull(),
+  key: varchar('key', { length: 255 }).notNull(),
+  valueEncrypted: text('value_encrypted').notNull(), // Encrypted value
+  isSecret: boolean('is_secret').default(false).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+// Nginx settings type for domain configuration
+export interface NginxSettings {
+  proxyPort?: number; // Override the default container port for this domain
+  proxyTimeout?: number; // seconds, default 86400
+  clientMaxBodySize?: string; // e.g., "10m", "100m", default "1m"
+  enableWebsocket?: boolean; // default true
+  enableGzip?: boolean; // default true
+  customHeaders?: Record<string, string>; // e.g., { "X-Custom-Header": "value" }
+  rateLimit?: {
+    enabled: boolean;
+    requestsPerSecond: number;
+    burst: number;
+  };
+  caching?: {
+    enabled: boolean;
+    maxAge: number; // seconds
+    staleWhileRevalidate?: number;
+  };
+  customLocationBlocks?: string; // raw nginx location blocks
+  forceHttps?: boolean; // default true when SSL is active
+}
+
+export const domains = pgTable('domains', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id')
+    .notNull()
+    .references(() => projects.id, { onDelete: 'cascade' }),
+  domain: varchar('domain', { length: 255 }).notNull().unique(),
+  isPrimary: boolean('is_primary').default(false).notNull(),
+  sslStatus: varchar('ssl_status', { length: 50 }).default('pending'), // pending, active, failed
+  nginxSettings: jsonb('nginx_settings').$type<NginxSettings>().default({}),
+  verifiedAt: timestamp('verified_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+// Relations
+export const projectsRelations = relations(projects, ({ one, many }) => ({
+  organization: one(organizations, {
+    fields: [projects.organizationId],
+    references: [organizations.id],
+  }),
+  server: one(servers, {
+    fields: [projects.serverId],
+    references: [servers.id],
+  }),
+  environmentVariables: many(environmentVariables),
+  domains: many(domains),
+}));
+
+export const environmentVariablesRelations = relations(environmentVariables, ({ one }) => ({
+  project: one(projects, {
+    fields: [environmentVariables.projectId],
+    references: [projects.id],
+  }),
+}));
+
+export const domainsRelations = relations(domains, ({ one }) => ({
+  project: one(projects, {
+    fields: [domains.projectId],
+    references: [projects.id],
+  }),
+}));

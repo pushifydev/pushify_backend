@@ -1,0 +1,2 @@
+CREATE TYPE "public"."server_setup_status" AS ENUM('pending', 'installing', 'completed', 'failed');--> statement-breakpoint
+ALTER TABLE "servers" ADD COLUMN "setup_status" "server_setup_status" DEFAULT 'pending' NOT NULL;
