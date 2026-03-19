@@ -1,5 +1,6 @@
 import type { SSHClient } from '../utils/ssh';
 import type { NginxSettings } from '../db/schema/projects';
+import { env } from '../config/env';
 
 export interface SiteConfig {
   domain: string;
@@ -241,6 +242,163 @@ export async function addSite(
   return {
     success: true,
     message: `Site ${projectSlug} added to Nginx`,
+  };
+}
+
+export interface AutoSubdomainSiteConfig {
+  domain: string;
+  containerPort: number;
+  projectSlug: string;
+  nginxSettings?: NginxSettings;
+}
+
+/**
+ * Generate Nginx config for an auto-generated subdomain using wildcard SSL cert
+ */
+function generateAutoSubdomainSiteConfig(config: AutoSubdomainSiteConfig): string {
+  const {
+    domain,
+    containerPort,
+    projectSlug,
+    nginxSettings = {},
+  } = config;
+
+  const previewBaseUrl = env.PREVIEW_BASE_URL || '';
+
+  // Merge with defaults
+  const settings = { ...DEFAULT_NGINX_SETTINGS, ...nginxSettings };
+  const {
+    proxyPort,
+    proxyTimeout,
+    clientMaxBodySize,
+    enableWebsocket,
+    enableGzip,
+    customHeaders,
+    rateLimit,
+    caching,
+    customLocationBlocks,
+  } = settings;
+
+  const targetPort = proxyPort || containerPort;
+
+  const websocketHeaders = enableWebsocket ? `
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_cache_bypass $http_upgrade;` : '';
+
+  const gzipConfig = enableGzip ? `
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_types text/plain text/css text/xml application/json application/javascript application/rss+xml application/atom+xml image/svg+xml;` : '';
+
+  const customHeadersBlock = generateCustomHeaders(customHeaders);
+  const rateLimitZone = generateRateLimitZone(projectSlug, rateLimit);
+  const rateLimitLocation = generateRateLimitLocation(projectSlug, rateLimit);
+  const cachingConfig = caching?.enabled ? `
+        proxy_cache_valid 200 ${caching.maxAge}s;
+        add_header X-Cache-Status $upstream_cache_status;` : '';
+  const customLocations = customLocationBlocks ? `\n${customLocationBlocks}` : '';
+
+  const proxyConfig = `
+        proxy_pass http://127.0.0.1:${targetPort};
+        proxy_http_version 1.1;${websocketHeaders}
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout ${proxyTimeout};
+        proxy_send_timeout ${proxyTimeout};
+        proxy_connect_timeout 60;
+        proxy_buffering off;${rateLimitLocation ? '\n' + rateLimitLocation : ''}${cachingConfig}${customHeadersBlock ? '\n' + customHeadersBlock : ''}`;
+
+  // Use wildcard cert from PREVIEW_BASE_URL
+  return `# Pushify site: ${projectSlug} (auto subdomain)
+# Domain: ${domain}
+# Proxy port: ${targetPort}${proxyPort ? ` (overridden from ${containerPort})` : ''}
+# Generated: ${new Date().toISOString()}
+${rateLimitZone ? '\n' + rateLimitZone + '\n' : ''}
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${domain};
+
+    # Redirect HTTP to HTTPS
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${domain};
+
+    ssl_certificate /etc/letsencrypt/live/${previewBaseUrl}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${previewBaseUrl}/privkey.pem;
+
+    # SSL configuration
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSL:50m;
+    ssl_session_tickets off;
+
+    # Modern configuration
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+
+    # HSTS
+    add_header Strict-Transport-Security "max-age=63072000" always;
+
+    # Client settings
+    client_max_body_size ${clientMaxBodySize};
+${gzipConfig}
+
+    location / {${proxyConfig}
+    }${customLocations}
+}
+`;
+}
+
+/**
+ * Add an auto-generated subdomain site to Nginx using wildcard SSL cert
+ */
+export async function addAutoSubdomainSite(
+  ssh: SSHClient,
+  config: AutoSubdomainSiteConfig
+): Promise<{ success: boolean; message: string }> {
+  const { projectSlug } = config;
+  const siteFileName = `pushify-${projectSlug}`;
+  const configContent = generateAutoSubdomainSiteConfig(config);
+
+  // Ensure pushify nginx directory exists
+  await ssh.exec(`mkdir -p ${PUSHIFY_SITES_DIR}`);
+
+  // Write configuration file
+  const configPath = `${NGINX_SITES_DIR}/${siteFileName}`;
+  await ssh.uploadFile(configContent, configPath);
+
+  // Create symlink in sites-enabled
+  await ssh.exec(`ln -sf ${configPath} ${NGINX_ENABLED_DIR}/${siteFileName}`);
+
+  // Also save a copy to our directory for tracking
+  await ssh.uploadFile(configContent, `${PUSHIFY_SITES_DIR}/${siteFileName}.conf`);
+
+  // Test nginx configuration
+  const testResult = await ssh.exec('nginx -t 2>&1');
+  if (testResult.code !== 0) {
+    // Rollback: remove the bad configuration
+    await ssh.exec(`rm -f ${NGINX_ENABLED_DIR}/${siteFileName}`);
+    await ssh.exec(`rm -f ${configPath}`);
+
+    return {
+      success: false,
+      message: `Nginx configuration test failed: ${testResult.stderr || testResult.stdout}`,
+    };
+  }
+
+  return {
+    success: true,
+    message: `Auto subdomain site ${config.domain} added to Nginx with wildcard SSL`,
   };
 }
 

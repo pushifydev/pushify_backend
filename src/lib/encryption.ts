@@ -4,24 +4,13 @@ const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 16;
 const AUTH_TAG_LENGTH = 16;
 
-// Get encryption key from environment (must be 32 bytes for AES-256)
+// Get encryption key from environment (must be 64-char hex string = 32 bytes for AES-256)
 function getEncryptionKey(): Buffer {
   const key = process.env.ENCRYPTION_KEY;
   if (!key) {
     throw new Error('ENCRYPTION_KEY environment variable is required');
   }
-  // If key is hex-encoded (64 chars), convert to buffer
-  if (key.length === 64) {
-    return Buffer.from(key, 'hex');
-  }
-  // If key is base64-encoded
-  if (key.length === 44) {
-    return Buffer.from(key, 'base64');
-  }
-  // Otherwise use as UTF-8 and pad/truncate to 32 bytes
-  const keyBuffer = Buffer.alloc(32);
-  Buffer.from(key).copy(keyBuffer);
-  return keyBuffer;
+  return Buffer.from(key, 'hex');
 }
 
 /**

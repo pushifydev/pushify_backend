@@ -28,8 +28,10 @@ const ProjectSchema = z
     gitRepoUrl: z.string().nullable(),
     gitBranch: z.string().nullable(),
     gitProvider: z.string().nullable(),
+    installCommand: z.string().nullable(),
     buildCommand: z.string().nullable(),
     startCommand: z.string().nullable(),
+    outputDirectory: z.string().nullable(),
     rootDirectory: z.string().nullable(),
     dockerfilePath: z.string().nullable(),
     port: z.number().nullable(),
@@ -78,8 +80,10 @@ const CreateProjectSchema = z
     gitRepoUrl: z.string().url().optional().openapi({ example: 'https://github.com/user/repo' }),
     gitBranch: z.string().max(100).optional().openapi({ example: 'main' }),
     gitProvider: z.enum(['github', 'gitlab', 'bitbucket']).optional(),
+    installCommand: z.string().max(500).optional().openapi({ example: 'npm install' }),
     buildCommand: z.string().max(500).optional().openapi({ example: 'npm run build' }),
     startCommand: z.string().max(500).optional().openapi({ example: 'npm start' }),
+    outputDirectory: z.string().max(255).optional().openapi({ example: '.next' }),
     rootDirectory: z.string().max(255).optional().openapi({ example: '/' }),
     dockerfilePath: z.string().max(255).optional().openapi({ example: 'Dockerfile' }),
     port: z.number().int().min(1).max(65535).optional().openapi({ example: 3000 }),
@@ -95,8 +99,10 @@ const UpdateProjectSchema = z
     gitRepoUrl: z.string().url().optional(),
     gitBranch: z.string().max(100).optional(),
     gitProvider: z.enum(['github', 'gitlab', 'bitbucket']).optional(),
+    installCommand: z.string().max(500).optional(),
     buildCommand: z.string().max(500).optional(),
     startCommand: z.string().max(500).optional(),
+    outputDirectory: z.string().max(255).optional(),
     rootDirectory: z.string().max(255).optional(),
     dockerfilePath: z.string().max(255).optional(),
     port: z.number().int().min(1).max(65535).optional(),
@@ -306,9 +312,15 @@ projectRouter.openapi(listProjectsRoute, async (c) => {
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
 
-  const projects = await projectService.getByOrganization(organizationId, userId, locale);
+  const projectsList = await projectService.getByOrganization(organizationId, userId, locale);
 
-  return c.json({ data: projects });
+  // Extract productionUrl from settings for each project
+  const projectsWithUrl = projectsList.map((p: any) => ({
+    ...p,
+    productionUrl: (p.settings as Record<string, unknown>)?.productionUrl || null,
+  }));
+
+  return c.json({ data: projectsWithUrl });
 });
 
 // Create project
@@ -349,8 +361,10 @@ projectRouter.openapi(getProjectRoute, async (c) => {
   const project = await projectService.getById(projectId, organizationId, userId, locale);
 
   // Transform server to match schema (pick only required fields)
+  const settings = (project.settings || {}) as Record<string, unknown>;
   const responseData = {
     ...project,
+    productionUrl: (settings.productionUrl as string) || null,
     server: project.server
       ? {
           id: project.server.id,

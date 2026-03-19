@@ -1,4 +1,5 @@
 import type { SSHClient } from '../utils/ssh';
+import { env } from '../config/env';
 
 export interface BuildImageOptions {
   workDir: string;
@@ -44,7 +45,10 @@ export async function buildImage(
   // - Parallelized layer builds
   // - Better cache management
   // - Inline cache export/import for cross-build caching
-  let buildCmd = `cd "${workDir}" && DOCKER_BUILDKIT=1 docker build`;
+  let buildCmd = `cd "${workDir}" && timeout ${env.DOCKER_BUILD_TIMEOUT} DOCKER_BUILDKIT=1 docker build`;
+
+  // Build resource limits (--cpus not supported by buildx, only --memory)
+  buildCmd += ` --memory ${env.DOCKER_BUILD_MEMORY_LIMIT}`;
 
   // Enable inline cache for faster subsequent builds
   buildCmd += ` --build-arg BUILDKIT_INLINE_CACHE=1`;
@@ -112,8 +116,14 @@ export async function runContainer(
   await ssh.exec(`docker stop ${containerName} 2>/dev/null || true`);
   await ssh.exec(`docker rm ${containerName} 2>/dev/null || true`);
 
-  // Build the docker run command
+  // Build the docker run command with resource limits
   let runCmd = `docker run -d --name ${containerName}`;
+
+  // Resource limits
+  runCmd += ` --memory ${env.DOCKER_MEMORY_LIMIT}`;
+  runCmd += ` --memory-swap 1g`;
+  runCmd += ` --cpus ${env.DOCKER_CPU_LIMIT}`;
+  runCmd += ` --pids-limit 256`;
 
   // Port mapping - bind to all interfaces for external access
   runCmd += ` -p 0.0.0.0:${hostPort}:${containerPort}`;
@@ -521,8 +531,14 @@ export async function runContainerFromImage(
     await ssh.exec(`docker rm ${containerName} 2>/dev/null || true`);
   }
 
-  // Build the docker run command
+  // Build the docker run command with resource limits
   let runCmd = `docker run -d --name ${containerName}`;
+
+  // Resource limits
+  runCmd += ` --memory ${env.DOCKER_MEMORY_LIMIT}`;
+  runCmd += ` --memory-swap 1g`;
+  runCmd += ` --cpus ${env.DOCKER_CPU_LIMIT}`;
+  runCmd += ` --pids-limit 256`;
 
   // Port mapping
   runCmd += ` -p 0.0.0.0:${hostPort}:${containerPort}`;
@@ -686,8 +702,14 @@ export async function blueGreenDeploy(
   const tempPort = parseInt(tempPortResult.stdout.trim()) || 30000;
   onProgress?.(`🔌 Using temporary port ${tempPort} for new container`);
 
-  // Build the docker run command for new container
+  // Build the docker run command for new container with resource limits
   let runCmd = `docker run -d --name ${newContainerName}`;
+
+  // Resource limits
+  runCmd += ` --memory ${env.DOCKER_MEMORY_LIMIT}`;
+  runCmd += ` --memory-swap 1g`;
+  runCmd += ` --cpus ${env.DOCKER_CPU_LIMIT}`;
+  runCmd += ` --pids-limit 256`;
 
   // Port mapping - use temporary port initially
   runCmd += ` -p 0.0.0.0:${tempPort}:${containerPort}`;
@@ -842,8 +864,12 @@ export async function completeBlueGreenSwitch(
     await ssh.exec(`docker stop ${newContainerName} 2>/dev/null || true`);
     await ssh.exec(`docker rm ${newContainerName} 2>/dev/null || true`);
 
-    // Recreate with correct port
+    // Recreate with correct port and resource limits
     let runCmd = `docker run -d --name ${newContainerName}`;
+    runCmd += ` --memory ${env.DOCKER_MEMORY_LIMIT}`;
+    runCmd += ` --memory-swap 1g`;
+    runCmd += ` --cpus ${env.DOCKER_CPU_LIMIT}`;
+    runCmd += ` --pids-limit 256`;
     runCmd += ` -p 0.0.0.0:${targetPort}:${containerPort}`;
 
     for (const envLine of envLines) {

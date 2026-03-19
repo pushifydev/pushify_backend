@@ -571,6 +571,105 @@ export const authService = {
   },
 
   /**
+   * Google OAuth login — creates or finds user, returns JWT
+   */
+  async googleLogin(
+    code: string,
+    locale: SupportedLocale = 'en',
+    ipAddress?: string,
+    userAgent?: string
+  ): Promise<AuthResult> {
+    const { googleService } = await import('./google.service');
+
+    // Exchange code for token
+    const tokenData = await googleService.exchangeCodeForToken(code);
+
+    // Get Google user profile
+    const googleUser = await googleService.getUser(tokenData.access_token);
+
+    if (!googleUser.email) {
+      throw new HTTPException(400, { message: 'Google account has no email address.' });
+    }
+
+    const googleId = googleUser.id;
+    const displayName = googleUser.name || googleUser.email.split('@')[0];
+
+    // Find existing user by Google ID or email
+    let user = await userRepository.findByGoogleId(googleId);
+
+    if (!user) {
+      // Try by email (link account if email matches)
+      const existingByEmail = await userRepository.findByEmail(googleUser.email);
+      if (existingByEmail) {
+        // Link Google ID to existing account
+        user = await userRepository.update(existingByEmail.id, {
+          googleId,
+          avatarUrl: existingByEmail.avatarUrl ?? googleUser.picture,
+          emailVerified: true,
+          emailVerifiedAt: new Date(),
+        });
+      } else {
+        // Create new user (no password for OAuth)
+        const newUser = await userRepository.create({
+          email: googleUser.email.toLowerCase(),
+          passwordHash: null,
+          name: displayName,
+          avatarUrl: googleUser.picture ?? null,
+        });
+        user = await userRepository.update(newUser.id, {
+          googleId,
+          emailVerified: true,
+          emailVerifiedAt: new Date(),
+        });
+
+        // Create default organization
+        const orgSlug = generateSlug(displayName) + '-' + Math.random().toString(36).substring(2, 8);
+        const org = await organizationRepository.create({
+          name: `${displayName}'s Workspace`,
+          slug: orgSlug,
+        });
+        await organizationRepository.addMember({
+          organizationId: org.id,
+          userId: newUser.id,
+          role: 'owner',
+        });
+      }
+    }
+
+    if (!user) {
+      throw new HTTPException(500, { message: t(locale, 'auth', 'noOrganization') });
+    }
+
+    const membership = await organizationRepository.findUserFirstOrganization(user.id);
+    if (!membership) {
+      throw new HTTPException(500, { message: t(locale, 'auth', 'noOrganization') });
+    }
+
+    // Generate JWT pair & create session
+    const tokens = await generateTokenPair(user.id, membership.organization.id);
+    await this.createSession(user.id, tokens.refreshToken, ipAddress, userAgent);
+
+    logger.info({ userId: user.id, provider: 'google' }, 'OAuth login successful');
+
+    return {
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        avatarUrl: user.avatarUrl ?? null,
+        emailVerified: user.emailVerified,
+        twoFactorEnabled: user.twoFactorEnabled,
+      },
+      organization: {
+        id: membership.organization.id,
+        name: membership.organization.name,
+        slug: membership.organization.slug,
+      },
+      ...tokens,
+    };
+  },
+
+  /**
    * Forgot password - generates a reset token
    * Always returns success to avoid revealing whether an email exists
    */

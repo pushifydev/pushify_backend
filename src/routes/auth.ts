@@ -137,6 +137,18 @@ const GithubLoginUrlResponseSchema = z
   })
   .openapi('GithubLoginUrlResponse');
 
+const GoogleLoginUrlResponseSchema = z
+  .object({
+    url: z.string().url(),
+  })
+  .openapi('GoogleLoginUrlResponse');
+
+const GoogleLoginCallbackRequestSchema = z
+  .object({
+    code: z.string().min(1),
+  })
+  .openapi('GoogleLoginCallbackRequest');
+
 const ForgotPasswordRequestSchema = z
   .object({
     email: z.string().email().openapi({ example: 'user@example.com' }),
@@ -521,6 +533,51 @@ const githubLoginCallbackRoute = createRoute({
   },
 });
 
+const googleLoginUrlRoute = createRoute({
+  method: 'get',
+  path: '/google/login-url',
+  tags: ['Authentication'],
+  summary: 'Get Google OAuth login URL',
+  description: 'Returns the Google OAuth URL to redirect the user to for login/signup',
+  responses: {
+    200: {
+      description: 'Google OAuth URL',
+      content: {
+        'application/json': {
+          schema: GoogleLoginUrlResponseSchema,
+        },
+      },
+    },
+  },
+});
+
+const googleLoginCallbackRoute = createRoute({
+  method: 'post',
+  path: '/google/login-callback',
+  tags: ['Authentication'],
+  summary: 'Handle Google OAuth login callback',
+  description: 'Exchange OAuth code for user session. Creates account if first login.',
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: GoogleLoginCallbackRequestSchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Login successful',
+      content: {
+        'application/json': {
+          schema: LoginResponseSchema,
+        },
+      },
+    },
+  },
+});
+
 const forgotPasswordRoute = createRoute({
   method: 'post',
   path: '/forgot-password',
@@ -719,6 +776,34 @@ authRouter.openapi(githubLoginCallbackRoute, async (c) => {
   const userAgent = c.req.header('user-agent');
 
   const result = await authService.githubLogin(code, locale, ipAddress, userAgent);
+
+  return c.json({
+    data: {
+      user: result.user,
+      organization: result.organization,
+    },
+    accessToken: result.accessToken,
+    refreshToken: result.refreshToken,
+  });
+});
+
+// Google OAuth Login URL
+authRouter.openapi(googleLoginUrlRoute, async (c) => {
+  const { googleService } = await import('../services/google.service');
+  const state = Math.random().toString(36).substring(2);
+  const url = googleService.getAuthorizationUrl(state);
+  return c.json({ url });
+});
+
+// Google OAuth Login Callback
+authRouter.use('/google/login-callback', authRateLimiter);
+authRouter.openapi(googleLoginCallbackRoute, async (c) => {
+  const { code } = c.req.valid('json');
+  const locale = c.get('locale');
+  const ipAddress = c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip');
+  const userAgent = c.req.header('user-agent');
+
+  const result = await authService.googleLogin(code, locale, ipAddress, userAgent);
 
   return c.json({
     data: {

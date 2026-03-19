@@ -44,6 +44,13 @@ export const userRepository = {
     });
   },
 
+  // Find user by Google ID
+  async findByGoogleId(googleId: string) {
+    return db.query.users.findFirst({
+      where: eq(users.googleId, googleId),
+    });
+  },
+
   // Find user by ID
   async findById(id: string) {
     return db.query.users.findFirst({

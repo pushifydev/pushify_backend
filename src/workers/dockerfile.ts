@@ -1,6 +1,11 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 
+function getBuildTimeEnvVars(envVars?: Record<string, string>) {
+  if (!envVars) return [];
+  return Object.entries(envVars);
+}
+
 export interface DockerfileOptions {
   framework?: string | null;
   buildCommand?: string | null;
@@ -9,6 +14,7 @@ export interface DockerfileOptions {
   outputDirectory?: string | null;
   port?: number;
   rootDirectory?: string;
+  envVars?: Record<string, string>;
 }
 
 interface FrameworkConfig {
@@ -96,7 +102,7 @@ export function generateDockerfile(options: DockerfileOptions): string {
   if (config.staticSite) {
     return generateStaticSiteDockerfile({
       buildCommand: buildCommand || 'npm run build',
-      installCommand: installCommand || 'npm install',
+      installCommand: installCommand || 'npm install --legacy-peer-deps',
       outputDirectory: outputDirectory || 'dist',
       rootDirectory,
     });
@@ -104,23 +110,25 @@ export function generateDockerfile(options: DockerfileOptions): string {
 
   if (framework === 'nextjs') {
     return generateNextjsDockerfile({
-      installCommand: installCommand || 'npm install',
+      installCommand: installCommand || 'npm install --legacy-peer-deps',
       rootDirectory,
       port,
+      envVars: options.envVars,
     });
   }
 
   if (framework === 'nuxt') {
     return generateNuxtDockerfile({
-      installCommand: installCommand || 'npm install',
+      installCommand: installCommand || 'npm install --legacy-peer-deps',
       rootDirectory,
       port,
+      envVars: options.envVars,
     });
   }
 
   return generateGenericNodeDockerfile({
     buildCommand,
-    installCommand: installCommand || 'npm install',
+    installCommand: installCommand || 'npm install --legacy-peer-deps',
     startCommand: startCommand || 'npm start',
     port,
     rootDirectory,
@@ -131,10 +139,16 @@ function generateNextjsDockerfile(options: {
   installCommand: string;
   rootDirectory: string;
   port: number;
+  envVars?: Record<string, string>;
 }): string {
-  const { installCommand, rootDirectory, port } = options;
+  const { installCommand, rootDirectory, port, envVars } = options;
   const workdir = rootDirectory === '.' || rootDirectory === './' ? '/app' : `/app/${rootDirectory}`;
   const copyPrefix = rootDirectory === '.' ? '' : rootDirectory + '/';
+
+  // Extract public env vars for build-time injection (all frameworks)
+  const buildTimeEnvs = getBuildTimeEnvVars(envVars);
+  const argLines = buildTimeEnvs.map(([key]) => `ARG ${key}`).join('\n');
+  const envLines = buildTimeEnvs.map(([key]) => `ENV ${key}=\${${key}}`).join('\n');
 
   return `# syntax=docker/dockerfile:1.4
 # Next.js Dockerfile with BuildKit caching
@@ -152,6 +166,10 @@ RUN --mount=type=cache,target=/root/.npm \\
 
 # Copy source code
 COPY ${rootDirectory === '.' ? '.' : rootDirectory} .
+
+# Build-time environment variables
+${argLines}
+${envLines}
 
 # Build the application with next cache mount
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -188,9 +206,14 @@ function generateNuxtDockerfile(options: {
   installCommand: string;
   rootDirectory: string;
   port: number;
+  envVars?: Record<string, string>;
 }): string {
-  const { installCommand, rootDirectory, port } = options;
+  const { installCommand, rootDirectory, port, envVars } = options;
   const workdir = rootDirectory === '.' || rootDirectory === './' ? '/app' : `/app/${rootDirectory}`;
+
+  const buildTimeEnvs = getBuildTimeEnvVars(envVars);
+  const argLines = buildTimeEnvs.map(([key]) => `ARG ${key}`).join('\n');
+  const envLines = buildTimeEnvs.map(([key]) => `ENV ${key}=\${${key}}`).join('\n');
 
   return `# syntax=docker/dockerfile:1.4
 # Nuxt Dockerfile with BuildKit caching
@@ -204,6 +227,10 @@ RUN --mount=type=cache,target=/root/.npm \\
     ${installCommand}
 
 COPY ${rootDirectory === '.' ? '.' : rootDirectory} .
+
+# Build-time environment variables
+${argLines}
+${envLines}
 
 # Build with Nuxt cache mount
 RUN --mount=type=cache,target=${workdir}/.nuxt \\
@@ -270,7 +297,7 @@ CMD ["nginx", "-g", "daemon off;"]
 function generateGenericNodeDockerfile(options: DockerfileOptions): string {
   const {
     buildCommand,
-    installCommand = 'npm install',
+    installCommand = 'npm install --legacy-peer-deps',
     startCommand = 'npm start',
     port = 3000,
     rootDirectory = '.',

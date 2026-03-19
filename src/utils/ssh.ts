@@ -246,7 +246,26 @@ export class SSHClient {
 }
 
 // Connection pool for reusing SSH connections
-const connectionPool: Map<string, SSHClient> = new Map();
+const MAX_POOL_SIZE = 20;
+const CONNECTION_TTL = 5 * 60 * 1000; // 5 minutes
+
+interface PoolEntry {
+  client: SSHClient;
+  lastUsedAt: number;
+}
+
+const connectionPool = new Map<string, PoolEntry>();
+
+// Cleanup stale connections every 60 seconds
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of connectionPool.entries()) {
+    if (now - entry.lastUsedAt > CONNECTION_TTL) {
+      entry.client.disconnect();
+      connectionPool.delete(key);
+    }
+  }
+}, 60 * 1000);
 
 /**
  * Get or create an SSH connection from the pool
@@ -255,9 +274,27 @@ export async function getSSHConnection(config: SSHConnectionConfig): Promise<SSH
   const key = `${config.username}@${config.host}:${config.port || 22}`;
 
   // Check if we have an existing connected client
-  const existingClient = connectionPool.get(key);
-  if (existingClient && existingClient.isConnected()) {
-    return existingClient;
+  const existing = connectionPool.get(key);
+  if (existing && existing.client.isConnected()) {
+    existing.lastUsedAt = Date.now();
+    return existing.client;
+  }
+
+  // Evict oldest entry if pool is full
+  if (connectionPool.size >= MAX_POOL_SIZE) {
+    let oldestKey: string | null = null;
+    let oldestTime = Infinity;
+    for (const [k, entry] of connectionPool.entries()) {
+      if (entry.lastUsedAt < oldestTime) {
+        oldestTime = entry.lastUsedAt;
+        oldestKey = k;
+      }
+    }
+    if (oldestKey) {
+      const evicted = connectionPool.get(oldestKey);
+      evicted?.client.disconnect();
+      connectionPool.delete(oldestKey);
+    }
   }
 
   // Create new client
@@ -265,7 +302,7 @@ export async function getSSHConnection(config: SSHConnectionConfig): Promise<SSH
   await client.connect(config);
 
   // Store in pool
-  connectionPool.set(key, client);
+  connectionPool.set(key, { client, lastUsedAt: Date.now() });
 
   return client;
 }
@@ -274,8 +311,8 @@ export async function getSSHConnection(config: SSHConnectionConfig): Promise<SSH
  * Close all connections in the pool
  */
 export function closeAllSSHConnections(): void {
-  for (const client of connectionPool.values()) {
-    client.disconnect();
+  for (const entry of connectionPool.values()) {
+    entry.client.disconnect();
   }
   connectionPool.clear();
 }
@@ -285,9 +322,9 @@ export function closeAllSSHConnections(): void {
  */
 export function removeSSHConnection(host: string, port: number = 22, username: string): void {
   const key = `${username}@${host}:${port}`;
-  const client = connectionPool.get(key);
-  if (client) {
-    client.disconnect();
+  const entry = connectionPool.get(key);
+  if (entry) {
+    entry.client.disconnect();
     connectionPool.delete(key);
   }
 }

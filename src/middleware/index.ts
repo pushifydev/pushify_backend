@@ -28,13 +28,26 @@ export function registerMiddleware(app: OpenAPIHono<any>) {
   app.use(
     '*',
     cors({
-      origin: [
-        'http://localhost:3000',
-        'http://localhost:3001',
-      ],
+      origin: (origin) => {
+        const allowed = [env.CORS_ORIGIN, env.FRONTEND_URL].filter(Boolean);
+        if (!origin || allowed.includes(origin)) return origin;
+        return null;
+      },
       credentials: true,
+      allowHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'Accept-Language'],
+      allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      maxAge: 86400,
     })
   );
+
+  // Body size limit (10MB)
+  app.use('*', async (c, next) => {
+    const contentLength = c.req.header('content-length');
+    if (contentLength && parseInt(contentLength) > 10 * 1024 * 1024) {
+      return c.json({ error: { code: 'PAYLOAD_TOO_LARGE', message: 'Request body too large (max 10MB)' } }, 413);
+    }
+    await next();
+  });
 
   // Global rate limiting (if enabled)
   if (env.RATE_LIMIT_ENABLED) {
