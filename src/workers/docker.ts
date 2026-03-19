@@ -1,4 +1,5 @@
 import { execStreamingCommand, execCommand, type StreamingCommandOptions } from './shell';
+import { env } from '../config/env';
 import net from 'net';
 
 /**
@@ -69,7 +70,11 @@ export async function buildImage(options: BuildOptions): Promise<void> {
 
   onProgress?.(`🔨 Building Docker image ${imageName}:${tag}...`);
 
-  const args = ['build', '-t', `${imageName}:${tag}`];
+  const args = [
+    'build',
+    '-t', `${imageName}:${tag}`,
+    '--memory', env.DOCKER_BUILD_MEMORY_LIMIT,
+  ];
 
   if (dockerfilePath) {
     args.push('-f', dockerfilePath);
@@ -83,11 +88,13 @@ export async function buildImage(options: BuildOptions): Promise<void> {
 
   args.push('.');
 
+  const buildTimeoutMs = env.DOCKER_BUILD_TIMEOUT * 1000;
+
   const streamOptions: StreamingCommandOptions = {
     cwd: workDir,
     onStdout: (data) => onProgress?.(data.trim()),
     onStderr: (data) => onProgress?.(data.trim()),
-    timeout: 600000, // 10 minutes for build
+    timeout: buildTimeoutMs,
   };
 
   const result = await execStreamingCommand('docker', args, streamOptions);
@@ -126,6 +133,10 @@ export async function runContainer(options: RunOptions): Promise<string> {
     '--name', containerName,
     '-p', `${hostPort}:${containerPort}`,
     '--restart', restart,
+    '--memory', env.DOCKER_MEMORY_LIMIT,
+    '--memory-swap', '1g',
+    '--cpus', env.DOCKER_CPU_LIMIT,
+    '--pids-limit', '256',
   ];
 
   if (networkMode) {

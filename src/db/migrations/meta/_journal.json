@@ -134,6 +134,13 @@
       "when": 1771855070001,
       "tag": "0018_bouncy_doctor_octopus",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1773863923685,
+      "tag": "0019_lazy_mesmero",
+      "breakpoints": true
     }
   ]
 }

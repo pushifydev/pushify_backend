@@ -5,9 +5,10 @@ import { domains } from '../db/schema/projects';
 import { SSHClient } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
 import { buildImage, runContainer, checkDocker, getImageId, tagImage, cleanupOldImages, runContainerFromImage, imageExists, blueGreenDeploy, completeBlueGreenSwitch } from './remote-docker';
-import { addSite, reloadNginx, requestSSLCertificate } from './nginx-manager';
+import { addSite, addAutoSubdomainSite, reloadNginx, requestSSLCertificate } from './nginx-manager';
 import { getOrAssignPort } from './port-manager';
 import { generateDockerfile } from './dockerfile';
+import { domainService } from '../services/domain.service';
 import path from 'path';
 
 export interface RemoteDeploymentConfig {
@@ -116,7 +117,7 @@ export async function deployToRemoteServer(
     envVars,
     buildCommand,
     startCommand,
-    installCommand = 'npm install',
+    installCommand = 'npm install --legacy-peer-deps',
     rootDirectory = '.',
     dockerfilePath,
     outputDirectory,
@@ -197,6 +198,7 @@ export async function deployToRemoteServer(
         outputDirectory,
         port: containerPort,
         rootDirectory,
+        envVars,
       });
 
       await ssh.uploadFile(dockerfileContent, path.posix.join(workDir, 'Dockerfile'));
@@ -211,11 +213,15 @@ export async function deployToRemoteServer(
 
     onProgress(`🔨 Building Docker image: ${imageName}:${imageTag}`);
 
+    // Pass all env vars as build args
+    const buildArgs: Record<string, string> = envVars ? { ...envVars } : {};
+
     const buildResult = await buildImage(ssh, {
       workDir,
       imageName,
       tag: imageTag,
       dockerfilePath: dockerfilePath ? path.posix.join(repoDir, dockerfilePath) : undefined,
+      buildArgs: Object.keys(buildArgs).length > 0 ? buildArgs : undefined,
       onProgress,
     });
 
@@ -315,58 +321,100 @@ export async function deployToRemoteServer(
       onProgress(`🔄 Tried iptables fallback for port ${hostPort}`);
     }
 
-    // Get primary domain for this project
-    const primaryDomain = await getPrimaryDomain(projectId);
+    // Check if project has any domains; if not, create auto subdomain
+    let primaryDomain = await getPrimaryDomain(projectId);
+
+    if (!primaryDomain) {
+      onProgress('🌐 No domain configured, creating auto subdomain...');
+      try {
+        const autoDomain = await domainService.createAutoSubdomain(projectId, projectSlug, serverId);
+        if (autoDomain) {
+          primaryDomain = autoDomain.domain;
+          onProgress(`✅ Auto subdomain created: ${primaryDomain}`);
+        }
+      } catch (autoSubError) {
+        onProgress(`⚠️ Auto subdomain creation warning: ${autoSubError instanceof Error ? autoSubError.message : 'Unknown error'}`);
+      }
+    }
 
     // Configure Nginx
     if (primaryDomain) {
-      onProgress(`🌐 Configuring Nginx for domain: ${primaryDomain}`);
+      // Check if this is an auto-generated subdomain (ends with PREVIEW_BASE_URL)
+      const { env: envConfig } = await import('../config/env');
+      const previewBaseUrl = envConfig.PREVIEW_BASE_URL;
+      const isAutoSubdomain = previewBaseUrl && primaryDomain.endsWith(`.${previewBaseUrl}`);
 
-      const addResult = await addSite(ssh, {
-        domain: primaryDomain,
-        containerPort: hostPort,
-        projectSlug,
-        ssl: false, // Start without SSL, will be added after
-      });
+      if (isAutoSubdomain) {
+        // Use wildcard cert for auto subdomains
+        onProgress(`🌐 Configuring Nginx for auto subdomain: ${primaryDomain}`);
 
-      if (!addResult.success) {
-        onProgress(`⚠️ Nginx config warning: ${addResult.message}`);
-      } else {
-        onProgress('✅ Nginx site configured');
+        const addResult = await addAutoSubdomainSite(ssh, {
+          domain: primaryDomain,
+          containerPort: hostPort,
+          projectSlug,
+        });
 
-        // Reload Nginx
-        const reloadResult = await reloadNginx(ssh);
-        if (!reloadResult.success) {
-          onProgress(`⚠️ Nginx reload warning: ${reloadResult.message}`);
+        if (!addResult.success) {
+          onProgress(`⚠️ Nginx config warning: ${addResult.message}`);
         } else {
-          onProgress('✅ Nginx reloaded');
-        }
-
-        // Try to get SSL certificate
-        onProgress('🔐 Requesting SSL certificate...');
-        try {
-          const sslResult = await requestSSLCertificate(
-            ssh,
-            primaryDomain,
-            'ssl@pushify.app' // TODO: Use org/user email
-          );
-
-          if (sslResult.success) {
-            onProgress('✅ SSL certificate obtained');
-
-            // Update Nginx config with SSL
-            await addSite(ssh, {
-              domain: primaryDomain,
-              containerPort: hostPort,
-              projectSlug,
-              ssl: true,
-            });
-            await reloadNginx(ssh);
+          onProgress('✅ Nginx site configured with wildcard SSL');
+          const reloadResult = await reloadNginx(ssh);
+          if (!reloadResult.success) {
+            onProgress(`⚠️ Nginx reload warning: ${reloadResult.message}`);
           } else {
-            onProgress(`⚠️ SSL certificate failed: ${sslResult.message}`);
+            onProgress('✅ Nginx reloaded');
           }
-        } catch (sslError) {
-          onProgress(`⚠️ SSL certificate error: ${sslError instanceof Error ? sslError.message : 'Unknown error'}`);
+        }
+      } else {
+        // Custom domain — use standard flow
+        onProgress(`🌐 Configuring Nginx for domain: ${primaryDomain}`);
+
+        const addResult = await addSite(ssh, {
+          domain: primaryDomain,
+          containerPort: hostPort,
+          projectSlug,
+          ssl: false, // Start without SSL, will be added after
+        });
+
+        if (!addResult.success) {
+          onProgress(`⚠️ Nginx config warning: ${addResult.message}`);
+        } else {
+          onProgress('✅ Nginx site configured');
+
+          // Reload Nginx
+          const reloadResult = await reloadNginx(ssh);
+          if (!reloadResult.success) {
+            onProgress(`⚠️ Nginx reload warning: ${reloadResult.message}`);
+          } else {
+            onProgress('✅ Nginx reloaded');
+          }
+
+          // Try to get SSL certificate
+          onProgress('🔐 Requesting SSL certificate...');
+          try {
+            const sslResult = await requestSSLCertificate(
+              ssh,
+              primaryDomain,
+              'ssl@pushify.app'
+            );
+
+            if (sslResult.success) {
+              onProgress('✅ SSL certificate obtained');
+
+              // Update Nginx config with SSL
+              await addSite(ssh, {
+                domain: primaryDomain,
+                containerPort: hostPort,
+                projectSlug,
+                ssl: true,
+              });
+              await reloadNginx(ssh);
+            } else {
+              onProgress(`⚠️ SSL certificate failed: ${sslResult.message}`);
+            }
+          } catch (sslError) {
+            onProgress(`⚠️ SSL certificate error: ${sslError instanceof Error ? sslError.message : 'Unknown error'}`);
+          }
         }
       }
     }

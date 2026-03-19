@@ -13,6 +13,10 @@ import type { DatabaseType } from '../db/schema/databases';
 
 // ============ Helpers ============
 
+function shellEscape(str: string): string {
+  return `'${str.replace(/'/g, "'\\''")}'`;
+}
+
 function backupFileName(databaseName: string, type: DatabaseType): string {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const ext = type === 'redis' ? 'rdb' : 'sql.gz';
@@ -32,18 +36,25 @@ function buildDumpCommand(
   fileName: string,
   backupPath: string
 ): string {
+  const eCont = shellEscape(containerName);
+  const eUser = shellEscape(username);
+  const ePass = shellEscape(password);
+  const eDb = shellEscape(databaseName);
+  const eFile = shellEscape(fileName);
+  const ePath = shellEscape(backupPath);
+
   switch (type) {
     case 'postgresql':
-      return `docker exec ${containerName} bash -c "pg_dump -U ${username} -d ${databaseName} | gzip > /tmp/${fileName}" && docker cp ${containerName}:/tmp/${fileName} ${backupPath}/`;
+      return `docker exec ${eCont} bash -c "pg_dump -U ${eUser} -d ${eDb} | gzip > /tmp/${eFile}" && docker cp ${eCont}:/tmp/${eFile} ${ePath}/`;
 
     case 'mysql':
-      return `docker exec ${containerName} bash -c "mysqldump -u ${username} -p'${password}' ${databaseName} | gzip > /tmp/${fileName}" && docker cp ${containerName}:/tmp/${fileName} ${backupPath}/`;
+      return `docker exec -e MYSQL_PWD=${ePass} ${eCont} bash -c "mysqldump -u ${eUser} ${eDb} | gzip > /tmp/${eFile}" && docker cp ${eCont}:/tmp/${eFile} ${ePath}/`;
 
     case 'mongodb':
-      return `docker exec ${containerName} mongodump --username ${username} --password '${password}' --authenticationDatabase admin --db ${databaseName} --archive=/tmp/${fileName} --gzip && docker cp ${containerName}:/tmp/${fileName} ${backupPath}/`;
+      return `docker exec ${eCont} mongodump --username ${eUser} --password ${ePass} --authenticationDatabase admin --db ${eDb} --archive=/tmp/${eFile} --gzip && docker cp ${eCont}:/tmp/${eFile} ${ePath}/`;
 
     case 'redis':
-      return `docker exec ${containerName} redis-cli -a '${password}' BGSAVE && sleep 2 && docker cp ${containerName}:/data/dump.rdb ${backupPath}/${fileName}`;
+      return `docker exec ${eCont} redis-cli -a ${ePass} BGSAVE && sleep 2 && docker cp ${eCont}:/data/dump.rdb ${ePath}/${eFile}`;
   }
 }
 
@@ -57,18 +68,25 @@ function buildRestoreCommand(
 ): string {
   const fileName = filePath.split('/').pop()!;
 
+  const eCont = shellEscape(containerName);
+  const eUser = shellEscape(username);
+  const ePass = shellEscape(password);
+  const eDb = shellEscape(databaseName);
+  const eFile = shellEscape(fileName);
+  const ePath = shellEscape(filePath);
+
   switch (type) {
     case 'postgresql':
-      return `docker cp ${filePath} ${containerName}:/tmp/${fileName} && docker exec ${containerName} bash -c "gunzip -c /tmp/${fileName} | psql -U ${username} -d ${databaseName}"`;
+      return `docker cp ${ePath} ${eCont}:/tmp/${eFile} && docker exec ${eCont} bash -c "gunzip -c /tmp/${eFile} | psql -U ${eUser} -d ${eDb}"`;
 
     case 'mysql':
-      return `docker cp ${filePath} ${containerName}:/tmp/${fileName} && docker exec ${containerName} bash -c "gunzip -c /tmp/${fileName} | mysql -u ${username} -p'${password}' ${databaseName}"`;
+      return `docker cp ${ePath} ${eCont}:/tmp/${eFile} && docker exec -e MYSQL_PWD=${ePass} ${eCont} bash -c "gunzip -c /tmp/${eFile} | mysql -u ${eUser} ${eDb}"`;
 
     case 'mongodb':
-      return `docker cp ${filePath} ${containerName}:/tmp/${fileName} && docker exec ${containerName} mongorestore --username ${username} --password '${password}' --authenticationDatabase admin --db ${databaseName} --archive=/tmp/${fileName} --gzip --drop`;
+      return `docker cp ${ePath} ${eCont}:/tmp/${eFile} && docker exec ${eCont} mongorestore --username ${eUser} --password ${ePass} --authenticationDatabase admin --db ${eDb} --archive=/tmp/${eFile} --gzip --drop`;
 
     case 'redis':
-      return `docker exec ${containerName} redis-cli -a '${password}' SHUTDOWN NOSAVE || true && docker cp ${filePath} ${containerName}:/data/dump.rdb && docker start ${containerName}`;
+      return `docker exec ${eCont} redis-cli -a ${ePass} SHUTDOWN NOSAVE || true && docker cp ${ePath} ${eCont}:/data/dump.rdb && docker start ${eCont}`;
   }
 }
 

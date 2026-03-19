@@ -43,11 +43,29 @@ async function detectFramework(workDir: string, rootDirectory: string = '.'): Pr
   }
 }
 
+
 const POLL_INTERVAL = 5000; // 5 seconds
-const MAX_CONCURRENT_DEPLOYMENTS = 2;
 
 let isRunning = false;
 let activeDeployments = 0;
+
+// Per-server concurrency tracking
+const activeDeploymentsPerServer = new Map<string, number>();
+
+function canDeployToServerSlot(serverId: string): boolean {
+  const active = activeDeploymentsPerServer.get(serverId) || 0;
+  return active < env.MAX_CONCURRENT_DEPLOYS_PER_SERVER;
+}
+
+function incrementServerDeploys(serverId: string): void {
+  const active = activeDeploymentsPerServer.get(serverId) || 0;
+  activeDeploymentsPerServer.set(serverId, active + 1);
+}
+
+function decrementServerDeploys(serverId: string): void {
+  const active = activeDeploymentsPerServer.get(serverId) || 0;
+  activeDeploymentsPerServer.set(serverId, Math.max(0, active - 1));
+}
 
 interface DeploymentJob {
   id: string;
@@ -55,6 +73,7 @@ interface DeploymentJob {
   branch: string | null;
   triggeredById: string | null;
   rollbackFromDeploymentId: string | null; // For quick rollback
+  serverId: string | null; // Server ID for concurrency tracking
 }
 
 interface GitHubStatusContext {
@@ -98,12 +117,30 @@ export function stopDeploymentWorker(): void {
 async function pollForDeployments(): Promise<void> {
   while (isRunning) {
     try {
-      if (activeDeployments < MAX_CONCURRENT_DEPLOYMENTS) {
-        const job = await getNextPendingDeployment();
+      if (activeDeployments >= env.MAX_CONCURRENT_DEPLOYS_TOTAL) {
+        // Global limit reached, skip this cycle
+        logger.debug(
+          { activeDeployments, limit: env.MAX_CONCURRENT_DEPLOYS_TOTAL },
+          'Global deployment concurrency limit reached, waiting...'
+        );
+      } else {
+        const job = await getNextEligibleDeployment();
         if (job) {
+          const serverId = job.serverId || '__local__';
           activeDeployments++;
+          incrementServerDeploys(serverId);
+          logger.info(
+            { deploymentId: job.id, serverId, activeDeployments, serverActive: activeDeploymentsPerServer.get(serverId) },
+            'Deployment slot acquired'
+          );
+
           processDeployment(job).finally(() => {
             activeDeployments--;
+            decrementServerDeploys(serverId);
+            logger.info(
+              { deploymentId: job.id, serverId, activeDeployments, serverActive: activeDeploymentsPerServer.get(serverId) },
+              'Deployment slot released'
+            );
           });
         }
       }
@@ -126,13 +163,51 @@ async function getNextPendingDeployment(): Promise<DeploymentJob | null> {
       branch: deployments.branch,
       triggeredById: deployments.triggeredById,
       rollbackFromDeploymentId: deployments.rollbackFromDeploymentId,
+      serverId: projects.serverId,
     })
     .from(deployments)
+    .innerJoin(projects, eq(deployments.projectId, projects.id))
     .where(eq(deployments.status, 'pending'))
     .orderBy(deployments.createdAt)
-    .limit(1);
+    .limit(10); // Fetch a batch to find an eligible one
 
   return result[0] || null;
+}
+
+/**
+ * Get the next pending deployment that is eligible to run
+ * (respects per-server concurrency limits)
+ */
+async function getNextEligibleDeployment(): Promise<DeploymentJob | null> {
+  const pending = await db
+    .select({
+      id: deployments.id,
+      projectId: deployments.projectId,
+      branch: deployments.branch,
+      triggeredById: deployments.triggeredById,
+      rollbackFromDeploymentId: deployments.rollbackFromDeploymentId,
+      serverId: projects.serverId,
+    })
+    .from(deployments)
+    .innerJoin(projects, eq(deployments.projectId, projects.id))
+    .where(eq(deployments.status, 'pending'))
+    .orderBy(deployments.createdAt)
+    .limit(10); // Fetch a batch to find an eligible one
+
+  for (const job of pending) {
+    const serverId = job.serverId || '__local__';
+
+    if (canDeployToServerSlot(serverId)) {
+      return job;
+    }
+
+    logger.debug(
+      { deploymentId: job.id, serverId, serverActive: activeDeploymentsPerServer.get(serverId) },
+      'Server concurrency limit reached, skipping deployment this cycle'
+    );
+  }
+
+  return null;
 }
 
 /**
@@ -404,7 +479,7 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
         envVars: envVarsDecrypted,
         buildCommand: project.buildCommand || undefined,
         startCommand: project.startCommand || undefined,
-        installCommand: (projectSettings?.installCommand as string) || 'npm install',
+        installCommand: project.installCommand || (projectSettings?.installCommand as string) || 'npm install --legacy-peer-deps',
         rootDirectory: project.rootDirectory || '.',
         dockerfilePath: project.dockerfilePath || undefined,
         outputDirectory: (projectSettings?.outputDirectory as string) || undefined,
@@ -487,6 +562,17 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
     }
 
     // === LOCAL DEPLOYMENT (fallback when no server assigned) ===
+
+    // Get environment variables early (needed for Dockerfile generation + build args)
+    const localEnvVars = await db
+      .select()
+      .from(environmentVariables)
+      .where(eq(environmentVariables.projectId, job.projectId));
+
+    const envVarsDecrypted: Record<string, string> = {};
+    for (const ev of localEnvVars) {
+      envVarsDecrypted[ev.key] = decrypt(ev.valueEncrypted);
+    }
 
     // Check Docker availability for local deployment
     const dockerAvailable = await isDockerAvailable();
@@ -577,11 +663,12 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
       const dockerfileContent = generateDockerfile({
         framework,
         buildCommand: project.buildCommand,
-        installCommand: (project.settings as Record<string, string>)?.installCommand || 'npm install',
+        installCommand: project.installCommand || (project.settings as Record<string, string>)?.installCommand || 'npm install --legacy-peer-deps',
         startCommand: project.startCommand,
         outputDirectory: (project.settings as Record<string, string>)?.outputDirectory || null,
         port: project.port || 3000,
         rootDirectory: project.rootDirectory || '.',
+        envVars: envVarsDecrypted,
       });
       await writeDockerfile(workDir, dockerfileContent);
       addLog('✅ Dockerfile generated');
@@ -596,11 +683,15 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
     addLog(`🔨 Building image: ${imageName}:${imageTag}`);
     await updateDeploymentStatus(job.id, 'building', logBuffer.join('\n'), job.projectId);
 
+    // Pass all env vars as build args
+    const buildArgs: Record<string, string> = { ...envVarsDecrypted };
+
     await buildImage({
       workDir,
       imageName,
       tag: imageTag,
       dockerfilePath: project.dockerfilePath || undefined,
+      buildArgs: Object.keys(buildArgs).length > 0 ? buildArgs : undefined,
       onProgress: addLog,
     });
 
@@ -608,18 +699,7 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
     await updateDeploymentStatus(job.id, 'deploying', logBuffer.join('\n'), job.projectId);
     addLog('🚀 Status: Deploying');
 
-    // Get environment variables
-    const envVars = await db
-      .select()
-      .from(environmentVariables)
-      .where(eq(environmentVariables.projectId, job.projectId));
-
-    const envVarsDecrypted: Record<string, string> = {};
-    for (const envVar of envVars) {
-      envVarsDecrypted[envVar.key] = decrypt(envVar.valueEncrypted);
-    }
-
-    // Run container
+    // Run container (envVarsDecrypted already loaded above)
     const containerName = `pushify-${project.slug}`;
 
     // Container port is what the app listens on inside the container

@@ -10,6 +10,7 @@ export const users = pgTable('users', {
   avatarUrl: varchar('avatar_url', { length: 500 }),
   // OAuth providers
   githubId: varchar('github_id', { length: 255 }).unique(),
+  googleId: varchar('google_id', { length: 255 }).unique(),
   emailVerified: boolean('email_verified').default(false).notNull(),
   emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
   twoFactorEnabled: boolean('two_factor_enabled').default(false).notNull(),

@@ -1,0 +1,1 @@
+ALTER TABLE "domains" ADD COLUMN "is_auto_generated" boolean DEFAULT false NOT NULL;
