@@ -728,8 +728,30 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
       throw new Error('Container failed to start');
     }
 
-    // Update deployment as successful
-    const deploymentUrl = `http://localhost:${hostPort}`;
+    // Create auto subdomain if no domain exists
+    let deploymentUrl = `http://localhost:${hostPort}`;
+    try {
+      const { domainService } = await import('../services/domain.service');
+      const { domains: domainsTable } = await import('../db/schema/projects');
+      const existingDomain = await db.query.domains.findFirst({
+        where: eq(domainsTable.projectId, job.projectId),
+        orderBy: (domains, { desc }) => [desc(domains.isPrimary)],
+      });
+
+      if (existingDomain) {
+        deploymentUrl = `https://${existingDomain.domain}`;
+        addLog(`🌐 Using existing domain: ${existingDomain.domain}`);
+      } else if (env.PREVIEW_BASE_URL) {
+        addLog('🌐 No domain configured, creating auto subdomain...');
+        const autoDomain = await domainService.createAutoSubdomain(job.projectId, project.slug, '');
+        if (autoDomain) {
+          deploymentUrl = `https://${autoDomain.domain}`;
+          addLog(`✅ Auto subdomain created: ${autoDomain.domain}`);
+        }
+      }
+    } catch (subdomainError) {
+      addLog(`⚠️ Subdomain setup skipped: ${subdomainError instanceof Error ? subdomainError.message : 'Unknown error'}`);
+    }
     await db
       .update(deployments)
       .set({
