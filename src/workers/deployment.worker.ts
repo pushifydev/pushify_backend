@@ -754,9 +754,8 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
       const domainName = deploymentUrl.replace(/^https?:\/\//, '');
       if (domainName && domainName !== `localhost:${hostPort}`) {
         addLog(`🌐 Configuring Nginx for: ${domainName}`);
-        const sslCertPath = env.PREVIEW_BASE_URL
-          ? `/etc/letsencrypt/live/${env.PREVIEW_BASE_URL}`
-          : `/etc/letsencrypt/live/${domainName}`;
+        const sslCertPath = env.WILDCARD_SSL_PATH
+          || (env.PREVIEW_BASE_URL ? `/etc/letsencrypt/live/${env.PREVIEW_BASE_URL}` : `/etc/letsencrypt/live/${domainName}`);
 
         const nginxConfig = `# Pushify auto-generated: ${project.slug}
 server {
