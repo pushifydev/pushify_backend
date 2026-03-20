@@ -40,6 +40,7 @@ const envSchema = z.object({
 
   // Preview Deployments
   PREVIEW_BASE_URL: z.string().optional(),
+  WILDCARD_SSL_PATH: z.string().optional(), // e.g. /etc/letsencrypt/live/pushify.dev-0001
 
   // AI Assistant
   ANTHROPIC_API_KEY: z.string().optional(),
