@@ -749,6 +749,52 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
           addLog(`✅ Auto subdomain created: ${autoDomain.domain}`);
         }
       }
+
+      // Write Nginx config for the subdomain/domain
+      const domainName = deploymentUrl.replace(/^https?:\/\//, '');
+      if (domainName && domainName !== `localhost:${hostPort}`) {
+        addLog(`🌐 Configuring Nginx for: ${domainName}`);
+        const sslCertPath = env.PREVIEW_BASE_URL
+          ? `/etc/letsencrypt/live/${env.PREVIEW_BASE_URL}`
+          : `/etc/letsencrypt/live/${domainName}`;
+
+        const nginxConfig = `# Pushify auto-generated: ${project.slug}
+server {
+    listen 80;
+    server_name ${domainName};
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name ${domainName};
+
+    ssl_certificate ${sslCertPath}/fullchain.pem;
+    ssl_certificate_key ${sslCertPath}/privkey.pem;
+
+    location / {
+        proxy_pass http://localhost:${hostPort};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_cache_bypass $http_upgrade;
+    }
+}
+`;
+        try {
+          const { execSync } = await import('child_process');
+          const confPath = `/etc/nginx/conf.d/${project.slug}.pushify.dev.conf`;
+          await fs.writeFile(confPath, nginxConfig);
+          execSync('nginx -t && nginx -s reload', { timeout: 10000 });
+          addLog(`✅ Nginx configured for ${domainName}`);
+        } catch (nginxError) {
+          addLog(`⚠️ Nginx config skipped: ${nginxError instanceof Error ? nginxError.message : 'Unknown error'}`);
+        }
+      }
     } catch (subdomainError) {
       addLog(`⚠️ Subdomain setup skipped: ${subdomainError instanceof Error ? subdomainError.message : 'Unknown error'}`);
     }
