@@ -8,6 +8,7 @@ export interface MarketplaceEnvVar {
   default?: string;
   type: 'text' | 'password' | 'number' | 'url' | 'email';
   generate?: 'password' | 'secret';
+  hidden?: boolean;
 }
 
 export interface MarketplaceTemplate {

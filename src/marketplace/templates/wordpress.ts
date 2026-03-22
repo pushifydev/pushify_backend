@@ -14,7 +14,7 @@ export const wordpress: MarketplaceTemplate = {
   port: 80,
   healthCheckPath: '/',
   envVars: [
-    { key: 'WORDPRESS_DB_HOST', label: 'Database Host', description: 'MySQL database host', required: true, type: 'text' },
+    { key: 'WORDPRESS_DB_HOST', label: 'Database Host', description: 'Auto-configured', required: false, type: 'text', hidden: true, default: 'auto' },
     { key: 'WORDPRESS_DB_USER', label: 'Database User', description: 'MySQL database user', required: true, default: 'wordpress', type: 'text' },
     { key: 'WORDPRESS_DB_PASSWORD', label: 'Database Password', description: 'MySQL database password', required: true, type: 'password', generate: 'password' },
     { key: 'WORDPRESS_DB_NAME', label: 'Database Name', description: 'MySQL database name', required: true, default: 'wordpress', type: 'text' },
