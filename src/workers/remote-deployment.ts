@@ -30,6 +30,12 @@ export interface RemoteDeploymentConfig {
   framework?: string;
   accessToken?: string;
   onProgress: (message: string) => void;
+  // Marketplace fields
+  marketplace?: {
+    dockerImage: string;
+    dockerCommand?: string;
+    volumes?: string[];
+  };
 }
 
 export interface RemoteDeploymentResult {
@@ -100,6 +106,82 @@ async function getPrimaryDomain(projectId: string): Promise<string | null> {
 }
 
 /**
+ * Setup Nginx and domain for a deployed project
+ */
+async function setupNginxAndDomain(
+  ssh: SSHClient,
+  server: typeof servers.$inferSelect,
+  projectId: string,
+  projectSlug: string,
+  hostPort: number,
+  onProgress: (msg: string) => void,
+): Promise<string> {
+  let primaryDomain = await getPrimaryDomain(projectId);
+
+  if (!primaryDomain) {
+    onProgress('🌐 No domain configured, creating auto subdomain...');
+    try {
+      const autoDomain = await domainService.createAutoSubdomain(projectId, projectSlug, server.id);
+      if (autoDomain) {
+        primaryDomain = autoDomain.domain;
+        onProgress(`✅ Auto subdomain created: ${primaryDomain}`);
+      }
+    } catch (autoSubError) {
+      onProgress(`⚠️ Auto subdomain creation warning: ${autoSubError instanceof Error ? autoSubError.message : 'Unknown error'}`);
+    }
+  }
+
+  if (primaryDomain) {
+    const { env: envConfig } = await import('../config/env');
+    const previewBaseUrl = envConfig.PREVIEW_BASE_URL;
+    const isAutoSubdomain = previewBaseUrl && primaryDomain.endsWith(`.${previewBaseUrl}`);
+
+    if (isAutoSubdomain) {
+      onProgress(`🌐 Configuring Nginx for auto subdomain: ${primaryDomain}`);
+      const addResult = await addAutoSubdomainSite(ssh, { domain: primaryDomain, containerPort: hostPort, projectSlug });
+      if (!addResult.success) {
+        onProgress(`⚠️ Nginx config warning: ${addResult.message}`);
+      } else {
+        onProgress('✅ Nginx site configured with wildcard SSL');
+        const reloadResult = await reloadNginx(ssh);
+        if (!reloadResult.success) onProgress(`⚠️ Nginx reload warning: ${reloadResult.message}`);
+        else onProgress('✅ Nginx reloaded');
+      }
+    } else {
+      onProgress(`🌐 Configuring Nginx for domain: ${primaryDomain}`);
+      const addResult = await addSite(ssh, { domain: primaryDomain, containerPort: hostPort, projectSlug, ssl: false });
+      if (!addResult.success) {
+        onProgress(`⚠️ Nginx config warning: ${addResult.message}`);
+      } else {
+        onProgress('✅ Nginx site configured');
+        const reloadResult = await reloadNginx(ssh);
+        if (!reloadResult.success) onProgress(`⚠️ Nginx reload warning: ${reloadResult.message}`);
+        else onProgress('✅ Nginx reloaded');
+
+        onProgress('🔐 Requesting SSL certificate...');
+        try {
+          const sslResult = await requestSSLCertificate(ssh, primaryDomain, 'ssl@pushify.app');
+          if (sslResult.success) {
+            onProgress('✅ SSL certificate obtained');
+            await addSite(ssh, { domain: primaryDomain, containerPort: hostPort, projectSlug, ssl: true });
+            await reloadNginx(ssh);
+          } else {
+            onProgress(`⚠️ SSL certificate failed: ${sslResult.message}`);
+          }
+        } catch (sslError) {
+          onProgress(`⚠️ SSL certificate error: ${sslError instanceof Error ? sslError.message : 'Unknown error'}`);
+        }
+      }
+    }
+  }
+
+  if (primaryDomain) {
+    return `https://${primaryDomain}`;
+  }
+  return `http://${server.ipv4}:${hostPort}`;
+}
+
+/**
  * Deploy a project to a remote server
  */
 export async function deployToRemoteServer(
@@ -157,8 +239,71 @@ export async function deployToRemoteServer(
     const repoDir = `${projectDir}/repo`;
 
     onProgress(`📁 Creating project directory: ${projectDir}`);
-    await ssh.exec(`rm -rf ${repoDir}`);
     await ssh.exec(`mkdir -p ${projectDir}`);
+
+    // ── Marketplace deploy: pull image directly ──
+    if (config.marketplace) {
+      const { dockerImage, dockerCommand, volumes } = config.marketplace;
+      const imageName = `pushify-${projectSlug}`;
+
+      onProgress(`📦 Pulling Docker image: ${dockerImage}`);
+      const pullResult = await ssh.exec(`docker pull ${dockerImage}`);
+      if (pullResult.code !== 0) {
+        throw new Error(`Failed to pull image: ${pullResult.stderr}`);
+      }
+      onProgress('✅ Image pulled successfully');
+
+      // Tag it locally
+      await ssh.exec(`docker tag ${dockerImage} ${imageName}:latest`);
+
+      // Assign port
+      const { port: hostPort } = await getOrAssignPort(ssh, projectSlug);
+      onProgress(`🔌 Assigned port: ${hostPort} -> ${containerPort}`);
+
+      // Build env var flags
+      const envFlags = Object.entries(envVars)
+        .map(([k, v]) => `-e ${k}='${v.replace(/'/g, "'\\''")}'`)
+        .join(' ');
+
+      // Build volume flags
+      const volFlags = (volumes || [])
+        .map((v) => `-v ${projectDir}/data/${v.split(':')[0]}:${v}`)
+        .join(' ');
+
+      // Create data directories for volumes
+      if (volumes && volumes.length > 0) {
+        const dataDirs = volumes.map((v) => `${projectDir}/data/${v.split(':')[0]}`).join(' ');
+        await ssh.exec(`mkdir -p ${dataDirs}`);
+      }
+
+      // Stop existing container
+      const containerName = `pushify-${projectSlug}`;
+      await ssh.exec(`docker stop ${containerName} 2>/dev/null; docker rm ${containerName} 2>/dev/null`);
+
+      // Run container
+      const cmdOverride = dockerCommand ? ` ${dockerCommand}` : '';
+      const runCmd = `docker run -d --name ${containerName} --restart unless-stopped -p ${hostPort}:${containerPort} ${envFlags} ${volFlags} ${imageName}:latest${cmdOverride}`;
+
+      onProgress(`🚀 Starting container: ${containerName}`);
+      const runResult = await ssh.exec(runCmd);
+      if (runResult.code !== 0) {
+        throw new Error(`Failed to start container: ${runResult.stderr}`);
+      }
+      onProgress('✅ Container started');
+
+      // Setup nginx + subdomain
+      const deploymentUrl = await setupNginxAndDomain(ssh, server, projectId, projectSlug, hostPort, onProgress);
+
+      return {
+        success: true,
+        deploymentUrl,
+        containerPort: hostPort,
+        dockerImageId: dockerImage,
+      };
+    }
+
+    // ── Standard git deploy flow ──
+    await ssh.exec(`rm -rf ${repoDir}`);
 
     // Clone repository
     onProgress(`📥 Cloning repository: ${repoUrl}`);

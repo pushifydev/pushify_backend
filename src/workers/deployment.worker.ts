@@ -467,11 +467,18 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
           .catch((err) => logger.error({ err }, 'Failed to flush deployment logs'));
       };
 
+      // Check if this is a marketplace deployment
+      const marketplaceConfig = projectSettings?.marketplaceTemplateId ? {
+        dockerImage: projectSettings.dockerImage as string,
+        dockerCommand: (projectSettings.dockerCommand as string) || undefined,
+        volumes: (projectSettings.volumes as string[]) || undefined,
+      } : undefined;
+
       const remoteResult = await deployToRemoteServer({
         serverId: project.serverId,
         projectId: project.id,
         projectSlug: project.slug,
-        deploymentId: job.id, // For image tagging (quick rollback support)
+        deploymentId: job.id,
         repoUrl: project.gitRepoUrl,
         branch: localClone.branch,
         commitHash: localClone.commitHash,
@@ -486,6 +493,7 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
         framework: (projectSettings?.framework as string) || undefined,
         accessToken,
         onProgress: onRemoteProgress,
+        marketplace: marketplaceConfig,
       });
 
       if (!remoteResult.success) {
