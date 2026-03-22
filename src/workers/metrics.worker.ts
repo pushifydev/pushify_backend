@@ -1,6 +1,11 @@
 import { metricsService } from '../services/metrics.service';
 import { metricsRepository } from '../repositories/metrics.repository';
 import { execCommand } from './shell';
+import { db } from '../db';
+import { servers } from '../db/schema/servers';
+import { eq } from 'drizzle-orm';
+import { SSHClient } from '../utils/ssh';
+import { decrypt } from '../lib/encryption';
 import { logger } from '../lib/logger';
 import { wsManager } from '../lib/ws';
 import type { NewContainerMetric } from '../db/schema';
@@ -60,34 +65,47 @@ async function pollForMetrics(): Promise<void> {
       const projectsToMonitor = await metricsService.getProjectsForMetricsCollection();
 
       if (projectsToMonitor.length > 0) {
-        // Collect container names
-        const containerNames = projectsToMonitor.map((p) => p.containerName);
+        // Group projects by server (null = local)
+        const serverGroups = new Map<string | null, typeof projectsToMonitor>();
+        for (const p of projectsToMonitor) {
+          const key = p.serverId || null;
+          if (!serverGroups.has(key)) serverGroups.set(key, []);
+          serverGroups.get(key)!.push(p);
+        }
 
-        // Get stats for all containers in one call
-        const stats = await getDockerStats(containerNames);
-
-        // Create metrics records
         const metricsToInsert: NewContainerMetric[] = [];
 
-        for (const project of projectsToMonitor) {
-          const stat = stats.get(project.containerName);
+        for (const [serverId, projects] of serverGroups) {
+          const containerNames = projects.map((p) => p.containerName);
+          let stats: Map<string, { cpuPercent: number; memoryUsageBytes: number; memoryLimitBytes: number; memoryPercent: number; networkRxBytes: number; networkTxBytes: number; blockReadBytes: number; blockWriteBytes: number; status: string; pids: number }>;
 
-          if (stat) {
-            metricsToInsert.push({
-              projectId: project.projectId,
-              deploymentId: project.deploymentId,
-              containerName: project.containerName,
-              cpuPercent: stat.cpuPercent,
-              memoryUsageBytes: stat.memoryUsageBytes,
-              memoryLimitBytes: stat.memoryLimitBytes,
-              memoryPercent: stat.memoryPercent,
-              networkRxBytes: stat.networkRxBytes,
-              networkTxBytes: stat.networkTxBytes,
-              blockReadBytes: stat.blockReadBytes,
-              blockWriteBytes: stat.blockWriteBytes,
-              containerStatus: stat.status,
-              pids: stat.pids,
-            });
+          if (!serverId) {
+            // Local Docker
+            stats = await getDockerStats(containerNames);
+          } else {
+            // Remote server via SSH
+            stats = await getRemoteDockerStats(serverId, containerNames);
+          }
+
+          for (const project of projects) {
+            const stat = stats.get(project.containerName);
+            if (stat) {
+              metricsToInsert.push({
+                projectId: project.projectId,
+                deploymentId: project.deploymentId,
+                containerName: project.containerName,
+                cpuPercent: stat.cpuPercent,
+                memoryUsageBytes: stat.memoryUsageBytes,
+                memoryLimitBytes: stat.memoryLimitBytes,
+                memoryPercent: stat.memoryPercent,
+                networkRxBytes: stat.networkRxBytes,
+                networkTxBytes: stat.networkTxBytes,
+                blockReadBytes: stat.blockReadBytes,
+                blockWriteBytes: stat.blockWriteBytes,
+                containerStatus: stat.status,
+                pids: stat.pids,
+              });
+            }
           }
         }
 
@@ -96,7 +114,6 @@ async function pollForMetrics(): Promise<void> {
           await metricsService.recordBulkMetrics(metricsToInsert);
           logger.debug({ count: metricsToInsert.length }, 'Metrics recorded');
 
-          // Publish metrics via WebSocket per project
           for (const metric of metricsToInsert) {
             wsManager.publish(`project:${metric.projectId}`, {
               type: 'metrics:update',
@@ -298,6 +315,67 @@ function parseSize(str: string): number {
   };
 
   return Math.round(value * (multipliers[unit] || 1));
+}
+
+/**
+ * Get docker stats from a remote server via SSH
+ */
+async function getRemoteDockerStats(
+  serverId: string,
+  containerNames: string[]
+): ReturnType<typeof getDockerStats> {
+  const result = new Map<string, { cpuPercent: number; memoryUsageBytes: number; memoryLimitBytes: number; memoryPercent: number; networkRxBytes: number; networkTxBytes: number; blockReadBytes: number; blockWriteBytes: number; status: string; pids: number }>();
+
+  if (containerNames.length === 0) return result;
+
+  let ssh: SSHClient | null = null;
+  try {
+    const server = await db.query.servers.findFirst({
+      where: eq(servers.id, serverId),
+    });
+
+    if (!server || !server.ipv4 || !server.sshPrivateKey) return result;
+
+    ssh = new SSHClient();
+    await ssh.connect({
+      host: server.ipv4,
+      port: 22,
+      username: 'root',
+      privateKey: decrypt(server.sshPrivateKey),
+    });
+
+    const containerList = containerNames.join(' ');
+    const cmdResult = await ssh.exec(`docker stats --no-stream --format '{{json .}}' ${containerList}`);
+
+    if (cmdResult.code !== 0 || !cmdResult.stdout?.trim()) return result;
+
+    const lines = cmdResult.stdout.trim().split('\n');
+    for (const line of lines) {
+      try {
+        const stats: DockerStatsOutput = JSON.parse(line);
+        result.set(stats.Name, {
+          cpuPercent: parsePercent(stats.CPUPerc),
+          memoryUsageBytes: parseMemoryUsage(stats.MemUsage),
+          memoryLimitBytes: parseMemoryLimit(stats.MemUsage),
+          memoryPercent: parsePercent(stats.MemPerc),
+          networkRxBytes: parseNetworkRx(stats.NetIO),
+          networkTxBytes: parseNetworkTx(stats.NetIO),
+          blockReadBytes: parseBlockRead(stats.BlockIO),
+          blockWriteBytes: parseBlockWrite(stats.BlockIO),
+          status: 'running',
+          pids: parseInt(stats.PIDs) || 0,
+        });
+      } catch {
+        // Skip invalid lines
+      }
+    }
+  } catch (error) {
+    logger.error({ err: error, serverId }, 'Error getting remote docker stats');
+  } finally {
+    ssh?.disconnect();
+  }
+
+  return result;
 }
 
 /**

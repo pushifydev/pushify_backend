@@ -133,9 +133,9 @@ export const metricsService = {
       containerName: string;
       deploymentId: string | null;
       slug: string;
+      serverId: string | null;
     }>
   > {
-    // Get all projects with running deployments
     const projectsWithRunningDeployments =
       await deploymentRepository.findProjectsWithRunningDeployments();
 
@@ -144,6 +144,7 @@ export const metricsService = {
       containerName: `pushify-${item.slug}`,
       deploymentId: item.deploymentId,
       slug: item.slug,
+      serverId: item.serverId,
     }));
   },
 
