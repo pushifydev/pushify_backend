@@ -10,7 +10,7 @@ export const strapi: MarketplaceTemplate = {
   tags: ['headless-cms', 'api', 'graphql', 'nodejs'],
   website: 'https://strapi.io',
   documentation: 'https://docs.strapi.io',
-  dockerImage: 'strapi/strapi:latest',
+  dockerImage: 'elestio/strapi-development:latest',
   port: 1337,
   healthCheckPath: '/_health',
   envVars: [
