@@ -124,16 +124,25 @@ async function setupNginxAndDomain(
     const { env: envConfig } = await import('../config/env');
     const previewBaseUrl = envConfig.PREVIEW_BASE_URL;
 
-    if (previewBaseUrl && server.isManaged) {
-      onProgress('🌐 No domain configured, creating auto subdomain...');
-      try {
-        const autoDomain = await domainService.createAutoSubdomain(projectId, projectSlug, server.id);
-        if (autoDomain) {
-          primaryDomain = autoDomain.domain;
-          onProgress(`✅ Auto subdomain created: ${primaryDomain}`);
+    if (previewBaseUrl) {
+      // Check if wildcard SSL cert exists on this server before creating subdomain
+      const sslPath = envConfig.WILDCARD_SSL_PATH || `/etc/letsencrypt/live/${previewBaseUrl}`;
+      const sslCheck = await ssh.exec(`test -f ${sslPath}/fullchain.pem && echo "exists" || echo "missing"`);
+      const hasWildcardSSL = sslCheck.stdout?.trim() === 'exists';
+
+      if (hasWildcardSSL) {
+        onProgress('🌐 No domain configured, creating auto subdomain...');
+        try {
+          const autoDomain = await domainService.createAutoSubdomain(projectId, projectSlug, server.id);
+          if (autoDomain) {
+            primaryDomain = autoDomain.domain;
+            onProgress(`✅ Auto subdomain created: ${primaryDomain}`);
+          }
+        } catch (autoSubError) {
+          onProgress(`⚠️ Auto subdomain creation warning: ${autoSubError instanceof Error ? autoSubError.message : 'Unknown error'}`);
         }
-      } catch (autoSubError) {
-        onProgress(`⚠️ Auto subdomain creation warning: ${autoSubError instanceof Error ? autoSubError.message : 'Unknown error'}`);
+      } else {
+        onProgress(`🌐 No wildcard SSL on this server. Access via: http://${server.ipv4}:${hostPort}`);
       }
     } else {
       onProgress(`🌐 No domain configured. Access via: http://${server.ipv4}:${hostPort}`);
@@ -482,16 +491,24 @@ export async function deployToRemoteServer(
       const { env: envConfig } = await import('../config/env');
       const previewBaseUrl = envConfig.PREVIEW_BASE_URL;
 
-      if (previewBaseUrl && server.isManaged) {
-        onProgress('🌐 No domain configured, creating auto subdomain...');
-        try {
-          const autoDomain = await domainService.createAutoSubdomain(projectId, projectSlug, serverId);
-          if (autoDomain) {
-            primaryDomain = autoDomain.domain;
-            onProgress(`✅ Auto subdomain created: ${primaryDomain}`);
+      if (previewBaseUrl) {
+        const sslPath = envConfig.WILDCARD_SSL_PATH || `/etc/letsencrypt/live/${previewBaseUrl}`;
+        const sslCheck = await ssh.exec(`test -f ${sslPath}/fullchain.pem && echo "exists" || echo "missing"`);
+        const hasWildcardSSL = sslCheck.stdout?.trim() === 'exists';
+
+        if (hasWildcardSSL) {
+          onProgress('🌐 No domain configured, creating auto subdomain...');
+          try {
+            const autoDomain = await domainService.createAutoSubdomain(projectId, projectSlug, serverId);
+            if (autoDomain) {
+              primaryDomain = autoDomain.domain;
+              onProgress(`✅ Auto subdomain created: ${primaryDomain}`);
+            }
+          } catch (autoSubError) {
+            onProgress(`⚠️ Auto subdomain creation warning: ${autoSubError instanceof Error ? autoSubError.message : 'Unknown error'}`);
           }
-        } catch (autoSubError) {
-          onProgress(`⚠️ Auto subdomain creation warning: ${autoSubError instanceof Error ? autoSubError.message : 'Unknown error'}`);
+        } else {
+          onProgress(`🌐 No wildcard SSL on this server. Access via: http://${server.ipv4}:${hostPort}`);
         }
       } else {
         onProgress(`🌐 No domain configured. Access via: http://${server.ipv4}:${hostPort}`);
