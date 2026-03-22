@@ -309,9 +309,11 @@ export async function deployToRemoteServer(
         onProgress('⏳ Waiting for database to be ready...');
         await new Promise(resolve => setTimeout(resolve, 10000));
 
-        // Set DB host env var to container name (Docker networking)
-        envVars.WORDPRESS_DB_HOST = envVars.WORDPRESS_DB_HOST || dbContainerName;
-        envVars.DB_HOST = envVars.DB_HOST || dbContainerName;
+        // Force DB host to container name (Docker networking requires this)
+        envVars.WORDPRESS_DB_HOST = dbContainerName;
+        envVars.DB_HOST = dbContainerName;
+        envVars.DATABASE_HOST = dbContainerName;
+        onProgress(`🔗 Database host set to: ${dbContainerName}`);
       }
 
       onProgress(`📦 Pulling Docker image: ${dockerImage}`);
