@@ -392,42 +392,52 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
         }
       }
 
-      // Get commit hash from remote clone
-      // First we need to clone locally to get the commit hash for status updates
-      // Priority: job.branch (from webhook/manual) > project.gitBranch (user setting) > git default
-      const branch = job.branch || project.gitBranch || undefined;
+      // Check if this is a marketplace project (skip git clone)
+      const isMarketplace = !!(projectSettings?.marketplaceTemplateId);
 
-      if (branch) {
-        addLog(`🌿 Using branch: ${branch}${job.branch ? ' (from trigger)' : ' (from project settings)'}`);
+      let localClone: { workDir: string; branch: string; commitHash: string; commitMessage: string } | null = null;
+
+      if (isMarketplace) {
+        addLog(`📦 Marketplace app: ${projectSettings.marketplaceTemplateId}`);
+        addLog('⏭️ Skipping git clone — using Docker image directly');
       } else {
-        addLog(`🌿 No branch specified, will use repository default`);
-      }
+        // Get commit hash from remote clone
+        const branch = job.branch || project.gitBranch || undefined;
 
-      if (!project.gitRepoUrl) {
-        throw new Error('No repository URL configured');
-      }
+        if (branch) {
+          addLog(`🌿 Using branch: ${branch}${job.branch ? ' (from trigger)' : ' (from project settings)'}`);
+        } else {
+          addLog(`🌿 No branch specified, will use repository default`);
+        }
 
-      // Clone locally just to get commit info
-      const localClone = await cloneRepository({
-        repoUrl: project.gitRepoUrl,
-        branch,
-        accessToken,
-        onProgress: addLog,
-      });
-      workDir = localClone.workDir;
+        if (!project.gitRepoUrl) {
+          throw new Error('No repository URL configured');
+        }
+
+        // Clone locally just to get commit info
+        localClone = await cloneRepository({
+          repoUrl: project.gitRepoUrl,
+          branch,
+          accessToken,
+          onProgress: addLog,
+        });
+        workDir = localClone.workDir;
+      }
 
       // Update commit info
-      await db
-        .update(deployments)
-        .set({
-          commitHash: localClone.commitHash,
-          commitMessage: localClone.commitMessage,
-          buildLogs: logBuffer.join('\n'),
-        })
-        .where(eq(deployments.id, job.id));
+      if (localClone) {
+        await db
+          .update(deployments)
+          .set({
+            commitHash: localClone.commitHash,
+            commitMessage: localClone.commitMessage,
+            buildLogs: logBuffer.join('\n'),
+          })
+          .where(eq(deployments.id, job.id));
+      }
 
       // Set up GitHub status context
-      if (prStatusChecksEnabled && accessToken && project.gitRepoUrl) {
+      if (localClone && prStatusChecksEnabled && accessToken && project.gitRepoUrl) {
         const repoInfo = githubService.parseRepoFromUrl(project.gitRepoUrl);
         if (repoInfo) {
           githubStatusCtx = {
@@ -467,14 +477,21 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
           .catch((err) => logger.error({ err }, 'Failed to flush deployment logs'));
       };
 
+      // Check if this is a marketplace deployment
+      const marketplaceConfig = projectSettings?.marketplaceTemplateId ? {
+        dockerImage: projectSettings.dockerImage as string,
+        dockerCommand: (projectSettings.dockerCommand as string) || undefined,
+        volumes: (projectSettings.volumes as string[]) || undefined,
+      } : undefined;
+
       const remoteResult = await deployToRemoteServer({
         serverId: project.serverId,
         projectId: project.id,
         projectSlug: project.slug,
-        deploymentId: job.id, // For image tagging (quick rollback support)
-        repoUrl: project.gitRepoUrl,
-        branch: localClone.branch,
-        commitHash: localClone.commitHash,
+        deploymentId: job.id,
+        repoUrl: project.gitRepoUrl || '',
+        branch: localClone?.branch || 'main',
+        commitHash: localClone?.commitHash || 'marketplace',
         port: project.port || 3000,
         envVars: envVarsDecrypted,
         buildCommand: project.buildCommand || undefined,
@@ -486,6 +503,7 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
         framework: (projectSettings?.framework as string) || undefined,
         accessToken,
         onProgress: onRemoteProgress,
+        marketplace: marketplaceConfig,
       });
 
       if (!remoteResult.success) {
@@ -551,8 +569,8 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
       // Send deployment success notification
       await notificationService.sendNotifications(job.projectId, 'deployment.success', {
         deploymentId: job.id,
-        branch: localClone.branch,
-        commitHash: localClone.commitHash,
+        branch: localClone?.branch || 'main',
+        commitHash: localClone?.commitHash || 'marketplace',
         status: 'running',
         message: 'Deployment completed successfully',
         url: remoteResult.deploymentUrl,
