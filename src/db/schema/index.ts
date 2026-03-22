@@ -39,3 +39,6 @@ export * from './container-logs';
 
 // Managed Databases
 export * from './databases';
+
+// Marketplace
+export * from './marketplace';
