@@ -199,7 +199,7 @@ export const stripeService = {
             .set({
               plan: planType,
               stripeSubscriptionId: subscriptionId,
-              stripeCurrentPeriodEnd: new Date(sub.current_period_end * 1000),
+              stripeCurrentPeriodEnd: new Date((sub as any).current_period_end * 1000),
               updatedAt: new Date(),
             })
             .where(eq(organizations.id, organizationId));
@@ -217,7 +217,7 @@ export const stripeService = {
         const newPlan = priceId ? getPlanFromPriceId(priceId) : null;
 
         const updateData: Record<string, unknown> = {
-          stripeCurrentPeriodEnd: new Date(sub.current_period_end * 1000),
+          stripeCurrentPeriodEnd: new Date((sub as any).current_period_end * 1000),
           updatedAt: new Date(),
         };
 
