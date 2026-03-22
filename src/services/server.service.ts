@@ -26,6 +26,7 @@ export interface CreateServerInput {
   ipv4?: string;
   sshPrivateKey?: string;
   rootPassword?: string;
+  authMethod?: 'ssh_key' | 'password';
 }
 
 // Cloud-init script for automatic software installation
@@ -898,9 +899,10 @@ export const serverService = {
 
       ssh = new SSHClient();
       const connectConfig: any = { host: ipv4, port: 22, username: 'root' };
-      if (rootPassword && !privateKey.includes('BEGIN')) {
+      if (rootPassword) {
         connectConfig.password = rootPassword;
-      } else {
+      }
+      if (privateKey && privateKey.includes('BEGIN')) {
         connectConfig.privateKey = privateKey;
       }
       await ssh.connect(connectConfig);
