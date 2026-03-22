@@ -1,4 +1,4 @@
-import { eq, desc, and } from 'drizzle-orm';
+import { eq, desc, and, ne } from 'drizzle-orm';
 import { db } from '../db';
 import { deployments } from '../db/schema/deployments';
 import { projects } from '../db/schema/projects';
@@ -215,6 +215,7 @@ export const deploymentRepository = {
       projectId: string;
       deploymentId: string;
       slug: string;
+      serverId: string | null;
     }>
   > {
     const result = await db
@@ -222,13 +223,15 @@ export const deploymentRepository = {
         projectId: deployments.projectId,
         deploymentId: deployments.id,
         slug: projects.slug,
+        serverId: projects.serverId,
       })
       .from(deployments)
       .innerJoin(projects, eq(deployments.projectId, projects.id))
       .where(
         and(
           eq(deployments.status, 'running'),
-          eq(deployments.isPreview, false)
+          eq(deployments.isPreview, false),
+          ne(projects.status, 'deleted')
         )
       );
 
