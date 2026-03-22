@@ -259,4 +259,23 @@ webhookRouter.post('/github/:projectId/ping', async (c) => {
   return c.json({ message: 'pong' });
 });
 
+// ─── Stripe Webhook ───────────────────────────
+webhookRouter.post('/stripe', async (c) => {
+  const { stripeService } = await import('../services/stripe.service');
+
+  const signature = c.req.header('stripe-signature');
+  if (!signature) {
+    return c.json({ error: 'Missing stripe-signature header' }, 400);
+  }
+
+  try {
+    const rawBody = await c.req.text();
+    await stripeService.handleWebhookEvent(rawBody, signature);
+    return c.json({ received: true });
+  } catch (err) {
+    logger.error({ err }, 'Stripe webhook error');
+    return c.json({ error: 'Webhook processing failed' }, 400);
+  }
+});
+
 export { webhookRouter as webhookRoutes };

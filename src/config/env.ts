@@ -61,6 +61,11 @@ const envSchema = z.object({
   DOCKER_BUILD_CPU_LIMIT: z.string().default('1'),
   DOCKER_BUILD_TIMEOUT: z.coerce.number().default(600), // seconds
 
+  // Stripe (optional — for payment processing)
+  STRIPE_SECRET_KEY: z.string().optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().optional(),
+  STRIPE_PUBLISHABLE_KEY: z.string().optional(),
+
   // Encryption
   ENCRYPTION_KEY: z.string().regex(/^[0-9a-fA-F]{64}$/, 'ENCRYPTION_KEY must be a 64-character hex string (use: openssl rand -hex 32)'),
 });
