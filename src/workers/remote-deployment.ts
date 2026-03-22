@@ -119,15 +119,24 @@ async function setupNginxAndDomain(
   let primaryDomain = await getPrimaryDomain(projectId);
 
   if (!primaryDomain) {
-    onProgress('🌐 No domain configured, creating auto subdomain...');
-    try {
-      const autoDomain = await domainService.createAutoSubdomain(projectId, projectSlug, server.id);
-      if (autoDomain) {
-        primaryDomain = autoDomain.domain;
-        onProgress(`✅ Auto subdomain created: ${primaryDomain}`);
+    // Only create auto subdomain on pushify's own servers
+    // Check if the server IP matches pushify's deployment server
+    const { env: envConfig } = await import('../config/env');
+    const previewBaseUrl = envConfig.PREVIEW_BASE_URL;
+
+    if (previewBaseUrl && server.isManaged) {
+      onProgress('🌐 No domain configured, creating auto subdomain...');
+      try {
+        const autoDomain = await domainService.createAutoSubdomain(projectId, projectSlug, server.id);
+        if (autoDomain) {
+          primaryDomain = autoDomain.domain;
+          onProgress(`✅ Auto subdomain created: ${primaryDomain}`);
+        }
+      } catch (autoSubError) {
+        onProgress(`⚠️ Auto subdomain creation warning: ${autoSubError instanceof Error ? autoSubError.message : 'Unknown error'}`);
       }
-    } catch (autoSubError) {
-      onProgress(`⚠️ Auto subdomain creation warning: ${autoSubError instanceof Error ? autoSubError.message : 'Unknown error'}`);
+    } else {
+      onProgress(`🌐 No domain configured. Access via: http://${server.ipv4}:${hostPort}`);
     }
   }
 
@@ -466,19 +475,26 @@ export async function deployToRemoteServer(
       onProgress(`🔄 Tried iptables fallback for port ${hostPort}`);
     }
 
-    // Check if project has any domains; if not, create auto subdomain
+    // Check if project has any domains; if not, create auto subdomain (only on managed servers)
     let primaryDomain = await getPrimaryDomain(projectId);
 
     if (!primaryDomain) {
-      onProgress('🌐 No domain configured, creating auto subdomain...');
-      try {
-        const autoDomain = await domainService.createAutoSubdomain(projectId, projectSlug, serverId);
-        if (autoDomain) {
-          primaryDomain = autoDomain.domain;
-          onProgress(`✅ Auto subdomain created: ${primaryDomain}`);
+      const { env: envConfig } = await import('../config/env');
+      const previewBaseUrl = envConfig.PREVIEW_BASE_URL;
+
+      if (previewBaseUrl && server.isManaged) {
+        onProgress('🌐 No domain configured, creating auto subdomain...');
+        try {
+          const autoDomain = await domainService.createAutoSubdomain(projectId, projectSlug, serverId);
+          if (autoDomain) {
+            primaryDomain = autoDomain.domain;
+            onProgress(`✅ Auto subdomain created: ${primaryDomain}`);
+          }
+        } catch (autoSubError) {
+          onProgress(`⚠️ Auto subdomain creation warning: ${autoSubError instanceof Error ? autoSubError.message : 'Unknown error'}`);
         }
-      } catch (autoSubError) {
-        onProgress(`⚠️ Auto subdomain creation warning: ${autoSubError instanceof Error ? autoSubError.message : 'Unknown error'}`);
+      } else {
+        onProgress(`🌐 No domain configured. Access via: http://${server.ipv4}:${hostPort}`);
       }
     }
 
