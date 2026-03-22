@@ -25,6 +25,7 @@ export interface CreateServerInput {
   // BYOS fields
   ipv4?: string;
   sshPrivateKey?: string;
+  rootPassword?: string;
 }
 
 // Cloud-init script for automatic software installation
@@ -433,11 +434,12 @@ export const serverService = {
           labels: input.labels || {},
           sshPrivateKey: input.sshPrivateKey ? encrypt(input.sshPrivateKey) : encrypt(sshKeyPair.privateKey),
           sshPublicKey: sshKeyPair.publicKey,
+          rootPassword: input.rootPassword ? encrypt(input.rootPassword) : null,
         })
         .returning();
 
       // Try to connect and setup the server in background
-      this.setupBYOSServer(dbServer.id, input.ipv4, input.sshPrivateKey || sshKeyPair.privateKey, sshKeyPair.publicKey).catch((err) => {
+      this.setupBYOSServer(dbServer.id, input.ipv4, input.sshPrivateKey || sshKeyPair.privateKey, sshKeyPair.publicKey, input.rootPassword).catch((err) => {
         logger.error({ err, serverId: dbServer.id }, 'BYOS server setup failed');
       });
 
@@ -888,14 +890,20 @@ export const serverService = {
   /**
    * Setup a BYOS (Bring Your Own Server) — connect via SSH, install Docker + Nginx
    */
-  async setupBYOSServer(serverId: string, ipv4: string, privateKey: string, publicKey: string): Promise<void> {
+  async setupBYOSServer(serverId: string, ipv4: string, privateKey: string, publicKey: string, rootPassword?: string): Promise<void> {
     let ssh: SSHClient | null = null;
 
     try {
       await db.update(servers).set({ setupStatus: 'installing', statusMessage: 'Connecting to server...' }).where(eq(servers.id, serverId));
 
       ssh = new SSHClient();
-      await ssh.connect({ host: ipv4, port: 22, username: 'root', privateKey });
+      const connectConfig: any = { host: ipv4, port: 22, username: 'root' };
+      if (rootPassword && !privateKey.includes('BEGIN')) {
+        connectConfig.password = rootPassword;
+      } else {
+        connectConfig.privateKey = privateKey;
+      }
+      await ssh.connect(connectConfig);
 
       await db.update(servers).set({ statusMessage: 'Connected. Installing dependencies...' }).where(eq(servers.id, serverId));
 
