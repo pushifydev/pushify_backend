@@ -46,11 +46,13 @@ export const marketplaceService = {
       throw new Error(`Template '${params.templateId}' not found`);
     }
 
-    // Generate slug from name
-    const slug = params.name
+    // Generate unique slug from name + random suffix
+    const baseSlug = params.name
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '');
+    const suffix = Math.random().toString(36).substring(2, 8);
+    const slug = `${baseSlug}-${suffix}`;
 
     // Generate values for auto-generate env vars
     const finalEnvVars: Record<string, string> = { ...params.envVars };
