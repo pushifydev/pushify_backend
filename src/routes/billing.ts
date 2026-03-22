@@ -64,7 +64,7 @@ billingRouter.post('/checkout', async (c) => {
   }
 
   const billingInfo = await billingService.getBillingInfo(organizationId, userId, locale);
-  const email = billingInfo.billingEmail || billingInfo.ownerEmail;
+  const email = billingInfo.billingEmail || '';
 
   const url = await stripeService.createCheckoutSession(organizationId, userId, email, planType, billingCycle);
 

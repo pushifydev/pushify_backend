@@ -73,8 +73,7 @@ export const marketplaceService = {
         serverId: params.serverId,
         name: params.name,
         slug,
-        framework: 'other',
-        repoUrl: template.website,
+        gitRepoUrl: template.website,
         status: 'active',
         port: template.port,
         settings: {
@@ -92,7 +91,7 @@ export const marketplaceService = {
       const envVarInserts = Object.entries(finalEnvVars).map(([key, value]) => ({
         projectId: project.id,
         key,
-        value: encrypt(value),
+        valueEncrypted: encrypt(value),
         environment: 'production' as const,
       }));
 
@@ -118,7 +117,7 @@ export const marketplaceService = {
         projectId: project.id,
         status: 'pending',
         trigger: 'manual',
-        commitSha: `marketplace-${template.id}-${template.appVersion}`,
+        commitHash: `marketplace-${template.id}`,
         commitMessage: `Deploy ${template.name} v${template.appVersion} from Marketplace`,
       })
       .returning();
