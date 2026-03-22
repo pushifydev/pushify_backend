@@ -1,5 +1,5 @@
 import { HTTPException } from 'hono/http-exception';
-import { eq, and, gte, sql, count } from 'drizzle-orm';
+import { eq, and, ne, gte, sql, count } from 'drizzle-orm';
 import { db } from '../db';
 import { deployments } from '../db/schema/deployments';
 import { projects, domains } from '../db/schema/projects';
@@ -122,11 +122,11 @@ export const billingService = {
       .where(eq(databases.organizationId, organizationId));
     const databaseCount = databasesResult[0]?.count || 0;
 
-    // Count projects
+    // Count projects (exclude deleted)
     const projectsResult = await db
       .select({ count: count() })
       .from(projects)
-      .where(eq(projects.organizationId, organizationId));
+      .where(and(eq(projects.organizationId, organizationId), ne(projects.status, 'deleted')));
     const projectCount = projectsResult[0]?.count || 0;
 
     // Count deployments this month
