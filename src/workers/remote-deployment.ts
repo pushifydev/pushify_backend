@@ -35,6 +35,7 @@ export interface RemoteDeploymentConfig {
     dockerImage: string;
     dockerCommand?: string;
     volumes?: string[];
+    requiresDatabase?: { type: string; version?: string };
   };
 }
 
@@ -263,6 +264,55 @@ export async function deployToRemoteServer(
     if (config.marketplace) {
       const { dockerImage, dockerCommand, volumes } = config.marketplace;
       const imageName = `pushify-${projectSlug}`;
+      const containerName = `pushify-${projectSlug}`;
+      const dbContainerName = `pushify-${projectSlug}-db`;
+
+      // Check if app requires a database and start one
+      const requiresDb = config.marketplace.requiresDatabase;
+      if (requiresDb) {
+        onProgress(`🗄️ Setting up ${requiresDb.type} database...`);
+
+        const dbImage = requiresDb.type === 'mysql' ? `mysql:${requiresDb.version || '8.0'}` : `postgres:${requiresDb.version || '16'}-alpine`;
+        const dbPassword = envVars.WORDPRESS_DB_PASSWORD || envVars.DB_PASSWORD || envVars.POSTGRES_PASSWORD || 'pushify_auto_' + Math.random().toString(36).substring(2, 10);
+        const dbName = envVars.WORDPRESS_DB_NAME || envVars.DB_NAME || envVars.POSTGRES_DB || projectSlug.replace(/-/g, '_');
+        const dbUser = envVars.WORDPRESS_DB_USER || envVars.DB_USER || envVars.POSTGRES_USER || 'pushify';
+
+        // Pull DB image
+        onProgress(`📦 Pulling ${dbImage}...`);
+        await ssh.exec(`docker pull ${dbImage}`);
+
+        // Stop existing DB container
+        await ssh.exec(`docker stop ${dbContainerName} 2>/dev/null; docker rm ${dbContainerName} 2>/dev/null`);
+
+        // Create data directory for DB
+        await ssh.exec(`mkdir -p ${projectDir}/data/db`);
+
+        // Start DB container
+        let dbEnvFlags: string;
+        let dbVolPath: string;
+        if (requiresDb.type === 'mysql') {
+          dbEnvFlags = `-e MYSQL_ROOT_PASSWORD='${dbPassword.replace(/'/g, "'\\''")}' -e MYSQL_DATABASE='${dbName}' -e MYSQL_USER='${dbUser}' -e MYSQL_PASSWORD='${dbPassword.replace(/'/g, "'\\''")}'`;
+          dbVolPath = `/var/lib/mysql`;
+        } else {
+          dbEnvFlags = `-e POSTGRES_PASSWORD='${dbPassword.replace(/'/g, "'\\''")}' -e POSTGRES_DB='${dbName}' -e POSTGRES_USER='${dbUser}'`;
+          dbVolPath = `/var/lib/postgresql/data`;
+        }
+
+        const dbRunCmd = `docker run -d --name ${dbContainerName} --restart unless-stopped -v ${projectDir}/data/db:${dbVolPath} ${dbEnvFlags} ${dbImage}`;
+        const dbRunResult = await ssh.exec(dbRunCmd);
+        if (dbRunResult.code !== 0) {
+          throw new Error(`Failed to start database: ${dbRunResult.stderr}`);
+        }
+        onProgress(`✅ ${requiresDb.type} database started`);
+
+        // Wait for DB to be ready
+        onProgress('⏳ Waiting for database to be ready...');
+        await new Promise(resolve => setTimeout(resolve, 10000));
+
+        // Set DB host env var to container name (Docker networking)
+        envVars.WORDPRESS_DB_HOST = envVars.WORDPRESS_DB_HOST || dbContainerName;
+        envVars.DB_HOST = envVars.DB_HOST || dbContainerName;
+      }
 
       onProgress(`📦 Pulling Docker image: ${dockerImage}`);
       const pullResult = await ssh.exec(`docker pull ${dockerImage}`);
@@ -285,22 +335,34 @@ export async function deployToRemoteServer(
 
       // Build volume flags
       const volFlags = (volumes || [])
-        .map((v) => `-v ${projectDir}/data/${v.split(':')[0]}:${v}`)
+        .map((v) => {
+          const hostPath = v.includes(':') ? v : `${projectDir}/data${v}`;
+          return `-v ${hostPath.startsWith('/') ? hostPath : projectDir + '/data/' + hostPath}`;
+        })
         .join(' ');
 
       // Create data directories for volumes
       if (volumes && volumes.length > 0) {
-        const dataDirs = volumes.map((v) => `${projectDir}/data/${v.split(':')[0]}`).join(' ');
-        await ssh.exec(`mkdir -p ${dataDirs}`);
+        for (const v of volumes) {
+          const dir = v.includes(':') ? v.split(':')[0] : `${projectDir}/data${v}`;
+          await ssh.exec(`mkdir -p ${dir}`);
+        }
       }
 
       // Stop existing container
-      const containerName = `pushify-${projectSlug}`;
       await ssh.exec(`docker stop ${containerName} 2>/dev/null; docker rm ${containerName} 2>/dev/null`);
+
+      // Create Docker network for app <-> db communication
+      const networkName = `pushify-${projectSlug}-net`;
+      await ssh.exec(`docker network create ${networkName} 2>/dev/null || true`);
+      if (requiresDb) {
+        await ssh.exec(`docker network connect ${networkName} ${dbContainerName} 2>/dev/null || true`);
+      }
 
       // Run container
       const cmdOverride = dockerCommand ? ` ${dockerCommand}` : '';
-      const runCmd = `docker run -d --name ${containerName} --restart unless-stopped -p ${hostPort}:${containerPort} ${envFlags} ${volFlags} ${imageName}:latest${cmdOverride}`;
+      const networkFlag = requiresDb ? `--network ${networkName}` : '';
+      const runCmd = `docker run -d --name ${containerName} --restart unless-stopped ${networkFlag} -p ${hostPort}:${containerPort} ${envFlags} ${volFlags} ${imageName}:latest${cmdOverride}`;
 
       onProgress(`🚀 Starting container: ${containerName}`);
       const runResult = await ssh.exec(runCmd);

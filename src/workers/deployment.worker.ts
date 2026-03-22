@@ -482,6 +482,7 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
         dockerImage: projectSettings.dockerImage as string,
         dockerCommand: (projectSettings.dockerCommand as string) || undefined,
         volumes: (projectSettings.volumes as string[]) || undefined,
+        requiresDatabase: (projectSettings.requiresDatabase as { type: string; version?: string }) || undefined,
       } : undefined;
 
       const remoteResult = await deployToRemoteServer({
