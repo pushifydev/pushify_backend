@@ -82,6 +82,7 @@ export const marketplaceService = {
           dockerCommand: template.dockerCommand || null,
           volumes: template.volumes || [],
           healthCheckPath: template.healthCheckPath,
+          requiresDatabase: template.requiresDatabase || null,
         },
       })
       .returning();
