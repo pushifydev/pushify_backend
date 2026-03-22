@@ -9,16 +9,24 @@ import { getServerStatusQueue } from '../queue';
 import { generateSSHKeyPair } from '../utils/ssh';
 import { encrypt, decrypt } from '../lib/encryption';
 import { getPlanInfo, isUnlimited, type PlanType } from '../lib/plans';
+import { SSHClient } from '../utils/ssh';
+import { wsManager } from '../lib/ws';
+import { logger } from '../lib/logger';
 
 export interface CreateServerInput {
   name: string;
   description?: string;
   provider: ProviderType;
   region: string;
-  size: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
+  size: 'xs' | 'sm' | 'md' | 'lg' | 'xl' | 'custom';
   image: string;
   sshKeyIds?: string[];
   labels?: Record<string, string>;
+  // BYOS fields
+  ipv4?: string;
+  sshPrivateKey?: string;
+  rootPassword?: string;
+  authMethod?: 'ssh_key' | 'password';
 }
 
 // Cloud-init script for automatic software installation
@@ -399,6 +407,70 @@ export const serverService = {
       }
     }
 
+    // ── BYOS (Bring Your Own Server) ──
+    if (input.provider === 'self_hosted') {
+      if (!input.ipv4) {
+        throw new HTTPException(400, { message: 'IP address is required for self-hosted servers' });
+      }
+
+      // Generate SSH key pair
+      const serverKeyName = `pushify-${organizationId.slice(0, 8)}-${Date.now()}`;
+      const sshKeyPair = generateSSHKeyPair(serverKeyName);
+
+      // Create server in database
+      const [dbServer] = await db
+        .insert(servers)
+        .values({
+          organizationId,
+          name: input.name,
+          description: input.description || null,
+          provider: 'self_hosted',
+          region: input.region || 'custom',
+          size: input.size || 'custom',
+          image: input.image || 'custom',
+          ipv4: input.ipv4,
+          status: 'running',
+          setupStatus: 'pending',
+          isManaged: false,
+          labels: input.labels || {},
+          sshPrivateKey: input.sshPrivateKey ? encrypt(input.sshPrivateKey) : encrypt(sshKeyPair.privateKey),
+          sshPublicKey: sshKeyPair.publicKey,
+          rootPassword: input.rootPassword ? encrypt(input.rootPassword) : null,
+        })
+        .returning();
+
+      // Try to connect and setup the server in background
+      this.setupBYOSServer(dbServer.id, input.ipv4, input.sshPrivateKey || sshKeyPair.privateKey, sshKeyPair.publicKey, input.rootPassword).catch((err) => {
+        logger.error({ err, serverId: dbServer.id }, 'BYOS server setup failed');
+      });
+
+      return {
+        id: dbServer.id,
+        name: dbServer.name,
+        description: dbServer.description,
+        provider: dbServer.provider,
+        providerId: dbServer.providerId,
+        region: dbServer.region,
+        size: dbServer.size,
+        image: dbServer.image,
+        vcpus: dbServer.vcpus,
+        memoryMb: dbServer.memoryMb,
+        diskGb: dbServer.diskGb,
+        ipv4: dbServer.ipv4,
+        ipv6: dbServer.ipv6,
+        privateIp: dbServer.privateIp,
+        status: dbServer.status,
+        setupStatus: dbServer.setupStatus,
+        statusMessage: 'Connecting to server...',
+        labels: dbServer.labels as Record<string, unknown>,
+        isManaged: dbServer.isManaged,
+        createdAt: dbServer.createdAt,
+        updatedAt: dbServer.updatedAt,
+        lastSeenAt: dbServer.lastSeenAt,
+      };
+    }
+
+    // ── Managed provider flow ──
     // Get provider token
     const apiToken = getProviderToken(input.provider);
     if (!apiToken) {
@@ -814,6 +886,96 @@ export const serverService = {
 
     const providerInstance = createProvider(provider, apiToken);
     return providerInstance.listServerTypes(location);
+  },
+
+  /**
+   * Setup a BYOS (Bring Your Own Server) — connect via SSH, install Docker + Nginx
+   */
+  async setupBYOSServer(serverId: string, ipv4: string, privateKey: string, publicKey: string, rootPassword?: string): Promise<void> {
+    let ssh: SSHClient | null = null;
+
+    try {
+      await db.update(servers).set({ setupStatus: 'installing', statusMessage: 'Connecting to server...' }).where(eq(servers.id, serverId));
+
+      ssh = new SSHClient();
+      const connectConfig: any = { host: ipv4, port: 22, username: 'root' };
+      if (rootPassword) {
+        connectConfig.password = rootPassword;
+      }
+      if (privateKey && privateKey.includes('BEGIN')) {
+        connectConfig.privateKey = privateKey;
+      }
+      await ssh.connect(connectConfig);
+
+      await db.update(servers).set({ statusMessage: 'Connected. Installing dependencies...' }).where(eq(servers.id, serverId));
+
+      // Add public key to authorized_keys
+      await ssh.exec(`mkdir -p ~/.ssh && echo '${publicKey}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`);
+
+      // Check if Docker is installed
+      const dockerCheck = await ssh.exec('docker --version');
+      if (dockerCheck.code !== 0) {
+        await db.update(servers).set({ statusMessage: 'Installing Docker...' }).where(eq(servers.id, serverId));
+        await ssh.exec('curl -fsSL https://get.docker.com | sh');
+        await ssh.exec('systemctl enable docker && systemctl start docker');
+      }
+
+      // Check if Nginx is installed
+      const nginxCheck = await ssh.exec('nginx -v 2>&1');
+      if (nginxCheck.code !== 0) {
+        await db.update(servers).set({ statusMessage: 'Installing Nginx...' }).where(eq(servers.id, serverId));
+        await ssh.exec('apt-get update -qq && apt-get install -y -qq nginx certbot python3-certbot-nginx > /dev/null 2>&1 || yum install -y nginx certbot python3-certbot-nginx > /dev/null 2>&1');
+        await ssh.exec('systemctl enable nginx && systemctl start nginx');
+      }
+
+      // Create pushify directories
+      await ssh.exec('mkdir -p /opt/pushify/apps /opt/pushify/nginx');
+
+      // Get server specs
+      const cpuResult = await ssh.exec('nproc');
+      const memResult = await ssh.exec("free -m | awk '/^Mem:/{print $2}'");
+      const diskResult = await ssh.exec("df -BG / | awk 'NR==2{print $2}' | tr -d 'G'");
+
+      const vcpus = parseInt(cpuResult.stdout?.trim() || '0') || 1;
+      const memoryMb = parseInt(memResult.stdout?.trim() || '0') || 512;
+      const diskGb = parseInt(diskResult.stdout?.trim() || '0') || 10;
+
+      // Update server as ready
+      await db.update(servers).set({
+        setupStatus: 'completed',
+        statusMessage: 'Server setup completed successfully',
+        status: 'running',
+        vcpus,
+        memoryMb,
+        diskGb,
+        lastSeenAt: new Date(),
+        updatedAt: new Date(),
+      }).where(eq(servers.id, serverId));
+
+      // Publish WebSocket event
+      wsManager.publish(`server:${serverId}`, {
+        type: 'server:status',
+        data: { serverId, status: 'running', setupStatus: 'completed', ipv4 },
+      }).catch(() => {});
+
+      logger.info({ serverId, ipv4 }, 'BYOS server setup completed');
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Setup failed';
+      logger.error({ err: error, serverId }, 'BYOS server setup failed');
+
+      await db.update(servers).set({
+        setupStatus: 'failed',
+        statusMessage: msg,
+        updatedAt: new Date(),
+      }).where(eq(servers.id, serverId));
+
+      wsManager.publish(`server:${serverId}`, {
+        type: 'server:status',
+        data: { serverId, status: 'error', setupStatus: 'failed', ipv4 },
+      }).catch(() => {});
+    } finally {
+      ssh?.disconnect();
+    }
   },
 
 };
