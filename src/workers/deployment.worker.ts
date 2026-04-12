@@ -664,31 +664,56 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
     const hasExistingDockerfile = await hasDockerfile(workDir, project.dockerfilePath || undefined);
 
     if (!hasExistingDockerfile) {
-      // Auto-detect framework if not set
-      let framework = (project.settings as Record<string, string>)?.framework || null;
+      // Use buildpack system for auto-detection
+      const { detectBuildpack, getBuildpack } = await import('../buildpacks');
 
-      if (!framework) {
-        addLog('🔍 Auto-detecting framework...');
-        framework = await detectFramework(workDir, project.rootDirectory || '.');
-        if (framework) {
-          addLog(`✅ Detected framework: ${framework}`);
+      addLog('🔍 Auto-detecting language and framework...');
+      const detection = await detectBuildpack(workDir, project.rootDirectory || '.');
+
+      let dockerfileContent: string;
+
+      if (detection && detection.buildpackId !== 'custom') {
+        const buildpack = getBuildpack(detection.buildpackId);
+        if (buildpack) {
+          addLog(`✅ Detected: ${buildpack.name} (${detection.framework})`);
+          addLog('📄 Generating optimized Dockerfile...');
+          dockerfileContent = buildpack.generateDockerfile({
+            framework: detection.framework,
+            buildCommand: project.buildCommand,
+            installCommand: project.installCommand || (project.settings as Record<string, string>)?.installCommand,
+            startCommand: project.startCommand,
+            outputDirectory: (project.settings as Record<string, string>)?.outputDirectory || null,
+            port: project.port || buildpack.getDefaultPort(detection.framework),
+            rootDirectory: project.rootDirectory || '.',
+            envVars: envVarsDecrypted,
+          } as any);
         } else {
-          addLog('⚠️ Could not detect framework, using generic Node.js');
-          framework = 'nodejs';
+          addLog('⚠️ Buildpack not found, falling back to generic');
+          dockerfileContent = generateDockerfile({
+            framework: null,
+            buildCommand: project.buildCommand,
+            installCommand: project.installCommand || (project.settings as Record<string, string>)?.installCommand || 'npm install --legacy-peer-deps',
+            startCommand: project.startCommand,
+            outputDirectory: (project.settings as Record<string, string>)?.outputDirectory || null,
+            port: project.port || 3000,
+            rootDirectory: project.rootDirectory || '.',
+            envVars: envVarsDecrypted,
+          });
         }
+      } else {
+        addLog('⚠️ Could not detect language, falling back to Node.js');
+        dockerfileContent = generateDockerfile({
+          framework: 'nodejs',
+          buildCommand: project.buildCommand,
+          installCommand: project.installCommand || (project.settings as Record<string, string>)?.installCommand || 'npm install --legacy-peer-deps',
+          startCommand: project.startCommand,
+          outputDirectory: (project.settings as Record<string, string>)?.outputDirectory || null,
+          port: project.port || 3000,
+          rootDirectory: project.rootDirectory || '.',
+          envVars: envVarsDecrypted,
+        });
       }
 
-      addLog('📄 Generating Dockerfile...');
-      const dockerfileContent = generateDockerfile({
-        framework,
-        buildCommand: project.buildCommand,
-        installCommand: project.installCommand || (project.settings as Record<string, string>)?.installCommand || 'npm install --legacy-peer-deps',
-        startCommand: project.startCommand,
-        outputDirectory: (project.settings as Record<string, string>)?.outputDirectory || null,
-        port: project.port || 3000,
-        rootDirectory: project.rootDirectory || '.',
-        envVars: envVarsDecrypted,
-      });
       await writeDockerfile(workDir, dockerfileContent);
       addLog('✅ Dockerfile generated');
     } else {
