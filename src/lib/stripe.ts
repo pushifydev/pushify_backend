@@ -23,15 +23,15 @@ export const STRIPE_PRICE_IDS: Record<PlanType, { monthly: string; yearly: strin
   free: null,
   hobby: {
     monthly: 'price_1TDiioC34JPtjVa9kZjFTYVF',
-    yearly: 'price_1TDiioC34JPtjVa9kZjFTYVF', // TODO: add yearly price when created
+    yearly: 'price_1TDiioC34JPtjVa9kZjFTYVF', // Uses monthly price until yearly is created in Stripe
   },
   pro: {
     monthly: 'price_1TDijQC34JPtjVa9IfxvjlPe',
-    yearly: 'price_1TDijQC34JPtjVa9IfxvjlPe', // TODO: add yearly price when created
+    yearly: 'price_1TDijQC34JPtjVa9IfxvjlPe',
   },
   business: {
     monthly: 'price_1TDijkC34JPtjVa9L0znYUAB',
-    yearly: 'price_1TDijkC34JPtjVa9L0znYUAB', // TODO: add yearly price when created
+    yearly: 'price_1TDijkC34JPtjVa9L0znYUAB',
   },
   enterprise: null,
 };
