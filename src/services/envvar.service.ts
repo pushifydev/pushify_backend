@@ -296,4 +296,58 @@ export const envVarService = {
 
     await envVarRepository.delete(envVarId);
   },
+
+  async cloneEnvironment(
+    projectId: string,
+    organizationId: string,
+    userId: string,
+    sourceEnv: Environment,
+    targetEnv: Environment,
+    overwrite: boolean = false,
+    locale?: SupportedLocale,
+  ): Promise<{ copied: number; skipped: number; overwritten: number }> {
+    await this.checkProjectAccess(projectId, organizationId, userId, locale as SupportedLocale);
+
+    // Get source env vars
+    const sourceVars = await envVarRepository.findByProject(projectId, sourceEnv);
+    if (sourceVars.length === 0) {
+      return { copied: 0, skipped: 0, overwritten: 0 };
+    }
+
+    // Get existing target env vars
+    const targetVars = await envVarRepository.findByProject(projectId, targetEnv);
+    const targetKeyMap = new Map(targetVars.map((v) => [v.key, v]));
+
+    let copied = 0;
+    let skipped = 0;
+    let overwritten = 0;
+
+    for (const srcVar of sourceVars) {
+      const decryptedValue = decrypt(srcVar.valueEncrypted);
+      const existingTarget = targetKeyMap.get(srcVar.key);
+
+      if (existingTarget) {
+        if (overwrite) {
+          await envVarRepository.update(existingTarget.id, {
+            valueEncrypted: encrypt(decryptedValue),
+            isSecret: srcVar.isSecret,
+          });
+          overwritten++;
+        } else {
+          skipped++;
+        }
+      } else {
+        await envVarRepository.create({
+          projectId,
+          key: srcVar.key,
+          valueEncrypted: encrypt(decryptedValue),
+          environment: targetEnv,
+          isSecret: srcVar.isSecret,
+        });
+        copied++;
+      }
+    }
+
+    return { copied, skipped, overwritten };
+  },
 };
