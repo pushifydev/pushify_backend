@@ -389,4 +389,70 @@ envVarRouter.openapi(deleteEnvVarRoute, async (c) => {
   return c.json({ message: t(locale, 'envVars', 'deleted') });
 });
 
+// Clone environment variables between environments
+const cloneEnvVarsRoute = createRoute({
+  method: 'post',
+  path: '/clone',
+  tags: ['Environment Variables'],
+  summary: 'Clone environment variables',
+  description: 'Copy all environment variables from one environment to another',
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: z.object({ projectId: z.string().uuid() }),
+    body: {
+      content: {
+        'application/json': {
+          schema: z.object({
+            sourceEnvironment: EnvironmentEnum,
+            targetEnvironment: EnvironmentEnum,
+            overwrite: z.boolean().optional().default(false),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Environment variables cloned',
+      content: {
+        'application/json': {
+          schema: z.object({
+            data: z.object({
+              copied: z.number(),
+              skipped: z.number(),
+              overwritten: z.number(),
+            }),
+            message: z.string(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: 'Bad request',
+      content: { 'application/json': { schema: z.object({ message: z.string() }) } },
+    },
+  },
+});
+
+envVarRouter.openapi(cloneEnvVarsRoute, async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const { projectId } = c.req.valid('param');
+  const { sourceEnvironment, targetEnvironment, overwrite } = c.req.valid('json');
+
+  if (sourceEnvironment === targetEnvironment) {
+    return c.json({ message: t(locale, 'envVars', 'sameEnvironment') || 'Source and target environment cannot be the same' }, 400);
+  }
+
+  const result = await envVarService.cloneEnvironment(
+    projectId, organizationId, userId, sourceEnvironment, targetEnvironment, overwrite, locale
+  );
+
+  return c.json({
+    data: result,
+    message: `Cloned ${result.copied} variables from ${sourceEnvironment} to ${targetEnvironment}`,
+  });
+});
+
 export { envVarRouter as envVarRoutes };
