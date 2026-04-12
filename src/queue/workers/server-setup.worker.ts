@@ -5,6 +5,7 @@ import { servers } from '../../db/schema/servers';
 import { createRedisConnection } from '../connection';
 import { QUEUE_NAMES, type ServerSetupJobData } from '../queues';
 import { wsManager } from '../../lib/ws';
+import { logger } from '../../lib/logger';
 
 // Check if server setup is complete by polling the health endpoint
 async function checkServerHealth(ipv4: string): Promise<boolean> {
@@ -32,7 +33,7 @@ async function checkServerHealth(ipv4: string): Promise<boolean> {
 async function processServerSetupJob(job: Job<ServerSetupJobData>): Promise<string> {
   const { serverId } = job.data;
 
-  console.log(`[ServerSetup] Processing job ${job.id} for server ${serverId}`);
+  logger.info(`[ServerSetup] Processing job ${job.id} for server ${serverId}`);
 
   // Get server from database
   const [serverRecord] = await db
@@ -42,13 +43,13 @@ async function processServerSetupJob(job: Job<ServerSetupJobData>): Promise<stri
     .limit(1);
 
   if (!serverRecord) {
-    console.log(`[ServerSetup] Server ${serverId} not found, job complete`);
+    logger.info(`[ServerSetup] Server ${serverId} not found, job complete`);
     return 'server_deleted';
   }
 
   // Check if setup is already complete or failed
   if (serverRecord.setupStatus === 'completed' || serverRecord.setupStatus === 'failed') {
-    console.log(`[ServerSetup] Server ${serverId} setup already ${serverRecord.setupStatus}`);
+    logger.info(`[ServerSetup] Server ${serverId} setup already ${serverRecord.setupStatus}`);
     return `already_${serverRecord.setupStatus}`;
   }
 
@@ -77,7 +78,7 @@ async function processServerSetupJob(job: Job<ServerSetupJobData>): Promise<stri
       data: { serverId, status: 'running', setupStatus: 'completed', statusMessage: 'Server setup completed successfully' },
     }).catch(() => {});
 
-    console.log(`[ServerSetup] Server ${serverId} setup completed!`);
+    logger.info(`[ServerSetup] Server ${serverId} setup completed!`);
     return 'completed';
   }
 
@@ -102,7 +103,7 @@ async function processServerSetupJob(job: Job<ServerSetupJobData>): Promise<stri
       data: { serverId, status: 'running', setupStatus: 'failed', statusMessage: 'Server setup timed out - health check not responding' },
     }).catch(() => {});
 
-    console.log(`[ServerSetup] Server ${serverId} setup failed after ${attemptsMade} attempts`);
+    logger.info(`[ServerSetup] Server ${serverId} setup failed after ${attemptsMade} attempts`);
     return 'failed';
   }
 
@@ -128,14 +129,14 @@ export const startServerSetupWorker = (): Worker<ServerSetupJobData> => {
   );
 
   worker.on('completed', (job, result) => {
-    console.log(`[ServerSetup] Job ${job.id} completed with result: ${result}`);
+    logger.info(`[ServerSetup] Job ${job.id} completed with result: ${result}`);
   });
 
   worker.on('failed', (job, err) => {
     if (job) {
       const attemptsLeft = (job.opts.attempts || 1) - job.attemptsMade;
       if (attemptsLeft > 0) {
-        console.log(`[ServerSetup] Job ${job.id} failed, ${attemptsLeft} attempts left: ${err.message}`);
+        logger.info(`[ServerSetup] Job ${job.id} failed, ${attemptsLeft} attempts left: ${err.message}`);
       } else {
         console.error(`[ServerSetup] Job ${job.id} failed permanently: ${err.message}`);
       }
@@ -146,7 +147,7 @@ export const startServerSetupWorker = (): Worker<ServerSetupJobData> => {
     console.error('[ServerSetup] Worker error:', err);
   });
 
-  console.log('[ServerSetup] Worker started');
+  logger.info('[ServerSetup] Worker started');
   return worker;
 };
 
@@ -154,6 +155,6 @@ export const stopServerSetupWorker = async (): Promise<void> => {
   if (worker) {
     await worker.close();
     worker = null;
-    console.log('[ServerSetup] Worker stopped');
+    logger.info('[ServerSetup] Worker stopped');
   }
 };

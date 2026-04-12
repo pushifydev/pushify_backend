@@ -415,19 +415,36 @@ export async function deployToRemoteServer(
     const hasDockerfile = await ssh.fileExists(dockerfileCheckPath);
 
     if (!hasDockerfile) {
-      // Generate Dockerfile
-      onProgress('📄 Generating Dockerfile...');
-      const dockerfileContent = generateDockerfile({
-        framework,
-        buildCommand,
-        installCommand,
-        startCommand,
-        outputDirectory,
-        port: containerPort,
-        rootDirectory,
-        envVars,
-      });
+      // Use buildpack system for detection and Dockerfile generation
+      const { detectBuildpack, getBuildpack } = await import('../buildpacks');
 
+      onProgress('🔍 Auto-detecting language and framework...');
+      const detection = await detectBuildpack(repoDir, rootDirectory);
+
+      let dockerfileContent: string;
+
+      if (detection && detection.buildpackId !== 'custom') {
+        const buildpack = getBuildpack(detection.buildpackId);
+        if (buildpack) {
+          onProgress(`✅ Detected: ${buildpack.name} (${detection.framework})`);
+          dockerfileContent = buildpack.generateDockerfile({
+            framework: detection.framework,
+            buildCommand,
+            installCommand,
+            startCommand,
+            outputDirectory,
+            port: containerPort,
+            rootDirectory,
+            envVars,
+          } as any);
+        } else {
+          dockerfileContent = generateDockerfile({ framework, buildCommand, installCommand, startCommand, outputDirectory, port: containerPort, rootDirectory, envVars });
+        }
+      } else {
+        dockerfileContent = generateDockerfile({ framework, buildCommand, installCommand, startCommand, outputDirectory, port: containerPort, rootDirectory, envVars });
+      }
+
+      onProgress('📄 Uploading Dockerfile...');
       await ssh.uploadFile(dockerfileContent, path.posix.join(workDir, 'Dockerfile'));
       onProgress('✅ Dockerfile generated');
     } else {
