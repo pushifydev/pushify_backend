@@ -183,7 +183,6 @@ const composeFile = `services:
       timeout: 5s
       retries: 10
     environment:
-      POSTGRES_HOST: /var/run/postgresql
       PGPORT: 5432
       POSTGRES_PORT: 5432
       PGPASSWORD: \${POSTGRES_PASSWORD}
@@ -197,6 +196,8 @@ const composeFile = `services:
       - ./init.sql:/docker-entrypoint-initdb.d/zz-pushify-roles.sql:ro,z
     command:
       - postgres
+      - -c
+      - listen_addresses=*
       - -c
       - log_min_messages=fatal
 
