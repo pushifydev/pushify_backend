@@ -3,10 +3,12 @@ import crypto from 'crypto';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../db';
 import { servers } from '../db/schema/servers';
+import { projects } from '../db/schema/projects';
 import { projectRepository } from '../repositories/project.repository';
 import { organizationRepository } from '../repositories/organization.repository';
 import { generateSlug } from '../lib/utils';
 import { logger } from '../lib/logger';
+import { decrypt } from '../lib/encryption';
 import { t, type SupportedLocale } from '../i18n';
 
 // Types
@@ -244,9 +246,57 @@ export const projectService = {
       throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
     }
 
+    // Best-effort cleanup of running containers / compose stacks
+    try {
+      await this.cleanupProjectContainers(existing);
+    } catch (err) {
+      logger.warn({ projectId, err }, 'Failed to cleanup containers — continuing with delete');
+    }
+
     await projectRepository.softDelete(projectId);
 
     logger.info({ projectId, userId }, 'Project deleted');
+  },
+
+  /**
+   * Stop and remove all Docker containers / compose stacks for a project.
+   * Works for both single-container and docker-compose deployments,
+   * on local Docker or remote SSH server.
+   */
+  async cleanupProjectContainers(project: typeof projects.$inferSelect): Promise<void> {
+    const settings = (project.settings || {}) as Record<string, any>;
+    const isCompose = settings.deploymentType === 'docker-compose';
+    const stackName = `pushify-${project.slug}`;
+    const containerName = `pushify-${project.slug}`;
+    const dbContainerName = `pushify-${project.slug}-db`;
+
+    // Build cleanup commands
+    const composeCleanup = `docker compose -p ${stackName} down -v 2>/dev/null || true`;
+    const containerCleanup =
+      `docker stop ${containerName} ${dbContainerName} 2>/dev/null; ` +
+      `docker rm -f ${containerName} ${dbContainerName} 2>/dev/null; ` +
+      `docker network rm pushify-${project.slug}-net 2>/dev/null; true`;
+
+    if (project.serverId) {
+      // Remote server — connect via SSH
+      const { getSSHConnection } = await import('../utils/ssh');
+      const server = await db.query.servers.findFirst({ where: eq(servers.id, project.serverId) });
+      if (!server || !server.ipv4) return;
+      const sshKey = server.sshPrivateKey ? decrypt(server.sshPrivateKey) : null;
+      if (!sshKey) return;
+      const ssh = await getSSHConnection({ host: server.ipv4, username: 'root', privateKey: sshKey });
+      const cmd = isCompose ? composeCleanup : containerCleanup;
+      await ssh.exec(cmd);
+      logger.info({ projectId: project.id, stackName }, 'Cleaned up remote containers');
+    } else {
+      // Local Docker
+      const { exec } = await import('child_process');
+      const { promisify } = await import('util');
+      const execAsync = promisify(exec);
+      const cmd = isCompose ? composeCleanup : containerCleanup;
+      await execAsync(cmd).catch(() => undefined);
+      logger.info({ projectId: project.id, stackName }, 'Cleaned up local containers');
+    }
   },
 
   /**
