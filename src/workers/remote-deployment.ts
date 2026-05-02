@@ -290,7 +290,8 @@ export async function deployToRemoteServer(
       onProgress(`📝 Writing docker-compose.yml...`);
       await ssh.uploadFile(config.marketplace.composeFile, composePath);
 
-      // Write .env file with all env vars + Pushify-injected port
+      // Write .env file with all env vars + Pushify-injected port + URLs
+      const publicUrl = `http://${server.ipv4}:${publicHostPort}`;
       const allEnvs = {
         ...envVars,
         PUSHIFY_PUBLIC_PORT: String(publicHostPort),
@@ -298,6 +299,12 @@ export async function deployToRemoteServer(
         KONG_HTTP_PORT: String(publicHostPort),
         APP_PORT: String(publicHostPort),
         PORT: String(publicHostPort),
+        // Common public URL env names (auto-injected so users don't need to set them)
+        SITE_URL: envVars.SITE_URL || publicUrl,
+        API_EXTERNAL_URL: envVars.API_EXTERNAL_URL || publicUrl,
+        SUPABASE_PUBLIC_URL: envVars.SUPABASE_PUBLIC_URL || publicUrl,
+        PUBLIC_URL: envVars.PUBLIC_URL || publicUrl,
+        APP_URL: envVars.APP_URL || publicUrl,
       };
       const envFileContent = Object.entries(allEnvs)
         .map(([k, v]) => `${k}=${v.replace(/\n/g, '\\n')}`)
