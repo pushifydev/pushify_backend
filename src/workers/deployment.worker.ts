@@ -479,8 +479,12 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
 
       // Check if this is a marketplace deployment
       const marketplaceConfig = projectSettings?.marketplaceTemplateId ? {
-        dockerImage: projectSettings.dockerImage as string,
+        deploymentType: (projectSettings.deploymentType as 'single-container' | 'docker-compose') || 'single-container',
+        dockerImage: projectSettings.dockerImage as string | undefined,
         dockerCommand: (projectSettings.dockerCommand as string) || undefined,
+        composeFile: (projectSettings.composeFile as string) || undefined,
+        composePublicService: (projectSettings.composePublicService as string) || undefined,
+        composePublicPort: (projectSettings.composePublicPort as number) || undefined,
         volumes: (projectSettings.volumes as string[]) || undefined,
         requiresDatabase: (projectSettings.requiresDatabase as { type: string; version?: string }) || undefined,
       } : undefined;
