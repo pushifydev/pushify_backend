@@ -277,17 +277,33 @@ export async function deployToRemoteServer(
       }
       onProgress(`✅ ${composeCheck.stdout.trim()}`);
 
+      // Find a free public port (5000-5999 range)
+      onProgress(`🔍 Finding available host port...`);
+      const findPortCmd = `for p in $(seq 5000 5999); do ss -tln 2>/dev/null | grep -q ":$p " || { echo $p; break; }; done`;
+      const portFindResult = await ssh.exec(findPortCmd);
+      const publicHostPort = parseInt(portFindResult.stdout.trim()) || 5000;
+      const internalPort = config.marketplace.composePublicPort || 80;
+      onProgress(`📌 Assigned host port: ${publicHostPort} → container ${internalPort}`);
+
       // Write compose file
       const composePath = `${projectDir}/docker-compose.yml`;
       onProgress(`📝 Writing docker-compose.yml...`);
       await ssh.uploadFile(config.marketplace.composeFile, composePath);
 
-      // Write .env file with all env vars
-      const envFileContent = Object.entries(envVars)
+      // Write .env file with all env vars + Pushify-injected port
+      const allEnvs = {
+        ...envVars,
+        PUSHIFY_PUBLIC_PORT: String(publicHostPort),
+        // Common port env names that compose files use
+        KONG_HTTP_PORT: String(publicHostPort),
+        APP_PORT: String(publicHostPort),
+        PORT: String(publicHostPort),
+      };
+      const envFileContent = Object.entries(allEnvs)
         .map(([k, v]) => `${k}=${v.replace(/\n/g, '\\n')}`)
         .join('\n');
       await ssh.uploadFile(envFileContent, `${projectDir}/.env`);
-      onProgress(`📝 Wrote ${Object.keys(envVars).length} env vars to .env`);
+      onProgress(`📝 Wrote ${Object.keys(allEnvs).length} env vars to .env`);
 
       // Stop existing stack if any
       onProgress(`🛑 Stopping existing stack (if any)...`);
@@ -300,23 +316,19 @@ export async function deployToRemoteServer(
         onProgress(`⚠️ Some images failed to pull, continuing...`);
       }
 
+      // Open firewall port (best-effort; supports ufw and firewalld)
+      onProgress(`🔓 Opening firewall port ${publicHostPort}...`);
+      await ssh.exec(
+        `(command -v ufw >/dev/null 2>&1 && ufw allow ${publicHostPort}/tcp 2>&1) || ` +
+        `(command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --permanent --add-port=${publicHostPort}/tcp 2>&1 && firewall-cmd --reload 2>&1) || ` +
+        `echo "No firewall manager detected"`
+      );
+
       // Start the stack
       onProgress(`🚀 Starting stack...`);
       const upResult = await ssh.exec(`cd ${projectDir} && docker compose -p ${stackName} up -d 2>&1`);
       if (upResult.code !== 0) {
         throw new Error(`docker compose up failed: ${upResult.stderr || upResult.stdout}`);
-      }
-
-      // Get public service port
-      const publicService = config.marketplace.composePublicService;
-      const publicPort = config.marketplace.composePublicPort || 80;
-      let publicHostPort = publicPort;
-
-      if (publicService) {
-        const portResult = await ssh.exec(
-          `docker port ${stackName}-${publicService}-1 ${publicPort} 2>/dev/null | head -1 | cut -d: -f2 || echo ${publicPort}`
-        );
-        publicHostPort = parseInt(portResult.stdout.trim()) || publicPort;
       }
 
       onProgress(`✅ Stack deployed: ${stackName} (port ${publicHostPort})`);

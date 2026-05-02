@@ -26,7 +26,6 @@ const composeFile = `services:
     restart: unless-stopped
     ports:
       - \${KONG_HTTP_PORT:-8000}:8000/tcp
-      - \${KONG_HTTPS_PORT:-8443}:8443/tcp
     environment:
       KONG_DATABASE: "off"
       KONG_DECLARATIVE_CONFIG: /home/kong/kong.yml
