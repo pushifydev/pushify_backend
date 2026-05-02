@@ -11,6 +11,8 @@ export interface MarketplaceEnvVar {
   hidden?: boolean;
 }
 
+export type DeploymentType = 'single-container' | 'docker-compose';
+
 export interface MarketplaceTemplate {
   id: string;
   name: string;
@@ -21,10 +23,23 @@ export interface MarketplaceTemplate {
   tags: string[];
   website: string;
   documentation: string;
-  dockerImage: string;
+
+  /** Deployment mechanism — defaults to single-container */
+  deploymentType?: DeploymentType;
+
+  /** For single-container apps */
+  dockerImage?: string;
   dockerCommand?: string;
   port: number;
   healthCheckPath: string;
+
+  /** For docker-compose apps — full compose YAML as string */
+  composeFile?: string;
+  /** Service in compose to map to public port */
+  composePublicService?: string;
+  /** Internal port the public service listens on */
+  composePublicPort?: number;
+
   envVars: MarketplaceEnvVar[];
   minMemoryMb: number;
   minDiskGb: number;

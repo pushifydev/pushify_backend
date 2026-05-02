@@ -10,8 +10,10 @@ import { portainer } from './portainer';
 import { plausible } from './plausible';
 import { redis } from './redis';
 import { postgresql } from './postgresql';
+import { supabaseTemplate } from './supabase';
 
 export const templates: MarketplaceTemplate[] = [
+  supabaseTemplate,
   wordpress,
   n8n,
   uptimeKuma,

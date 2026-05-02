@@ -32,10 +32,15 @@ export interface RemoteDeploymentConfig {
   onProgress: (message: string) => void;
   // Marketplace fields
   marketplace?: {
-    dockerImage: string;
+    dockerImage?: string;
     dockerCommand?: string;
     volumes?: string[];
     requiresDatabase?: { type: string; version?: string };
+    // Compose deployment fields
+    deploymentType?: 'single-container' | 'docker-compose';
+    composeFile?: string;
+    composePublicService?: string;
+    composePublicPort?: number;
   };
 }
 
@@ -260,9 +265,73 @@ export async function deployToRemoteServer(
     onProgress(`📁 Creating project directory: ${projectDir}`);
     await ssh.exec(`mkdir -p ${projectDir}`);
 
+    // ── Marketplace COMPOSE deploy: deploy multi-container stack ──
+    if (config.marketplace?.deploymentType === 'docker-compose' && config.marketplace.composeFile) {
+      const stackName = `pushify-${projectSlug}`;
+      onProgress(`📦 Deploying Docker Compose stack: ${stackName}`);
+
+      // Check docker compose plugin
+      const composeCheck = await ssh.exec('docker compose version 2>&1');
+      if (!composeCheck.stdout.includes('Docker Compose')) {
+        throw new Error('Docker Compose plugin not installed on server');
+      }
+      onProgress(`✅ ${composeCheck.stdout.trim()}`);
+
+      // Write compose file
+      const composePath = `${projectDir}/docker-compose.yml`;
+      onProgress(`📝 Writing docker-compose.yml...`);
+      await ssh.uploadFile(config.marketplace.composeFile, composePath);
+
+      // Write .env file with all env vars
+      const envFileContent = Object.entries(envVars)
+        .map(([k, v]) => `${k}=${v.replace(/\n/g, '\\n')}`)
+        .join('\n');
+      await ssh.uploadFile(envFileContent, `${projectDir}/.env`);
+      onProgress(`📝 Wrote ${Object.keys(envVars).length} env vars to .env`);
+
+      // Stop existing stack if any
+      onProgress(`🛑 Stopping existing stack (if any)...`);
+      await ssh.exec(`cd ${projectDir} && docker compose -p ${stackName} down 2>&1 || true`);
+
+      // Pull all images
+      onProgress(`⬇️ Pulling images (this may take a while)...`);
+      const pullResult = await ssh.exec(`cd ${projectDir} && docker compose -p ${stackName} pull 2>&1`);
+      if (pullResult.code !== 0) {
+        onProgress(`⚠️ Some images failed to pull, continuing...`);
+      }
+
+      // Start the stack
+      onProgress(`🚀 Starting stack...`);
+      const upResult = await ssh.exec(`cd ${projectDir} && docker compose -p ${stackName} up -d 2>&1`);
+      if (upResult.code !== 0) {
+        throw new Error(`docker compose up failed: ${upResult.stderr || upResult.stdout}`);
+      }
+
+      // Get public service port
+      const publicService = config.marketplace.composePublicService;
+      const publicPort = config.marketplace.composePublicPort || 80;
+      let publicHostPort = publicPort;
+
+      if (publicService) {
+        const portResult = await ssh.exec(
+          `docker port ${stackName}-${publicService}-1 ${publicPort} 2>/dev/null | head -1 | cut -d: -f2 || echo ${publicPort}`
+        );
+        publicHostPort = parseInt(portResult.stdout.trim()) || publicPort;
+      }
+
+      onProgress(`✅ Stack deployed: ${stackName} (port ${publicHostPort})`);
+
+      return {
+        success: true,
+        deploymentUrl: `http://${server.ipv4}:${publicHostPort}`,
+        containerPort: publicHostPort,
+      };
+    }
+
     // ── Marketplace deploy: pull image directly ──
     if (config.marketplace) {
       const { dockerImage, dockerCommand, volumes } = config.marketplace;
+      if (!dockerImage) throw new Error('Marketplace deploy requires dockerImage');
       const imageName = `pushify-${projectSlug}`;
       const containerName = `pushify-${projectSlug}`;
       const dbContainerName = `pushify-${projectSlug}-db`;

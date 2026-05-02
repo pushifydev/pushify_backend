@@ -68,6 +68,7 @@ export const marketplaceService = {
     }
 
     // Create project
+    const isCompose = template.deploymentType === 'docker-compose';
     const [project] = await db
       .insert(projects)
       .values({
@@ -77,11 +78,15 @@ export const marketplaceService = {
         slug,
         gitRepoUrl: template.website,
         status: 'active',
-        port: template.port,
+        port: isCompose ? (template.composePublicPort || template.port) : template.port,
         settings: {
           marketplaceTemplateId: template.id,
+          deploymentType: template.deploymentType || 'single-container',
           dockerImage: template.dockerImage,
           dockerCommand: template.dockerCommand || null,
+          composeFile: template.composeFile || null,
+          composePublicService: template.composePublicService || null,
+          composePublicPort: template.composePublicPort || null,
           volumes: template.volumes || [],
           healthCheckPath: template.healthCheckPath,
           requiresDatabase: template.requiresDatabase || null,
