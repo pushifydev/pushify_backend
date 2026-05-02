@@ -194,6 +194,7 @@ const composeFile = `services:
       JWT_EXP: 3600
     volumes:
       - supabase-db:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/zz-pushify-roles.sql:ro,z
     command:
       - postgres
       - -c
@@ -229,6 +230,64 @@ This deployment includes all 9 Supabase services orchestrated via Docker Compose
   composePublicService: 'kong',
   composePublicPort: 8000,
   extraFiles: {
+    'init.sql': `-- Pushify init: ensure Supabase roles exist with correct passwords
+-- Runs after the official supabase/postgres image's own init scripts
+DO $$
+DECLARE
+  pwd text := '\${POSTGRES_PASSWORD}';
+BEGIN
+  -- supabase_admin (full access)
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'supabase_admin') THEN
+    EXECUTE format('CREATE USER supabase_admin SUPERUSER CREATEDB CREATEROLE REPLICATION BYPASSRLS LOGIN PASSWORD %L', pwd);
+  ELSE
+    EXECUTE format('ALTER USER supabase_admin WITH PASSWORD %L', pwd);
+  END IF;
+
+  -- supabase_auth_admin (for GoTrue)
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'supabase_auth_admin') THEN
+    EXECUTE format('CREATE USER supabase_auth_admin NOINHERIT CREATEROLE LOGIN NOREPLICATION PASSWORD %L', pwd);
+  ELSE
+    EXECUTE format('ALTER USER supabase_auth_admin WITH PASSWORD %L', pwd);
+  END IF;
+  CREATE SCHEMA IF NOT EXISTS auth AUTHORIZATION supabase_auth_admin;
+  GRANT CREATE ON DATABASE postgres TO supabase_auth_admin;
+  ALTER USER supabase_auth_admin SET search_path = 'auth';
+
+  -- supabase_storage_admin (for Storage API)
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'supabase_storage_admin') THEN
+    EXECUTE format('CREATE USER supabase_storage_admin NOINHERIT CREATEROLE LOGIN NOREPLICATION PASSWORD %L', pwd);
+  ELSE
+    EXECUTE format('ALTER USER supabase_storage_admin WITH PASSWORD %L', pwd);
+  END IF;
+  CREATE SCHEMA IF NOT EXISTS storage AUTHORIZATION supabase_storage_admin;
+  GRANT CREATE ON DATABASE postgres TO supabase_storage_admin;
+  ALTER USER supabase_storage_admin SET search_path = 'storage';
+
+  -- authenticator (for PostgREST)
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authenticator') THEN
+    EXECUTE format('CREATE USER authenticator NOINHERIT LOGIN NOREPLICATION PASSWORD %L', pwd);
+  ELSE
+    EXECUTE format('ALTER USER authenticator WITH PASSWORD %L', pwd);
+  END IF;
+
+  -- anon, authenticated, service_role (PostgREST switching)
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'anon') THEN
+    CREATE ROLE anon NOLOGIN NOINHERIT;
+  END IF;
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authenticated') THEN
+    CREATE ROLE authenticated NOLOGIN NOINHERIT;
+  END IF;
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'service_role') THEN
+    CREATE ROLE service_role NOLOGIN NOINHERIT BYPASSRLS;
+  END IF;
+
+  GRANT anon, authenticated, service_role TO authenticator;
+
+  -- Update postgres password too (used by Studio/meta)
+  EXECUTE format('ALTER USER postgres WITH PASSWORD %L', pwd);
+END
+$$;
+`,
     'kong.yml': `_format_version: '2.1'
 _transform: true
 
