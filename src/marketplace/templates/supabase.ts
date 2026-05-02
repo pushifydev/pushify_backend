@@ -435,19 +435,27 @@ sinks:
 `,
     'init.sql': `-- Pushify init: ensure Supabase roles exist with correct passwords
 -- Runs after the official supabase/postgres image's own init scripts
+-- File is named with zz- prefix so it's the LAST init script to run
+\\set ON_ERROR_STOP on
 
--- Create _supabase database (used by analytics/logflare)
+-- Create _supabase database (used by analytics/logflare/supavisor)
 SELECT 'CREATE DATABASE _supabase'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '_supabase')\\gexec
 
--- Create the _analytics schema in _supabase database
+-- Schemas in _supabase
 \\c _supabase
 CREATE SCHEMA IF NOT EXISTS _analytics;
 CREATE SCHEMA IF NOT EXISTS _supavisor;
 CREATE SCHEMA IF NOT EXISTS _realtime;
+
+-- Back to main DB
 \\c postgres
 CREATE SCHEMA IF NOT EXISTS _realtime;
 
+-- Force-set passwords for all Supabase roles to POSTGRES_PASSWORD
+-- This is critical: the official supabase/postgres image creates these roles
+-- with random/different passwords; we need them all to match POSTGRES_PASSWORD
+-- so that auth/rest/storage/etc can connect.
 DO $$
 DECLARE
   pwd text := '\${POSTGRES_PASSWORD}';
@@ -499,10 +507,26 @@ BEGIN
 
   GRANT anon, authenticated, service_role TO authenticator;
 
-  -- Update postgres password too (used by Studio/meta)
+  -- Final pass: re-ALTER all critical users to be 100% sure passwords match
+  -- (in case earlier statements were interrupted or run before role creation)
   EXECUTE format('ALTER USER postgres WITH PASSWORD %L', pwd);
+  EXECUTE format('ALTER USER supabase_admin WITH PASSWORD %L', pwd);
+  EXECUTE format('ALTER USER supabase_auth_admin WITH PASSWORD %L', pwd);
+  EXECUTE format('ALTER USER supabase_storage_admin WITH PASSWORD %L', pwd);
+  EXECUTE format('ALTER USER authenticator WITH PASSWORD %L', pwd);
+
+  -- Permission grants
+  GRANT ALL PRIVILEGES ON DATABASE postgres TO supabase_admin;
+  GRANT ALL PRIVILEGES ON DATABASE _supabase TO supabase_admin;
+  GRANT USAGE ON SCHEMA _realtime TO supabase_admin;
+  GRANT ALL ON ALL TABLES IN SCHEMA _realtime TO supabase_admin;
 END
 $$;
+
+-- Verify (logged to postgres logs for debugging)
+SELECT 'Pushify init complete: ' || count(*)::text || ' supabase roles configured'
+FROM pg_roles
+WHERE rolname IN ('supabase_admin','supabase_auth_admin','supabase_storage_admin','authenticator','anon','authenticated','service_role');
 `,
     'kong.yml': `_format_version: '2.1'
 _transform: true
