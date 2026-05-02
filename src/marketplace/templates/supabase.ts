@@ -58,12 +58,80 @@ const composeFile = `services:
       GOTRUE_DB_DRIVER: postgres
       GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:\${POSTGRES_PASSWORD}@db:5432/postgres
       GOTRUE_SITE_URL: \${SITE_URL}
-      GOTRUE_DISABLE_SIGNUP: "false"
+      GOTRUE_URI_ALLOW_LIST: \${ADDITIONAL_REDIRECT_URLS:-}
+      GOTRUE_DISABLE_SIGNUP: \${DISABLE_SIGNUP:-false}
       GOTRUE_JWT_SECRET: \${JWT_SECRET}
       GOTRUE_JWT_EXP: 3600
       GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      # ── Email auth ──
       GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
-      GOTRUE_MAILER_AUTOCONFIRM: "true"
+      GOTRUE_MAILER_AUTOCONFIRM: \${MAILER_AUTOCONFIRM:-true}
+      GOTRUE_SMTP_HOST: \${SMTP_HOST:-}
+      GOTRUE_SMTP_PORT: \${SMTP_PORT:-587}
+      GOTRUE_SMTP_USER: \${SMTP_USER:-}
+      GOTRUE_SMTP_PASS: \${SMTP_PASS:-}
+      GOTRUE_SMTP_ADMIN_EMAIL: \${SMTP_ADMIN_EMAIL:-}
+      GOTRUE_SMTP_SENDER_NAME: \${SMTP_SENDER_NAME:-Supabase}
+      # ── Phone auth ──
+      GOTRUE_EXTERNAL_PHONE_ENABLED: \${ENABLE_PHONE_SIGNUP:-false}
+      GOTRUE_SMS_AUTOCONFIRM: "true"
+      # ── Anonymous sign-ins ──
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: \${ENABLE_ANONYMOUS_USERS:-false}
+      # ── Google OAuth ──
+      GOTRUE_EXTERNAL_GOOGLE_ENABLED: \${GOOGLE_ENABLED:-false}
+      GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID: \${GOOGLE_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_GOOGLE_SECRET: \${GOOGLE_SECRET:-}
+      GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI: \${API_EXTERNAL_URL}/auth/v1/callback
+      # ── GitHub OAuth ──
+      GOTRUE_EXTERNAL_GITHUB_ENABLED: \${GITHUB_ENABLED:-false}
+      GOTRUE_EXTERNAL_GITHUB_CLIENT_ID: \${GITHUB_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_GITHUB_SECRET: \${GITHUB_SECRET:-}
+      GOTRUE_EXTERNAL_GITHUB_REDIRECT_URI: \${API_EXTERNAL_URL}/auth/v1/callback
+      # ── Discord OAuth ──
+      GOTRUE_EXTERNAL_DISCORD_ENABLED: \${DISCORD_ENABLED:-false}
+      GOTRUE_EXTERNAL_DISCORD_CLIENT_ID: \${DISCORD_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_DISCORD_SECRET: \${DISCORD_SECRET:-}
+      GOTRUE_EXTERNAL_DISCORD_REDIRECT_URI: \${API_EXTERNAL_URL}/auth/v1/callback
+      # ── Apple OAuth ──
+      GOTRUE_EXTERNAL_APPLE_ENABLED: \${APPLE_ENABLED:-false}
+      GOTRUE_EXTERNAL_APPLE_CLIENT_ID: \${APPLE_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_APPLE_SECRET: \${APPLE_SECRET:-}
+      GOTRUE_EXTERNAL_APPLE_REDIRECT_URI: \${API_EXTERNAL_URL}/auth/v1/callback
+      # ── Facebook OAuth ──
+      GOTRUE_EXTERNAL_FACEBOOK_ENABLED: \${FACEBOOK_ENABLED:-false}
+      GOTRUE_EXTERNAL_FACEBOOK_CLIENT_ID: \${FACEBOOK_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_FACEBOOK_SECRET: \${FACEBOOK_SECRET:-}
+      GOTRUE_EXTERNAL_FACEBOOK_REDIRECT_URI: \${API_EXTERNAL_URL}/auth/v1/callback
+      # ── Twitter OAuth ──
+      GOTRUE_EXTERNAL_TWITTER_ENABLED: \${TWITTER_ENABLED:-false}
+      GOTRUE_EXTERNAL_TWITTER_CLIENT_ID: \${TWITTER_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_TWITTER_SECRET: \${TWITTER_SECRET:-}
+      GOTRUE_EXTERNAL_TWITTER_REDIRECT_URI: \${API_EXTERNAL_URL}/auth/v1/callback
+      # ── LinkedIn OAuth ──
+      GOTRUE_EXTERNAL_LINKEDIN_OIDC_ENABLED: \${LINKEDIN_ENABLED:-false}
+      GOTRUE_EXTERNAL_LINKEDIN_OIDC_CLIENT_ID: \${LINKEDIN_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_LINKEDIN_OIDC_SECRET: \${LINKEDIN_SECRET:-}
+      GOTRUE_EXTERNAL_LINKEDIN_OIDC_REDIRECT_URI: \${API_EXTERNAL_URL}/auth/v1/callback
+      # ── Slack OAuth ──
+      GOTRUE_EXTERNAL_SLACK_ENABLED: \${SLACK_ENABLED:-false}
+      GOTRUE_EXTERNAL_SLACK_CLIENT_ID: \${SLACK_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_SLACK_SECRET: \${SLACK_SECRET:-}
+      GOTRUE_EXTERNAL_SLACK_REDIRECT_URI: \${API_EXTERNAL_URL}/auth/v1/callback
+      # ── Twitch OAuth ──
+      GOTRUE_EXTERNAL_TWITCH_ENABLED: \${TWITCH_ENABLED:-false}
+      GOTRUE_EXTERNAL_TWITCH_CLIENT_ID: \${TWITCH_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_TWITCH_SECRET: \${TWITCH_SECRET:-}
+      GOTRUE_EXTERNAL_TWITCH_REDIRECT_URI: \${API_EXTERNAL_URL}/auth/v1/callback
+      # ── Spotify OAuth ──
+      GOTRUE_EXTERNAL_SPOTIFY_ENABLED: \${SPOTIFY_ENABLED:-false}
+      GOTRUE_EXTERNAL_SPOTIFY_CLIENT_ID: \${SPOTIFY_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_SPOTIFY_SECRET: \${SPOTIFY_SECRET:-}
+      GOTRUE_EXTERNAL_SPOTIFY_REDIRECT_URI: \${API_EXTERNAL_URL}/auth/v1/callback
+      # ── Notion OAuth ──
+      GOTRUE_EXTERNAL_NOTION_ENABLED: \${NOTION_ENABLED:-false}
+      GOTRUE_EXTERNAL_NOTION_CLIENT_ID: \${NOTION_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_NOTION_SECRET: \${NOTION_SECRET:-}
+      GOTRUE_EXTERNAL_NOTION_REDIRECT_URI: \${API_EXTERNAL_URL}/auth/v1/callback
 
   rest:
     image: postgrest/postgrest:v12.0.1
@@ -201,6 +269,86 @@ const composeFile = `services:
       - -c
       - log_min_messages=fatal
 
+  # ── Connection Pooler (Supavisor) ──
+  supavisor:
+    image: supabase/supavisor:1.1.56
+    healthcheck:
+      test: ["CMD", "curl", "-sSfL", "http://localhost:4000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    ports:
+      - \${POOLER_PROXY_PORT_TRANSACTION:-6543}:6543
+    environment:
+      PORT: 4000
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: \${POSTGRES_DB:-postgres}
+      POSTGRES_PASSWORD: \${POSTGRES_PASSWORD}
+      DATABASE_URL: ecto://supabase_admin:\${POSTGRES_PASSWORD}@db:5432/_supabase
+      CLUSTER_POSTGRES: "true"
+      SECRET_KEY_BASE: \${SECRET_KEY_BASE}
+      VAULT_ENC_KEY: \${VAULT_ENC_KEY:-your-encryption-key-32-chars-min}
+      API_JWT_SECRET: \${JWT_SECRET}
+      METRICS_JWT_SECRET: \${JWT_SECRET}
+      REGION: local
+      ERL_AFLAGS: -proto_dist inet_tcp
+      POOLER_TENANT_ID: \${POOLER_TENANT_ID:-default}
+      POOLER_DEFAULT_POOL_SIZE: \${POOLER_DEFAULT_POOL_SIZE:-20}
+      POOLER_MAX_CLIENT_CONN: \${POOLER_MAX_CLIENT_CONN:-100}
+      POOLER_POOL_MODE: transaction
+    command:
+      - /bin/sh
+      - -c
+      - "/app/bin/migrate && /app/bin/supavisor eval \\"$$(cat /etc/pool_tenant.exs)\\" && /app/bin/server"
+
+  # ── Log Collector (Vector) ──
+  vector:
+    image: timberio/vector:0.28.1-alpine
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://vector:9001/health"]
+      timeout: 5s
+      interval: 5s
+      retries: 3
+    restart: unless-stopped
+    volumes:
+      - ./vector.yml:/etc/vector/vector.yml:ro,z
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: ["--config", "/etc/vector/vector.yml"]
+    environment:
+      LOGFLARE_API_KEY: \${LOGFLARE_API_KEY}
+
+  # ── Analytics (Logflare) ──
+  analytics:
+    image: supabase/logflare:1.4.0
+    healthcheck:
+      test: ["CMD", "curl", "http://localhost:4000/health"]
+      timeout: 5s
+      interval: 5s
+      retries: 30
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      LOGFLARE_NODE_HOST: 127.0.0.1
+      DB_USERNAME: supabase_admin
+      DB_DATABASE: _supabase
+      DB_HOSTNAME: db
+      DB_PORT: 5432
+      DB_PASSWORD: \${POSTGRES_PASSWORD}
+      DB_SCHEMA: _analytics
+      LOGFLARE_API_KEY: \${LOGFLARE_API_KEY}
+      LOGFLARE_SINGLE_TENANT: "true"
+      LOGFLARE_SUPABASE_MODE: "true"
+      LOGFLARE_MIN_CLUSTER_SIZE: 1
+      POSTGRES_BACKEND_URL: postgresql://supabase_admin:\${POSTGRES_PASSWORD}@db:5432/_supabase
+      POSTGRES_BACKEND_SCHEMA: _analytics
+      LOGFLARE_FEATURE_FLAG_OVERRIDE: multibackend=true
+
 volumes:
   supabase-db:
   supabase-storage:
@@ -231,8 +379,72 @@ This deployment includes all 9 Supabase services orchestrated via Docker Compose
   composePublicService: 'kong',
   composePublicPort: 8000,
   extraFiles: {
+    'vector.yml': `# Pushify-managed Vector config for Supabase
+api:
+  enabled: true
+  address: 0.0.0.0:9001
+
+sources:
+  docker_host:
+    type: docker_logs
+    exclude_containers:
+      - supabase-vector
+
+transforms:
+  project_logs:
+    type: remap
+    inputs:
+      - docker_host
+    source: |-
+      .project = "default"
+      .event_message = del(.message)
+      .appname = del(.container_name)
+      del(.container_created_at)
+      del(.container_id)
+      del(.source_type)
+      del(.stream)
+      del(.label)
+      del(.image)
+      del(.host)
+      del(.stream)
+
+  router:
+    type: route
+    inputs:
+      - project_logs
+    route:
+      kong: 'starts_with(string!(.appname), "supabase-kong")'
+      auth: 'starts_with(string!(.appname), "supabase-auth")'
+      rest: 'starts_with(string!(.appname), "supabase-rest")'
+      realtime: 'starts_with(string!(.appname), "supabase-realtime")'
+      storage: 'starts_with(string!(.appname), "supabase-storage")'
+      functions: 'starts_with(string!(.appname), "supabase-functions")'
+      db: 'starts_with(string!(.appname), "supabase-db")'
+
+sinks:
+  logflare_logs:
+    type: 'http'
+    inputs:
+      - project_logs
+    encoding:
+      codec: 'json'
+    method: 'post'
+    request:
+      retry_max_duration_secs: 10
+    uri: 'http://analytics:4000/api/logs?source_name=postgREST.logs.prod&api_key=\${LOGFLARE_API_KEY?LOGFLARE_API_KEY is required}'
+`,
     'init.sql': `-- Pushify init: ensure Supabase roles exist with correct passwords
 -- Runs after the official supabase/postgres image's own init scripts
+
+-- Create _supabase database (used by analytics/logflare)
+SELECT 'CREATE DATABASE _supabase'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '_supabase')\\gexec
+
+-- Create the _analytics schema in _supabase database
+\\c _supabase
+CREATE SCHEMA IF NOT EXISTS _analytics;
+\\c postgres
+
 DO $$
 DECLARE
   pwd text := '\${POSTGRES_PASSWORD}';
@@ -476,9 +688,18 @@ services:
       generate: 'secret',
       hidden: true,
     },
+    {
+      key: 'VAULT_ENC_KEY',
+      label: 'Vault Encryption Key',
+      description: 'Key used by Supavisor pooler to encrypt secrets at rest',
+      required: true,
+      type: 'password',
+      generate: 'secret',
+      hidden: true,
+    },
   ],
-  minMemoryMb: 4096,
-  minDiskGb: 10,
+  minMemoryMb: 6144,
+  minDiskGb: 15,
   version: '1.0.0',
   appVersion: '2024.03',
   featured: true,
