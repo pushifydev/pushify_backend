@@ -41,6 +41,7 @@ export interface RemoteDeploymentConfig {
     composeFile?: string;
     composePublicService?: string;
     composePublicPort?: number;
+    extraFiles?: Record<string, string>;
   };
 }
 
@@ -289,6 +290,17 @@ export async function deployToRemoteServer(
       const composePath = `${projectDir}/docker-compose.yml`;
       onProgress(`📝 Writing docker-compose.yml...`);
       await ssh.uploadFile(config.marketplace.composeFile, composePath);
+
+      // Write any extra files (e.g. kong.yml). Substitute ${VAR} with env values.
+      const extraFiles = config.marketplace.extraFiles;
+      if (extraFiles && Object.keys(extraFiles).length > 0) {
+        for (const [filename, contents] of Object.entries(extraFiles)) {
+          const expanded = contents.replace(/\$\{([A-Z0-9_]+)\}/g, (_m, key) => envVars[key] ?? '');
+          const filePath = `${projectDir}/${filename}`;
+          await ssh.uploadFile(expanded, filePath);
+          onProgress(`📝 Wrote ${filename}`);
+        }
+      }
 
       // Write .env file with all env vars + Pushify-injected port + URLs
       const publicUrl = `http://${server.ipv4}:${publicHostPort}`;

@@ -485,6 +485,7 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
         composeFile: (projectSettings.composeFile as string) || undefined,
         composePublicService: (projectSettings.composePublicService as string) || undefined,
         composePublicPort: (projectSettings.composePublicPort as number) || undefined,
+        extraFiles: (projectSettings.extraFiles as Record<string, string>) || undefined,
         volumes: (projectSettings.volumes as string[]) || undefined,
         requiresDatabase: (projectSettings.requiresDatabase as { type: string; version?: string }) || undefined,
       } : undefined;

@@ -26,6 +26,8 @@ const composeFile = `services:
     restart: unless-stopped
     ports:
       - \${KONG_HTTP_PORT:-8000}:8000/tcp
+    volumes:
+      - ./kong.yml:/home/kong/kong.yml:ro,z
     environment:
       KONG_DATABASE: "off"
       KONG_DECLARATIVE_CONFIG: /home/kong/kong.yml
@@ -226,6 +228,125 @@ This deployment includes all 9 Supabase services orchestrated via Docker Compose
   composeFile,
   composePublicService: 'kong',
   composePublicPort: 8000,
+  extraFiles: {
+    'kong.yml': `_format_version: '2.1'
+_transform: true
+
+consumers:
+  - username: DASHBOARD
+  - username: anon
+    keyauth_credentials:
+      - key: \${ANON_KEY}
+  - username: service_role
+    keyauth_credentials:
+      - key: \${SERVICE_ROLE_KEY}
+
+acls:
+  - consumer: anon
+    group: anon
+  - consumer: service_role
+    group: admin
+
+basicauth_credentials:
+  - consumer: DASHBOARD
+    username: \${DASHBOARD_USERNAME}
+    password: \${DASHBOARD_PASSWORD}
+
+services:
+  - name: auth-v1
+    url: http://auth:9999/
+    routes:
+      - name: auth-v1-all
+        strip_path: true
+        paths:
+          - /auth/v1/
+    plugins:
+      - name: cors
+
+  - name: rest-v1
+    url: http://rest:3000/
+    routes:
+      - name: rest-v1-all
+        strip_path: true
+        paths:
+          - /rest/v1/
+    plugins:
+      - name: cors
+      - name: key-auth
+        config:
+          hide_credentials: true
+      - name: acl
+        config:
+          hide_groups_header: true
+          allow:
+            - admin
+            - anon
+
+  - name: realtime-v1-ws
+    url: http://realtime:4000/socket
+    protocol: ws
+    routes:
+      - name: realtime-v1-ws
+        strip_path: true
+        paths:
+          - /realtime/v1/
+    plugins:
+      - name: cors
+      - name: key-auth
+        config:
+          hide_credentials: false
+
+  - name: storage-v1
+    url: http://storage:5000/
+    routes:
+      - name: storage-v1-all
+        strip_path: true
+        paths:
+          - /storage/v1/
+    plugins:
+      - name: cors
+
+  - name: functions-v1
+    url: http://functions:9000/
+    routes:
+      - name: functions-v1-all
+        strip_path: true
+        paths:
+          - /functions/v1/
+    plugins:
+      - name: cors
+
+  - name: meta
+    url: http://meta:8080/
+    routes:
+      - name: meta-all
+        strip_path: true
+        paths:
+          - /pg/
+    plugins:
+      - name: key-auth
+        config:
+          hide_credentials: false
+      - name: acl
+        config:
+          hide_groups_header: true
+          allow:
+            - admin
+
+  - name: dashboard
+    url: http://studio:3000/
+    routes:
+      - name: dashboard-all
+        strip_path: false
+        paths:
+          - /
+    plugins:
+      - name: cors
+      - name: basic-auth
+        config:
+          hide_credentials: true
+`,
+  },
 
   port: 8000,
   healthCheckPath: '/',

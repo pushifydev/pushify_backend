@@ -39,6 +39,8 @@ export interface MarketplaceTemplate {
   composePublicService?: string;
   /** Internal port the public service listens on */
   composePublicPort?: number;
+  /** Extra files to upload alongside docker-compose.yml (e.g. kong.yml). Path is relative to project dir */
+  extraFiles?: Record<string, string>;
 
   envVars: MarketplaceEnvVar[];
   minMemoryMb: number;
