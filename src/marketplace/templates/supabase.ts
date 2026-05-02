@@ -9,9 +9,6 @@ const composeFile = `services:
       timeout: 5s
       interval: 5s
       retries: 3
-    depends_on:
-      analytics:
-        condition: service_healthy
     environment:
       STUDIO_PG_META_URL: http://meta:8080
       POSTGRES_PASSWORD: \${POSTGRES_PASSWORD}
@@ -47,8 +44,6 @@ const composeFile = `services:
     depends_on:
       db:
         condition: service_healthy
-      analytics:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9999/health"]
       timeout: 5s
@@ -74,8 +69,6 @@ const composeFile = `services:
     depends_on:
       db:
         condition: service_healthy
-      analytics:
-        condition: service_healthy
     restart: unless-stopped
     environment:
       PGRST_DB_URI: postgres://authenticator:\${POSTGRES_PASSWORD}@db:5432/postgres
@@ -88,8 +81,6 @@ const composeFile = `services:
     image: supabase/realtime:v2.28.32
     depends_on:
       db:
-        condition: service_healthy
-      analytics:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sSfL", "--head", "-o", "/dev/null", "-H", "Authorization: Bearer \${ANON_KEY}", "http://localhost:4000/api/tenants/realtime-dev/health"]
@@ -161,8 +152,6 @@ const composeFile = `services:
     depends_on:
       db:
         condition: service_healthy
-      analytics:
-        condition: service_healthy
     restart: unless-stopped
     environment:
       PG_META_PORT: 8080
@@ -175,9 +164,6 @@ const composeFile = `services:
   functions:
     image: supabase/edge-runtime:v1.45.2
     restart: unless-stopped
-    depends_on:
-      analytics:
-        condition: service_healthy
     environment:
       JWT_SECRET: \${JWT_SECRET}
       SUPABASE_URL: http://kong:8000
@@ -186,33 +172,6 @@ const composeFile = `services:
       SUPABASE_DB_URL: postgresql://postgres:\${POSTGRES_PASSWORD}@db:5432/postgres
       VERIFY_JWT: "false"
     command: ["start", "--main-service", "/home/deno/functions/main"]
-
-  analytics:
-    image: supabase/logflare:1.4.0
-    healthcheck:
-      test: ["CMD", "curl", "http://localhost:4000/health"]
-      timeout: 5s
-      interval: 5s
-      retries: 10
-    restart: unless-stopped
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      LOGFLARE_NODE_HOST: 127.0.0.1
-      DB_USERNAME: supabase_admin
-      DB_DATABASE: _supabase
-      DB_HOSTNAME: db
-      DB_PORT: 5432
-      DB_PASSWORD: \${POSTGRES_PASSWORD}
-      DB_SCHEMA: _analytics
-      LOGFLARE_API_KEY: \${LOGFLARE_API_KEY}
-      LOGFLARE_SINGLE_TENANT: "true"
-      LOGFLARE_SUPABASE_MODE: "true"
-      LOGFLARE_MIN_CLUSTER_SIZE: 1
-      POSTGRES_BACKEND_URL: postgresql://supabase_admin:\${POSTGRES_PASSWORD}@db:5432/_supabase
-      POSTGRES_BACKEND_SCHEMA: _analytics
-      LOGFLARE_FEATURE_FLAG_OVERRIDE: multibackend=true
 
   db:
     image: supabase/postgres:15.1.1.78
