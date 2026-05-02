@@ -233,9 +233,6 @@ const composeFile = `services:
       interval: 5s
       timeout: 5s
       retries: 10
-    depends_on:
-      vector:
-        condition: service_healthy
     environment:
       POSTGRES_HOST: /var/run/postgresql
       PGPORT: 5432
@@ -247,24 +244,11 @@ const composeFile = `services:
       JWT_SECRET: \${JWT_SECRET}
       JWT_EXP: 3600
     volumes:
-      - supabase-db:/var/lib/postgresql/data:z
+      - supabase-db:/var/lib/postgresql/data
     command:
       - postgres
       - -c
-      - config_file=/etc/postgresql/postgresql.conf
-      - -c
       - log_min_messages=fatal
-
-  vector:
-    container_name: supabase-vector
-    image: timberio/vector:0.28.1-alpine
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://vector:9001/health"]
-      timeout: 5s
-      interval: 5s
-      retries: 3
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
 
 volumes:
   supabase-db:
