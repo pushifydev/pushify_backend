@@ -2,7 +2,6 @@ import type { MarketplaceTemplate } from '../types';
 
 const composeFile = `services:
   studio:
-    container_name: supabase-studio
     image: supabase/studio:20240326-5e5586d
     restart: unless-stopped
     healthcheck:
@@ -26,7 +25,6 @@ const composeFile = `services:
       LOGFLARE_URL: http://analytics:4000
 
   kong:
-    container_name: supabase-kong
     image: kong:2.8.1
     restart: unless-stopped
     ports:
@@ -45,7 +43,6 @@ const composeFile = `services:
       DASHBOARD_PASSWORD: \${DASHBOARD_PASSWORD}
 
   auth:
-    container_name: supabase-auth
     image: supabase/gotrue:v2.151.0
     depends_on:
       db:
@@ -73,7 +70,6 @@ const composeFile = `services:
       GOTRUE_MAILER_AUTOCONFIRM: "true"
 
   rest:
-    container_name: supabase-rest
     image: postgrest/postgrest:v12.0.1
     depends_on:
       db:
@@ -89,7 +85,6 @@ const composeFile = `services:
       PGRST_DB_USE_LEGACY_GUCS: "false"
 
   realtime:
-    container_name: supabase-realtime
     image: supabase/realtime:v2.28.32
     depends_on:
       db:
@@ -121,7 +116,6 @@ const composeFile = `services:
       RUN_JANITOR: "true"
 
   storage:
-    container_name: supabase-storage
     image: supabase/storage-api:v0.46.4
     depends_on:
       db:
@@ -152,7 +146,6 @@ const composeFile = `services:
       IMGPROXY_URL: http://imgproxy:5001
 
   imgproxy:
-    container_name: supabase-imgproxy
     image: darthsim/imgproxy:v3.8.0
     restart: unless-stopped
     volumes:
@@ -164,7 +157,6 @@ const composeFile = `services:
       IMGPROXY_ENABLE_WEBP_DETECTION: \${IMGPROXY_ENABLE_WEBP_DETECTION:-true}
 
   meta:
-    container_name: supabase-meta
     image: supabase/postgres-meta:v0.80.0
     depends_on:
       db:
@@ -181,7 +173,6 @@ const composeFile = `services:
       PG_META_DB_PASSWORD: \${POSTGRES_PASSWORD}
 
   functions:
-    container_name: supabase-edge-functions
     image: supabase/edge-runtime:v1.45.2
     restart: unless-stopped
     depends_on:
@@ -197,7 +188,6 @@ const composeFile = `services:
     command: ["start", "--main-service", "/home/deno/functions/main"]
 
   analytics:
-    container_name: supabase-analytics
     image: supabase/logflare:1.4.0
     healthcheck:
       test: ["CMD", "curl", "http://localhost:4000/health"]
@@ -225,7 +215,6 @@ const composeFile = `services:
       LOGFLARE_FEATURE_FLAG_OVERRIDE: multibackend=true
 
   db:
-    container_name: supabase-db
     image: supabase/postgres:15.1.1.78
     restart: unless-stopped
     healthcheck:
