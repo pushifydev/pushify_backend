@@ -27,7 +27,7 @@ const composeFile = `services:
     ports:
       - \${KONG_HTTP_PORT:-8000}:8000/tcp
     volumes:
-      - ./kong.yml:/home/kong/kong.yml:ro,z
+      - ./kong.yml:/home/kong/kong.yml:ro
     environment:
       KONG_DATABASE: "off"
       KONG_DECLARATIVE_CONFIG: /home/kong/kong.yml
@@ -261,11 +261,13 @@ const composeFile = `services:
       JWT_EXP: 3600
     volumes:
       - supabase-db:/var/lib/postgresql/data
-      - ./init.sql:/docker-entrypoint-initdb.d/zz-pushify-roles.sql:ro,z
+      - ./init.sql:/docker-entrypoint-initdb.d/zz-pushify-roles.sql:ro
     command:
       - postgres
       - -c
       - listen_addresses=*
+      - -c
+      - shared_preload_libraries=pg_stat_statements,pg_stat_monitor,pgaudit,plpgsql,plpgsql_check,pg_cron,pg_net,timescaledb,auto_explain,pg_tle,plan_filter
       - -c
       - log_min_messages=fatal
 
@@ -315,7 +317,7 @@ const composeFile = `services:
       retries: 3
     restart: unless-stopped
     volumes:
-      - ./vector.yml:/etc/vector/vector.yml:ro,z
+      - ./vector.yml:/etc/vector/vector.yml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     command: ["--config", "/etc/vector/vector.yml"]
     environment:
