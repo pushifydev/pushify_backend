@@ -443,7 +443,10 @@ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '_supabase')\\gexec
 -- Create the _analytics schema in _supabase database
 \\c _supabase
 CREATE SCHEMA IF NOT EXISTS _analytics;
+CREATE SCHEMA IF NOT EXISTS _supavisor;
+CREATE SCHEMA IF NOT EXISTS _realtime;
 \\c postgres
+CREATE SCHEMA IF NOT EXISTS _realtime;
 
 DO $$
 DECLARE
