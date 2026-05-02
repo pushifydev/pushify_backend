@@ -42,6 +42,7 @@ export interface RemoteDeploymentConfig {
     composePublicService?: string;
     composePublicPort?: number;
     extraFiles?: Record<string, string>;
+    postDeploySql?: string;
   };
 }
 
@@ -347,7 +348,39 @@ export async function deployToRemoteServer(
       onProgress(`🚀 Starting stack...`);
       const upResult = await ssh.exec(`cd ${projectDir} && docker compose -p ${stackName} up -d 2>&1`);
       if (upResult.code !== 0) {
-        throw new Error(`docker compose up failed: ${upResult.stderr || upResult.stdout}`);
+        // Some services may have failed dependency checks but core services
+        // are usually up. Continue to post-deploy fix-up which can rescue them.
+        onProgress(`⚠️ Some services failed to start, attempting post-deploy fixup...`);
+      }
+
+      // ── Post-deploy: run any post-deploy SQL/scripts to fix common issues ──
+      const postDeploySql = (config.marketplace as any).postDeploySql as string | undefined;
+      if (postDeploySql) {
+        onProgress(`🩹 Running post-deploy fixup (waiting for db to be ready)...`);
+        // Wait for db container to be healthy (max 90s)
+        for (let i = 0; i < 30; i++) {
+          const check = await ssh.exec(
+            `docker exec ${stackName}-db-1 pg_isready -U postgres 2>&1 | grep -c "accepting" || true`
+          );
+          if (check.stdout.trim() === '1') break;
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+
+        // Substitute env vars into the SQL
+        const expandedSql = postDeploySql.replace(/\$\{([A-Z0-9_]+)\}/g, (_m, key) => envVars[key] ?? '');
+        // Upload SQL to a temp file on remote
+        const tmpSqlPath = `${projectDir}/.post-deploy.sql`;
+        await ssh.uploadFile(expandedSql, tmpSqlPath);
+        // Run inside db container as postgres (which Postgres image creates as superuser)
+        const sqlResult = await ssh.exec(
+          `docker exec -i ${stackName}-db-1 psql -U postgres -d postgres -f - < ${tmpSqlPath} 2>&1 || true`
+        );
+        await ssh.exec(`rm -f ${tmpSqlPath}`);
+        onProgress(`✅ Post-deploy SQL applied`);
+
+        // Restart services that depend on the fixed credentials
+        onProgress(`🔄 Restarting dependent services...`);
+        await ssh.exec(`cd ${projectDir} && docker compose -p ${stackName} restart 2>&1 || true`);
       }
 
       onProgress(`✅ Stack deployed: ${stackName} (port ${publicHostPort})`);

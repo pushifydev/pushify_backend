@@ -88,6 +88,7 @@ export const marketplaceService = {
           composePublicService: template.composePublicService || null,
           composePublicPort: template.composePublicPort || null,
           extraFiles: template.extraFiles || null,
+          postDeploySql: template.postDeploySql || null,
           volumes: template.volumes || [],
           healthCheckPath: template.healthCheckPath,
           requiresDatabase: template.requiresDatabase || null,

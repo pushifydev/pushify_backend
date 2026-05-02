@@ -380,6 +380,16 @@ This deployment includes all 9 Supabase services orchestrated via Docker Compose
   composeFile,
   composePublicService: 'kong',
   composePublicPort: 8000,
+  // Runs AFTER docker compose up (postgres init may not have set passwords correctly)
+  postDeploySql: `-- Pushify post-deploy: force-set Supabase role passwords
+ALTER USER supabase_admin WITH PASSWORD '\${POSTGRES_PASSWORD}';
+ALTER USER supabase_auth_admin WITH PASSWORD '\${POSTGRES_PASSWORD}';
+ALTER USER supabase_storage_admin WITH PASSWORD '\${POSTGRES_PASSWORD}';
+ALTER USER authenticator WITH PASSWORD '\${POSTGRES_PASSWORD}';
+ALTER USER postgres WITH PASSWORD '\${POSTGRES_PASSWORD}';
+SELECT 'Pushify post-deploy: ' || count(*) || ' role passwords reset' AS status
+FROM pg_roles WHERE rolname IN ('supabase_admin','supabase_auth_admin','supabase_storage_admin','authenticator','postgres');
+`,
   extraFiles: {
     'vector.yml': `# Pushify-managed Vector config for Supabase
 api:
