@@ -6,7 +6,7 @@ const composeFile = `services:
     container_name: appwrite
     restart: unless-stopped
     ports:
-      - \${APPWRITE_HTTP_PORT:-8080}:80
+      - \${KONG_HTTP_PORT:-8080}:80
     depends_on:
       - mariadb
       - redis

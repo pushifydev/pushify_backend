@@ -312,6 +312,9 @@ export async function deployToRemoteServer(
         // Common port env names that compose files use
         KONG_HTTP_PORT: String(publicHostPort),
         APP_PORT: String(publicHostPort),
+        APPWRITE_HTTP_PORT: String(publicHostPort),
+        HTTP_PORT: String(publicHostPort),
+        WEB_PORT: String(publicHostPort),
         PORT: String(publicHostPort),
         // Common public URL env names (auto-injected so users don't need to set them)
         SITE_URL: envVars.SITE_URL || publicUrl,
