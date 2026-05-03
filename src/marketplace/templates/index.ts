@@ -17,6 +17,12 @@ import { typesense } from './typesense';
 import { directus } from './directus';
 import { hasura } from './hasura';
 import { appwrite } from './appwrite';
+import { vaultwarden } from './vaultwarden';
+import { nocodb } from './nocodb';
+import { umami } from './umami';
+import { nextcloud } from './nextcloud';
+import { codeServer } from './code-server';
+import { calcom } from './calcom';
 
 export const templates: MarketplaceTemplate[] = [
   // ── Backend-as-a-Service / Database platforms ──
@@ -25,6 +31,7 @@ export const templates: MarketplaceTemplate[] = [
   pocketbase,
   hasura,
   directus,
+  nocodb,
   // ── Search engines ──
   meilisearch,
   typesense,
@@ -32,13 +39,19 @@ export const templates: MarketplaceTemplate[] = [
   wordpress,
   ghost,
   strapi,
-  // ── Automation / DevTools ──
+  // ── Productivity / Collaboration ──
+  nextcloud,
+  calcom,
+  // ── DevTools ──
+  codeServer,
+  vaultwarden,
   n8n,
   uptimeKuma,
   gitea,
   portainer,
   // ── Storage / Analytics ──
   minio,
+  umami,
   plausible,
   // ── Standalone databases ──
   postgresql,
