@@ -450,6 +450,16 @@ export async function deployToRemoteServer(
         envVars.WORDPRESS_DB_HOST = dbContainerName;
         envVars.DB_HOST = dbContainerName;
         envVars.DATABASE_HOST = dbContainerName;
+
+        // Build full connection URL for apps that expect a single DATABASE_URL
+        // (Hasura, Directus, Strapi, Rails, Django, etc.)
+        const dbScheme = requiresDb.type === 'mysql' ? 'mysql' : 'postgres';
+        const dbPort = requiresDb.type === 'mysql' ? 3306 : 5432;
+        const fullUrl = `${dbScheme}://${dbUser}:${dbPassword}@${dbContainerName}:${dbPort}/${dbName}`;
+        envVars.DATABASE_URL = envVars.DATABASE_URL || fullUrl;
+        envVars.HASURA_GRAPHQL_DATABASE_URL = envVars.HASURA_GRAPHQL_DATABASE_URL || fullUrl;
+        envVars.PG_DATABASE_URL = envVars.PG_DATABASE_URL || fullUrl;
+
         onProgress(`🔗 Database host set to: ${dbContainerName}`);
       }
 
