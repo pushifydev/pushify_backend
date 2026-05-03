@@ -506,18 +506,34 @@ export async function deployToRemoteServer(
         .map(([k, v]) => `-e ${k}='${v.replace(/'/g, "'\\''")}'`)
         .join(' ');
 
-      // Build volume flags
+      // Build volume flags. Templates can specify volumes in two formats:
+      //   '/path/in/container'        → host path auto-derived from project dir
+      //   'host/path:/container/path' → explicit host:container mapping
       const volFlags = (volumes || [])
         .map((v) => {
-          const hostPath = v.includes(':') ? v : `${projectDir}/data${v}`;
-          return `-v ${hostPath.startsWith('/') ? hostPath : projectDir + '/data/' + hostPath}`;
+          if (v.includes(':')) {
+            // Explicit host:container mapping
+            const [hostPath, containerPath] = v.split(':');
+            const fullHostPath = hostPath.startsWith('/') ? hostPath : `${projectDir}/data/${hostPath}`;
+            return `-v ${fullHostPath}:${containerPath}`;
+          }
+          // Single path = container path; auto-derive host path
+          const containerPath = v;
+          const hostPath = `${projectDir}/data${containerPath}`;
+          return `-v ${hostPath}:${containerPath}`;
         })
         .join(' ');
 
       // Create data directories for volumes
       if (volumes && volumes.length > 0) {
         for (const v of volumes) {
-          const dir = v.includes(':') ? v.split(':')[0] : `${projectDir}/data${v}`;
+          let dir: string;
+          if (v.includes(':')) {
+            const [hostPath] = v.split(':');
+            dir = hostPath.startsWith('/') ? hostPath : `${projectDir}/data/${hostPath}`;
+          } else {
+            dir = `${projectDir}/data${v}`;
+          }
           await ssh.exec(`mkdir -p ${dir}`);
         }
       }
