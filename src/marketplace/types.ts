@@ -43,6 +43,8 @@ export interface MarketplaceTemplate {
   extraFiles?: Record<string, string>;
   /** SQL to run on the db container AFTER docker compose up. Uses ${VAR} substitution. Useful for fixing role passwords on images that override them. */
   postDeploySql?: string;
+  /** Shell command(s) to run AFTER container/stack is up. For single-container apps, runs inside the main container. For compose, runs on the docker host. Uses ${VAR} substitution. */
+  postDeployShell?: string;
 
   envVars: MarketplaceEnvVar[];
   minMemoryMb: number;

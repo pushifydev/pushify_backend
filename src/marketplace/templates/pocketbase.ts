@@ -28,6 +28,8 @@ but the first admin must be created through the web UI.`,
   dockerImage: 'ghcr.io/muchobien/pocketbase:latest',
   port: 8090,
   healthCheckPath: '/api/health',
+  // Auto-create the first superuser so users can log in immediately
+  postDeployShell: '/usr/local/bin/pocketbase superuser upsert "${POCKETBASE_ADMIN_EMAIL}" "${POCKETBASE_ADMIN_PASSWORD}" --dir=/pb_data',
   envVars: [
     {
       key: 'POCKETBASE_ADMIN_EMAIL',

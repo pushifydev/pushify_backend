@@ -43,6 +43,7 @@ export interface RemoteDeploymentConfig {
     composePublicPort?: number;
     extraFiles?: Record<string, string>;
     postDeploySql?: string;
+    postDeployShell?: string;
   };
 }
 
@@ -505,6 +506,19 @@ export async function deployToRemoteServer(
         throw new Error(`Failed to start container: ${runResult.stderr}`);
       }
       onProgress('✅ Container started');
+
+      // ── Post-deploy shell command (e.g. create initial admin user) ──
+      const postDeployShell = (config.marketplace as any).postDeployShell as string | undefined;
+      if (postDeployShell) {
+        onProgress(`🩹 Running post-deploy setup...`);
+        // Wait a few seconds for the container to actually be ready
+        await new Promise((r) => setTimeout(r, 5000));
+        // Substitute env vars into command
+        const expandedCmd = postDeployShell.replace(/\$\{([A-Z0-9_]+)\}/g, (_m, key) => envVars[key] ?? '');
+        const shellResult = await ssh.exec(`docker exec ${containerName} sh -c "${expandedCmd.replace(/"/g, '\\"')}" 2>&1 || true`);
+        if (shellResult.stdout) onProgress(`   ${shellResult.stdout.trim().split('\n').slice(0, 5).join('\n   ')}`);
+        onProgress(`✅ Post-deploy setup complete`);
+      }
 
       // Setup nginx + subdomain
       const deploymentUrl = await setupNginxAndDomain(ssh, server, projectId, projectSlug, hostPort, onProgress);
