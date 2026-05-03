@@ -11,20 +11,38 @@ import { plausible } from './plausible';
 import { redis } from './redis';
 import { postgresql } from './postgresql';
 import { supabaseTemplate } from './supabase';
+import { pocketbase } from './pocketbase';
+import { meilisearch } from './meilisearch';
+import { typesense } from './typesense';
+import { directus } from './directus';
+import { hasura } from './hasura';
+import { appwrite } from './appwrite';
 
 export const templates: MarketplaceTemplate[] = [
+  // ── Backend-as-a-Service / Database platforms ──
   supabaseTemplate,
+  appwrite,
+  pocketbase,
+  hasura,
+  directus,
+  // ── Search engines ──
+  meilisearch,
+  typesense,
+  // ── CMS ──
   wordpress,
+  ghost,
+  strapi,
+  // ── Automation / DevTools ──
   n8n,
   uptimeKuma,
-  strapi,
-  ghost,
-  minio,
   gitea,
   portainer,
+  // ── Storage / Analytics ──
+  minio,
   plausible,
-  redis,
+  // ── Standalone databases ──
   postgresql,
+  redis,
 ];
 
 export function getTemplateById(id: string): MarketplaceTemplate | undefined {
