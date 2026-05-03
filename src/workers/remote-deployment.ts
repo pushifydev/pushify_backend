@@ -447,14 +447,38 @@ export async function deployToRemoteServer(
         await new Promise(resolve => setTimeout(resolve, 10000));
 
         // Force DB host to container name (Docker networking requires this)
-        envVars.WORDPRESS_DB_HOST = dbContainerName;
-        envVars.DB_HOST = dbContainerName;
-        envVars.DATABASE_HOST = dbContainerName;
-
-        // Build full connection URL for apps that expect a single DATABASE_URL
-        // (Hasura, Directus, Strapi, Rails, Django, etc.)
         const dbScheme = requiresDb.type === 'mysql' ? 'mysql' : 'postgres';
         const dbPort = requiresDb.type === 'mysql' ? 3306 : 5432;
+
+        // Auto-inject all common DB env var aliases used by various apps:
+        // WordPress, Directus, Strapi, Rails, Django, Hasura, Ghost, etc.
+        envVars.WORDPRESS_DB_HOST = dbContainerName;
+        envVars.WORDPRESS_DB_NAME = dbName;
+        envVars.WORDPRESS_DB_USER = dbUser;
+        envVars.WORDPRESS_DB_PASSWORD = dbPassword;
+
+        envVars.DB_HOST = dbContainerName;
+        envVars.DB_PORT = String(dbPort);
+        envVars.DB_DATABASE = dbName;
+        envVars.DB_NAME = envVars.DB_NAME || dbName;
+        envVars.DB_USER = envVars.DB_USER || dbUser;
+        envVars.DB_USERNAME = dbUser;
+        envVars.DB_PASSWORD = envVars.DB_PASSWORD || dbPassword;
+        envVars.DB_CLIENT = requiresDb.type === 'mysql' ? 'mysql' : 'pg';
+
+        envVars.DATABASE_HOST = dbContainerName;
+        envVars.DATABASE_PORT = String(dbPort);
+        envVars.DATABASE_NAME = dbName;
+        envVars.DATABASE_USER = dbUser;
+        envVars.DATABASE_PASSWORD = dbPassword;
+
+        envVars.POSTGRES_HOST = dbContainerName;
+        envVars.POSTGRES_DB = envVars.POSTGRES_DB || dbName;
+        envVars.POSTGRES_USER = envVars.POSTGRES_USER || dbUser;
+        envVars.POSTGRES_PASSWORD = envVars.POSTGRES_PASSWORD || dbPassword;
+
+        // Full connection URL for apps that expect a single DSN
+        // (Hasura, Strapi, Rails, Django, Prisma, etc.)
         const fullUrl = `${dbScheme}://${dbUser}:${dbPassword}@${dbContainerName}:${dbPort}/${dbName}`;
         envVars.DATABASE_URL = envVars.DATABASE_URL || fullUrl;
         envVars.HASURA_GRAPHQL_DATABASE_URL = envVars.HASURA_GRAPHQL_DATABASE_URL || fullUrl;
