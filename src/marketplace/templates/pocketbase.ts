@@ -41,7 +41,7 @@ but the first admin must be created through the web UI.`,
     {
       key: 'POCKETBASE_ADMIN_PASSWORD',
       label: 'Admin Password',
-      description: 'Password for the initial superuser (min 10 chars)',
+      description: 'Password for the initial superuser (must be at least 10 characters)',
       required: true,
       type: 'password',
       generate: 'password',

@@ -253,6 +253,15 @@ export const projectService = {
       logger.warn({ projectId, err }, 'Failed to cleanup containers — continuing with delete');
     }
 
+    // Cleanup related DB records (domains, env vars, etc.)
+    try {
+      const { domains: domainsTable, environmentVariables } = await import('../db/schema');
+      await db.delete(domainsTable).where(eq(domainsTable.projectId, projectId));
+      await db.delete(environmentVariables).where(eq(environmentVariables.projectId, projectId));
+    } catch (err) {
+      logger.warn({ projectId, err }, 'Failed to cleanup related records');
+    }
+
     await projectRepository.softDelete(projectId);
 
     logger.info({ projectId, userId }, 'Project deleted');
@@ -269,13 +278,26 @@ export const projectService = {
     const stackName = `pushify-${project.slug}`;
     const containerName = `pushify-${project.slug}`;
     const dbContainerName = `pushify-${project.slug}-db`;
+    const projectDir = `/opt/pushify/apps/${project.slug}`;
 
-    // Build cleanup commands
-    const composeCleanup = `docker compose -p ${stackName} down -v 2>/dev/null || true`;
-    const containerCleanup =
-      `docker stop ${containerName} ${dbContainerName} 2>/dev/null; ` +
-      `docker rm -f ${containerName} ${dbContainerName} 2>/dev/null; ` +
-      `docker network rm pushify-${project.slug}-net 2>/dev/null; true`;
+    // Cleanup commands — combine container teardown + filesystem + nginx
+    const composeCleanup = [
+      `cd ${projectDir} 2>/dev/null && docker compose -p ${stackName} down -v 2>/dev/null || docker compose -p ${stackName} down -v 2>/dev/null || true`,
+      `docker rm -f $(docker ps -aq --filter "name=^${stackName}-") 2>/dev/null || true`,
+      `rm -rf ${projectDir}`,
+      // Remove any nginx configs created for this project's auto subdomain
+      `rm -f /etc/nginx/conf.d/${project.slug}.pushify.dev.conf /etc/nginx/sites-enabled/${project.slug}.pushify.dev.conf /etc/nginx/sites-available/${project.slug}.pushify.dev.conf 2>/dev/null || true`,
+      `nginx -t 2>/dev/null && nginx -s reload 2>/dev/null || true`,
+    ].join('; ');
+
+    const containerCleanup = [
+      `docker stop ${containerName} ${dbContainerName} 2>/dev/null`,
+      `docker rm -f ${containerName} ${dbContainerName} 2>/dev/null`,
+      `docker network rm pushify-${project.slug}-net 2>/dev/null`,
+      `rm -rf ${projectDir}`,
+      `rm -f /etc/nginx/conf.d/${project.slug}.pushify.dev.conf /etc/nginx/sites-enabled/${project.slug}.pushify.dev.conf /etc/nginx/sites-available/${project.slug}.pushify.dev.conf 2>/dev/null || true`,
+      `nginx -t 2>/dev/null && nginx -s reload 2>/dev/null || true`,
+    ].join('; ');
 
     if (project.serverId) {
       // Remote server — connect via SSH
@@ -287,7 +309,7 @@ export const projectService = {
       const ssh = await getSSHConnection({ host: server.ipv4, username: 'root', privateKey: sshKey });
       const cmd = isCompose ? composeCleanup : containerCleanup;
       await ssh.exec(cmd);
-      logger.info({ projectId: project.id, stackName }, 'Cleaned up remote containers');
+      logger.info({ projectId: project.id, stackName }, 'Cleaned up remote containers, files, and nginx');
     } else {
       // Local Docker
       const { exec } = await import('child_process');
