@@ -25,6 +25,8 @@ const composeFile = `services:
       _APP_OPENSSL_KEY_V1: \${APPWRITE_SECRET_KEY}
       _APP_DOMAIN: \${APP_DOMAIN:-localhost}
       _APP_DOMAIN_TARGET: \${APP_DOMAIN:-localhost}
+      _APP_DOMAIN_FUNCTIONS: \${APP_DOMAIN:-localhost}
+      _APP_OPTIONS_ROUTER_PROTECTION: disabled
       _APP_CONSOLE_WHITELIST_ROOT: enabled
       _APP_CONSOLE_WHITELIST_EMAILS: \${APPWRITE_ADMIN_EMAIL}
       _APP_SYSTEM_EMAIL_NAME: Appwrite
