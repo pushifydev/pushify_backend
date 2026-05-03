@@ -13,7 +13,11 @@ export const pocketbase: MarketplaceTemplate = {
 - **File storage** with image transformations
 
 Ships as a single executable file — no external dependencies. Perfect for SaaS,
-mobile apps, and rapid prototyping.`,
+mobile apps, and rapid prototyping.
+
+**After deploy:** Visit \`/_/\` (e.g. http://your-host:port/_/) to create your
+first superuser via the setup wizard. The env vars are stored for reference
+but the first admin must be created through the web UI.`,
   icon: 'Database',
   category: 'database',
   tags: ['backend', 'sqlite', 'realtime', 'auth', 'firebase-alternative'],
