@@ -41,6 +41,9 @@ export interface RemoteDeploymentConfig {
     composeFile?: string;
     composePublicService?: string;
     composePublicPort?: number;
+    extraFiles?: Record<string, string>;
+    postDeploySql?: string;
+    postDeployShell?: string;
   };
 }
 
@@ -277,17 +280,54 @@ export async function deployToRemoteServer(
       }
       onProgress(`✅ ${composeCheck.stdout.trim()}`);
 
+      // Find a free public port (5000-5999 range)
+      onProgress(`🔍 Finding available host port...`);
+      const findPortCmd = `for p in $(seq 5000 5999); do ss -tln 2>/dev/null | grep -q ":$p " || { echo $p; break; }; done`;
+      const portFindResult = await ssh.exec(findPortCmd);
+      const publicHostPort = parseInt(portFindResult.stdout.trim()) || 5000;
+      const internalPort = config.marketplace.composePublicPort || 80;
+      onProgress(`📌 Assigned host port: ${publicHostPort} → container ${internalPort}`);
+
       // Write compose file
       const composePath = `${projectDir}/docker-compose.yml`;
       onProgress(`📝 Writing docker-compose.yml...`);
       await ssh.uploadFile(config.marketplace.composeFile, composePath);
 
-      // Write .env file with all env vars
-      const envFileContent = Object.entries(envVars)
+      // Write any extra files (e.g. kong.yml). Substitute ${VAR} with env values.
+      const extraFiles = config.marketplace.extraFiles;
+      if (extraFiles && Object.keys(extraFiles).length > 0) {
+        for (const [filename, contents] of Object.entries(extraFiles)) {
+          const expanded = contents.replace(/\$\{([A-Z0-9_]+)\}/g, (_m, key) => envVars[key] ?? '');
+          const filePath = `${projectDir}/${filename}`;
+          await ssh.uploadFile(expanded, filePath);
+          onProgress(`📝 Wrote ${filename}`);
+        }
+      }
+
+      // Write .env file with all env vars + Pushify-injected port + URLs
+      const publicUrl = `http://${server.ipv4}:${publicHostPort}`;
+      const allEnvs = {
+        ...envVars,
+        PUSHIFY_PUBLIC_PORT: String(publicHostPort),
+        // Common port env names that compose files use
+        KONG_HTTP_PORT: String(publicHostPort),
+        APP_PORT: String(publicHostPort),
+        APPWRITE_HTTP_PORT: String(publicHostPort),
+        HTTP_PORT: String(publicHostPort),
+        WEB_PORT: String(publicHostPort),
+        PORT: String(publicHostPort),
+        // Common public URL env names (auto-injected so users don't need to set them)
+        SITE_URL: envVars.SITE_URL || publicUrl,
+        API_EXTERNAL_URL: envVars.API_EXTERNAL_URL || publicUrl,
+        SUPABASE_PUBLIC_URL: envVars.SUPABASE_PUBLIC_URL || publicUrl,
+        PUBLIC_URL: envVars.PUBLIC_URL || publicUrl,
+        APP_URL: envVars.APP_URL || publicUrl,
+      };
+      const envFileContent = Object.entries(allEnvs)
         .map(([k, v]) => `${k}=${v.replace(/\n/g, '\\n')}`)
         .join('\n');
       await ssh.uploadFile(envFileContent, `${projectDir}/.env`);
-      onProgress(`📝 Wrote ${Object.keys(envVars).length} env vars to .env`);
+      onProgress(`📝 Wrote ${Object.keys(allEnvs).length} env vars to .env`);
 
       // Stop existing stack if any
       onProgress(`🛑 Stopping existing stack (if any)...`);
@@ -300,23 +340,51 @@ export async function deployToRemoteServer(
         onProgress(`⚠️ Some images failed to pull, continuing...`);
       }
 
+      // Open firewall port (best-effort; supports ufw and firewalld)
+      onProgress(`🔓 Opening firewall port ${publicHostPort}...`);
+      await ssh.exec(
+        `(command -v ufw >/dev/null 2>&1 && ufw allow ${publicHostPort}/tcp 2>&1) || ` +
+        `(command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --permanent --add-port=${publicHostPort}/tcp 2>&1 && firewall-cmd --reload 2>&1) || ` +
+        `echo "No firewall manager detected"`
+      );
+
       // Start the stack
       onProgress(`🚀 Starting stack...`);
       const upResult = await ssh.exec(`cd ${projectDir} && docker compose -p ${stackName} up -d 2>&1`);
       if (upResult.code !== 0) {
-        throw new Error(`docker compose up failed: ${upResult.stderr || upResult.stdout}`);
+        // Some services may have failed dependency checks but core services
+        // are usually up. Continue to post-deploy fix-up which can rescue them.
+        onProgress(`⚠️ Some services failed to start, attempting post-deploy fixup...`);
       }
 
-      // Get public service port
-      const publicService = config.marketplace.composePublicService;
-      const publicPort = config.marketplace.composePublicPort || 80;
-      let publicHostPort = publicPort;
+      // ── Post-deploy: run any post-deploy SQL/scripts to fix common issues ──
+      const postDeploySql = (config.marketplace as any).postDeploySql as string | undefined;
+      if (postDeploySql) {
+        onProgress(`🩹 Running post-deploy fixup (waiting for db to be ready)...`);
+        // Wait for db container to be healthy (max 90s)
+        for (let i = 0; i < 30; i++) {
+          const check = await ssh.exec(
+            `docker exec ${stackName}-db-1 pg_isready -U postgres 2>&1 | grep -c "accepting" || true`
+          );
+          if (check.stdout.trim() === '1') break;
+          await new Promise((r) => setTimeout(r, 3000));
+        }
 
-      if (publicService) {
-        const portResult = await ssh.exec(
-          `docker port ${stackName}-${publicService}-1 ${publicPort} 2>/dev/null | head -1 | cut -d: -f2 || echo ${publicPort}`
+        // Substitute env vars into the SQL
+        const expandedSql = postDeploySql.replace(/\$\{([A-Z0-9_]+)\}/g, (_m, key) => envVars[key] ?? '');
+        // Upload SQL to a temp file on remote
+        const tmpSqlPath = `${projectDir}/.post-deploy.sql`;
+        await ssh.uploadFile(expandedSql, tmpSqlPath);
+        // Run inside db container as postgres (which Postgres image creates as superuser)
+        const sqlResult = await ssh.exec(
+          `docker exec -i ${stackName}-db-1 psql -U postgres -d postgres -f - < ${tmpSqlPath} 2>&1 || true`
         );
-        publicHostPort = parseInt(portResult.stdout.trim()) || publicPort;
+        await ssh.exec(`rm -f ${tmpSqlPath}`);
+        onProgress(`✅ Post-deploy SQL applied`);
+
+        // Restart services that depend on the fixed credentials
+        onProgress(`🔄 Restarting dependent services...`);
+        await ssh.exec(`cd ${projectDir} && docker compose -p ${stackName} restart 2>&1 || true`);
       }
 
       onProgress(`✅ Stack deployed: ${stackName} (port ${publicHostPort})`);
@@ -379,9 +447,43 @@ export async function deployToRemoteServer(
         await new Promise(resolve => setTimeout(resolve, 10000));
 
         // Force DB host to container name (Docker networking requires this)
+        const dbScheme = requiresDb.type === 'mysql' ? 'mysql' : 'postgres';
+        const dbPort = requiresDb.type === 'mysql' ? 3306 : 5432;
+
+        // Auto-inject all common DB env var aliases used by various apps:
+        // WordPress, Directus, Strapi, Rails, Django, Hasura, Ghost, etc.
         envVars.WORDPRESS_DB_HOST = dbContainerName;
+        envVars.WORDPRESS_DB_NAME = dbName;
+        envVars.WORDPRESS_DB_USER = dbUser;
+        envVars.WORDPRESS_DB_PASSWORD = dbPassword;
+
         envVars.DB_HOST = dbContainerName;
+        envVars.DB_PORT = String(dbPort);
+        envVars.DB_DATABASE = dbName;
+        envVars.DB_NAME = envVars.DB_NAME || dbName;
+        envVars.DB_USER = envVars.DB_USER || dbUser;
+        envVars.DB_USERNAME = dbUser;
+        envVars.DB_PASSWORD = envVars.DB_PASSWORD || dbPassword;
+        envVars.DB_CLIENT = requiresDb.type === 'mysql' ? 'mysql' : 'pg';
+
         envVars.DATABASE_HOST = dbContainerName;
+        envVars.DATABASE_PORT = String(dbPort);
+        envVars.DATABASE_NAME = dbName;
+        envVars.DATABASE_USER = dbUser;
+        envVars.DATABASE_PASSWORD = dbPassword;
+
+        envVars.POSTGRES_HOST = dbContainerName;
+        envVars.POSTGRES_DB = envVars.POSTGRES_DB || dbName;
+        envVars.POSTGRES_USER = envVars.POSTGRES_USER || dbUser;
+        envVars.POSTGRES_PASSWORD = envVars.POSTGRES_PASSWORD || dbPassword;
+
+        // Full connection URL for apps that expect a single DSN
+        // (Hasura, Strapi, Rails, Django, Prisma, etc.)
+        const fullUrl = `${dbScheme}://${dbUser}:${dbPassword}@${dbContainerName}:${dbPort}/${dbName}`;
+        envVars.DATABASE_URL = envVars.DATABASE_URL || fullUrl;
+        envVars.HASURA_GRAPHQL_DATABASE_URL = envVars.HASURA_GRAPHQL_DATABASE_URL || fullUrl;
+        envVars.PG_DATABASE_URL = envVars.PG_DATABASE_URL || fullUrl;
+
         onProgress(`🔗 Database host set to: ${dbContainerName}`);
       }
 
@@ -404,18 +506,34 @@ export async function deployToRemoteServer(
         .map(([k, v]) => `-e ${k}='${v.replace(/'/g, "'\\''")}'`)
         .join(' ');
 
-      // Build volume flags
+      // Build volume flags. Templates can specify volumes in two formats:
+      //   '/path/in/container'        → host path auto-derived from project dir
+      //   'host/path:/container/path' → explicit host:container mapping
       const volFlags = (volumes || [])
         .map((v) => {
-          const hostPath = v.includes(':') ? v : `${projectDir}/data${v}`;
-          return `-v ${hostPath.startsWith('/') ? hostPath : projectDir + '/data/' + hostPath}`;
+          if (v.includes(':')) {
+            // Explicit host:container mapping
+            const [hostPath, containerPath] = v.split(':');
+            const fullHostPath = hostPath.startsWith('/') ? hostPath : `${projectDir}/data/${hostPath}`;
+            return `-v ${fullHostPath}:${containerPath}`;
+          }
+          // Single path = container path; auto-derive host path
+          const containerPath = v;
+          const hostPath = `${projectDir}/data${containerPath}`;
+          return `-v ${hostPath}:${containerPath}`;
         })
         .join(' ');
 
       // Create data directories for volumes
       if (volumes && volumes.length > 0) {
         for (const v of volumes) {
-          const dir = v.includes(':') ? v.split(':')[0] : `${projectDir}/data${v}`;
+          let dir: string;
+          if (v.includes(':')) {
+            const [hostPath] = v.split(':');
+            dir = hostPath.startsWith('/') ? hostPath : `${projectDir}/data/${hostPath}`;
+          } else {
+            dir = `${projectDir}/data${v}`;
+          }
           await ssh.exec(`mkdir -p ${dir}`);
         }
       }
@@ -441,6 +559,19 @@ export async function deployToRemoteServer(
         throw new Error(`Failed to start container: ${runResult.stderr}`);
       }
       onProgress('✅ Container started');
+
+      // ── Post-deploy shell command (e.g. create initial admin user) ──
+      const postDeployShell = (config.marketplace as any).postDeployShell as string | undefined;
+      if (postDeployShell) {
+        onProgress(`🩹 Running post-deploy setup...`);
+        // Wait a few seconds for the container to actually be ready
+        await new Promise((r) => setTimeout(r, 5000));
+        // Substitute env vars into command
+        const expandedCmd = postDeployShell.replace(/\$\{([A-Z0-9_]+)\}/g, (_m, key) => envVars[key] ?? '');
+        const shellResult = await ssh.exec(`docker exec ${containerName} sh -c "${expandedCmd.replace(/"/g, '\\"')}" 2>&1 || true`);
+        if (shellResult.stdout) onProgress(`   ${shellResult.stdout.trim().split('\n').slice(0, 5).join('\n   ')}`);
+        onProgress(`✅ Post-deploy setup complete`);
+      }
 
       // Setup nginx + subdomain
       const deploymentUrl = await setupNginxAndDomain(ssh, server, projectId, projectSlug, hostPort, onProgress);

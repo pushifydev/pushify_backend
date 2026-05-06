@@ -3,10 +3,12 @@ import crypto from 'crypto';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../db';
 import { servers } from '../db/schema/servers';
+import { projects } from '../db/schema/projects';
 import { projectRepository } from '../repositories/project.repository';
 import { organizationRepository } from '../repositories/organization.repository';
 import { generateSlug } from '../lib/utils';
 import { logger } from '../lib/logger';
+import { decrypt } from '../lib/encryption';
 import { t, type SupportedLocale } from '../i18n';
 
 // Types
@@ -244,9 +246,79 @@ export const projectService = {
       throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
     }
 
+    // Best-effort cleanup of running containers / compose stacks
+    try {
+      await this.cleanupProjectContainers(existing);
+    } catch (err) {
+      logger.warn({ projectId, err }, 'Failed to cleanup containers — continuing with delete');
+    }
+
+    // Cleanup related DB records (domains, env vars, etc.)
+    try {
+      const { domains: domainsTable, environmentVariables } = await import('../db/schema');
+      await db.delete(domainsTable).where(eq(domainsTable.projectId, projectId));
+      await db.delete(environmentVariables).where(eq(environmentVariables.projectId, projectId));
+    } catch (err) {
+      logger.warn({ projectId, err }, 'Failed to cleanup related records');
+    }
+
     await projectRepository.softDelete(projectId);
 
     logger.info({ projectId, userId }, 'Project deleted');
+  },
+
+  /**
+   * Stop and remove all Docker containers / compose stacks for a project.
+   * Works for both single-container and docker-compose deployments,
+   * on local Docker or remote SSH server.
+   */
+  async cleanupProjectContainers(project: typeof projects.$inferSelect): Promise<void> {
+    const settings = (project.settings || {}) as Record<string, any>;
+    const isCompose = settings.deploymentType === 'docker-compose';
+    const stackName = `pushify-${project.slug}`;
+    const containerName = `pushify-${project.slug}`;
+    const dbContainerName = `pushify-${project.slug}-db`;
+    const projectDir = `/opt/pushify/apps/${project.slug}`;
+
+    // Cleanup commands — combine container teardown + filesystem + nginx
+    const composeCleanup = [
+      `cd ${projectDir} 2>/dev/null && docker compose -p ${stackName} down -v 2>/dev/null || docker compose -p ${stackName} down -v 2>/dev/null || true`,
+      `docker rm -f $(docker ps -aq --filter "name=^${stackName}-") 2>/dev/null || true`,
+      `rm -rf ${projectDir}`,
+      // Remove any nginx configs created for this project's auto subdomain
+      `rm -f /etc/nginx/conf.d/${project.slug}.pushify.dev.conf /etc/nginx/sites-enabled/${project.slug}.pushify.dev.conf /etc/nginx/sites-available/${project.slug}.pushify.dev.conf 2>/dev/null || true`,
+      `nginx -t 2>/dev/null && nginx -s reload 2>/dev/null || true`,
+    ].join('; ');
+
+    const containerCleanup = [
+      `docker stop ${containerName} ${dbContainerName} 2>/dev/null`,
+      `docker rm -f ${containerName} ${dbContainerName} 2>/dev/null`,
+      `docker network rm pushify-${project.slug}-net 2>/dev/null`,
+      `rm -rf ${projectDir}`,
+      `rm -f /etc/nginx/conf.d/${project.slug}.pushify.dev.conf /etc/nginx/sites-enabled/${project.slug}.pushify.dev.conf /etc/nginx/sites-available/${project.slug}.pushify.dev.conf 2>/dev/null || true`,
+      `nginx -t 2>/dev/null && nginx -s reload 2>/dev/null || true`,
+    ].join('; ');
+
+    if (project.serverId) {
+      // Remote server — connect via SSH
+      const { getSSHConnection } = await import('../utils/ssh');
+      const server = await db.query.servers.findFirst({ where: eq(servers.id, project.serverId) });
+      if (!server || !server.ipv4) return;
+      const sshKey = server.sshPrivateKey ? decrypt(server.sshPrivateKey) : null;
+      if (!sshKey) return;
+      const ssh = await getSSHConnection({ host: server.ipv4, username: 'root', privateKey: sshKey });
+      const cmd = isCompose ? composeCleanup : containerCleanup;
+      await ssh.exec(cmd);
+      logger.info({ projectId: project.id, stackName }, 'Cleaned up remote containers, files, and nginx');
+    } else {
+      // Local Docker
+      const { exec } = await import('child_process');
+      const { promisify } = await import('util');
+      const execAsync = promisify(exec);
+      const cmd = isCompose ? composeCleanup : containerCleanup;
+      await execAsync(cmd).catch(() => undefined);
+      logger.info({ projectId: project.id, stackName }, 'Cleaned up local containers');
+    }
   },
 
   /**

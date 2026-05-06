@@ -67,6 +67,27 @@ export const marketplaceService = {
       }
     }
 
+    // ── Supabase-specific: ANON_KEY and SERVICE_ROLE_KEY must be valid JWTs
+    //    signed with JWT_SECRET (not random secrets)
+    if (template.id === 'supabase') {
+      const { SignJWT } = await import('jose');
+      const secret = new TextEncoder().encode(finalEnvVars.JWT_SECRET);
+      const now = Math.floor(Date.now() / 1000);
+      const tenYears = 60 * 60 * 24 * 365 * 10;
+
+      finalEnvVars.ANON_KEY = await new SignJWT({ iss: 'supabase', ref: 'pushify', role: 'anon' })
+        .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
+        .setIssuedAt(now)
+        .setExpirationTime(now + tenYears)
+        .sign(secret);
+
+      finalEnvVars.SERVICE_ROLE_KEY = await new SignJWT({ iss: 'supabase', ref: 'pushify', role: 'service_role' })
+        .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
+        .setIssuedAt(now)
+        .setExpirationTime(now + tenYears)
+        .sign(secret);
+    }
+
     // Create project
     const isCompose = template.deploymentType === 'docker-compose';
     const [project] = await db
@@ -87,6 +108,9 @@ export const marketplaceService = {
           composeFile: template.composeFile || null,
           composePublicService: template.composePublicService || null,
           composePublicPort: template.composePublicPort || null,
+          extraFiles: template.extraFiles || null,
+          postDeploySql: template.postDeploySql || null,
+          postDeployShell: template.postDeployShell || null,
           volumes: template.volumes || [],
           healthCheckPath: template.healthCheckPath,
           requiresDatabase: template.requiresDatabase || null,

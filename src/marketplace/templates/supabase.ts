@@ -2,7 +2,6 @@ import type { MarketplaceTemplate } from '../types';
 
 const composeFile = `services:
   studio:
-    container_name: supabase-studio
     image: supabase/studio:20240326-5e5586d
     restart: unless-stopped
     healthcheck:
@@ -10,9 +9,6 @@ const composeFile = `services:
       timeout: 5s
       interval: 5s
       retries: 3
-    depends_on:
-      analytics:
-        condition: service_healthy
     environment:
       STUDIO_PG_META_URL: http://meta:8080
       POSTGRES_PASSWORD: \${POSTGRES_PASSWORD}
@@ -26,12 +22,12 @@ const composeFile = `services:
       LOGFLARE_URL: http://analytics:4000
 
   kong:
-    container_name: supabase-kong
     image: kong:2.8.1
     restart: unless-stopped
     ports:
       - \${KONG_HTTP_PORT:-8000}:8000/tcp
-      - \${KONG_HTTPS_PORT:-8443}:8443/tcp
+    volumes:
+      - ./kong.yml:/home/kong/kong.yml:ro
     environment:
       KONG_DATABASE: "off"
       KONG_DECLARATIVE_CONFIG: /home/kong/kong.yml
@@ -45,12 +41,9 @@ const composeFile = `services:
       DASHBOARD_PASSWORD: \${DASHBOARD_PASSWORD}
 
   auth:
-    container_name: supabase-auth
     image: supabase/gotrue:v2.151.0
     depends_on:
       db:
-        condition: service_healthy
-      analytics:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9999/health"]
@@ -65,20 +58,85 @@ const composeFile = `services:
       GOTRUE_DB_DRIVER: postgres
       GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:\${POSTGRES_PASSWORD}@db:5432/postgres
       GOTRUE_SITE_URL: \${SITE_URL}
-      GOTRUE_DISABLE_SIGNUP: "false"
+      GOTRUE_URI_ALLOW_LIST: \${ADDITIONAL_REDIRECT_URLS:-}
+      GOTRUE_DISABLE_SIGNUP: \${DISABLE_SIGNUP:-false}
       GOTRUE_JWT_SECRET: \${JWT_SECRET}
       GOTRUE_JWT_EXP: 3600
       GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      # ── Email auth ──
       GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
-      GOTRUE_MAILER_AUTOCONFIRM: "true"
+      GOTRUE_MAILER_AUTOCONFIRM: \${MAILER_AUTOCONFIRM:-true}
+      GOTRUE_SMTP_HOST: \${SMTP_HOST:-}
+      GOTRUE_SMTP_PORT: \${SMTP_PORT:-587}
+      GOTRUE_SMTP_USER: \${SMTP_USER:-}
+      GOTRUE_SMTP_PASS: \${SMTP_PASS:-}
+      GOTRUE_SMTP_ADMIN_EMAIL: \${SMTP_ADMIN_EMAIL:-}
+      GOTRUE_SMTP_SENDER_NAME: \${SMTP_SENDER_NAME:-Supabase}
+      # ── Phone auth ──
+      GOTRUE_EXTERNAL_PHONE_ENABLED: \${ENABLE_PHONE_SIGNUP:-false}
+      GOTRUE_SMS_AUTOCONFIRM: "true"
+      # ── Anonymous sign-ins ──
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: \${ENABLE_ANONYMOUS_USERS:-false}
+      # ── Google OAuth ──
+      GOTRUE_EXTERNAL_GOOGLE_ENABLED: \${GOOGLE_ENABLED:-false}
+      GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID: \${GOOGLE_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_GOOGLE_SECRET: \${GOOGLE_SECRET:-}
+      GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI: \${API_EXTERNAL_URL}/auth/v1/callback
+      # ── GitHub OAuth ──
+      GOTRUE_EXTERNAL_GITHUB_ENABLED: \${GITHUB_ENABLED:-false}
+      GOTRUE_EXTERNAL_GITHUB_CLIENT_ID: \${GITHUB_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_GITHUB_SECRET: \${GITHUB_SECRET:-}
+      GOTRUE_EXTERNAL_GITHUB_REDIRECT_URI: \${API_EXTERNAL_URL}/auth/v1/callback
+      # ── Discord OAuth ──
+      GOTRUE_EXTERNAL_DISCORD_ENABLED: \${DISCORD_ENABLED:-false}
+      GOTRUE_EXTERNAL_DISCORD_CLIENT_ID: \${DISCORD_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_DISCORD_SECRET: \${DISCORD_SECRET:-}
+      GOTRUE_EXTERNAL_DISCORD_REDIRECT_URI: \${API_EXTERNAL_URL}/auth/v1/callback
+      # ── Apple OAuth ──
+      GOTRUE_EXTERNAL_APPLE_ENABLED: \${APPLE_ENABLED:-false}
+      GOTRUE_EXTERNAL_APPLE_CLIENT_ID: \${APPLE_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_APPLE_SECRET: \${APPLE_SECRET:-}
+      GOTRUE_EXTERNAL_APPLE_REDIRECT_URI: \${API_EXTERNAL_URL}/auth/v1/callback
+      # ── Facebook OAuth ──
+      GOTRUE_EXTERNAL_FACEBOOK_ENABLED: \${FACEBOOK_ENABLED:-false}
+      GOTRUE_EXTERNAL_FACEBOOK_CLIENT_ID: \${FACEBOOK_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_FACEBOOK_SECRET: \${FACEBOOK_SECRET:-}
+      GOTRUE_EXTERNAL_FACEBOOK_REDIRECT_URI: \${API_EXTERNAL_URL}/auth/v1/callback
+      # ── Twitter OAuth ──
+      GOTRUE_EXTERNAL_TWITTER_ENABLED: \${TWITTER_ENABLED:-false}
+      GOTRUE_EXTERNAL_TWITTER_CLIENT_ID: \${TWITTER_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_TWITTER_SECRET: \${TWITTER_SECRET:-}
+      GOTRUE_EXTERNAL_TWITTER_REDIRECT_URI: \${API_EXTERNAL_URL}/auth/v1/callback
+      # ── LinkedIn OAuth ──
+      GOTRUE_EXTERNAL_LINKEDIN_OIDC_ENABLED: \${LINKEDIN_ENABLED:-false}
+      GOTRUE_EXTERNAL_LINKEDIN_OIDC_CLIENT_ID: \${LINKEDIN_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_LINKEDIN_OIDC_SECRET: \${LINKEDIN_SECRET:-}
+      GOTRUE_EXTERNAL_LINKEDIN_OIDC_REDIRECT_URI: \${API_EXTERNAL_URL}/auth/v1/callback
+      # ── Slack OAuth ──
+      GOTRUE_EXTERNAL_SLACK_ENABLED: \${SLACK_ENABLED:-false}
+      GOTRUE_EXTERNAL_SLACK_CLIENT_ID: \${SLACK_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_SLACK_SECRET: \${SLACK_SECRET:-}
+      GOTRUE_EXTERNAL_SLACK_REDIRECT_URI: \${API_EXTERNAL_URL}/auth/v1/callback
+      # ── Twitch OAuth ──
+      GOTRUE_EXTERNAL_TWITCH_ENABLED: \${TWITCH_ENABLED:-false}
+      GOTRUE_EXTERNAL_TWITCH_CLIENT_ID: \${TWITCH_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_TWITCH_SECRET: \${TWITCH_SECRET:-}
+      GOTRUE_EXTERNAL_TWITCH_REDIRECT_URI: \${API_EXTERNAL_URL}/auth/v1/callback
+      # ── Spotify OAuth ──
+      GOTRUE_EXTERNAL_SPOTIFY_ENABLED: \${SPOTIFY_ENABLED:-false}
+      GOTRUE_EXTERNAL_SPOTIFY_CLIENT_ID: \${SPOTIFY_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_SPOTIFY_SECRET: \${SPOTIFY_SECRET:-}
+      GOTRUE_EXTERNAL_SPOTIFY_REDIRECT_URI: \${API_EXTERNAL_URL}/auth/v1/callback
+      # ── Notion OAuth ──
+      GOTRUE_EXTERNAL_NOTION_ENABLED: \${NOTION_ENABLED:-false}
+      GOTRUE_EXTERNAL_NOTION_CLIENT_ID: \${NOTION_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_NOTION_SECRET: \${NOTION_SECRET:-}
+      GOTRUE_EXTERNAL_NOTION_REDIRECT_URI: \${API_EXTERNAL_URL}/auth/v1/callback
 
   rest:
-    container_name: supabase-rest
     image: postgrest/postgrest:v12.0.1
     depends_on:
       db:
-        condition: service_healthy
-      analytics:
         condition: service_healthy
     restart: unless-stopped
     environment:
@@ -89,12 +147,9 @@ const composeFile = `services:
       PGRST_DB_USE_LEGACY_GUCS: "false"
 
   realtime:
-    container_name: supabase-realtime
     image: supabase/realtime:v2.28.32
     depends_on:
       db:
-        condition: service_healthy
-      analytics:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sSfL", "--head", "-o", "/dev/null", "-H", "Authorization: Bearer \${ANON_KEY}", "http://localhost:4000/api/tenants/realtime-dev/health"]
@@ -121,7 +176,6 @@ const composeFile = `services:
       RUN_JANITOR: "true"
 
   storage:
-    container_name: supabase-storage
     image: supabase/storage-api:v0.46.4
     depends_on:
       db:
@@ -152,7 +206,6 @@ const composeFile = `services:
       IMGPROXY_URL: http://imgproxy:5001
 
   imgproxy:
-    container_name: supabase-imgproxy
     image: darthsim/imgproxy:v3.8.0
     restart: unless-stopped
     volumes:
@@ -164,12 +217,9 @@ const composeFile = `services:
       IMGPROXY_ENABLE_WEBP_DETECTION: \${IMGPROXY_ENABLE_WEBP_DETECTION:-true}
 
   meta:
-    container_name: supabase-meta
     image: supabase/postgres-meta:v0.80.0
     depends_on:
       db:
-        condition: service_healthy
-      analytics:
         condition: service_healthy
     restart: unless-stopped
     environment:
@@ -181,12 +231,8 @@ const composeFile = `services:
       PG_META_DB_PASSWORD: \${POSTGRES_PASSWORD}
 
   functions:
-    container_name: supabase-edge-functions
     image: supabase/edge-runtime:v1.45.2
     restart: unless-stopped
-    depends_on:
-      analytics:
-        condition: service_healthy
     environment:
       JWT_SECRET: \${JWT_SECRET}
       SUPABASE_URL: http://kong:8000
@@ -196,14 +242,95 @@ const composeFile = `services:
       VERIFY_JWT: "false"
     command: ["start", "--main-service", "/home/deno/functions/main"]
 
+  db:
+    image: supabase/postgres:15.1.1.78
+    restart: unless-stopped
+    healthcheck:
+      test: pg_isready -U postgres -h localhost
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    environment:
+      PGPORT: 5432
+      POSTGRES_PORT: 5432
+      PGPASSWORD: \${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: \${POSTGRES_PASSWORD}
+      PGDATABASE: postgres
+      POSTGRES_DB: postgres
+      JWT_SECRET: \${JWT_SECRET}
+      JWT_EXP: 3600
+    volumes:
+      - supabase-db:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/zz-pushify-roles.sql:ro
+    command:
+      - postgres
+      - -c
+      - listen_addresses=*
+      - -c
+      - shared_preload_libraries=pg_stat_statements,pg_stat_monitor,pgaudit,plpgsql,plpgsql_check,pg_cron,pg_net,timescaledb,auto_explain,pg_tle,plan_filter
+      - -c
+      - log_min_messages=fatal
+
+  # ── Connection Pooler (Supavisor) ──
+  supavisor:
+    image: supabase/supavisor:1.1.56
+    healthcheck:
+      test: ["CMD", "curl", "-sSfL", "http://localhost:4000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    ports:
+      - \${POOLER_PROXY_PORT_TRANSACTION:-6543}:6543
+    environment:
+      PORT: 4000
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: \${POSTGRES_DB:-postgres}
+      POSTGRES_PASSWORD: \${POSTGRES_PASSWORD}
+      DATABASE_URL: ecto://supabase_admin:\${POSTGRES_PASSWORD}@db:5432/_supabase
+      CLUSTER_POSTGRES: "true"
+      SECRET_KEY_BASE: \${SECRET_KEY_BASE}
+      VAULT_ENC_KEY: \${VAULT_ENC_KEY:-your-encryption-key-32-chars-min}
+      API_JWT_SECRET: \${JWT_SECRET}
+      METRICS_JWT_SECRET: \${JWT_SECRET}
+      REGION: local
+      ERL_AFLAGS: -proto_dist inet_tcp
+      POOLER_TENANT_ID: \${POOLER_TENANT_ID:-default}
+      POOLER_DEFAULT_POOL_SIZE: \${POOLER_DEFAULT_POOL_SIZE:-20}
+      POOLER_MAX_CLIENT_CONN: \${POOLER_MAX_CLIENT_CONN:-100}
+      POOLER_POOL_MODE: transaction
+    command:
+      - /bin/sh
+      - -c
+      - "/app/bin/migrate && /app/bin/supavisor eval \\"$$(cat /etc/pool_tenant.exs)\\" && /app/bin/server"
+
+  # ── Log Collector (Vector) ──
+  vector:
+    image: timberio/vector:0.28.1-alpine
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://vector:9001/health"]
+      timeout: 5s
+      interval: 5s
+      retries: 3
+    restart: unless-stopped
+    volumes:
+      - ./vector.yml:/etc/vector/vector.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: ["--config", "/etc/vector/vector.yml"]
+    environment:
+      LOGFLARE_API_KEY: \${LOGFLARE_API_KEY}
+
+  # ── Analytics (Logflare) ──
   analytics:
-    container_name: supabase-analytics
     image: supabase/logflare:1.4.0
     healthcheck:
       test: ["CMD", "curl", "http://localhost:4000/health"]
       timeout: 5s
       interval: 5s
-      retries: 10
+      retries: 30
     restart: unless-stopped
     depends_on:
       db:
@@ -223,48 +350,6 @@ const composeFile = `services:
       POSTGRES_BACKEND_URL: postgresql://supabase_admin:\${POSTGRES_PASSWORD}@db:5432/_supabase
       POSTGRES_BACKEND_SCHEMA: _analytics
       LOGFLARE_FEATURE_FLAG_OVERRIDE: multibackend=true
-
-  db:
-    container_name: supabase-db
-    image: supabase/postgres:15.1.1.78
-    restart: unless-stopped
-    healthcheck:
-      test: pg_isready -U postgres -h localhost
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    depends_on:
-      vector:
-        condition: service_healthy
-    environment:
-      POSTGRES_HOST: /var/run/postgresql
-      PGPORT: 5432
-      POSTGRES_PORT: 5432
-      PGPASSWORD: \${POSTGRES_PASSWORD}
-      POSTGRES_PASSWORD: \${POSTGRES_PASSWORD}
-      PGDATABASE: postgres
-      POSTGRES_DB: postgres
-      JWT_SECRET: \${JWT_SECRET}
-      JWT_EXP: 3600
-    volumes:
-      - supabase-db:/var/lib/postgresql/data:z
-    command:
-      - postgres
-      - -c
-      - config_file=/etc/postgresql/postgresql.conf
-      - -c
-      - log_min_messages=fatal
-
-  vector:
-    container_name: supabase-vector
-    image: timberio/vector:0.28.1-alpine
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://vector:9001/health"]
-      timeout: 5s
-      interval: 5s
-      retries: 3
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
 
 volumes:
   supabase-db:
@@ -295,6 +380,284 @@ This deployment includes all 9 Supabase services orchestrated via Docker Compose
   composeFile,
   composePublicService: 'kong',
   composePublicPort: 8000,
+  // Runs AFTER docker compose up (postgres init may not have set passwords correctly)
+  postDeploySql: `-- Pushify post-deploy: force-set Supabase role passwords
+ALTER USER supabase_admin WITH PASSWORD '\${POSTGRES_PASSWORD}';
+ALTER USER supabase_auth_admin WITH PASSWORD '\${POSTGRES_PASSWORD}';
+ALTER USER supabase_storage_admin WITH PASSWORD '\${POSTGRES_PASSWORD}';
+ALTER USER authenticator WITH PASSWORD '\${POSTGRES_PASSWORD}';
+ALTER USER postgres WITH PASSWORD '\${POSTGRES_PASSWORD}';
+SELECT 'Pushify post-deploy: ' || count(*) || ' role passwords reset' AS status
+FROM pg_roles WHERE rolname IN ('supabase_admin','supabase_auth_admin','supabase_storage_admin','authenticator','postgres');
+`,
+  extraFiles: {
+    'vector.yml': `# Pushify-managed Vector config for Supabase
+api:
+  enabled: true
+  address: 0.0.0.0:9001
+
+sources:
+  docker_host:
+    type: docker_logs
+    exclude_containers:
+      - supabase-vector
+
+transforms:
+  project_logs:
+    type: remap
+    inputs:
+      - docker_host
+    source: |-
+      .project = "default"
+      .event_message = del(.message)
+      .appname = del(.container_name)
+      del(.container_created_at)
+      del(.container_id)
+      del(.source_type)
+      del(.stream)
+      del(.label)
+      del(.image)
+      del(.host)
+      del(.stream)
+
+  router:
+    type: route
+    inputs:
+      - project_logs
+    route:
+      kong: 'starts_with(string!(.appname), "supabase-kong")'
+      auth: 'starts_with(string!(.appname), "supabase-auth")'
+      rest: 'starts_with(string!(.appname), "supabase-rest")'
+      realtime: 'starts_with(string!(.appname), "supabase-realtime")'
+      storage: 'starts_with(string!(.appname), "supabase-storage")'
+      functions: 'starts_with(string!(.appname), "supabase-functions")'
+      db: 'starts_with(string!(.appname), "supabase-db")'
+
+sinks:
+  logflare_logs:
+    type: 'http'
+    inputs:
+      - project_logs
+    encoding:
+      codec: 'json'
+    method: 'post'
+    request:
+      retry_max_duration_secs: 10
+    uri: 'http://analytics:4000/api/logs?source_name=postgREST.logs.prod&api_key=\${LOGFLARE_API_KEY?LOGFLARE_API_KEY is required}'
+`,
+    'init.sql': `-- Pushify init: ensure Supabase roles exist with correct passwords
+-- Runs after the official supabase/postgres image's own init scripts
+-- File is named with zz- prefix so it's the LAST init script to run
+\\set ON_ERROR_STOP on
+
+-- Create _supabase database (used by analytics/logflare/supavisor)
+SELECT 'CREATE DATABASE _supabase'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '_supabase')\\gexec
+
+-- Schemas in _supabase
+\\c _supabase
+CREATE SCHEMA IF NOT EXISTS _analytics;
+CREATE SCHEMA IF NOT EXISTS _supavisor;
+CREATE SCHEMA IF NOT EXISTS _realtime;
+
+-- Back to main DB
+\\c postgres
+CREATE SCHEMA IF NOT EXISTS _realtime;
+
+-- Force-set passwords for all Supabase roles to POSTGRES_PASSWORD
+-- This is critical: the official supabase/postgres image creates these roles
+-- with random/different passwords; we need them all to match POSTGRES_PASSWORD
+-- so that auth/rest/storage/etc can connect.
+DO $$
+DECLARE
+  pwd text := '\${POSTGRES_PASSWORD}';
+BEGIN
+  -- supabase_admin (full access)
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'supabase_admin') THEN
+    EXECUTE format('CREATE USER supabase_admin SUPERUSER CREATEDB CREATEROLE REPLICATION BYPASSRLS LOGIN PASSWORD %L', pwd);
+  ELSE
+    EXECUTE format('ALTER USER supabase_admin WITH PASSWORD %L', pwd);
+  END IF;
+
+  -- supabase_auth_admin (for GoTrue)
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'supabase_auth_admin') THEN
+    EXECUTE format('CREATE USER supabase_auth_admin NOINHERIT CREATEROLE LOGIN NOREPLICATION PASSWORD %L', pwd);
+  ELSE
+    EXECUTE format('ALTER USER supabase_auth_admin WITH PASSWORD %L', pwd);
+  END IF;
+  CREATE SCHEMA IF NOT EXISTS auth AUTHORIZATION supabase_auth_admin;
+  GRANT CREATE ON DATABASE postgres TO supabase_auth_admin;
+  ALTER USER supabase_auth_admin SET search_path = 'auth';
+
+  -- supabase_storage_admin (for Storage API)
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'supabase_storage_admin') THEN
+    EXECUTE format('CREATE USER supabase_storage_admin NOINHERIT CREATEROLE LOGIN NOREPLICATION PASSWORD %L', pwd);
+  ELSE
+    EXECUTE format('ALTER USER supabase_storage_admin WITH PASSWORD %L', pwd);
+  END IF;
+  CREATE SCHEMA IF NOT EXISTS storage AUTHORIZATION supabase_storage_admin;
+  GRANT CREATE ON DATABASE postgres TO supabase_storage_admin;
+  ALTER USER supabase_storage_admin SET search_path = 'storage';
+
+  -- authenticator (for PostgREST)
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authenticator') THEN
+    EXECUTE format('CREATE USER authenticator NOINHERIT LOGIN NOREPLICATION PASSWORD %L', pwd);
+  ELSE
+    EXECUTE format('ALTER USER authenticator WITH PASSWORD %L', pwd);
+  END IF;
+
+  -- anon, authenticated, service_role (PostgREST switching)
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'anon') THEN
+    CREATE ROLE anon NOLOGIN NOINHERIT;
+  END IF;
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authenticated') THEN
+    CREATE ROLE authenticated NOLOGIN NOINHERIT;
+  END IF;
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'service_role') THEN
+    CREATE ROLE service_role NOLOGIN NOINHERIT BYPASSRLS;
+  END IF;
+
+  GRANT anon, authenticated, service_role TO authenticator;
+
+  -- Final pass: re-ALTER all critical users to be 100% sure passwords match
+  -- (in case earlier statements were interrupted or run before role creation)
+  EXECUTE format('ALTER USER postgres WITH PASSWORD %L', pwd);
+  EXECUTE format('ALTER USER supabase_admin WITH PASSWORD %L', pwd);
+  EXECUTE format('ALTER USER supabase_auth_admin WITH PASSWORD %L', pwd);
+  EXECUTE format('ALTER USER supabase_storage_admin WITH PASSWORD %L', pwd);
+  EXECUTE format('ALTER USER authenticator WITH PASSWORD %L', pwd);
+
+  -- Permission grants
+  GRANT ALL PRIVILEGES ON DATABASE postgres TO supabase_admin;
+  GRANT ALL PRIVILEGES ON DATABASE _supabase TO supabase_admin;
+  GRANT USAGE ON SCHEMA _realtime TO supabase_admin;
+  GRANT ALL ON ALL TABLES IN SCHEMA _realtime TO supabase_admin;
+END
+$$;
+
+-- Verify (logged to postgres logs for debugging)
+SELECT 'Pushify init complete: ' || count(*)::text || ' supabase roles configured'
+FROM pg_roles
+WHERE rolname IN ('supabase_admin','supabase_auth_admin','supabase_storage_admin','authenticator','anon','authenticated','service_role');
+`,
+    'kong.yml': `_format_version: '2.1'
+_transform: true
+
+consumers:
+  - username: DASHBOARD
+  - username: anon
+    keyauth_credentials:
+      - key: \${ANON_KEY}
+  - username: service_role
+    keyauth_credentials:
+      - key: \${SERVICE_ROLE_KEY}
+
+acls:
+  - consumer: anon
+    group: anon
+  - consumer: service_role
+    group: admin
+
+basicauth_credentials:
+  - consumer: DASHBOARD
+    username: \${DASHBOARD_USERNAME}
+    password: \${DASHBOARD_PASSWORD}
+
+services:
+  - name: auth-v1
+    url: http://auth:9999/
+    routes:
+      - name: auth-v1-all
+        strip_path: true
+        paths:
+          - /auth/v1/
+    plugins:
+      - name: cors
+
+  - name: rest-v1
+    url: http://rest:3000/
+    routes:
+      - name: rest-v1-all
+        strip_path: true
+        paths:
+          - /rest/v1/
+    plugins:
+      - name: cors
+      - name: key-auth
+        config:
+          hide_credentials: true
+      - name: acl
+        config:
+          hide_groups_header: true
+          allow:
+            - admin
+            - anon
+
+  - name: realtime-v1-ws
+    url: http://realtime:4000/socket
+    protocol: ws
+    routes:
+      - name: realtime-v1-ws
+        strip_path: true
+        paths:
+          - /realtime/v1/
+    plugins:
+      - name: cors
+      - name: key-auth
+        config:
+          hide_credentials: false
+
+  - name: storage-v1
+    url: http://storage:5000/
+    routes:
+      - name: storage-v1-all
+        strip_path: true
+        paths:
+          - /storage/v1/
+    plugins:
+      - name: cors
+
+  - name: functions-v1
+    url: http://functions:9000/
+    routes:
+      - name: functions-v1-all
+        strip_path: true
+        paths:
+          - /functions/v1/
+    plugins:
+      - name: cors
+
+  - name: meta
+    url: http://meta:8080/
+    routes:
+      - name: meta-all
+        strip_path: true
+        paths:
+          - /pg/
+    plugins:
+      - name: key-auth
+        config:
+          hide_credentials: false
+      - name: acl
+        config:
+          hide_groups_header: true
+          allow:
+            - admin
+
+  - name: dashboard
+    url: http://studio:3000/
+    routes:
+      - name: dashboard-all
+        strip_path: false
+        paths:
+          - /
+    plugins:
+      - name: cors
+      - name: basic-auth
+        config:
+          hide_credentials: true
+`,
+  },
 
   port: 8000,
   healthCheckPath: '/',
@@ -356,38 +719,26 @@ This deployment includes all 9 Supabase services orchestrated via Docker Compose
       generate: 'password',
     },
     {
-      key: 'SITE_URL',
-      label: 'Site URL',
-      description: 'Your application URL (used for auth redirects)',
-      required: true,
-      type: 'url',
-      default: 'http://localhost:3000',
-    },
-    {
-      key: 'API_EXTERNAL_URL',
-      label: 'API External URL',
-      description: 'Public URL where your Supabase API will be accessible',
-      required: true,
-      type: 'url',
-    },
-    {
-      key: 'SUPABASE_PUBLIC_URL',
-      label: 'Supabase Public URL',
-      description: 'Same as API External URL — public URL for the Studio',
-      required: true,
-      type: 'url',
-    },
-    {
       key: 'LOGFLARE_API_KEY',
       label: 'Logflare API Key',
       description: 'Internal logging API key',
       required: true,
       type: 'password',
       generate: 'secret',
+      hidden: true,
+    },
+    {
+      key: 'VAULT_ENC_KEY',
+      label: 'Vault Encryption Key',
+      description: 'Key used by Supavisor pooler to encrypt secrets at rest',
+      required: true,
+      type: 'password',
+      generate: 'secret',
+      hidden: true,
     },
   ],
-  minMemoryMb: 4096,
-  minDiskGb: 10,
+  minMemoryMb: 6144,
+  minDiskGb: 15,
   version: '1.0.0',
   appVersion: '2024.03',
   featured: true,
