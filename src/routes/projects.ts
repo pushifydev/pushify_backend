@@ -3,6 +3,7 @@ import { projectService } from '../services/project.service';
 import { activityService } from '../services/activity.service';
 import { combinedAuthMiddleware } from '../middleware/auth';
 import { requireScope } from '../middleware/apikey-auth';
+import { omitWebhookSecret } from '../lib/project-public';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 
@@ -162,7 +163,9 @@ const createProjectRoute = createRoute({
       content: {
         'application/json': {
           schema: z.object({
-            data: ProjectSchema,
+            data: ProjectSchema.extend({
+              webhookSecret: z.string().describe('GitHub webhook secret; shown once at creation'),
+            }),
             message: z.string(),
           }),
         },
@@ -315,10 +318,13 @@ projectRouter.openapi(listProjectsRoute, async (c) => {
   const projectsList = await projectService.getByOrganization(organizationId, userId, locale);
 
   // Extract productionUrl from settings for each project
-  const projectsWithUrl = projectsList.map((p: any) => ({
-    ...p,
-    productionUrl: (p.settings as Record<string, unknown>)?.productionUrl || null,
-  }));
+  const projectsWithUrl = projectsList.map((p) => {
+    const { webhookSecret: _omit, ...rest } = p as typeof p & { webhookSecret?: string | null };
+    return {
+      ...rest,
+      productionUrl: ((p.settings || {}) as Record<string, unknown>).productionUrl ?? null,
+    };
+  });
 
   return c.json({ data: projectsWithUrl });
 });
@@ -344,7 +350,10 @@ projectRouter.openapi(createProjectRoute, async (c) => {
 
   return c.json(
     {
-      data: project,
+      data: {
+        ...omitWebhookSecret(project),
+        webhookSecret: project.webhookSecret ?? '',
+      },
       message: t(locale, 'projects', 'created'),
     },
     201
@@ -363,7 +372,7 @@ projectRouter.openapi(getProjectRoute, async (c) => {
   // Transform server to match schema (pick only required fields)
   const settings = (project.settings || {}) as Record<string, unknown>;
   const responseData = {
-    ...project,
+    ...omitWebhookSecret(project),
     productionUrl: (settings.productionUrl as string) || null,
     server: project.server
       ? {
@@ -401,7 +410,7 @@ projectRouter.openapi(updateProjectRoute, async (c) => {
   );
 
   return c.json({
-    data: project,
+    data: omitWebhookSecret(project),
     message: t(locale, 'projects', 'updated'),
   });
 });
@@ -454,7 +463,7 @@ projectRouter.openapi(updateStatusRoute, async (c) => {
     userAgent: c.req.header('user-agent'),
   });
 
-  return c.json({ data: project });
+  return c.json({ data: omitWebhookSecret(project) });
 });
 
 // ============ Webhook Management ============
@@ -518,6 +527,10 @@ projectRouter.patch('/:projectId/settings', async (c) => {
 
   const project = await projectService.updateSettings(projectId, organizationId, userId, settings, locale);
 
+  if (!project) {
+    return c.json({ error: { code: 'NOT_FOUND', message: t(locale, 'projects', 'notFound') } }, 404);
+  }
+
   // Log activity
   const changedSettings = Object.keys(settings).join(', ');
   await activityService.logSettingsUpdated(
@@ -530,7 +543,7 @@ projectRouter.patch('/:projectId/settings', async (c) => {
   );
 
   return c.json({
-    data: project,
+    data: omitWebhookSecret(project),
     message: t(locale, 'projects', 'settingsUpdated'),
   });
 });

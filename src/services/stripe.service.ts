@@ -3,6 +3,7 @@ import { db } from '../db';
 import { organizations } from '../db/schema';
 import { env } from '../config/env';
 import { getStripe, getPriceId, getPlanFromPriceId } from '../lib/stripe';
+import { claimStripeWebhookEvent } from '../lib/stripe-webhook-dedupe';
 import type { PlanType } from '../lib/plans';
 import type Stripe from 'stripe';
 
@@ -179,6 +180,11 @@ export const stripeService = {
     }
 
     const event = stripe.webhooks.constructEvent(payload, signature, env.STRIPE_WEBHOOK_SECRET);
+
+    const shouldProcess = await claimStripeWebhookEvent(event.id);
+    if (!shouldProcess) {
+      return;
+    }
 
     switch (event.type) {
       case 'checkout.session.completed': {

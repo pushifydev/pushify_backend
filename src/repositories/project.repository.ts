@@ -19,6 +19,8 @@ export type CreateProjectInput = {
   port?: number;
   autoDeploy?: boolean;
   serverId?: string;
+  /** If omitted, GitHub webhooks cannot be verified until regenerated */
+  webhookSecret?: string;
 };
 
 export type UpdateProjectInput = {
