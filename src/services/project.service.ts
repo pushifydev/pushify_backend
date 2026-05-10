@@ -88,6 +88,8 @@ export const projectService = {
       validatedServerId = input.serverId;
     }
 
+    const webhookSecret = crypto.randomBytes(32).toString('hex');
+
     // Create project
     const project = await projectRepository.create({
       organizationId,
@@ -104,6 +106,7 @@ export const projectService = {
       port: input.port || 3000,
       autoDeploy: input.autoDeploy ?? true,
       serverId: validatedServerId,
+      webhookSecret,
     });
 
     logger.info({ projectId: project.id, userId }, 'Project created');
