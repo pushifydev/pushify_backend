@@ -1,10 +1,11 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { HTTPException } from 'hono/http-exception';
-import crypto from 'crypto';
 import { projectRepository } from '../repositories/project.repository';
 import { deploymentRepository } from '../repositories/deployment.repository';
 import { previewService } from '../services/preview.service';
 import { webhookRateLimiter } from '../middleware/rate-limit';
+import { verifyGitHubSignature } from '../lib/github-webhook';
+import { claimGitHubWebhookDelivery } from '../lib/webhook-dedupe';
 import { logger } from '../lib/logger';
 import type { AppEnv } from '../types';
 
@@ -64,19 +65,6 @@ interface GitHubPullRequestPayload {
   };
 }
 
-// Verify GitHub webhook signature
-function verifyGitHubSignature(payload: string, signature: string, secret: string): boolean {
-  const expectedSignature = 'sha256=' + crypto
-    .createHmac('sha256', secret)
-    .update(payload)
-    .digest('hex');
-
-  return crypto.timingSafeEqual(
-    Buffer.from(signature),
-    Buffer.from(expectedSignature)
-  );
-}
-
 // Route schemas
 const WebhookResponseSchema = z.object({
   message: z.string(),
@@ -106,6 +94,9 @@ const webhookRoute = createRoute({
     400: {
       description: 'Invalid webhook payload or signature',
     },
+    401: {
+      description: 'Webhook secret not configured',
+    },
     404: {
       description: 'Project not found',
     },
@@ -127,10 +118,8 @@ webhookRouter.openapi(webhookRoute, async (c) => {
 
   // Get GitHub headers
   const signature = c.req.header('X-Hub-Signature-256');
-  const event = c.req.header('X-GitHub-Event');
+  const event = c.req.header('X-GitHub-Event') ?? '';
   const deliveryId = c.req.header('X-GitHub-Delivery');
-
-  console.log(`[Webhook] Received ${event} event for project ${projectId}, delivery: ${deliveryId}`);
 
   // Find project
   const project = await projectRepository.findById(projectId);
@@ -138,21 +127,47 @@ webhookRouter.openapi(webhookRoute, async (c) => {
     throw new HTTPException(404, { message: 'Project not found' });
   }
 
-  // Verify signature if webhook secret is set
-  if (project.webhookSecret) {
-    if (!signature) {
-      throw new HTTPException(400, { message: 'Missing webhook signature' });
-    }
-
-    try {
-      const isValid = verifyGitHubSignature(rawBody, signature, project.webhookSecret);
-      if (!isValid) {
+  /**
+   * GitHub "ping" can be received before the repository webhook secret is pasted into GitHub.
+   * If a secret exists, we always verify. Other events require a configured secret + valid signature.
+   */
+  if (event === 'ping') {
+    if (project.webhookSecret) {
+      if (!signature) {
+        throw new HTTPException(400, { message: 'Missing webhook signature' });
+      }
+      if (!verifyGitHubSignature(rawBody, signature, project.webhookSecret)) {
         throw new HTTPException(400, { message: 'Invalid webhook signature' });
       }
-    } catch (error) {
-      if (error instanceof HTTPException) throw error;
-      throw new HTTPException(400, { message: 'Signature verification failed' });
     }
+    logger.info({ projectId, deliveryId, event: 'ping' }, 'GitHub webhook ping received');
+    const pingFirst = await claimGitHubWebhookDelivery(deliveryId);
+    if (!pingFirst) {
+      return c.json({ message: 'pong', duplicate: true });
+    }
+    return c.json({ message: 'pong' });
+  }
+
+  if (!project.webhookSecret) {
+    throw new HTTPException(401, {
+      message:
+        'Webhook secret is not configured. Open the project in Pushify and use “Regenerate webhook secret”, then paste the secret into your GitHub webhook settings.',
+    });
+  }
+
+  if (!signature) {
+    throw new HTTPException(400, { message: 'Missing webhook signature' });
+  }
+
+  if (!verifyGitHubSignature(rawBody, signature, project.webhookSecret)) {
+    throw new HTTPException(400, { message: 'Invalid webhook signature' });
+  }
+
+  logger.info({ projectId, deliveryId, event }, 'GitHub webhook received');
+
+  const processDelivery = await claimGitHubWebhookDelivery(deliveryId);
+  if (!processDelivery) {
+    return c.json({ message: 'Duplicate webhook delivery ignored' });
   }
 
   // Parse payload
@@ -244,19 +259,15 @@ webhookRouter.openapi(webhookRoute, async (c) => {
     branch,
   });
 
-  console.log(`[Webhook] Created deployment ${deployment.id} for project ${project.name}`);
+  logger.info(
+    { projectId: project.id, deploymentId: deployment.id, projectName: project.name },
+    'Deployment created from GitHub push webhook'
+  );
 
   return c.json({
     message: 'Deployment triggered',
     deploymentId: deployment.id,
   });
-});
-
-// Ping event handler (sent when webhook is first created)
-webhookRouter.post('/github/:projectId/ping', async (c) => {
-  const projectId = c.req.param('projectId');
-  console.log(`[Webhook] Received ping for project ${projectId}`);
-  return c.json({ message: 'pong' });
 });
 
 // ─── Stripe Webhook ───────────────────────────

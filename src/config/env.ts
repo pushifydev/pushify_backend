@@ -45,10 +45,20 @@ const envSchema = z.object({
   // AI Assistant
   ANTHROPIC_API_KEY: z.string().optional(),
 
-  // Rate Limiting
+  // Rate Limiting (see middleware/rate-limit.ts)
   RATE_LIMIT_ENABLED: z.coerce.boolean().default(true),
-  RATE_LIMIT_AUTH_MAX: z.coerce.number().default(5), // Max auth requests per minute
-  RATE_LIMIT_API_MAX: z.coerce.number().default(100), // Max API requests per minute
+  /** Login, register, refresh, OAuth callbacks — per IP, per minute */
+  RATE_LIMIT_AUTH_MAX: z.coerce.number().default(20),
+  /** Global `/api/*` middleware — per IP, per minute */
+  RATE_LIMIT_API_MAX: z.coerce.number().default(200),
+  /** GitHub/Stripe webhook routes — per project or IP, per minute */
+  RATE_LIMIT_WEBHOOK_MAX: z.coerce.number().default(60),
+  /** Manual deploy / redeploy / rollback — per project or IP, per hour */
+  RATE_LIMIT_DEPLOY_TRIGGER_MAX: z.coerce.number().default(20),
+  /** Forgot / reset password — per IP, per 15 minutes */
+  RATE_LIMIT_PASSWORD_RESET_MAX: z.coerce.number().default(3),
+  /** Sensitive routes — per IP, per hour */
+  RATE_LIMIT_SENSITIVE_MAX: z.coerce.number().default(10),
 
   // Deployment Concurrency Limits
   MAX_CONCURRENT_DEPLOYS_PER_SERVER: z.coerce.number().default(2),

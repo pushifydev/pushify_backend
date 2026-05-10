@@ -19,6 +19,7 @@ import {
 } from './workers';
 import { startNotificationWorker, stopNotificationWorker } from './workers/notification.worker';
 import { closeQueues } from './lib/queue';
+import { closeOptionalRedis } from './lib/redis-client';
 import {
   startServerStatusWorker,
   stopServerStatusWorker,
@@ -112,6 +113,7 @@ async function gracefulShutdown(signal: string) {
   await closeQueues();
   await shutdownServerQueues();
   await wsManager.shutdown();
+  await closeOptionalRedis();
 
   process.exit(0);
 }

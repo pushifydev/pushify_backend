@@ -1,9 +1,11 @@
+import crypto from 'crypto';
 import { db } from '../db';
 import { projects, deployments, environmentVariables, marketplaceDeployments } from '../db/schema';
 import { templates, getTemplateById } from '../marketplace/templates';
 import { generatePassword, generateSecret } from '../marketplace/helpers';
 import type { MarketplaceCategory } from '../marketplace/types';
 import { encrypt } from '../lib/encryption';
+import { omitWebhookSecret } from '../lib/project-public';
 import { eq, and } from 'drizzle-orm';
 import { logger } from '../lib/logger';
 
@@ -90,6 +92,7 @@ export const marketplaceService = {
 
     // Create project
     const isCompose = template.deploymentType === 'docker-compose';
+    const webhookSecret = crypto.randomBytes(32).toString('hex');
     const [project] = await db
       .insert(projects)
       .values({
@@ -98,6 +101,7 @@ export const marketplaceService = {
         name: params.name,
         slug,
         gitRepoUrl: template.website,
+        webhookSecret,
         status: 'active',
         port: isCompose ? (template.composePublicPort || template.port) : template.port,
         settings: {
@@ -157,7 +161,7 @@ export const marketplaceService = {
     logger.info(`Marketplace deploy: ${template.name} -> project ${project.id}`);
 
     return {
-      project,
+      project: omitWebhookSecret(project),
       deployment,
       marketplaceDeployment: mpDeployment,
     };
@@ -172,7 +176,7 @@ export const marketplaceService = {
 
     return result.map((r) => ({
       ...r.marketplace_deployments,
-      project: r.projects,
+      project: omitWebhookSecret(r.projects),
     }));
   },
 };

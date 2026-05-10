@@ -1,6 +1,6 @@
 {
   "name": "pushify-backend",
-  "version": "0.1.0",
+  "version": "0.2.0-beta.1",
   "private": true,
   "description": "Pushify cloud deployment platform — API server",
   "license": "MIT",
@@ -40,7 +40,6 @@
     "pg": "^8.13.0",
     "pino": "^9.4.0",
     "qrcode": "^1.5.4",
-    "redis": "^4.7.0",
     "ssh2": "^1.17.0",
     "stripe": "^20.4.1",
     "zod": "^4.3.6"
