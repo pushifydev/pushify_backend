@@ -4,12 +4,16 @@ import { getOptionalRedis } from '../lib/redis-client';
 import { redisFixedWindowHit } from '../lib/rate-limit-redis';
 import { logger } from '../lib/logger';
 import { env } from '../config/env';
+import { getApiRequestsPerMinute, type PlanType } from '../lib/plans';
+import { organizationRepository } from '../repositories/organization.repository';
 
 export interface RateLimitConfig {
   /** Isolates counters between limiters (auth vs general, etc.) */
   namespace: string;
   windowMs: number;
   maxRequests: number;
+  /** When set, overrides maxRequests per request (e.g. plan-based API limits) */
+  resolveMaxRequests?: (c: Context) => number | Promise<number>;
   keyGenerator?: (c: Context) => string;
   skip?: (c: Context) => boolean;
   message?: string;
@@ -54,6 +58,7 @@ export function createRateLimiter(config: RateLimitConfig) {
     namespace,
     windowMs,
     maxRequests,
+    resolveMaxRequests,
     keyGenerator = defaultKeyGenerator,
     skip,
     message = 'Too many requests, please try again later',
@@ -64,6 +69,13 @@ export function createRateLimiter(config: RateLimitConfig) {
       return next();
     }
 
+    const limit =
+      resolveMaxRequests !== undefined ? await resolveMaxRequests(c) : maxRequests;
+
+    if (limit === -1) {
+      return next();
+    }
+
     const clientKey = keyGenerator(c);
     const storeKey = `${namespace}:${clientKey}`;
     const redis = getOptionalRedis();
@@ -71,11 +83,11 @@ export function createRateLimiter(config: RateLimitConfig) {
     if (redis) {
       try {
         const rlKey = `pushify:rl:${namespace}:${clientKey}`;
-        const r = await redisFixedWindowHit(redis, rlKey, windowMs, maxRequests);
-        const remaining = Math.max(0, maxRequests - r.count);
+        const r = await redisFixedWindowHit(redis, rlKey, windowMs, limit);
+        const remaining = Math.max(0, limit - r.count);
         const resetInSeconds = Math.max(0, Math.ceil((r.resetAtMs - Date.now()) / 1000));
 
-        c.header('X-RateLimit-Limit', maxRequests.toString());
+        c.header('X-RateLimit-Limit', limit.toString());
         c.header('X-RateLimit-Remaining', remaining.toString());
         c.header('X-RateLimit-Reset', Math.ceil(r.resetAtMs / 1000).toString());
         c.header('Retry-After', resetInSeconds.toString());
@@ -107,15 +119,15 @@ export function createRateLimiter(config: RateLimitConfig) {
     entry.count++;
     rateLimitStore.set(storeKey, entry);
 
-    const remaining = Math.max(0, maxRequests - entry.count);
+    const remaining = Math.max(0, limit - entry.count);
     const resetInSeconds = Math.ceil((entry.resetAt - now) / 1000);
 
-    c.header('X-RateLimit-Limit', maxRequests.toString());
+    c.header('X-RateLimit-Limit', limit.toString());
     c.header('X-RateLimit-Remaining', remaining.toString());
     c.header('X-RateLimit-Reset', Math.ceil(entry.resetAt / 1000).toString());
     c.header('Retry-After', resetInSeconds.toString());
 
-    if (entry.count > maxRequests) {
+    if (entry.count > limit) {
       throw new HTTPException(429, {
         message,
       });
@@ -146,11 +158,78 @@ export const apiRateLimiter = createRateLimiter({
   message: 'API rate limit exceeded, please slow down your requests',
 });
 
+/** IP-based limit for unauthenticated /api routes (auth, health, webhooks, etc.) */
 export const generalRateLimiter = createRateLimiter({
   namespace: 'general',
   windowMs: 60 * 1000,
   maxRequests: env.RATE_LIMIT_API_MAX,
+  skip: (c) => {
+    const auth = c.req.header('Authorization');
+    if (auth?.startsWith('Bearer ')) return true;
+    if (c.req.query('token')) return true;
+    return false;
+  },
 });
+
+const ORG_PLAN_CACHE_TTL_MS = 60_000;
+const orgPlanCache = new Map<string, { plan: PlanType; expiresAt: number }>();
+
+async function getOrganizationPlan(organizationId: string): Promise<PlanType> {
+  const cached = orgPlanCache.get(organizationId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.plan;
+  }
+
+  const org = await organizationRepository.findById(organizationId);
+  const plan = (org?.plan ?? 'free') as PlanType;
+  orgPlanCache.set(organizationId, { plan, expiresAt: Date.now() + ORG_PLAN_CACHE_TTL_MS });
+  return plan;
+}
+
+async function resolvePlanApiMaxRequests(c: Context): Promise<number> {
+  const organizationId = c.get('organizationId') as string | undefined;
+  if (organizationId) {
+    const plan = await getOrganizationPlan(organizationId);
+    return getApiRequestsPerMinute(plan);
+  }
+  return getApiRequestsPerMinute('free');
+}
+
+function planApiRateLimitKey(c: Context): string {
+  const apiKey = c.get('apiKey') as { id: string } | undefined;
+  if (apiKey?.id) {
+    return `apikey:${apiKey.id}`;
+  }
+
+  const organizationId = c.get('organizationId') as string | undefined;
+  if (organizationId) {
+    return `org:${organizationId}`;
+  }
+
+  const userId = c.get('userId') as string | undefined;
+  if (userId) {
+    return `user:${userId}`;
+  }
+
+  return getClientIp(c);
+}
+
+/** Per API key / org, per plan — runs after JWT or API key auth */
+export const planApiRateLimiter = createRateLimiter({
+  namespace: 'api-plan',
+  windowMs: 60 * 1000,
+  maxRequests: 60,
+  resolveMaxRequests: resolvePlanApiMaxRequests,
+  keyGenerator: planApiRateLimitKey,
+  message: 'API rate limit exceeded, please slow down your requests',
+});
+
+export async function applyPlanApiRateLimit(c: Context, next: Next) {
+  if (!env.RATE_LIMIT_ENABLED) {
+    return next();
+  }
+  return planApiRateLimiter(c, next);
+}
 
 export const sensitiveRateLimiter = createRateLimiter({
   namespace: 'sensitive',
