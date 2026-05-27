@@ -233,8 +233,16 @@ export const deploymentRepository = {
           eq(deployments.isPreview, false),
           ne(projects.status, 'deleted')
         )
-      );
+      )
+      .orderBy(desc(deployments.createdAt));
 
-    return result;
+    // One row per project (latest running deployment)
+    const byProject = new Map<string, (typeof result)[number]>();
+    for (const row of result) {
+      if (!byProject.has(row.projectId)) {
+        byProject.set(row.projectId, row);
+      }
+    }
+    return Array.from(byProject.values());
   },
 };
