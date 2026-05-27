@@ -2,6 +2,8 @@
 export type PlanType = 'free' | 'hobby' | 'pro' | 'business' | 'enterprise';
 
 export interface PlanLimits {
+  /** Authenticated API requests per minute (per API key or org). -1 = unlimited */
+  apiRequestsPerMinute: number;
   servers: number;
   databases: number;
   projects: number;
@@ -27,6 +29,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
     name: 'Free',
     price: 0,
     limits: {
+      apiRequestsPerMinute: 60,
       servers: 0, // No servers on free plan
       databases: 0, // No databases on free plan
       projects: 3,
@@ -45,6 +48,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
     name: 'Hobby',
     price: 10,
     limits: {
+      apiRequestsPerMinute: 120,
       servers: 1,
       databases: 2,
       projects: 10,
@@ -63,6 +67,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
     name: 'Pro',
     price: 25,
     limits: {
+      apiRequestsPerMinute: 300,
       servers: 3,
       databases: 5,
       projects: 50,
@@ -81,6 +86,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
     name: 'Business',
     price: 99,
     limits: {
+      apiRequestsPerMinute: 600,
       servers: 10,
       databases: 20,
       projects: 200,
@@ -99,6 +105,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
     name: 'Enterprise',
     price: -1, // Custom pricing
     limits: {
+      apiRequestsPerMinute: -1,
       servers: -1, // Unlimited
       databases: -1, // Unlimited
       projects: -1, // Unlimited
@@ -117,6 +124,10 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
 
 export function getPlanInfo(plan: PlanType): PlanInfo {
   return PLAN_LIMITS[plan];
+}
+
+export function getApiRequestsPerMinute(plan: PlanType): number {
+  return getPlanInfo(plan).limits.apiRequestsPerMinute;
 }
 
 export function isUnlimited(value: number): boolean {

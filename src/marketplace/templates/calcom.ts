@@ -4,22 +4,40 @@ const composeFile = `services:
   calcom:
     image: calcom/cal.com:latest
     restart: unless-stopped
+    env_file:
+      - .env
     ports:
       - \${KONG_HTTP_PORT:-3000}:3000
+    extra_hosts:
+      - "PUSHIFY_CALCOM_EXTRA_HOST_PLACEHOLDER:host-gateway"
     depends_on:
       database:
         condition: service_healthy
+      redis:
+        condition: service_started
     environment:
       DATABASE_URL: postgres://calcom:\${POSTGRES_PASSWORD}@database:5432/calendso
       DATABASE_DIRECT_URL: postgres://calcom:\${POSTGRES_PASSWORD}@database:5432/calendso
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: \${JWT_SECRET}
       NEXTAUTH_SECRET: \${NEXTAUTH_SECRET}
       NEXTAUTH_URL: \${NEXT_PUBLIC_WEBAPP_URL}
       CALENDSO_ENCRYPTION_KEY: \${CALENDSO_ENCRYPTION_KEY}
       NEXT_PUBLIC_WEBAPP_URL: \${NEXT_PUBLIC_WEBAPP_URL}
       NEXT_PUBLIC_WEBSITE_URL: \${NEXT_PUBLIC_WEBAPP_URL}
       NEXT_PUBLIC_API_V2_URL: \${NEXT_PUBLIC_WEBAPP_URL}/api/v2
+      ALLOWED_HOSTNAMES: '"PUSHIFY_CALCOM_ALLOWED_HOST_PLACEHOLDER"'
+      DATABASE_HOST: database:5432
+      WEBAPP_URL: \${NEXT_PUBLIC_WEBAPP_URL}
+      NODE_ENV: production
+      AUTH_TRUST_HOST: "true"
+      ORGANIZATIONS_ENABLED: "false"
+      CALCOM_TELEMETRY_DISABLED: "1"
       NEXT_PUBLIC_LICENSE_CONSENT: agree
       LICENSE: agree
+      STRIPE_PRIVATE_KEY: \${STRIPE_PRIVATE_KEY}
+      STRIPE_API_KEY: \${STRIPE_API_KEY}
+      STRIPE_WEBHOOK_SECRET: \${STRIPE_WEBHOOK_SECRET}
       EMAIL_FROM: \${EMAIL_FROM:-noreply@example.com}
       EMAIL_SERVER_HOST: \${SMTP_HOST:-}
       EMAIL_SERVER_PORT: \${SMTP_PORT:-587}
@@ -29,6 +47,8 @@ const composeFile = `services:
   database:
     image: postgres:16-alpine
     restart: unless-stopped
+    env_file:
+      - .env
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U calcom -d calendso"]
       interval: 5s
@@ -40,6 +60,11 @@ const composeFile = `services:
       POSTGRES_DB: calendso
     volumes:
       - calcom-db:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
 
 volumes:
   calcom-db:
@@ -102,6 +127,15 @@ scheduling tool that connects to all your calendars and integrates with the apps
       hidden: true,
     },
     {
+      key: 'JWT_SECRET',
+      label: 'JWT Secret',
+      description: 'Secret for API tokens (auto-generated)',
+      required: true,
+      type: 'password',
+      generate: 'secret',
+      hidden: true,
+    },
+    {
       key: 'NEXT_PUBLIC_WEBAPP_URL',
       label: 'Public URL',
       description: 'Public URL where Cal.com is reachable (auto-set by Pushify)',
@@ -112,7 +146,7 @@ scheduling tool that connects to all your calendars and integrates with the apps
   ],
   minMemoryMb: 2048,
   minDiskGb: 5,
-  version: '1.0.0',
+  version: '1.1.0',
   appVersion: 'latest',
   featured: true,
   volumes: ['calcom-db'],
