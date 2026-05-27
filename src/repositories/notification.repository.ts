@@ -1,5 +1,6 @@
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, gte } from 'drizzle-orm';
 import { db } from '../db';
+import { projects } from '../db/schema/projects';
 import {
   notificationChannels,
   notificationLogs,
@@ -11,6 +12,69 @@ import {
 
 export const notificationRepository = {
   // ============ Channels ============
+
+  async findChannelsByOrganization(organizationId: string) {
+    return db
+      .select({
+        id: notificationChannels.id,
+        projectId: notificationChannels.projectId,
+        projectName: projects.name,
+        projectSlug: projects.slug,
+        type: notificationChannels.type,
+        name: notificationChannels.name,
+        events: notificationChannels.events,
+        isActive: notificationChannels.isActive,
+        createdAt: notificationChannels.createdAt,
+        updatedAt: notificationChannels.updatedAt,
+      })
+      .from(notificationChannels)
+      .innerJoin(projects, eq(notificationChannels.projectId, projects.id))
+      .where(
+        and(
+          eq(projects.organizationId, organizationId),
+          eq(projects.status, 'active')
+        )
+      )
+      .orderBy(desc(notificationChannels.updatedAt));
+  },
+
+  async findRecentLogsByOrganization(organizationId: string, limit = 30) {
+    return db
+      .select({
+        id: notificationLogs.id,
+        channelId: notificationLogs.channelId,
+        channelName: notificationChannels.name,
+        channelType: notificationChannels.type,
+        projectId: projects.id,
+        projectName: projects.name,
+        eventType: notificationLogs.eventType,
+        status: notificationLogs.status,
+        errorMessage: notificationLogs.errorMessage,
+        sentAt: notificationLogs.sentAt,
+      })
+      .from(notificationLogs)
+      .innerJoin(notificationChannels, eq(notificationLogs.channelId, notificationChannels.id))
+      .innerJoin(projects, eq(notificationChannels.projectId, projects.id))
+      .where(eq(projects.organizationId, organizationId))
+      .orderBy(desc(notificationLogs.sentAt))
+      .limit(limit);
+  },
+
+  async countFailedLogsSince(organizationId: string, since: Date): Promise<number> {
+    const rows = await db
+      .select({ id: notificationLogs.id })
+      .from(notificationLogs)
+      .innerJoin(notificationChannels, eq(notificationLogs.channelId, notificationChannels.id))
+      .innerJoin(projects, eq(notificationChannels.projectId, projects.id))
+      .where(
+        and(
+          eq(projects.organizationId, organizationId),
+          eq(notificationLogs.status, 'failed'),
+          gte(notificationLogs.sentAt, since)
+        )
+      );
+    return rows.length;
+  },
 
   // Find all channels for a project
   async findChannelsByProject(projectId: string): Promise<NotificationChannel[]> {

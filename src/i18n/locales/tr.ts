@@ -192,6 +192,25 @@ export const tr: TranslationKeys = {
     emailUpdated: 'Fatura e-postası başarıyla güncellendi',
   },
 
+  dashboard: {
+    actionFailedDeploymentsTitle: '{count} başarısız dağıtım',
+    actionFailedDeploymentsDesc: 'Logları inceleyin ve proje veya aktivite sayfasından yeniden dağıtın.',
+    actionFailedLatestDesc: 'Son hata: {project} — dağıtım loglarını kontrol edin.',
+    actionServerIssueTitle: '"{name}" sunucusu dikkat gerektiriyor',
+    actionServerSetupFailedDesc: 'İlk kurulum tamamlanmadı. Sunucu sayfasından yeniden deneyin veya bağlantıyı kontrol edin.',
+    actionServerErrorDesc: 'Sunucu hata durumunda. SSH ve sunucu sağlığını doğrulayın.',
+    actionUsageLimitTitle: 'Plan kullanımı {percent}%',
+    actionUsageLimitDesc: '{resource} plan limitinize yaklaşıyor. Faturalama sayfasından yükseltin veya kapasite açın.',
+    actionInProgressTitle: '{count} dağıtım devam ediyor',
+    actionInProgressDesc: 'Projelerinizde derleme ve dağıtımlar çalışıyor.',
+    usageResourceServers: 'Sunucular',
+    usageResourceDatabases: 'Veritabanları',
+    usageResourceProjects: 'Projeler',
+    usageResourceDeployments: 'Bu ayki dağıtımlar',
+    usageResourceTeamMembers: 'Ekip üyeleri',
+    usageResourceCustomDomains: 'Özel alan adları',
+  },
+
   // Servers
   servers: {
     notFound: 'Sunucu bulunamadı',

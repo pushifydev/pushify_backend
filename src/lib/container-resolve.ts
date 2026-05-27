@@ -1,7 +1,12 @@
+import { eq } from 'drizzle-orm';
+import { db } from '../db';
+import { servers } from '../db/schema/servers';
+import { decrypt } from './encryption';
+import { logger } from './logger';
 import { execCommand } from '../workers/shell';
 import { isContainerRunning } from '../workers/docker';
 import { isContainerRunning as isRemoteContainerRunning } from '../workers/remote-docker';
-import type { SSHClient } from '../utils/ssh';
+import { SSHClient } from '../utils/ssh';
 
 /** Sidecar / data containers we should not use for app-level metrics */
 const SIDECAR_NAME_PATTERN = /-(db|redis|postgres|mysql|kong|mail)(-\d+)?$/i;
@@ -45,4 +50,60 @@ export async function resolvePushifyContainerName(
 /** Docker stats JSON may prefix container names with "/" */
 export function normalizeDockerStatsName(name: string): string {
   return name.replace(/^\//, '');
+}
+
+/**
+ * Restart the active Pushify container for a project (local or remote via SSH).
+ */
+export async function restartPushifyContainer(
+  slug: string,
+  serverId: string | null
+): Promise<boolean> {
+  let ssh: SSHClient | null = null;
+  try {
+    if (serverId) {
+      const server = await db.query.servers.findFirst({
+        where: eq(servers.id, serverId),
+      });
+      if (!server?.ipv4 || !server.sshPrivateKey) {
+        return false;
+      }
+      ssh = new SSHClient();
+      await ssh.connect({
+        host: server.ipv4,
+        port: 22,
+        username: 'root',
+        privateKey: decrypt(server.sshPrivateKey),
+      });
+    }
+
+    const containerName = await resolvePushifyContainerName(slug, ssh);
+    if (!containerName) {
+      logger.warn({ slug, serverId }, 'No running container found to restart');
+      return false;
+    }
+
+    if (ssh) {
+      const result = await ssh.exec(`docker restart ${containerName}`);
+      if (result.code === 0) {
+        logger.info({ slug, serverId, containerName }, 'Container restarted via SSH');
+        return true;
+      }
+      return false;
+    }
+
+    const { exitCode } = await execCommand(`docker restart ${containerName}`, {
+      timeout: 30000,
+    });
+    if (exitCode === 0) {
+      logger.info({ slug, containerName }, 'Container restarted locally');
+      return true;
+    }
+    return false;
+  } catch (error) {
+    logger.error({ err: error, slug, serverId }, 'Failed to restart container');
+    return false;
+  } finally {
+    ssh?.disconnect();
+  }
 }

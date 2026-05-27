@@ -146,14 +146,13 @@ async function runHealthCheck(
       consecutiveFailures = prevFailures + 1;
       previousStatus.set(projectId, 'unhealthy');
 
-      // Handle unhealthy status
-      const containerName = `pushify-${project.slug}`;
+      // Handle unhealthy status (restart resolves blue/green + compose container names)
       actionTaken = await healthCheckService.handleUnhealthy(
         projectId,
         consecutiveFailures,
         config.unhealthyThreshold,
         config.autoRestart,
-        containerName
+        { slug: project.slug, serverId: project.serverId }
       );
     }
 
