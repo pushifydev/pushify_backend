@@ -4,8 +4,27 @@ import { organizations } from '../db/schema';
 import { env } from '../config/env';
 import { getStripe, getPriceId, getPlanFromPriceId } from '../lib/stripe';
 import { claimStripeWebhookEvent } from '../lib/stripe-webhook-dedupe';
+import { sendBillingPaymentFailedEmail } from '../lib/email';
+import { organizationRepository } from '../repositories/organization.repository';
+import { userRepository } from '../repositories/user.repository';
 import type { PlanType } from '../lib/plans';
 import type Stripe from 'stripe';
+import { logger } from '../lib/logger';
+
+async function resolveBillingNotifyEmail(organizationId: string): Promise<string | null> {
+  const org = await organizationRepository.findById(organizationId);
+  if (org?.billingEmail) {
+    return org.billingEmail;
+  }
+
+  const owner = await organizationRepository.findOwner(organizationId);
+  if (!owner) {
+    return null;
+  }
+
+  const user = await userRepository.findById(owner.userId);
+  return user?.email ?? null;
+}
 
 export const stripeService = {
   async getOrCreateCustomer(organizationId: string, email: string): Promise<string> {
@@ -257,7 +276,29 @@ export const stripeService = {
       }
 
       case 'invoice.payment_failed': {
-        // TODO: Send notification to org admin
+        const invoice = event.data.object as Stripe.Invoice;
+        const customerId =
+          typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
+
+        if (!customerId) break;
+
+        const [org] = await db
+          .select({
+            id: organizations.id,
+            name: organizations.name,
+          })
+          .from(organizations)
+          .where(eq(organizations.stripeCustomerId, customerId))
+          .limit(1);
+
+        if (!org) break;
+
+        const notifyEmail = await resolveBillingNotifyEmail(org.id);
+        if (notifyEmail) {
+          await sendBillingPaymentFailedEmail(notifyEmail, org.name);
+        } else {
+          logger.warn({ organizationId: org.id }, 'No billing email for payment_failed notification');
+        }
         break;
       }
     }

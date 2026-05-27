@@ -78,7 +78,7 @@ function getErrorCode(status: number): string {
     404: 'NOT_FOUND',
     409: 'CONFLICT',
     422: 'UNPROCESSABLE_ENTITY',
-    429: 'TOO_MANY_REQUESTS',
+    429: 'RATE_LIMITED',
     500: 'INTERNAL_ERROR',
   };
   return codes[status] || 'UNKNOWN_ERROR';

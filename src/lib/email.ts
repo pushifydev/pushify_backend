@@ -261,6 +261,48 @@ function orgInvitationTemplate(
   `);
 }
 
+function billingPaymentFailedTemplate(
+  orgName: string,
+  billingUrl: string,
+  locale: 'en' | 'tr'
+): string {
+  const texts = {
+    en: {
+      title: 'Payment failed for your Pushify subscription',
+      greeting: 'Hi there,',
+      body: `We could not process the latest payment for <strong style="color:#e2e8f0;">${orgName}</strong>. Please update your payment method to avoid service interruption.`,
+      button: 'Manage billing',
+      note: 'If you already updated your card, you can ignore this email.',
+    },
+    tr: {
+      title: 'Pushify abonelik ödemesi başarısız',
+      greeting: 'Merhaba,',
+      body: `<strong style="color:#e2e8f0;">${orgName}</strong> için son ödeme işlenemedi. Hizmet kesintisi yaşamamak için ödeme yönteminizi güncelleyin.`,
+      button: 'Faturalamayı yönet',
+      note: 'Kartınızı zaten güncellediyseniz bu e-postayı yok sayabilirsiniz.',
+    },
+  };
+
+  const t = texts[locale] ?? texts.en;
+
+  return baseTemplate(`
+    <h1 style="color:#ffffff;font-size:24px;font-weight:700;margin:0 0 8px 0;">${t.title}</h1>
+    <p style="color:#9ca3af;font-size:15px;line-height:1.6;margin:0 0 20px 0;">${t.greeting}</p>
+    <p style="color:#9ca3af;font-size:15px;line-height:1.6;margin:0 0 32px 0;">${t.body}</p>
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:32px;">
+      <tr>
+        <td align="center">
+          <a href="${billingUrl}"
+             style="display:inline-block;background-color:#06b6d4;color:#0a0a0f;text-decoration:none;font-size:15px;font-weight:700;padding:14px 32px;border-radius:10px;">
+            ${t.button}
+          </a>
+        </td>
+      </tr>
+    </table>
+    <p style="color:#6b7280;font-size:13px;line-height:1.6;margin:0;">${t.note}</p>
+  `);
+}
+
 // ============ Send Functions ============
 
 export async function sendPasswordResetEmail(
@@ -357,6 +399,35 @@ export async function sendOrgInvitationEmail(
     logger.info({ to, orgName }, 'Org invitation email sent');
   } catch (error) {
     logger.error({ error, to }, 'Failed to send org invitation email');
+  }
+}
+
+export async function sendBillingPaymentFailedEmail(
+  to: string,
+  orgName: string,
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping billing payment failed email');
+    return;
+  }
+
+  const billingUrl = `${env.FRONTEND_URL}/dashboard/billing`;
+  const subjects = {
+    en: `Action required: payment failed for ${orgName}`,
+    tr: `İşlem gerekli: ${orgName} ödemesi başarısız`,
+  };
+
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: subjects[locale] ?? subjects.en,
+      html: billingPaymentFailedTemplate(orgName, billingUrl, locale),
+    });
+    logger.info({ to, orgName }, 'Billing payment failed email sent');
+  } catch (error) {
+    logger.error({ error, to, orgName }, 'Failed to send billing payment failed email');
   }
 }
 
