@@ -7,9 +7,9 @@ export const siteStudioTemplates: SiteStudioTemplate[] = [
     name: 'E-Commerce Store',
     tagline: 'Sell online with WooCommerce on your own server',
     description:
-      'Launch a full online store with product catalog, cart, checkout, and Turkish payment gateways.',
+      'Launch a full online store with product catalog, cart, checkout, and your choice of payment gateways.',
     longDescription:
-      'A production-ready WooCommerce stack on WordPress. After launch, install iyzico, PayTR, or Stripe plugins from the WordPress admin — your keys stay on your server. Ideal for brands selling in Turkey and internationally.',
+      'A production-ready WooCommerce stack on WordPress. After launch, install Stripe, PayPal, or regional payment plugins from the WordPress admin — your keys stay on your server. Sell globally from day one.',
     category: 'ecommerce',
     stack: 'wordpress',
     icon: 'ShoppingBag',
@@ -34,7 +34,7 @@ export const siteStudioTemplates: SiteStudioTemplate[] = [
     setupGuide: [
       { title: 'Complete WordPress setup', description: 'Open your site URL, finish the 5-minute WordPress installer, and set your store name.' },
       { title: 'Install WooCommerce', description: 'Plugins → Add New → search "WooCommerce" → Install & activate the wizard.' },
-      { title: 'Connect payments', description: 'WooCommerce → Settings → Payments → enable iyzico, PayTR, or Stripe and add API keys.' },
+      { title: 'Connect payments', description: 'WooCommerce → Settings → Payments → enable Stripe, PayPal, or your regional gateway and add API keys.' },
       { title: 'Add products & go live', description: 'Create products, configure shipping/tax, and point your custom domain in Pushify.' },
     ],
     suggestedPlugins: ['woocommerce', 'iyzico-woocommerce', 'woocommerce-paytr'],
