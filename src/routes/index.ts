@@ -21,6 +21,7 @@ import { databaseRoutes } from './databases';
 import { aiRoutes } from './ai';
 import { cliAuthRoutes } from './cli-auth';
 import { marketplaceRoutes } from './marketplace';
+import { siteStudioRoutes } from './site-studio';
 
 export function registerRoutes(app: OpenAPIHono<any>) {
   // API v1 routes
@@ -48,6 +49,7 @@ export function registerRoutes(app: OpenAPIHono<any>) {
   app.route('/api/v1/ai', aiRoutes);
   app.route('/api/v1/auth/cli', cliAuthRoutes);
   app.route('/api/v1/marketplace', marketplaceRoutes);
+  app.route('/api/v1/site-studio', siteStudioRoutes);
 
   // Webhook routes (no auth required - verified by signature)
   app.route('/api/v1/webhooks', webhookRoutes);

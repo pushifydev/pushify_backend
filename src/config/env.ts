@@ -49,7 +49,7 @@ const envSchema = z.object({
   RATE_LIMIT_ENABLED: z.coerce.boolean().default(true),
   /** Login, register, refresh, OAuth callbacks — per IP, per minute */
   RATE_LIMIT_AUTH_MAX: z.coerce.number().default(20),
-  /** Global `/api/*` middleware — per IP, per minute */
+  /** Unauthenticated `/api/*` routes — per IP, per minute (authenticated routes use plan limits) */
   RATE_LIMIT_API_MAX: z.coerce.number().default(200),
   /** GitHub/Stripe webhook routes — per project or IP, per minute */
   RATE_LIMIT_WEBHOOK_MAX: z.coerce.number().default(60),

@@ -2,6 +2,7 @@ import type { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { verifyToken } from '../lib/jwt';
 import { isApiKeyAuth, apiKeyAuthMiddleware } from './apikey-auth';
+import { applyPlanApiRateLimit } from './rate-limit';
 
 export async function authMiddleware(c: Context, next: Next) {
   const authHeader = c.req.header('Authorization');
@@ -34,7 +35,7 @@ export async function authMiddleware(c: Context, next: Next) {
       c.set('organizationId', payload.org);
     }
 
-    await next();
+    await applyPlanApiRateLimit(c, next);
   } catch (error) {
     if (error instanceof HTTPException) {
       throw error;

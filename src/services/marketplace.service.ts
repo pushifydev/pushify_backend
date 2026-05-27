@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { db } from '../db';
 import { projects, deployments, environmentVariables, marketplaceDeployments } from '../db/schema';
 import { templates, getTemplateById } from '../marketplace/templates';
-import { generatePassword, generateSecret } from '../marketplace/helpers';
+import { generatePassword, generateSecret, applyCalcomEnvDefaults } from '../marketplace/helpers';
 import type { MarketplaceCategory } from '../marketplace/types';
 import { encrypt } from '../lib/encryption';
 import { omitWebhookSecret } from '../lib/project-public';
@@ -67,6 +67,10 @@ export const marketplaceService = {
       if (envVar.default && !finalEnvVars[envVar.key]) {
         finalEnvVars[envVar.key] = envVar.default;
       }
+    }
+
+    if (template.id === 'calcom') {
+      Object.assign(finalEnvVars, applyCalcomEnvDefaults(finalEnvVars));
     }
 
     // ── Supabase-specific: ANON_KEY and SERVICE_ROLE_KEY must be valid JWTs

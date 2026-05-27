@@ -9,6 +9,7 @@ import { cloneRepository, cleanupRepository } from './git';
 import { buildImage, runContainer, isDockerAvailable, isContainerRunning, findAvailablePort } from './docker';
 import { generateDockerfile, hasDockerfile, writeDockerfile } from './dockerfile';
 import { deployToRemoteServer, canDeployToServer, quickRollbackToDeployment } from './remote-deployment';
+import { buildMarketplaceDeployConfig } from '../marketplace/deploy-config';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { githubService } from '../services/github.service';
@@ -477,20 +478,13 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
           .catch((err) => logger.error({ err }, 'Failed to flush deployment logs'));
       };
 
-      // Check if this is a marketplace deployment
-      const marketplaceConfig = projectSettings?.marketplaceTemplateId ? {
-        deploymentType: (projectSettings.deploymentType as 'single-container' | 'docker-compose') || 'single-container',
-        dockerImage: projectSettings.dockerImage as string | undefined,
-        dockerCommand: (projectSettings.dockerCommand as string) || undefined,
-        composeFile: (projectSettings.composeFile as string) || undefined,
-        composePublicService: (projectSettings.composePublicService as string) || undefined,
-        composePublicPort: (projectSettings.composePublicPort as number) || undefined,
-        extraFiles: (projectSettings.extraFiles as Record<string, string>) || undefined,
-        postDeploySql: (projectSettings.postDeploySql as string) || undefined,
-        postDeployShell: (projectSettings.postDeployShell as string) || undefined,
-        volumes: (projectSettings.volumes as string[]) || undefined,
-        requiresDatabase: (projectSettings.requiresDatabase as { type: string; version?: string }) || undefined,
-      } : undefined;
+      // Marketplace: always load latest template from codebase (not stale project.settings.composeFile)
+      const marketplaceConfig = projectSettings?.marketplaceTemplateId
+        ? buildMarketplaceDeployConfig(
+            projectSettings.marketplaceTemplateId as string,
+            projectSettings as Record<string, unknown>
+          )
+        : undefined;
 
       const remoteResult = await deployToRemoteServer({
         serverId: project.serverId,
@@ -530,15 +524,24 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
         })
         .where(eq(deployments.id, job.id));
 
-      // Update project with production URL
+      // Update project with production URL (+ refresh marketplace compose from latest template)
+      const settingsUpdate: Record<string, unknown> = {
+        ...(project.settings as Record<string, unknown>),
+        productionUrl: remoteResult.deploymentUrl,
+        lastDeploymentId: job.id,
+      };
+      if (marketplaceConfig && projectSettings?.marketplaceTemplateId) {
+        settingsUpdate.composeFile = marketplaceConfig.composeFile ?? settingsUpdate.composeFile;
+        settingsUpdate.composePublicService =
+          marketplaceConfig.composePublicService ?? settingsUpdate.composePublicService;
+        settingsUpdate.composePublicPort =
+          marketplaceConfig.composePublicPort ?? settingsUpdate.composePublicPort;
+        settingsUpdate.extraFiles = marketplaceConfig.extraFiles ?? settingsUpdate.extraFiles;
+      }
       await db
         .update(projects)
         .set({
-          settings: {
-            ...(project.settings as Record<string, unknown>),
-            productionUrl: remoteResult.deploymentUrl,
-            lastDeploymentId: job.id,
-          },
+          settings: settingsUpdate,
           updatedAt: new Date(),
         })
         .where(eq(projects.id, job.projectId));

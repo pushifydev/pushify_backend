@@ -68,6 +68,8 @@ export {
   authRateLimiter,
   apiRateLimiter,
   generalRateLimiter,
+  planApiRateLimiter,
+  applyPlanApiRateLimit,
   sensitiveRateLimiter,
   passwordResetRateLimiter,
   webhookRateLimiter,

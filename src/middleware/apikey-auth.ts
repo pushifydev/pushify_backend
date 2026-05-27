@@ -3,6 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { apiKeyService, hasScope } from '../services/apikey.service';
 import { t, type SupportedLocale } from '../i18n';
 import type { ApiKeyScope } from '../db/schema';
+import { applyPlanApiRateLimit } from './rate-limit';
 
 const API_KEY_PREFIX = 'pk_live_';
 
@@ -52,7 +53,7 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
   c.set('apiKey', result.apiKey);
   c.set('isApiKeyAuth', true);
 
-  await next();
+  await applyPlanApiRateLimit(c, next);
 }
 
 /**

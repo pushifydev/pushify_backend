@@ -6,6 +6,12 @@ import { SSHClient } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
 import { buildImage, runContainer, checkDocker, getImageId, tagImage, cleanupOldImages, runContainerFromImage, imageExists, blueGreenDeploy, completeBlueGreenSwitch } from './remote-docker';
 import { addSite, addAutoSubdomainSite, reloadNginx, requestSSLCertificate } from './nginx-manager';
+import {
+  applyCalcomEnvDefaults,
+  getCalcomExtraHost,
+  getCalcomAllowedHostPlaceholder,
+} from '../marketplace/helpers';
+import { buildCalcomImageScript, calcomImageTag } from '../marketplace/calcom-image';
 import { getOrAssignPort } from './port-manager';
 import { generateDockerfile } from './dockerfile';
 import { domainService } from '../services/domain.service';
@@ -32,6 +38,7 @@ export interface RemoteDeploymentConfig {
   onProgress: (message: string) => void;
   // Marketplace fields
   marketplace?: {
+    id?: string;
     dockerImage?: string;
     dockerCommand?: string;
     volumes?: string[];
@@ -288,25 +295,13 @@ export async function deployToRemoteServer(
       const internalPort = config.marketplace.composePublicPort || 80;
       onProgress(`📌 Assigned host port: ${publicHostPort} → container ${internalPort}`);
 
-      // Write compose file
+      const publicUrl = `http://${server.ipv4}:${publicHostPort}`;
       const composePath = `${projectDir}/docker-compose.yml`;
-      onProgress(`📝 Writing docker-compose.yml...`);
-      await ssh.uploadFile(config.marketplace.composeFile, composePath);
+      const composeCmd = (args: string) =>
+        `cd ${projectDir} && docker compose --env-file .env -p ${stackName} ${args}`;
 
       // Write any extra files (e.g. kong.yml). Substitute ${VAR} with env values.
-      const extraFiles = config.marketplace.extraFiles;
-      if (extraFiles && Object.keys(extraFiles).length > 0) {
-        for (const [filename, contents] of Object.entries(extraFiles)) {
-          const expanded = contents.replace(/\$\{([A-Z0-9_]+)\}/g, (_m, key) => envVars[key] ?? '');
-          const filePath = `${projectDir}/${filename}`;
-          await ssh.uploadFile(expanded, filePath);
-          onProgress(`📝 Wrote ${filename}`);
-        }
-      }
-
-      // Write .env file with all env vars + Pushify-injected port + URLs
-      const publicUrl = `http://${server.ipv4}:${publicHostPort}`;
-      const allEnvs = {
+      const allEnvs: Record<string, string> = {
         ...envVars,
         PUSHIFY_PUBLIC_PORT: String(publicHostPort),
         // Common port env names that compose files use
@@ -322,20 +317,91 @@ export async function deployToRemoteServer(
         SUPABASE_PUBLIC_URL: envVars.SUPABASE_PUBLIC_URL || publicUrl,
         PUBLIC_URL: envVars.PUBLIC_URL || publicUrl,
         APP_URL: envVars.APP_URL || publicUrl,
+        // Cal.com / Next.js apps
+        NEXT_PUBLIC_WEBAPP_URL: envVars.NEXT_PUBLIC_WEBAPP_URL || publicUrl,
+        NEXTAUTH_URL: envVars.NEXTAUTH_URL || envVars.NEXT_PUBLIC_WEBAPP_URL || publicUrl,
       };
+
+      // Cal.com: host allowlist, Stripe placeholders, Redis, extra_hosts (IP:port OK without domain)
+      if (
+        config.marketplace.id === 'calcom' ||
+        config.marketplace.composePublicService === 'calcom'
+      ) {
+        Object.assign(allEnvs, applyCalcomEnvDefaults(allEnvs, { publicUrl }));
+        onProgress(
+          `🔧 Cal.com env: URL=${allEnvs.NEXT_PUBLIC_WEBAPP_URL}, DATABASE_HOST=${allEnvs.DATABASE_HOST}`
+        );
+      }
       const envFileContent = Object.entries(allEnvs)
         .map(([k, v]) => `${k}=${v.replace(/\n/g, '\\n')}`)
         .join('\n');
       await ssh.uploadFile(envFileContent, `${projectDir}/.env`);
       onProgress(`📝 Wrote ${Object.keys(allEnvs).length} env vars to .env`);
 
+      // Write compose after .env values are known (bake Cal.com extra_hosts — empty var breaks compose)
+      let composeContent = config.marketplace.composeFile;
+      const isCalcom =
+        config.marketplace.id === 'calcom' ||
+        config.marketplace.composePublicService === 'calcom';
+      if (isCalcom) {
+        const extraHost = getCalcomExtraHost(publicUrl);
+        const allowedHost = getCalcomAllowedHostPlaceholder(publicUrl);
+        composeContent = composeContent
+          .replace('PUSHIFY_CALCOM_EXTRA_HOST_PLACEHOLDER', extraHost)
+          .replace('PUSHIFY_CALCOM_ALLOWED_HOST_PLACEHOLDER', allowedHost);
+        onProgress(
+          `📝 Cal.com hosts: ALLOWED_HOSTNAMES="${allowedHost}", extra_hosts=${extraHost}:host-gateway`
+        );
+
+        const imageTag = calcomImageTag(publicUrl);
+        const buildScriptPath = `${projectDir}/pushify-build-calcom.sh`;
+        const buildScript = buildCalcomImageScript({
+          projectDir,
+          publicUrl,
+          imageTag,
+          nextAuthSecret: allEnvs.NEXTAUTH_SECRET || '',
+          encryptionKey: allEnvs.CALENDSO_ENCRYPTION_KEY || '',
+        });
+        await ssh.uploadFile(buildScript, buildScriptPath);
+        await ssh.exec(`chmod +x ${buildScriptPath}`);
+        onProgress(
+          `🔨 Building Cal.com image for ${publicUrl} (cached as ${imageTag}; first run ~15–30 min)…`
+        );
+        const buildResult = await ssh.exec(`bash ${buildScriptPath} 2>&1`);
+        const buildTail = `${buildResult.stdout}\n${buildResult.stderr}`.trim().split('\n').slice(-15).join('\n');
+        if (buildResult.code !== 0) {
+          onProgress(
+            `⚠️ Cal.com custom build failed — using Hub image + runtime URL replace. Tail:\n${buildTail}`
+          );
+        } else {
+          onProgress(`✅ Cal.com image ready: ${imageTag}`);
+          if (buildTail) onProgress(buildTail);
+          composeContent = composeContent.replace(
+            'image: calcom/cal.com:latest',
+            `image: ${imageTag}`
+          );
+        }
+      }
+      onProgress(`📝 Writing docker-compose.yml...`);
+      await ssh.uploadFile(composeContent, composePath);
+
+      const extraFiles = config.marketplace.extraFiles;
+      if (extraFiles && Object.keys(extraFiles).length > 0) {
+        for (const [filename, contents] of Object.entries(extraFiles)) {
+          const expanded = contents.replace(/\$\{([A-Z0-9_]+)\}/g, (_m, key) => allEnvs[key] ?? '');
+          const filePath = `${projectDir}/${filename}`;
+          await ssh.uploadFile(expanded, filePath);
+          onProgress(`📝 Wrote ${filename}`);
+        }
+      }
+
       // Stop existing stack if any
       onProgress(`🛑 Stopping existing stack (if any)...`);
-      await ssh.exec(`cd ${projectDir} && docker compose -p ${stackName} down 2>&1 || true`);
+      await ssh.exec(`${composeCmd('down')} 2>&1 || true`);
 
       // Pull all images
       onProgress(`⬇️ Pulling images (this may take a while)...`);
-      const pullResult = await ssh.exec(`cd ${projectDir} && docker compose -p ${stackName} pull 2>&1`);
+      const pullResult = await ssh.exec(`${composeCmd('pull')} 2>&1`);
       if (pullResult.code !== 0) {
         onProgress(`⚠️ Some images failed to pull, continuing...`);
       }
@@ -343,19 +409,32 @@ export async function deployToRemoteServer(
       // Open firewall port (best-effort; supports ufw and firewalld)
       onProgress(`🔓 Opening firewall port ${publicHostPort}...`);
       await ssh.exec(
-        `(command -v ufw >/dev/null 2>&1 && ufw allow ${publicHostPort}/tcp 2>&1) || ` +
+        `(command -v ufw >/dev/null 2>&1 && (ufw allow ${publicHostPort}/tcp 2>&1 || sudo ufw allow ${publicHostPort}/tcp 2>&1) && (ufw reload 2>&1 || sudo ufw reload 2>&1)) || ` +
         `(command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --permanent --add-port=${publicHostPort}/tcp 2>&1 && firewall-cmd --reload 2>&1) || ` +
-        `echo "No firewall manager detected"`
+        `echo "No firewall manager detected — open port ${publicHostPort} in your cloud provider firewall"`
       );
 
-      // Start the stack
+      // Start the stack (--env-file required for ${VAR} substitution in compose YAML)
       onProgress(`🚀 Starting stack...`);
-      const upResult = await ssh.exec(`cd ${projectDir} && docker compose -p ${stackName} up -d 2>&1`);
-      if (upResult.code !== 0) {
-        // Some services may have failed dependency checks but core services
-        // are usually up. Continue to post-deploy fix-up which can rescue them.
-        onProgress(`⚠️ Some services failed to start, attempting post-deploy fixup...`);
+      const upResult = await ssh.exec(`${composeCmd('up -d')} 2>&1`);
+      const upOutput = `${upResult.stdout}\n${upResult.stderr}`;
+      if (
+        upResult.code !== 0 ||
+        upOutput.includes('decoding failed') ||
+        upOutput.includes('bad host name')
+      ) {
+        throw new Error(
+          `Docker Compose failed to start stack. Run on server: cd ${projectDir} && docker compose --env-file .env -p ${stackName} up -d\n${upOutput.slice(-800)}`
+        );
       }
+
+      const runningCheck = await ssh.exec(`${composeCmd('ps -q')} 2>&1`);
+      if (!runningCheck.stdout.trim()) {
+        throw new Error(
+          `No containers running after compose up. Check: ${composeCmd('logs')} 2>&1 | tail -50`
+        );
+      }
+      onProgress(`✅ ${runningCheck.stdout.trim().split('\n').length} container(s) running`);
 
       // ── Post-deploy: run any post-deploy SQL/scripts to fix common issues ──
       const postDeploySql = (config.marketplace as any).postDeploySql as string | undefined;
@@ -384,14 +463,67 @@ export async function deployToRemoteServer(
 
         // Restart services that depend on the fixed credentials
         onProgress(`🔄 Restarting dependent services...`);
-        await ssh.exec(`cd ${projectDir} && docker compose -p ${stackName} restart 2>&1 || true`);
+        await ssh.exec(`${composeCmd('restart')} 2>&1 || true`);
+      }
+
+      // Cal.com needs migrations + Next.js boot — wait for health (up to ~5 min)
+      if (config.marketplace.composePublicService === 'calcom') {
+        onProgress(`⏳ Waiting for Cal.com to become ready (migrations may take 3–5 min)...`);
+        const healthUrl = `http://127.0.0.1:${publicHostPort}/api/health`;
+        let ready = false;
+        for (let i = 0; i < 60; i++) {
+          const probe = await ssh.exec(
+            `curl -sf -o /dev/null -w "%{http_code}" ${healthUrl} 2>/dev/null || echo "000"`
+          );
+          const code = probe.stdout.trim();
+          if (code === '200') {
+            ready = true;
+            break;
+          }
+          if (i > 0 && i % 6 === 0) {
+            const logs = await ssh.exec(
+              `${composeCmd('logs calcom --tail 8')} 2>&1 || true`
+            );
+            const tail = logs.stdout.trim().split('\n').slice(-3).join(' | ');
+            if (tail) onProgress(`   Cal.com: ${tail}`);
+          }
+          await new Promise((r) => setTimeout(r, 5000));
+        }
+        const homeProbe = await ssh.exec(
+          `curl -sf -o /dev/null -w "%{http_code}" http://127.0.0.1:${publicHostPort}/ 2>/dev/null || echo "000"`
+        );
+        const homeCode = homeProbe.stdout.trim();
+        if (ready) {
+          onProgress(`✅ Cal.com is responding on port ${publicHostPort}`);
+        } else {
+          onProgress(
+            `⚠️ Cal.com health check pending — check logs: cd ${projectDir} && docker compose --env-file .env -p ${stackName} logs calcom --tail 40`
+          );
+        }
+        if (homeCode === '500' || homeCode === '000') {
+          const errLogs = await ssh.exec(
+            `${composeCmd('logs calcom --tail 25')} 2>&1 || true`
+          );
+          const tail = errLogs.stdout.trim().split('\n').slice(-8).join(' | ');
+          if (tail) onProgress(`⚠️ Cal.com homepage returned ${homeCode}: ${tail}`);
+        }
       }
 
       onProgress(`✅ Stack deployed: ${stackName} (port ${publicHostPort})`);
+      const siteUrl = `http://${server.ipv4}:${publicHostPort}`;
+      onProgress(`🌐 Your site: ${siteUrl}`);
+      if (isCalcom) {
+        onProgress(`📋 First-time setup (open after ~3 min): ${siteUrl}/auth/setup`);
+        onProgress(`💡 No manual server steps needed — Pushify configured env, firewall port, and Docker for you.`);
+      } else {
+        onProgress(
+          `💡 If the URL does not load externally, open TCP port ${publicHostPort} in your cloud firewall (e.g. Hetzner).`
+        );
+      }
 
       return {
         success: true,
-        deploymentUrl: `http://${server.ipv4}:${publicHostPort}`,
+        deploymentUrl: siteUrl,
         containerPort: publicHostPort,
       };
     }
