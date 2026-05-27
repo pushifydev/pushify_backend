@@ -8,6 +8,10 @@ import { SSHClient } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
 import { logger } from '../lib/logger';
 import { wsManager } from '../lib/ws';
+import {
+  normalizeDockerStatsName,
+  resolvePushifyContainerName,
+} from '../lib/container-resolve';
 import type { NewContainerMetric } from '../db/schema';
 
 const POLL_INTERVAL = 15000; // 15 seconds
@@ -76,24 +80,60 @@ async function pollForMetrics(): Promise<void> {
         const metricsToInsert: NewContainerMetric[] = [];
 
         for (const [serverId, projects] of serverGroups) {
-          const containerNames = projects.map((p) => p.containerName);
-          let stats: Map<string, { cpuPercent: number; memoryUsageBytes: number; memoryLimitBytes: number; memoryPercent: number; networkRxBytes: number; networkTxBytes: number; blockReadBytes: number; blockWriteBytes: number; status: string; pids: number }>;
+          let ssh: SSHClient | null = null;
+          if (serverId) {
+            ssh = await connectServerSsh(serverId);
+            if (!ssh) continue;
+          }
+
+          const resolved: Array<(typeof projects)[number] & { resolvedContainerName: string }> =
+            [];
+          for (const project of projects) {
+            const resolvedName = await resolvePushifyContainerName(project.slug, ssh);
+            if (resolvedName) {
+              resolved.push({ ...project, resolvedContainerName: resolvedName });
+            }
+          }
+
+          if (ssh) {
+            ssh.disconnect();
+            ssh = null;
+          }
+
+          if (resolved.length === 0) continue;
+
+          const containerNames = resolved.map((p) => p.resolvedContainerName);
+          let stats: Map<
+            string,
+            {
+              cpuPercent: number;
+              memoryUsageBytes: number;
+              memoryLimitBytes: number;
+              memoryPercent: number;
+              networkRxBytes: number;
+              networkTxBytes: number;
+              blockReadBytes: number;
+              blockWriteBytes: number;
+              status: string;
+              pids: number;
+            }
+          >;
 
           if (!serverId) {
-            // Local Docker
             stats = await getDockerStats(containerNames);
           } else {
-            // Remote server via SSH
             stats = await getRemoteDockerStats(serverId, containerNames);
           }
 
-          for (const project of projects) {
-            const stat = stats.get(project.containerName);
+          for (const project of resolved) {
+            const stat =
+              stats.get(project.resolvedContainerName) ??
+              stats.get(`/${project.resolvedContainerName}`);
             if (stat) {
               metricsToInsert.push({
                 projectId: project.projectId,
                 deploymentId: project.deploymentId,
-                containerName: project.containerName,
+                containerName: project.resolvedContainerName,
                 cpuPercent: stat.cpuPercent,
                 memoryUsageBytes: stat.memoryUsageBytes,
                 memoryLimitBytes: stat.memoryLimitBytes,
@@ -205,7 +245,7 @@ async function getDockerStats(
     for (const line of lines) {
       try {
         const stats: DockerStatsOutput = JSON.parse(line);
-        const name = stats.Name;
+        const name = normalizeDockerStatsName(stats.Name);
 
         result.set(name, {
           cpuPercent: parsePercent(stats.CPUPerc),
@@ -353,7 +393,7 @@ async function getRemoteDockerStats(
     for (const line of lines) {
       try {
         const stats: DockerStatsOutput = JSON.parse(line);
-        result.set(stats.Name, {
+        result.set(normalizeDockerStatsName(stats.Name), {
           cpuPercent: parsePercent(stats.CPUPerc),
           memoryUsageBytes: parseMemoryUsage(stats.MemUsage),
           memoryLimitBytes: parseMemoryLimit(stats.MemUsage),
@@ -376,6 +416,27 @@ async function getRemoteDockerStats(
   }
 
   return result;
+}
+
+async function connectServerSsh(serverId: string): Promise<SSHClient | null> {
+  try {
+    const server = await db.query.servers.findFirst({
+      where: eq(servers.id, serverId),
+    });
+    if (!server?.ipv4 || !server.sshPrivateKey) return null;
+
+    const ssh = new SSHClient();
+    await ssh.connect({
+      host: server.ipv4,
+      port: 22,
+      username: 'root',
+      privateKey: decrypt(server.sshPrivateKey),
+    });
+    return ssh;
+  } catch (error) {
+    logger.error({ err: error, serverId }, 'Failed to connect for metrics collection');
+    return null;
+  }
 }
 
 /**
