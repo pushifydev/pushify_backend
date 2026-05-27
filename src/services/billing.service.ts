@@ -48,6 +48,8 @@ export interface BillingInfo {
   planName: string;
   price: number;
   billingEmail: string | null;
+  /** API requests per minute per API key (org plan). -1 = unlimited */
+  apiRequestsPerMinute: number;
   usage: UsageStats;
   features: {
     previewDeployments: boolean;
@@ -88,6 +90,7 @@ export const billingService = {
       planName: planInfo.name,
       price: planInfo.price,
       billingEmail: org.billingEmail,
+      apiRequestsPerMinute: planInfo.limits.apiRequestsPerMinute,
       usage,
       features: {
         previewDeployments: planInfo.limits.previewDeployments,
