@@ -6,7 +6,7 @@ import { generatePassword, generateSecret, applyCalcomEnvDefaults } from '../mar
 import type { MarketplaceCategory } from '../marketplace/types';
 import { encrypt } from '../lib/encryption';
 import { omitWebhookSecret } from '../lib/project-public';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, desc } from 'drizzle-orm';
 import { logger } from '../lib/logger';
 
 export const marketplaceService = {
@@ -176,11 +176,18 @@ export const marketplaceService = {
       .select()
       .from(marketplaceDeployments)
       .innerJoin(projects, eq(marketplaceDeployments.projectId, projects.id))
-      .where(eq(projects.organizationId, organizationId));
+      .where(eq(projects.organizationId, organizationId))
+      .orderBy(desc(marketplaceDeployments.createdAt));
 
-    return result.map((r) => ({
-      ...r.marketplace_deployments,
-      project: omitWebhookSecret(r.projects),
-    }));
+    return result.map((r) => {
+      const template = getTemplateById(r.marketplace_deployments.templateId);
+      return {
+        ...r.marketplace_deployments,
+        templateName: template?.name ?? r.marketplace_deployments.templateId,
+        templateIcon: template?.icon ?? '📦',
+        templateCategory: template?.category ?? null,
+        project: omitWebhookSecret(r.projects),
+      };
+    });
   },
 };

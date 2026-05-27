@@ -3,6 +3,7 @@ import { healthCheckRepository } from '../repositories/healthcheck.repository';
 import { projectRepository } from '../repositories/project.repository';
 import { organizationRepository } from '../repositories/organization.repository';
 import { notificationService } from './notification.service';
+import { restartPushifyContainer } from '../lib/container-resolve';
 import { logger } from '../lib/logger';
 import { t, type SupportedLocale } from '../i18n';
 import type { HealthCheck, HealthCheckLog } from '../db/schema';
@@ -202,7 +203,7 @@ export const healthCheckService = {
     consecutiveFailures: number,
     unhealthyThreshold: number,
     autoRestart: boolean,
-    containerName?: string
+    restartContext?: { slug: string; serverId: string | null }
   ): Promise<'none' | 'restarted' | 'notified'> {
     // Only take action if threshold is reached
     if (consecutiveFailures < unhealthyThreshold) {
@@ -215,19 +216,23 @@ export const healthCheckService = {
       message: `Health check failed ${consecutiveFailures} times`,
     });
 
-    // Auto-restart if enabled
-    if (autoRestart && containerName) {
-      try {
-        const { exec } = await import('child_process');
-        const { promisify } = await import('util');
-        const execAsync = promisify(exec);
-
-        await execAsync(`docker restart ${containerName}`);
-        logger.info({ projectId, containerName }, 'Container auto-restarted due to health check failure');
+    // Auto-restart if enabled (local or remote server)
+    if (autoRestart && restartContext) {
+      const restarted = await restartPushifyContainer(
+        restartContext.slug,
+        restartContext.serverId
+      );
+      if (restarted) {
+        logger.info(
+          { projectId, slug: restartContext.slug, serverId: restartContext.serverId },
+          'Container auto-restarted due to health check failure'
+        );
         return 'restarted';
-      } catch (error) {
-        logger.error({ error, projectId, containerName }, 'Failed to auto-restart container');
       }
+      logger.error(
+        { projectId, slug: restartContext.slug, serverId: restartContext.serverId },
+        'Failed to auto-restart container'
+      );
     }
 
     return 'notified';

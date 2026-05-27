@@ -163,6 +163,24 @@ export interface TranslationKeys {
   billing: {
     emailUpdated: string;
   };
+  dashboard: {
+    actionFailedDeploymentsTitle: string;
+    actionFailedDeploymentsDesc: string;
+    actionFailedLatestDesc: string;
+    actionServerIssueTitle: string;
+    actionServerSetupFailedDesc: string;
+    actionServerErrorDesc: string;
+    actionUsageLimitTitle: string;
+    actionUsageLimitDesc: string;
+    actionInProgressTitle: string;
+    actionInProgressDesc: string;
+    usageResourceServers: string;
+    usageResourceDatabases: string;
+    usageResourceProjects: string;
+    usageResourceDeployments: string;
+    usageResourceTeamMembers: string;
+    usageResourceCustomDomains: string;
+  };
   servers: {
     notFound: string;
     created: string;
@@ -397,6 +415,25 @@ export const en: TranslationKeys = {
   // Billing
   billing: {
     emailUpdated: 'Billing email updated successfully',
+  },
+
+  dashboard: {
+    actionFailedDeploymentsTitle: '{count} failed deployment(s)',
+    actionFailedDeploymentsDesc: 'Review logs and redeploy from the project or activity page.',
+    actionFailedLatestDesc: 'Latest failure on {project} — check deployment logs.',
+    actionServerIssueTitle: 'Server "{name}" needs attention',
+    actionServerSetupFailedDesc: 'Initial setup did not complete. Open the server page to retry or reconnect.',
+    actionServerErrorDesc: 'The server reported an error state. Verify SSH and host health.',
+    actionUsageLimitTitle: 'Plan usage at {percent}%',
+    actionUsageLimitDesc: '{resource} is near your plan limit. Upgrade or free capacity in Billing.',
+    actionInProgressTitle: '{count} deployment(s) in progress',
+    actionInProgressDesc: 'Builds and deploys are running across your projects.',
+    usageResourceServers: 'Servers',
+    usageResourceDatabases: 'Databases',
+    usageResourceProjects: 'Projects',
+    usageResourceDeployments: 'Deployments this month',
+    usageResourceTeamMembers: 'Team members',
+    usageResourceCustomDomains: 'Custom domains',
   },
 
   // Servers

@@ -1,7 +1,9 @@
 import { HTTPException } from 'hono/http-exception';
-import { eq, and, desc, count } from 'drizzle-orm';
+import { eq, and, desc, count, ne, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { servers } from '../db/schema/servers';
+import { projects } from '../db/schema/projects';
+import { databases } from '../db/schema/databases';
 import { organizationRepository } from '../repositories/organization.repository';
 import { createProvider, type ProviderType, type ServerConfig } from '../providers';
 import { t, type SupportedLocale } from '../i18n';
@@ -223,6 +225,14 @@ touch /opt/pushify/.setup-complete
 log "Pushify setup completed successfully!"
 `;
 
+export interface ServerLocation {
+  city: string;
+  country: string;
+  latitude: number;
+  longitude: number;
+  datacenter?: string;
+}
+
 export interface ServerWithDetails {
   id: string;
   name: string;
@@ -242,10 +252,127 @@ export interface ServerWithDetails {
   setupStatus: string;
   statusMessage: string | null;
   labels: Record<string, unknown>;
+  location: ServerLocation | null;
+  projectCount: number;
+  databaseCount: number;
   isManaged: boolean;
   createdAt: Date;
   updatedAt: Date;
   lastSeenAt: Date | null;
+}
+
+function extractServerLocation(providerData: unknown): ServerLocation | null {
+  if (!providerData || typeof providerData !== 'object') return null;
+  const pd = providerData as {
+    location?: {
+      city?: string;
+      country?: string;
+      latitude?: number;
+      longitude?: number;
+      name?: string;
+    };
+    datacenter?: string;
+  };
+  const loc = pd.location;
+  if (typeof loc?.latitude === 'number' && typeof loc?.longitude === 'number') {
+    return {
+      city: loc.city || loc.name || '',
+      country: loc.country || '',
+      latitude: loc.latitude,
+      longitude: loc.longitude,
+      datacenter: pd.datacenter,
+    };
+  }
+  return null;
+}
+
+type ServerRow = typeof servers.$inferSelect;
+
+async function getServerUsageCounts(organizationId: string, serverIds: string[]) {
+  const projectCountMap = new Map<string, number>();
+  const databaseCountMap = new Map<string, number>();
+
+  if (serverIds.length === 0) {
+    return { projectCountMap, databaseCountMap };
+  }
+
+  const [projectRows, databaseRows] = await Promise.all([
+    db
+      .select({ serverId: projects.serverId, count: count() })
+      .from(projects)
+      .where(
+        and(
+          eq(projects.organizationId, organizationId),
+          ne(projects.status, 'deleted'),
+          inArray(projects.serverId, serverIds)
+        )
+      )
+      .groupBy(projects.serverId),
+    db
+      .select({ serverId: databases.serverId, count: count() })
+      .from(databases)
+      .where(
+        and(
+          eq(databases.organizationId, organizationId),
+          inArray(databases.serverId, serverIds)
+        )
+      )
+      .groupBy(databases.serverId),
+  ]);
+
+  for (const row of projectRows) {
+    if (row.serverId) projectCountMap.set(row.serverId, row.count);
+  }
+  for (const row of databaseRows) {
+    if (row.serverId) databaseCountMap.set(row.serverId, row.count);
+  }
+
+  return { projectCountMap, databaseCountMap };
+}
+
+function mapServerRow(
+  s: ServerRow,
+  projectCountMap: Map<string, number>,
+  databaseCountMap: Map<string, number>,
+  overrides?: Partial<Pick<ServerWithDetails, 'statusMessage'>>
+): ServerWithDetails {
+  return {
+    id: s.id,
+    name: s.name,
+    description: s.description,
+    provider: s.provider,
+    providerId: s.providerId,
+    region: s.region,
+    size: s.size,
+    image: s.image,
+    vcpus: s.vcpus,
+    memoryMb: s.memoryMb,
+    diskGb: s.diskGb,
+    ipv4: s.ipv4,
+    ipv6: s.ipv6,
+    privateIp: s.privateIp,
+    status: s.status,
+    setupStatus: s.setupStatus,
+    statusMessage: s.statusMessage,
+    labels: s.labels as Record<string, unknown>,
+    location: extractServerLocation(s.providerData),
+    projectCount: projectCountMap.get(s.id) ?? 0,
+    databaseCount: databaseCountMap.get(s.id) ?? 0,
+    isManaged: s.isManaged,
+    createdAt: s.createdAt,
+    updatedAt: s.updatedAt,
+    lastSeenAt: s.lastSeenAt,
+    ...overrides,
+  };
+}
+
+async function toServerDetails(
+  s: ServerRow,
+  organizationId: string,
+  overrides?: Partial<Pick<ServerWithDetails, 'statusMessage'>>
+): Promise<ServerWithDetails> {
+  const { projectCountMap, databaseCountMap } = await getServerUsageCounts(organizationId, [s.id]);
+  return mapServerRow(s, projectCountMap, databaseCountMap, overrides);
 }
 
 // Get provider API token from organization settings or env
@@ -285,30 +412,12 @@ export const serverService = {
       .where(eq(servers.organizationId, organizationId))
       .orderBy(desc(servers.createdAt));
 
-    return result.map((s) => ({
-      id: s.id,
-      name: s.name,
-      description: s.description,
-      provider: s.provider,
-      providerId: s.providerId,
-      region: s.region,
-      size: s.size,
-      image: s.image,
-      vcpus: s.vcpus,
-      memoryMb: s.memoryMb,
-      diskGb: s.diskGb,
-      ipv4: s.ipv4,
-      ipv6: s.ipv6,
-      privateIp: s.privateIp,
-      status: s.status,
-      setupStatus: s.setupStatus,
-      statusMessage: s.statusMessage,
-      labels: s.labels as Record<string, unknown>,
-      isManaged: s.isManaged,
-      createdAt: s.createdAt,
-      updatedAt: s.updatedAt,
-      lastSeenAt: s.lastSeenAt,
-    }));
+    const { projectCountMap, databaseCountMap } = await getServerUsageCounts(
+      organizationId,
+      result.map((s) => s.id)
+    );
+
+    return result.map((s) => mapServerRow(s, projectCountMap, databaseCountMap));
   },
 
   /**
@@ -337,30 +446,10 @@ export const serverService = {
     }
 
     const s = result[0];
-    return {
-      id: s.id,
-      name: s.name,
-      description: s.description,
-      provider: s.provider,
-      providerId: s.providerId,
-      region: s.region,
-      size: s.size,
-      image: s.image,
-      vcpus: s.vcpus,
-      memoryMb: s.memoryMb,
-      diskGb: s.diskGb,
-      ipv4: s.ipv4,
-      ipv6: s.ipv6,
-      privateIp: s.privateIp,
-      status: s.status,
-      setupStatus: s.setupStatus,
-      statusMessage: s.statusMessage,
-      labels: s.labels as Record<string, unknown>,
-      isManaged: s.isManaged,
-      createdAt: s.createdAt,
-      updatedAt: s.updatedAt,
-      lastSeenAt: s.lastSeenAt,
-    };
+    const { projectCountMap, databaseCountMap } = await getServerUsageCounts(organizationId, [
+      s.id,
+    ]);
+    return mapServerRow(s, projectCountMap, databaseCountMap);
   },
 
   /**
@@ -444,30 +533,9 @@ export const serverService = {
         logger.error({ err, serverId: dbServer.id }, 'BYOS server setup failed');
       });
 
-      return {
-        id: dbServer.id,
-        name: dbServer.name,
-        description: dbServer.description,
-        provider: dbServer.provider,
-        providerId: dbServer.providerId,
-        region: dbServer.region,
-        size: dbServer.size,
-        image: dbServer.image,
-        vcpus: dbServer.vcpus,
-        memoryMb: dbServer.memoryMb,
-        diskGb: dbServer.diskGb,
-        ipv4: dbServer.ipv4,
-        ipv6: dbServer.ipv6,
-        privateIp: dbServer.privateIp,
-        status: dbServer.status,
-        setupStatus: dbServer.setupStatus,
+      return toServerDetails(dbServer, organizationId, {
         statusMessage: 'Connecting to server...',
-        labels: dbServer.labels as Record<string, unknown>,
-        isManaged: dbServer.isManaged,
-        createdAt: dbServer.createdAt,
-        updatedAt: dbServer.updatedAt,
-        lastSeenAt: dbServer.lastSeenAt,
-      };
+      });
     }
 
     // ── Managed provider flow ──
@@ -566,30 +634,7 @@ export const serverService = {
         }
       );
 
-      return {
-        id: updated.id,
-        name: updated.name,
-        description: updated.description,
-        provider: updated.provider,
-        providerId: updated.providerId,
-        region: updated.region,
-        size: updated.size,
-        image: updated.image,
-        vcpus: updated.vcpus,
-        memoryMb: updated.memoryMb,
-        diskGb: updated.diskGb,
-        ipv4: updated.ipv4,
-        ipv6: updated.ipv6,
-        privateIp: updated.privateIp,
-        status: updated.status,
-        setupStatus: updated.setupStatus,
-        statusMessage: updated.statusMessage,
-        labels: updated.labels as Record<string, unknown>,
-        isManaged: updated.isManaged,
-        createdAt: updated.createdAt,
-        updatedAt: updated.updatedAt,
-        lastSeenAt: updated.lastSeenAt,
-      };
+      return toServerDetails(updated, organizationId);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       console.error('Server creation failed:', errorMessage, error);
@@ -730,30 +775,7 @@ export const serverService = {
       .where(eq(servers.id, serverId))
       .returning();
 
-    return {
-      id: updated.id,
-      name: updated.name,
-      description: updated.description,
-      provider: updated.provider,
-      providerId: updated.providerId,
-      region: updated.region,
-      size: updated.size,
-      image: updated.image,
-      vcpus: updated.vcpus,
-      memoryMb: updated.memoryMb,
-      diskGb: updated.diskGb,
-      ipv4: updated.ipv4,
-      ipv6: updated.ipv6,
-      privateIp: updated.privateIp,
-      status: updated.status,
-      setupStatus: updated.setupStatus,
-      statusMessage: updated.statusMessage,
-      labels: updated.labels as Record<string, unknown>,
-      isManaged: updated.isManaged,
-      createdAt: updated.createdAt,
-      updatedAt: updated.updatedAt,
-      lastSeenAt: updated.lastSeenAt,
-    };
+    return toServerDetails(updated, organizationId);
   },
 
   /**
@@ -810,30 +832,7 @@ export const serverService = {
       .where(eq(servers.id, serverId))
       .returning();
 
-    return {
-      id: updated.id,
-      name: updated.name,
-      description: updated.description,
-      provider: updated.provider,
-      providerId: updated.providerId,
-      region: updated.region,
-      size: updated.size,
-      image: updated.image,
-      vcpus: updated.vcpus,
-      memoryMb: updated.memoryMb,
-      diskGb: updated.diskGb,
-      ipv4: updated.ipv4,
-      ipv6: updated.ipv6,
-      privateIp: updated.privateIp,
-      status: updated.status,
-      setupStatus: updated.setupStatus,
-      statusMessage: updated.statusMessage,
-      labels: updated.labels as Record<string, unknown>,
-      isManaged: updated.isManaged,
-      createdAt: updated.createdAt,
-      updatedAt: updated.updatedAt,
-      lastSeenAt: updated.lastSeenAt,
-    };
+    return toServerDetails(updated, organizationId);
   },
 
   /**
