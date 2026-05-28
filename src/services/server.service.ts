@@ -5,12 +5,16 @@ import { servers } from '../db/schema/servers';
 import { projects } from '../db/schema/projects';
 import { databases } from '../db/schema/databases';
 import { organizationRepository } from '../repositories/organization.repository';
+import { organizations } from '../db/schema/organizations';
 import { createProvider, type ProviderType, type ServerConfig } from '../providers';
 import { t, type SupportedLocale } from '../i18n';
 import { getServerStatusQueue } from '../queue';
 import { generateSSHKeyPair } from '../utils/ssh';
 import { encrypt, decrypt } from '../lib/encryption';
 import { getPlanInfo, isUnlimited, type PlanType } from '../lib/plans';
+import { getPlanInfraLimits } from '../lib/infra-billing';
+import { infraBillingService } from './infra-billing.service';
+import { assertOrganizationCanMutateResources } from './organization-billing.service';
 import { SSHClient } from '../utils/ssh';
 import { wsManager } from '../lib/ws';
 import { logger } from '../lib/logger';
@@ -471,6 +475,8 @@ export const serverService = {
       throw new HTTPException(403, { message: t(locale, 'organizations', 'adminRequired') });
     }
 
+    await assertOrganizationCanMutateResources(organizationId, locale);
+
     // Check server quota
     const org = await organizationRepository.findById(organizationId);
     if (!org) {
@@ -539,6 +545,22 @@ export const serverService = {
     }
 
     // ── Managed provider flow ──
+    const infraLimits = getPlanInfraLimits(plan);
+    if (!infraLimits.managedServersEnabled) {
+      throw new HTTPException(403, {
+        message: t(locale, 'infraBilling', 'managedNotAllowed'),
+      });
+    }
+
+    const quote = await infraBillingService.quoteManagedServer(
+      plan,
+      input.provider,
+      input.region,
+      input.size,
+      locale,
+    );
+    await infraBillingService.assertWalletCanProvision(organizationId, plan, quote, locale);
+
     // Get provider token
     const apiToken = getProviderToken(input.provider);
     if (!apiToken) {
@@ -562,6 +584,8 @@ export const serverService = {
       // Continue without SSH key - server will still be created with password auth
     }
 
+    const billingFields = infraBillingService.billingFieldsFromQuote(quote);
+
     // Create server in database first (provisioning status)
     const [dbServer] = await db
       .insert(servers)
@@ -578,6 +602,11 @@ export const serverService = {
         sshKeyId: providerSshKeyId || null,
         sshPrivateKey: encrypt(sshKeyPair.privateKey),
         sshPublicKey: sshKeyPair.publicKey,
+        vcpus: quote.specs.vcpus,
+        memoryMb: quote.specs.memoryMb,
+        diskGb: quote.specs.diskGb,
+        isManaged: true,
+        ...billingFields,
       })
       .returning();
 
@@ -737,7 +766,7 @@ export const serverService = {
     }
 
     // Get server
-    const [server] = await db
+    let [server] = await db
       .select()
       .from(servers)
       .where(and(eq(servers.id, serverId), eq(servers.organizationId, organizationId)))
@@ -747,8 +776,45 @@ export const serverService = {
       throw new HTTPException(404, { message: t(locale, 'servers', 'notFound') });
     }
 
-    if (!server.providerId) {
+    if (action === 'start') {
+      await assertOrganizationCanMutateResources(organizationId, locale);
+    }
+
+    const providerId = server.providerId;
+    if (!providerId) {
       throw new HTTPException(400, { message: t(locale, 'servers', 'notProvisioned') });
+    }
+
+    if (action === 'start' && server.isManaged && server.provider !== 'self_hosted') {
+      const org = await organizationRepository.findById(organizationId);
+      const plan = (org?.plan || 'free') as PlanType;
+
+      if (plan !== 'enterprise') {
+        if (!server.customerPriceMonthlyCents) {
+          await infraBillingService.backfillServerBillingIfMissing(serverId);
+          const [refreshed] = await db
+            .select()
+            .from(servers)
+            .where(eq(servers.id, serverId))
+            .limit(1);
+          if (refreshed) server = refreshed;
+        }
+
+        const required = server.customerPriceMonthlyCents ?? 0;
+        if (required > 0) {
+          const [orgWallet] = await db
+            .select({ balance: organizations.infraWalletBalanceCents })
+            .from(organizations)
+            .where(eq(organizations.id, organizationId))
+            .limit(1);
+
+          if ((orgWallet?.balance ?? 0) < required) {
+            throw new HTTPException(402, {
+              message: t(locale, 'infraBilling', 'insufficientWallet'),
+            });
+          }
+        }
+      }
     }
 
     const apiToken = getProviderToken(server.provider as ProviderType);
@@ -757,13 +823,13 @@ export const serverService = {
     // Execute action
     switch (action) {
       case 'start':
-        await provider.powerOn(server.providerId);
+        await provider.powerOn(providerId);
         break;
       case 'stop':
-        await provider.powerOff(server.providerId);
+        await provider.powerOff(providerId);
         break;
       case 'reboot':
-        await provider.reboot(server.providerId);
+        await provider.reboot(providerId);
         break;
     }
 
@@ -872,6 +938,29 @@ export const serverService = {
 
     const providerInstance = createProvider(provider, apiToken);
     return providerInstance.listSizes();
+  },
+
+  /**
+   * Sizes with customer pricing, margin, and plan eligibility (for dashboard).
+   */
+  async getSizesForOrganization(
+    organizationId: string,
+    provider: ProviderType,
+    region: string,
+    locale: SupportedLocale = 'en',
+  ) {
+    const org = await organizationRepository.findById(organizationId);
+    if (!org) {
+      throw new HTTPException(404, { message: t(locale, 'organizations', 'notFound') });
+    }
+    const plan = (org.plan || 'free') as PlanType;
+    return infraBillingService.getSizedOptionsForOrganization(
+      organizationId,
+      plan,
+      provider,
+      region,
+      locale,
+    );
   },
 
   /**

@@ -16,6 +16,8 @@ import {
   stopLogCollector,
   startBackupWorker,
   stopBackupWorker,
+  startInfraBillingWorker,
+  stopInfraBillingWorker,
 } from './workers';
 import { startNotificationWorker, stopNotificationWorker } from './workers/notification.worker';
 import { closeQueues } from './lib/queue';
@@ -54,6 +56,10 @@ startDeploymentWorker().catch((error) => {
 // Start the health check worker
 startHealthCheckWorker().catch((error) => {
   logger.error('Failed to start health check worker:', error);
+});
+
+startInfraBillingWorker().catch((error) => {
+  logger.error('Failed to start infra billing worker:', error);
 });
 
 // Start the metrics worker
@@ -105,6 +111,7 @@ async function gracefulShutdown(signal: string) {
   stopMetricsWorker();
   stopLogCollector();
   stopBackupWorker();
+  stopInfraBillingWorker();
   await stopNotificationWorker();
   await stopServerStatusWorker();
   await stopServerSetupWorker();

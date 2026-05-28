@@ -152,6 +152,156 @@ function orgInvitationTemplate(
   });
 }
 
+function formatUsd(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+function infraCreditTopUpTemplate(
+  orgName: string,
+  amountCents: number,
+  balanceCents: number,
+  billingUrl: string,
+  locale: 'en' | 'tr'
+): string {
+  const texts = {
+    en: {
+      title: 'Infrastructure credits added',
+      greeting: 'Hi there,',
+      button: 'View billing',
+    },
+    tr: {
+      title: 'Altyapı kredileri eklendi',
+      greeting: 'Merhaba,',
+      button: 'Faturalandırmayı görüntüle',
+    },
+  };
+  const t = texts[locale] ?? texts.en;
+  const safeOrg = esc(orgName);
+  const bodyHtml =
+    locale === 'tr'
+      ? `<strong style="color:#fafafa;">${safeOrg}</strong> için <strong style="color:#fafafa;">${formatUsd(amountCents)}</strong> altyapı kredisi yüklendi. Güncel bakiye: <strong style="color:#fafafa;">${formatUsd(balanceCents)}</strong>.`
+      : `<strong style="color:#fafafa;">${formatUsd(amountCents)}</strong> in infrastructure credits was added to <strong style="color:#fafafa;">${safeOrg}</strong>. New balance: <strong style="color:#fafafa;">${formatUsd(balanceCents)}</strong>.`;
+
+  return renderTransactionalEmail({
+    title: t.title,
+    greeting: t.greeting,
+    bodyHtml,
+    button: { href: billingUrl, label: t.button },
+  });
+}
+
+function infraCreditsLowTemplate(
+  orgName: string,
+  balanceCents: number,
+  billingUrl: string,
+  locale: 'en' | 'tr'
+): string {
+  const texts = {
+    en: {
+      title: 'Low infrastructure credits',
+      greeting: 'Hi there,',
+      button: 'Add credits',
+      note: 'Managed servers may be stopped automatically when credits run out.',
+    },
+    tr: {
+      title: 'Altyapı kredisi düşük',
+      greeting: 'Merhaba,',
+      button: 'Kredi ekle',
+      note: 'Krediler bittiğinde yönetilen sunucular otomatik olarak durdurulabilir.',
+    },
+  };
+  const t = texts[locale] ?? texts.en;
+  const safeOrg = esc(orgName);
+  const bodyHtml =
+    locale === 'tr'
+      ? `<strong style="color:#fafafa;">${safeOrg}</strong> altyapı cüzdan bakiyesi <strong style="color:#fafafa;">${formatUsd(balanceCents)}</strong> seviyesine düştü. Kesinti yaşamamak için kredi ekleyin.`
+      : `Infrastructure credit balance for <strong style="color:#fafafa;">${safeOrg}</strong> is low (<strong style="color:#fafafa;">${formatUsd(balanceCents)}</strong>). Add credits to avoid interruptions.`;
+
+  return renderTransactionalEmail({
+    title: t.title,
+    greeting: t.greeting,
+    bodyHtml,
+    button: { href: billingUrl, label: t.button },
+    notes: [t.note],
+  });
+}
+
+function infraServerSuspendedTemplate(
+  orgName: string,
+  serverName: string,
+  billingUrl: string,
+  locale: 'en' | 'tr'
+): string {
+  const texts = {
+    en: {
+      title: 'Server stopped — credits exhausted',
+      greeting: 'Hi there,',
+      button: 'Add credits',
+      note: 'After adding credits, start the server again from the dashboard.',
+    },
+    tr: {
+      title: 'Sunucu durduruldu — kredi bitti',
+      greeting: 'Merhaba,',
+      button: 'Kredi ekle',
+      note: 'Kredi yükledikten sonra sunucuyu panelden yeniden başlatabilirsiniz.',
+    },
+  };
+  const t = texts[locale] ?? texts.en;
+  const safeOrg = esc(orgName);
+  const safeServer = esc(serverName);
+  const bodyHtml =
+    locale === 'tr'
+      ? `<strong style="color:#fafafa;">${safeServer}</strong> (<strong style="color:#fafafa;">${safeOrg}</strong>) yönetilen sunucusu, yetersiz altyapı kredisi nedeniyle durduruldu.`
+      : `Managed server <strong style="color:#fafafa;">${safeServer}</strong> in <strong style="color:#fafafa;">${safeOrg}</strong> was stopped because infrastructure credits ran out.`;
+
+  return renderTransactionalEmail({
+    title: t.title,
+    greeting: t.greeting,
+    bodyHtml,
+    button: { href: billingUrl, label: t.button },
+    notes: [t.note],
+  });
+}
+
+function billingPlanActivatedTemplate(
+  orgName: string,
+  planName: string,
+  billingUrl: string,
+  locale: 'en' | 'tr'
+): string {
+  const texts = {
+    en: {
+      title: 'Plan updated',
+      greeting: 'Hi there,',
+      button: 'View billing',
+    },
+    tr: {
+      title: 'Plan güncellendi',
+      greeting: 'Merhaba,',
+      button: 'Faturalandırmayı görüntüle',
+    },
+  };
+  const t = texts[locale] ?? texts.en;
+  const safeOrg = esc(orgName);
+  const safePlan = esc(planName);
+  const bodyHtml =
+    locale === 'tr'
+      ? `<strong style="color:#fafafa;">${safeOrg}</strong> için platform planınız <strong style="color:#fafafa;">${safePlan}</strong> olarak güncellendi.`
+      : `Your platform plan for <strong style="color:#fafafa;">${safeOrg}</strong> is now <strong style="color:#fafafa;">${safePlan}</strong>.`;
+
+  return renderTransactionalEmail({
+    title: t.title,
+    greeting: t.greeting,
+    bodyHtml,
+    notes: [
+      locale === 'tr'
+        ? 'Yönetilen bulut sunucuları ayrı altyapı kredileri ile faturalandırılır.'
+        : 'Managed cloud servers are billed separately via infrastructure credits.',
+    ],
+    button: { href: billingUrl, label: t.button },
+  });
+}
+
 function billingPaymentFailedTemplate(
   orgName: string,
   billingUrl: string,
@@ -178,6 +328,42 @@ function billingPaymentFailedTemplate(
     locale === 'tr'
       ? `<strong style="color:#fafafa;">${safeOrg}</strong> için son ödeme işlenemedi. Kesinti yaşamamak için ödeme yönteminizi güncelleyin.`
       : `We couldn't process the latest payment for <strong style="color:#fafafa;">${safeOrg}</strong>. Update your payment method to avoid service interruption.`;
+
+  return renderTransactionalEmail({
+    title: t.title,
+    greeting: t.greeting,
+    bodyHtml,
+    button: { href: billingUrl, label: t.button },
+    notes: [t.note],
+  });
+}
+
+function billingSuspendedTemplate(
+  orgName: string,
+  billingUrl: string,
+  locale: 'en' | 'tr'
+): string {
+  const texts = {
+    en: {
+      title: 'Subscription ended — services paused',
+      greeting: 'Hi there,',
+      button: 'Manage billing',
+      note: 'Resume your plan to start servers and deployments again. Projects were paused automatically.',
+    },
+    tr: {
+      title: 'Abonelik sona erdi — hizmetler duraklatıldı',
+      greeting: 'Merhaba,',
+      button: 'Faturalamayı yönet',
+      note: 'Sunucuları ve dağıtımları yeniden başlatmak için planınızı yenileyin. Projeler otomatik olarak duraklatıldı.',
+    },
+  };
+
+  const t = texts[locale] ?? texts.en;
+  const safeOrg = esc(orgName);
+  const bodyHtml =
+    locale === 'tr'
+      ? `<strong style="color:#fafafa;">${safeOrg}</strong> için platform aboneliği sona erdi. Yönetilen sunucular durduruldu ve aktif projeler duraklatıldı.`
+      : `Your platform subscription for <strong style="color:#fafafa;">${safeOrg}</strong> has ended. Managed servers were stopped and active projects were paused.`;
 
   return renderTransactionalEmail({
     title: t.title,
@@ -286,6 +472,127 @@ export async function sendOrgInvitationEmail(
   }
 }
 
+export async function sendInfraCreditTopUpEmail(
+  to: string,
+  orgName: string,
+  amountCents: number,
+  balanceCents: number,
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping infra top-up email');
+    return;
+  }
+
+  const billingUrl = `${env.FRONTEND_URL}/dashboard/billing`;
+  const subjects = {
+    en: `Infrastructure credits added — ${orgName}`,
+    tr: `Altyapı kredileri eklendi — ${orgName}`,
+  };
+
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: subjects[locale] ?? subjects.en,
+      html: infraCreditTopUpTemplate(orgName, amountCents, balanceCents, billingUrl, locale),
+    });
+    logger.info({ to, orgName, amountCents }, 'Infra credit top-up email sent');
+  } catch (error) {
+    logger.error({ error, to, orgName }, 'Failed to send infra top-up email');
+  }
+}
+
+export async function sendInfraCreditsLowEmail(
+  to: string,
+  orgName: string,
+  balanceCents: number,
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping infra low balance email');
+    return;
+  }
+
+  const billingUrl = `${env.FRONTEND_URL}/dashboard/billing`;
+  const subjects = {
+    en: `Low infrastructure credits — ${orgName}`,
+    tr: `Düşük altyapı kredisi — ${orgName}`,
+  };
+
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: subjects[locale] ?? subjects.en,
+      html: infraCreditsLowTemplate(orgName, balanceCents, billingUrl, locale),
+    });
+    logger.info({ to, orgName, balanceCents }, 'Infra low balance email sent');
+  } catch (error) {
+    logger.error({ error, to, orgName }, 'Failed to send infra low balance email');
+  }
+}
+
+export async function sendInfraServerSuspendedEmail(
+  to: string,
+  orgName: string,
+  serverName: string,
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping infra server suspended email');
+    return;
+  }
+
+  const billingUrl = `${env.FRONTEND_URL}/dashboard/billing`;
+  const subjects = {
+    en: `Server stopped — add credits (${orgName})`,
+    tr: `Sunucu durduruldu — kredi ekleyin (${orgName})`,
+  };
+
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: subjects[locale] ?? subjects.en,
+      html: infraServerSuspendedTemplate(orgName, serverName, billingUrl, locale),
+    });
+    logger.info({ to, orgName, serverName }, 'Infra server suspended email sent');
+  } catch (error) {
+    logger.error({ error, to, orgName, serverName }, 'Failed to send infra server suspended email');
+  }
+}
+
+export async function sendBillingPlanActivatedEmail(
+  to: string,
+  orgName: string,
+  planName: string,
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping plan activated email');
+    return;
+  }
+
+  const billingUrl = `${env.FRONTEND_URL}/dashboard/billing`;
+  const subjects = {
+    en: `Plan updated — ${orgName}`,
+    tr: `Plan güncellendi — ${orgName}`,
+  };
+
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: subjects[locale] ?? subjects.en,
+      html: billingPlanActivatedTemplate(orgName, planName, billingUrl, locale),
+    });
+    logger.info({ to, orgName, planName }, 'Billing plan activated email sent');
+  } catch (error) {
+    logger.error({ error, to, orgName }, 'Failed to send plan activated email');
+  }
+}
+
 export async function sendBillingPaymentFailedEmail(
   to: string,
   orgName: string,
@@ -312,6 +619,35 @@ export async function sendBillingPaymentFailedEmail(
     logger.info({ to, orgName }, 'Billing payment failed email sent');
   } catch (error) {
     logger.error({ error, to, orgName }, 'Failed to send billing payment failed email');
+  }
+}
+
+export async function sendBillingSuspendedEmail(
+  to: string,
+  orgName: string,
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping billing suspended email');
+    return;
+  }
+
+  const billingUrl = `${env.FRONTEND_URL}/dashboard/billing`;
+  const subjects = {
+    en: `Services paused — ${orgName}`,
+    tr: `Hizmetler duraklatıldı — ${orgName}`,
+  };
+
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: subjects[locale] ?? subjects.en,
+      html: billingSuspendedTemplate(orgName, billingUrl, locale),
+    });
+    logger.info({ to, orgName }, 'Billing suspended email sent');
+  } catch (error) {
+    logger.error({ error, to, orgName }, 'Failed to send billing suspended email');
   }
 }
 
