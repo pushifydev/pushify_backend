@@ -6,6 +6,7 @@ import { notificationService } from './notification.service';
 import { restartPushifyContainer } from '../lib/container-resolve';
 import { logger } from '../lib/logger';
 import { t, type SupportedLocale } from '../i18n';
+import { planLimitsService } from './plan-limits.service';
 import type { HealthCheck, HealthCheckLog } from '../db/schema';
 
 interface HealthCheckInput {
@@ -76,6 +77,8 @@ export const healthCheckService = {
       logger.info({ projectId, userId }, 'Health check config updated');
       return updated;
     }
+
+    await planLimitsService.assertHealthChecksAllowed(organizationId, locale);
 
     const config = await healthCheckRepository.create({
       projectId,

@@ -4,6 +4,7 @@ import { projectRepository } from '../repositories/project.repository';
 import { organizationRepository } from '../repositories/organization.repository';
 import { t, type SupportedLocale } from '../i18n';
 import { assertOrganizationCanMutateResources } from './organization-billing.service';
+import { planLimitsService } from './plan-limits.service';
 
 type DeploymentTrigger = 'manual' | 'git_push' | 'rollback' | 'redeploy';
 
@@ -88,6 +89,8 @@ export const deploymentService = {
     const project = await this.checkProjectAccess(projectId, organizationId, userId, locale);
 
     await assertOrganizationCanMutateResources(organizationId, locale);
+    await planLimitsService.assertDeploymentsQuota(organizationId, locale);
+    await planLimitsService.assertBuildMinutesQuota(organizationId, locale);
 
     // Check if project is paused
     if (project.status === 'paused') {

@@ -215,6 +215,22 @@ export const tr: TranslationKeys = {
       'Platform aboneliğiniz sona erdi. Sunucuları, projeleri ve dağıtımları yeniden kullanmak için Faturalandırma sayfasından planınızı yenileyin.',
   },
 
+  planLimits: {
+    servers: 'Sunucu limitine ulaşıldı. Daha fazla sunucu için planınızı yükseltin.',
+    databases: 'Veritabanı limitine ulaşıldı. Daha fazla veritabanı için planınızı yükseltin.',
+    projects: 'Proje limitine ulaşıldı. Daha fazla proje için planınızı yükseltin.',
+    deploymentsPerMonth:
+      'Aylık dağıtım limitine ulaşıldı. Planınızı yükseltin veya gelecek ayı bekleyin.',
+    teamMembers: 'Ekip üyesi limitine ulaşıldı. Daha fazla davet için planınızı yükseltin.',
+    customDomains: 'Özel alan adı limitine ulaşıldı. Daha fazla domain için planınızı yükseltin.',
+    buildMinutesPerMonth:
+      'Aylık build süresi limitine ulaşıldı. Planınızı yükseltin veya gelecek ayı bekleyin.',
+    previewDeployments:
+      'Planınızda önizleme dağıtımları yok. Hobby veya üzeri bir plana geçin.',
+    healthChecks:
+      'Planınızda health check yok. Hobby veya üzeri bir plana geçin.',
+  },
+
   dashboard: {
     actionFailedDeploymentsTitle: '{count} başarısız dağıtım',
     actionFailedDeploymentsDesc: 'Logları inceleyin ve proje veya aktivite sayfasından yeniden dağıtın.',

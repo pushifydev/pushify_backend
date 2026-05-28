@@ -24,21 +24,25 @@ export interface PlanInfo {
   limits: PlanLimits;
 }
 
+/**
+ * Platform limits (v2 — profit-oriented).
+ * Managed server compute is billed separately via the infra wallet (+ margin).
+ */
 export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
   free: {
     name: 'Free',
     price: 0,
     limits: {
       apiRequestsPerMinute: 60,
-      servers: 0, // No servers on free plan
-      databases: 0, // No databases on free plan
-      projects: 3,
-      deploymentsPerMonth: 100,
+      servers: 0,
+      databases: 0,
+      projects: 2,
+      deploymentsPerMonth: 30,
       teamMembers: 1,
       customDomains: 1,
       storageGb: 1,
-      bandwidthGb: 10,
-      buildMinutesPerMonth: 100,
+      bandwidthGb: 5,
+      buildMinutesPerMonth: 30,
       previewDeployments: false,
       healthChecks: false,
       prioritySupport: false,
@@ -50,14 +54,14 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
     limits: {
       apiRequestsPerMinute: 120,
       servers: 1,
-      databases: 2,
-      projects: 10,
-      deploymentsPerMonth: 500,
-      teamMembers: 3,
-      customDomains: 5,
-      storageGb: 10,
-      bandwidthGb: 100,
-      buildMinutesPerMonth: 500,
+      databases: 1,
+      projects: 5,
+      deploymentsPerMonth: 150,
+      teamMembers: 2,
+      customDomains: 2,
+      storageGb: 5,
+      bandwidthGb: 50,
+      buildMinutesPerMonth: 200,
       previewDeployments: true,
       healthChecks: true,
       prioritySupport: false,
@@ -69,14 +73,14 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
     limits: {
       apiRequestsPerMinute: 300,
       servers: 3,
-      databases: 5,
-      projects: 50,
-      deploymentsPerMonth: 2000,
-      teamMembers: 10,
-      customDomains: 20,
-      storageGb: 50,
-      bandwidthGb: 500,
-      buildMinutesPerMonth: 2000,
+      databases: 3,
+      projects: 15,
+      deploymentsPerMonth: 750,
+      teamMembers: 5,
+      customDomains: 10,
+      storageGb: 25,
+      bandwidthGb: 250,
+      buildMinutesPerMonth: 750,
       previewDeployments: true,
       healthChecks: true,
       prioritySupport: true,
@@ -87,15 +91,15 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
     price: 99,
     limits: {
       apiRequestsPerMinute: 600,
-      servers: 10,
-      databases: 20,
-      projects: 200,
-      deploymentsPerMonth: 10000,
-      teamMembers: 50,
-      customDomains: 100,
-      storageGb: 200,
-      bandwidthGb: 2000,
-      buildMinutesPerMonth: 10000,
+      servers: 8,
+      databases: 10,
+      projects: 50,
+      deploymentsPerMonth: 3000,
+      teamMembers: 15,
+      customDomains: 25,
+      storageGb: 100,
+      bandwidthGb: 1000,
+      buildMinutesPerMonth: 3000,
       previewDeployments: true,
       healthChecks: true,
       prioritySupport: true,
@@ -106,9 +110,9 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
     price: -1, // Custom pricing
     limits: {
       apiRequestsPerMinute: -1,
-      servers: -1, // Unlimited
-      databases: -1, // Unlimited
-      projects: -1, // Unlimited
+      servers: -1,
+      databases: -1,
+      projects: -1,
       deploymentsPerMonth: -1,
       teamMembers: -1,
       customDomains: -1,

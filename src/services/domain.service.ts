@@ -14,6 +14,7 @@ import { getOrAssignPort } from '../workers/port-manager';
 import { t, type SupportedLocale } from '../i18n';
 import { logger } from '../lib/logger';
 import { env } from '../config/env';
+import { planLimitsService } from './plan-limits.service';
 
 interface CreateDomainInput {
   domain: string;
@@ -229,6 +230,8 @@ export const domainService = {
     if (!DOMAIN_REGEX.test(domainName)) {
       throw new HTTPException(400, { message: t(locale, 'domains', 'invalidFormat') });
     }
+
+    await planLimitsService.assertCustomDomainsQuota(organizationId, locale);
 
     // Check if domain already exists globally
     const existingDomain = await domainRepository.findByDomain(domainName);
