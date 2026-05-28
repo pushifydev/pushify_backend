@@ -26,19 +26,19 @@ export const PLAN_INFRA_LIMITS: Record<PlanType, PlanInfraLimits> = {
     managedServersEnabled: true,
     maxServerVcpus: 2,
     maxServerMemoryMb: 4096,
-    maxProviderMonthlyUsdCents: 1500, // ~€14/mo provider cap
+    maxProviderMonthlyUsdCents: 1200, // ~$12/mo provider cap before margin
   },
   pro: {
     managedServersEnabled: true,
     maxServerVcpus: 4,
     maxServerMemoryMb: 8192,
-    maxProviderMonthlyUsdCents: 4000,
+    maxProviderMonthlyUsdCents: 3500,
   },
   business: {
     managedServersEnabled: true,
     maxServerVcpus: 8,
     maxServerMemoryMb: 32768,
-    maxProviderMonthlyUsdCents: 12000,
+    maxProviderMonthlyUsdCents: 10000,
   },
   enterprise: {
     managedServersEnabled: true,

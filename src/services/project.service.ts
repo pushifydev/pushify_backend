@@ -11,6 +11,7 @@ import { logger } from '../lib/logger';
 import { decrypt } from '../lib/encryption';
 import { t, type SupportedLocale } from '../i18n';
 import { assertOrganizationCanMutateResources } from './organization-billing.service';
+import { planLimitsService } from './plan-limits.service';
 
 // Types
 interface CreateProjectInput {
@@ -60,6 +61,7 @@ export const projectService = {
     }
 
     await assertOrganizationCanMutateResources(organizationId, locale);
+    await planLimitsService.assertProjectsQuota(organizationId, locale);
 
     // Generate slug from name
     let slug = generateSlug(input.name);

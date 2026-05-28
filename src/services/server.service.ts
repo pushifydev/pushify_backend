@@ -13,7 +13,8 @@ import { t, type SupportedLocale } from '../i18n';
 import { getServerStatusQueue } from '../queue';
 import { generateSSHKeyPair } from '../utils/ssh';
 import { encrypt, decrypt } from '../lib/encryption';
-import { getPlanInfo, isUnlimited, type PlanType } from '../lib/plans';
+import { type PlanType } from '../lib/plans';
+import { planLimitsService } from './plan-limits.service';
 import { getPlanInfraLimits } from '../lib/infra-billing';
 import { infraBillingService } from './infra-billing.service';
 import { assertOrganizationCanMutateResources } from './organization-billing.service';
@@ -511,30 +512,13 @@ export const serverService = {
 
     await assertOrganizationCanMutateResources(organizationId, locale);
 
-    // Check server quota
+    await planLimitsService.assertServersQuota(organizationId, locale);
+
     const org = await organizationRepository.findById(organizationId);
     if (!org) {
       throw new HTTPException(404, { message: t(locale, 'organizations', 'notFound') });
     }
-
     const plan = (org.plan || 'free') as PlanType;
-    const planInfo = getPlanInfo(plan);
-    const serverLimit = planInfo.limits.servers;
-
-    if (!isUnlimited(serverLimit)) {
-      // Count current servers
-      const serversResult = await db
-        .select({ count: count() })
-        .from(servers)
-        .where(eq(servers.organizationId, organizationId));
-      const currentServerCount = serversResult[0]?.count || 0;
-
-      if (currentServerCount >= serverLimit) {
-        throw new HTTPException(403, {
-          message: t(locale, 'servers', 'quotaExceeded'),
-        });
-      }
-    }
 
     // ── BYOS (Bring Your Own Server) ──
     if (input.provider === 'self_hosted') {
