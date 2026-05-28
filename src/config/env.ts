@@ -75,6 +75,13 @@ const envSchema = z.object({
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
   STRIPE_PUBLISHABLE_KEY: z.string().optional(),
+  /** Live/test Price IDs — override hardcoded defaults in lib/stripe.ts */
+  STRIPE_PRICE_HOBBY_MONTHLY: z.string().optional(),
+  STRIPE_PRICE_HOBBY_YEARLY: z.string().optional(),
+  STRIPE_PRICE_PRO_MONTHLY: z.string().optional(),
+  STRIPE_PRICE_PRO_YEARLY: z.string().optional(),
+  STRIPE_PRICE_BUSINESS_MONTHLY: z.string().optional(),
+  STRIPE_PRICE_BUSINESS_YEARLY: z.string().optional(),
 
   /** Margin % on managed infra provider list price (default 20) */
   INFRA_MARGIN_PERCENT: z.coerce.number().min(0).max(100).default(20),

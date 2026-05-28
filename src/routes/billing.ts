@@ -122,6 +122,8 @@ billingRouter.get('/infra', async (c) => {
 
   await billingService.getBillingInfo(organizationId, userId, locale);
 
+  await infraBillingService.clearInfraCreditsStoppedMessages(organizationId);
+
   const wallet = await infraBillingService.getWalletSummary(organizationId);
   const transactions = await infraBillingService.listTransactions(organizationId, 30);
 

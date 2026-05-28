@@ -57,6 +57,13 @@ export interface InfraWalletSummary {
   topUpAmountsCents: readonly number[];
 }
 
+export interface ServerInfraBillingContext {
+  walletBalanceCents: number;
+  requiredStartCents: number;
+  estimatedMonthlyCents: number;
+  canStart: boolean;
+}
+
 export interface SizedOptionForPlan {
   size: ServerSize;
   specs: {
@@ -70,10 +77,55 @@ export interface SizedOptionForPlan {
     marginPercent: number;
   };
   allowedByPlan: boolean;
+  /** Stable code for clients to localize UI (prefer over disallowReason). */
+  disallowCode?: 'managedNotAllowed' | 'serverTierExceeded';
   disallowReason?: string;
 }
 
 export const infraBillingService = {
+  async getServerInfraBillingContext(
+    organizationId: string,
+    serverId: string,
+  ): Promise<ServerInfraBillingContext | null> {
+    const [server] = await db
+      .select({
+        isManaged: servers.isManaged,
+        provider: servers.provider,
+        customerPriceMonthlyCents: servers.customerPriceMonthlyCents,
+      })
+      .from(servers)
+      .where(and(eq(servers.id, serverId), eq(servers.organizationId, organizationId)))
+      .limit(1);
+
+    if (!server?.isManaged || server.provider === 'self_hosted') {
+      return null;
+    }
+
+    const org = await organizationRepository.findById(organizationId);
+    if (!org) return null;
+
+    let monthly = server.customerPriceMonthlyCents ?? 0;
+    if (monthly <= 0) {
+      await this.backfillServerBillingIfMissing(serverId);
+      const [refreshed] = await db
+        .select({ monthly: servers.customerPriceMonthlyCents })
+        .from(servers)
+        .where(eq(servers.id, serverId))
+        .limit(1);
+      monthly = refreshed?.monthly ?? 0;
+    }
+
+    const balance = org.infraWalletBalanceCents ?? 0;
+    const requiredStartCents = org.plan === 'enterprise' ? 0 : monthly;
+
+    return {
+      walletBalanceCents: balance,
+      requiredStartCents,
+      estimatedMonthlyCents: monthly,
+      canStart: org.plan === 'enterprise' || balance >= requiredStartCents,
+    };
+  },
+
   async getWalletSummary(organizationId: string): Promise<InfraWalletSummary> {
     const [org] = await db
       .select({ balance: organizations.infraWalletBalanceCents })
@@ -139,6 +191,7 @@ export const infraBillingService = {
       );
 
       let allowedByPlan = limits.managedServersEnabled;
+      let disallowCode: SizedOptionForPlan['disallowCode'];
       let disallowReason: string | undefined;
 
       if (allowedByPlan) {
@@ -146,10 +199,12 @@ export const infraBillingService = {
           assertServerWithinPlanLimits(plan, quote.specs, quote.providerCostMonthlyCents);
         } catch (e) {
           allowedByPlan = false;
+          disallowCode = 'serverTierExceeded';
           disallowReason =
             e instanceof Error ? mapInfraError(e.message, locale) : undefined;
         }
       } else {
+        disallowCode = 'managedNotAllowed';
         disallowReason = t(locale, 'infraBilling', 'managedNotAllowed');
       }
 
@@ -166,6 +221,7 @@ export const infraBillingService = {
           marginPercent: quote.marginPercent,
         },
         allowedByPlan,
+        disallowCode,
         disallowReason,
       };
     });
@@ -259,6 +315,7 @@ export const infraBillingService = {
         .limit(1);
 
       if (existing) {
+        await this.clearInfraCreditsStoppedMessages(organizationId);
         return { balanceAfterCents: existing.balanceAfterCents, created: false };
       }
     }
@@ -289,7 +346,69 @@ export const infraBillingService = {
       return newBalance;
     });
 
+    await this.clearInfraCreditsStoppedMessages(organizationId);
+
     return { balanceAfterCents, created: true };
+  },
+
+  /**
+   * Remove stale "infra credits stopped" copy when the wallet can fund a start again.
+   * Does not power servers on — users still tap Start after topping up.
+   */
+  async clearInfraCreditsStoppedMessages(organizationId: string): Promise<number> {
+    const org = await organizationRepository.findById(organizationId);
+    if (!org) return 0;
+
+    const balance = org.infraWalletBalanceCents ?? 0;
+    if (org.plan === 'enterprise') {
+      const cleared = await db
+        .update(servers)
+        .set({ statusMessage: null, updatedAt: new Date() })
+        .where(
+          and(
+            eq(servers.organizationId, organizationId),
+            eq(servers.statusMessage, 'infra_credits_stopped'),
+          ),
+        )
+        .returning({ id: servers.id });
+      return cleared.length;
+    }
+
+    const candidates = await db
+      .select()
+      .from(servers)
+      .where(
+        and(
+          eq(servers.organizationId, organizationId),
+          eq(servers.statusMessage, 'infra_credits_stopped'),
+        ),
+      );
+
+    let count = 0;
+    for (const server of candidates) {
+      let monthly = server.customerPriceMonthlyCents ?? 0;
+      if (monthly <= 0) {
+        await this.backfillServerBillingIfMissing(server.id);
+        const [refreshed] = await db
+          .select({ monthly: servers.customerPriceMonthlyCents })
+          .from(servers)
+          .where(eq(servers.id, server.id))
+          .limit(1);
+        monthly = refreshed?.monthly ?? 0;
+      }
+
+      if (monthly > 0 && balance < monthly) {
+        continue;
+      }
+
+      await db
+        .update(servers)
+        .set({ statusMessage: null, updatedAt: new Date() })
+        .where(eq(servers.id, server.id));
+      count++;
+    }
+
+    return count;
   },
 
   async debitWallet(

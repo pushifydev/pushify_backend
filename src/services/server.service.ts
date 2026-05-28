@@ -237,6 +237,13 @@ export interface ServerLocation {
   datacenter?: string;
 }
 
+export interface ServerInfraBillingDetails {
+  walletBalanceCents: number;
+  requiredStartCents: number;
+  estimatedMonthlyCents: number;
+  canStart: boolean;
+}
+
 export interface ServerWithDetails {
   id: string;
   name: string;
@@ -260,6 +267,7 @@ export interface ServerWithDetails {
   projectCount: number;
   databaseCount: number;
   isManaged: boolean;
+  infraBilling?: ServerInfraBillingDetails;
   createdAt: Date;
   updatedAt: Date;
   lastSeenAt: Date | null;
@@ -439,6 +447,8 @@ export const serverService = {
       throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
     }
 
+    await infraBillingService.clearInfraCreditsStoppedMessages(organizationId);
+
     const result = await db
       .select()
       .from(servers)
@@ -453,7 +463,12 @@ export const serverService = {
     const { projectCountMap, databaseCountMap } = await getServerUsageCounts(organizationId, [
       s.id,
     ]);
-    return mapServerRow(s, projectCountMap, databaseCountMap);
+    const row = mapServerRow(s, projectCountMap, databaseCountMap);
+    const infraBilling = await infraBillingService.getServerInfraBillingContext(
+      organizationId,
+      serverId,
+    );
+    return infraBilling ? { ...row, infraBilling } : row;
   },
 
   /**
@@ -833,11 +848,15 @@ export const serverService = {
         break;
     }
 
-    // Update status
+    // Update status; clear billing stop copy after a successful start
     const newStatus = action === 'reboot' ? 'rebooting' : action === 'start' ? 'running' : 'stopped';
     const [updated] = await db
       .update(servers)
-      .set({ status: newStatus, updatedAt: new Date() })
+      .set({
+        status: newStatus,
+        updatedAt: new Date(),
+        ...(action === 'start' ? { statusMessage: null } : {}),
+      })
       .where(eq(servers.id, serverId))
       .returning();
 
@@ -880,6 +899,11 @@ export const serverService = {
     // Get server from provider
     const providerServer = await provider.getServer(server.providerId);
 
+    const clearBillingStopMessage =
+      providerServer.status === 'running' &&
+      (server.statusMessage === 'infra_credits_stopped' ||
+        server.statusMessage === 'billing_suspended');
+
     // Update database
     const [updated] = await db
       .update(servers)
@@ -894,6 +918,7 @@ export const serverService = {
         providerData: providerServer.providerData,
         lastSeenAt: new Date(),
         updatedAt: new Date(),
+        ...(clearBillingStopMessage ? { statusMessage: null } : {}),
       })
       .where(eq(servers.id, serverId))
       .returning();
