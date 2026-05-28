@@ -11,6 +11,7 @@ import { stopContainer, removeContainer } from '../workers/docker';
 import { env } from '../config/env';
 import type { PreviewDeployment } from '../db/schema';
 import { canOrganizationDeploy } from './organization-billing.service';
+import { planLimitsService } from './plan-limits.service';
 
 interface CreatePreviewInput {
   prNumber: number;
@@ -74,7 +75,8 @@ export const previewService = {
    */
   async createOrUpdatePreview(
     projectId: string,
-    input: CreatePreviewInput
+    input: CreatePreviewInput,
+    locale: SupportedLocale = 'en',
   ): Promise<PreviewDeployment> {
     const project = await projectRepository.findById(projectId);
     if (!project) {
@@ -84,6 +86,10 @@ export const previewService = {
     if (!(await canOrganizationDeploy(project.organizationId))) {
       throw new Error('Organization billing does not allow deployments');
     }
+
+    await planLimitsService.assertPreviewDeploymentsAllowed(project.organizationId, locale);
+    await planLimitsService.assertDeploymentsQuota(project.organizationId, locale);
+    await planLimitsService.assertBuildMinutesQuota(project.organizationId, locale);
 
     // Check if preview already exists
     const existing = await previewRepository.findByProjectAndPr(projectId, input.prNumber);

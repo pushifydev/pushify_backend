@@ -9,7 +9,7 @@ import { db } from '../db';
 import { eq } from 'drizzle-orm';
 import { servers } from '../db/schema/servers';
 import type { DatabaseType, DatabaseStatus } from '../db/schema/databases';
-import { getPlanInfo, isUnlimited, type PlanType } from '../lib/plans';
+import { planLimitsService } from './plan-limits.service';
 import { assertOrganizationCanMutateResources } from './organization-billing.service';
 import crypto from 'crypto';
 
@@ -179,24 +179,7 @@ export const databaseService = {
 
     await assertOrganizationCanMutateResources(organizationId, locale);
 
-    // Check database quota
-    const org = await organizationRepository.findById(organizationId);
-    if (!org) {
-      throw new HTTPException(404, { message: t(locale, 'organizations', 'notFound') });
-    }
-
-    const plan = (org.plan || 'free') as PlanType;
-    const planInfo = getPlanInfo(plan);
-    const databaseLimit = planInfo.limits.databases;
-
-    if (!isUnlimited(databaseLimit)) {
-      const existingDatabases = await databaseRepository.findByOrganization(organizationId);
-      if (existingDatabases.length >= databaseLimit) {
-        throw new HTTPException(403, {
-          message: t(locale, 'databases', 'quotaExceeded'),
-        });
-      }
-    }
+    await planLimitsService.assertDatabasesQuota(organizationId, locale);
 
     // Check if name already exists
     const existing = await databaseRepository.findByName(organizationId, input.name);

@@ -3,6 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { organizationRepository } from '../repositories/organization.repository';
 import { userRepository } from '../repositories/user.repository';
 import { logger } from '../lib/logger';
+import { planLimitsService } from './plan-limits.service';
 import { t, type SupportedLocale } from '../i18n';
 import { sendOrgInvitationEmail } from '../lib/email';
 
@@ -110,6 +111,8 @@ export const organizationService = {
     if (existingMember) {
       throw new HTTPException(409, { message: t(locale, 'organizations', 'alreadyMember') });
     }
+
+    await planLimitsService.assertTeamMembersQuota(organizationId, locale);
 
     const member = await organizationRepository.addMember({
       organizationId,
@@ -228,6 +231,8 @@ export const organizationService = {
     if (existingInvitation) {
       throw new HTTPException(409, { message: t(locale, 'organizations', 'invitationAlreadyPending') });
     }
+
+    await planLimitsService.assertTeamMembersQuota(organizationId, locale);
 
     // Generate token
     const rawToken = crypto.randomBytes(32).toString('hex');

@@ -178,6 +178,17 @@ export interface TranslationKeys {
     pastDue: string;
     suspended: string;
   };
+  planLimits: {
+    servers: string;
+    databases: string;
+    projects: string;
+    deploymentsPerMonth: string;
+    teamMembers: string;
+    customDomains: string;
+    buildMinutesPerMonth: string;
+    previewDeployments: string;
+    healthChecks: string;
+  };
   dashboard: {
     actionFailedDeploymentsTitle: string;
     actionFailedDeploymentsDesc: string;
@@ -464,6 +475,21 @@ export const en: TranslationKeys = {
       'Your platform subscription payment is past due. Update your payment method in Billing to create or deploy resources.',
     suspended:
       'Your platform subscription has ended. Renew your plan in Billing to resume servers, projects, and deployments.',
+  },
+
+  planLimits: {
+    servers: 'Server limit reached. Upgrade your plan to add more servers.',
+    databases: 'Database limit reached. Upgrade your plan to add more databases.',
+    projects: 'Project limit reached. Upgrade your plan to create more projects.',
+    deploymentsPerMonth:
+      'Monthly deployment limit reached. Upgrade your plan or wait until next month.',
+    teamMembers: 'Team member limit reached. Upgrade your plan to invite more people.',
+    customDomains: 'Custom domain limit reached. Upgrade your plan to add more domains.',
+    buildMinutesPerMonth:
+      'Monthly build time limit reached. Upgrade your plan or wait until next month.',
+    previewDeployments:
+      'Preview deployments are not included on your plan. Upgrade to Hobby or higher.',
+    healthChecks: 'Health checks are not included on your plan. Upgrade to Hobby or higher.',
   },
 
   dashboard: {
