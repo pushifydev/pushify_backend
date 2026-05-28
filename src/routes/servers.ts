@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { serverService } from '../services/server.service';
-import { authMiddleware } from '../middleware/auth';
+import { combinedAuthMiddleware } from '../middleware/auth';
+import { requireScope, rejectApiKeyAuth } from '../middleware/apikey-auth';
 import { t } from '../i18n';
 import { db } from '../db';
 import { servers } from '../db/schema/servers';
@@ -13,14 +14,14 @@ import type { ProviderType } from '../providers';
 
 const serverRouter = new Hono<AppEnv>();
 
-// All routes require authentication
-serverRouter.use('*', authMiddleware);
+// JWT or API key (pk_live_...)
+serverRouter.use('*', combinedAuthMiddleware);
 
 // ============ Provider Routes ============
 // IMPORTANT: These must be defined BEFORE :serverId routes to avoid matching conflicts
 
 // Get available regions for a provider
-serverRouter.get('/providers/:provider/regions', async (c) => {
+serverRouter.get('/providers/:provider/regions', requireScope('servers:read'), async (c) => {
   const locale = c.get('locale');
   const provider = c.req.param('provider') as ProviderType;
 
@@ -30,7 +31,7 @@ serverRouter.get('/providers/:provider/regions', async (c) => {
 });
 
 // Get available images for a provider
-serverRouter.get('/providers/:provider/images', async (c) => {
+serverRouter.get('/providers/:provider/images', requireScope('servers:read'), async (c) => {
   const locale = c.get('locale');
   const provider = c.req.param('provider') as ProviderType;
 
@@ -40,7 +41,7 @@ serverRouter.get('/providers/:provider/images', async (c) => {
 });
 
 // Get available sizes for a provider
-serverRouter.get('/providers/:provider/sizes', async (c) => {
+serverRouter.get('/providers/:provider/sizes', requireScope('servers:read'), async (c) => {
   const locale = c.get('locale');
   const provider = c.req.param('provider') as ProviderType;
 
@@ -50,7 +51,7 @@ serverRouter.get('/providers/:provider/sizes', async (c) => {
 });
 
 // Get available server types for a provider (raw types from provider)
-serverRouter.get('/providers/:provider/server-types', async (c) => {
+serverRouter.get('/providers/:provider/server-types', requireScope('servers:read'), async (c) => {
   const locale = c.get('locale');
   const provider = c.req.param('provider') as ProviderType;
   const location = c.req.query('location');
@@ -63,7 +64,7 @@ serverRouter.get('/providers/:provider/server-types', async (c) => {
 // ============ Server Routes ============
 
 // List all servers
-serverRouter.get('/', async (c) => {
+serverRouter.get('/', requireScope('servers:read'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -74,7 +75,7 @@ serverRouter.get('/', async (c) => {
 });
 
 // Create a new server
-serverRouter.post('/', async (c) => {
+serverRouter.post('/', requireScope('servers:write'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -86,7 +87,7 @@ serverRouter.post('/', async (c) => {
 });
 
 // Get a single server
-serverRouter.get('/:serverId', async (c) => {
+serverRouter.get('/:serverId', requireScope('servers:read'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -98,7 +99,7 @@ serverRouter.get('/:serverId', async (c) => {
 });
 
 // Delete a server
-serverRouter.delete('/:serverId', async (c) => {
+serverRouter.delete('/:serverId', requireScope('servers:write'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -110,7 +111,7 @@ serverRouter.delete('/:serverId', async (c) => {
 });
 
 // Power actions
-serverRouter.post('/:serverId/start', async (c) => {
+serverRouter.post('/:serverId/start', requireScope('servers:write'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -121,7 +122,7 @@ serverRouter.post('/:serverId/start', async (c) => {
   return c.json({ data: server, message: t(locale, 'servers', 'started') });
 });
 
-serverRouter.post('/:serverId/stop', async (c) => {
+serverRouter.post('/:serverId/stop', requireScope('servers:write'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -132,7 +133,7 @@ serverRouter.post('/:serverId/stop', async (c) => {
   return c.json({ data: server, message: t(locale, 'servers', 'stopped') });
 });
 
-serverRouter.post('/:serverId/reboot', async (c) => {
+serverRouter.post('/:serverId/reboot', requireScope('servers:write'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -144,7 +145,7 @@ serverRouter.post('/:serverId/reboot', async (c) => {
 });
 
 // Sync server status from provider
-serverRouter.post('/:serverId/sync', async (c) => {
+serverRouter.post('/:serverId/sync', requireScope('servers:write'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -158,7 +159,7 @@ serverRouter.post('/:serverId/sync', async (c) => {
 // ============ SSH Key Download ============
 
 // Get SSH connection info (IP, username, public key)
-serverRouter.get('/:serverId/ssh-info', async (c) => {
+serverRouter.get('/:serverId/ssh-info', requireScope('servers:read'), async (c) => {
   const serverId = c.req.param('serverId');
   const organizationId = c.get('organizationId')!;
 
@@ -182,7 +183,7 @@ serverRouter.get('/:serverId/ssh-info', async (c) => {
 });
 
 // Download SSH private key (one-time display)
-serverRouter.get('/:serverId/ssh-key', async (c) => {
+serverRouter.get('/:serverId/ssh-key', rejectApiKeyAuth(), async (c) => {
   const serverId = c.req.param('serverId');
   const organizationId = c.get('organizationId')!;
   const userId = c.get('userId')!;
@@ -223,7 +224,7 @@ serverRouter.get('/:serverId/ssh-key', async (c) => {
 // ============ Web Terminal ============
 
 // Execute command on server (REST-based terminal)
-serverRouter.post('/:serverId/terminal', async (c) => {
+serverRouter.post('/:serverId/terminal', rejectApiKeyAuth(), async (c) => {
   const serverId = c.req.param('serverId');
   const organizationId = c.get('organizationId')!;
   const userId = c.get('userId')!;

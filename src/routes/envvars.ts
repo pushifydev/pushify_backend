@@ -1,7 +1,8 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { envVarService } from '../services/envvar.service';
 import { activityService } from '../services/activity.service';
-import { authMiddleware } from '../middleware/auth';
+import { combinedAuthMiddleware } from '../middleware/auth';
+import { requireScope } from '../middleware/apikey-auth';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 
@@ -262,8 +263,16 @@ const deleteEnvVarRoute = createRoute({
 
 const envVarRouter = new OpenAPIHono<AppEnv>();
 
-// All routes require authentication
-envVarRouter.use('*', authMiddleware);
+// JWT or API key (pk_live_...)
+envVarRouter.use('*', combinedAuthMiddleware);
+
+envVarRouter.get('/', requireScope('envvars:read'));
+envVarRouter.post('/', requireScope('envvars:write'));
+envVarRouter.post('/bulk', requireScope('envvars:write'));
+envVarRouter.get('/:envVarId', requireScope('envvars:read'));
+envVarRouter.patch('/:envVarId', requireScope('envvars:write'));
+envVarRouter.delete('/:envVarId', requireScope('envvars:write'));
+envVarRouter.post('/clone', requireScope('envvars:write'));
 
 // List environment variables
 envVarRouter.openapi(listEnvVarsRoute, async (c) => {

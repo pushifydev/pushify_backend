@@ -107,3 +107,19 @@ export function requireScope(...requiredScopes: ApiKeyScope[]) {
     await next();
   };
 }
+
+/**
+ * Block API key auth on interactive or highly sensitive routes (SSH keys, web terminal).
+ * JWT session auth still works.
+ */
+export function rejectApiKeyAuth() {
+  return async (c: Context, next: Next) => {
+    if (c.get('isApiKeyAuth')) {
+      const locale: SupportedLocale = c.get('locale') || 'en';
+      throw new HTTPException(403, {
+        message: t(locale, 'apiKeys', 'sessionOnly'),
+      });
+    }
+    await next();
+  };
+}

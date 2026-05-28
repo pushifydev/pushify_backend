@@ -300,11 +300,11 @@ deploymentRouter.use('*', combinedAuthMiddleware);
 // Scope requirements for API key access
 deploymentRouter.get('/', requireScope('deployments:read'));
 deploymentRouter.get('/:deploymentId', requireScope('deployments:read'));
-deploymentRouter.get('/:deploymentId/logs', requireScope('deployments:read'));
-deploymentRouter.get('/:deploymentId/logs/stream', requireScope('deployments:read'));
-deploymentRouter.get('/:deploymentId/container-logs/stream', requireScope('deployments:read'));
+deploymentRouter.get('/:deploymentId/logs', requireScope('deployments:read', 'logs:read'));
+deploymentRouter.get('/:deploymentId/logs/stream', requireScope('deployments:read', 'logs:read'));
+deploymentRouter.get('/:deploymentId/container-logs/stream', requireScope('deployments:read', 'logs:read'));
 deploymentRouter.post('/', requireScope('deployments:write'), deploymentRateLimiter);
-deploymentRouter.post('/:deploymentId/cancel', requireScope('deployments:write'));
+deploymentRouter.post('/:deploymentId/cancel', requireScope('deployments:write', 'deployments:cancel'));
 deploymentRouter.post('/:deploymentId/redeploy', requireScope('deployments:write'), deploymentRateLimiter);
 deploymentRouter.post('/:deploymentId/rollback', requireScope('deployments:write'), deploymentRateLimiter);
 
