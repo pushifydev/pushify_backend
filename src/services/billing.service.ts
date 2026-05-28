@@ -47,6 +47,7 @@ export interface BillingInfo {
   plan: PlanType;
   planName: string;
   price: number;
+  billingStatus: 'active' | 'past_due' | 'suspended';
   billingEmail: string | null;
   /** API requests per minute per API key (org plan). -1 = unlimited */
   apiRequestsPerMinute: number;
@@ -89,6 +90,7 @@ export const billingService = {
       plan,
       planName: planInfo.name,
       price: planInfo.price,
+      billingStatus: (org.billingStatus ?? 'active') as BillingInfo['billingStatus'],
       billingEmail: org.billingEmail,
       apiRequestsPerMinute: planInfo.limits.apiRequestsPerMinute,
       usage,

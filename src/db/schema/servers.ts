@@ -85,6 +85,14 @@ export const servers = pgTable('servers', {
   labels: jsonb('labels').default({}).notNull(),
   isManaged: boolean('is_managed').default(true).notNull(), // Managed by Pushify or BYOC
 
+  // Infrastructure billing (managed providers only)
+  providerServerType: varchar('provider_server_type', { length: 64 }),
+  providerCostMonthlyCents: integer('provider_cost_monthly_cents'),
+  providerCostHourlyCents: integer('provider_cost_hourly_cents'),
+  customerPriceMonthlyCents: integer('customer_price_monthly_cents'),
+  customerPriceHourlyCents: integer('customer_price_hourly_cents'),
+  infraLastChargedAt: timestamp('infra_last_charged_at', { withTimezone: true }),
+
   // Timestamps
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

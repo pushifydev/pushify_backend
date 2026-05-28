@@ -163,6 +163,20 @@ export interface TranslationKeys {
   };
   billing: {
     emailUpdated: string;
+    stripeNotConfigured: string;
+  };
+  infraBilling: {
+    managedNotAllowed: string;
+    serverTierExceeded: string;
+    insufficientWallet: string;
+    billingError: string;
+    topUpSuccess: string;
+    invalidTopUpAmount: string;
+    serverStoppedInsufficientCredits: string;
+  };
+  organizationBilling: {
+    pastDue: string;
+    suspended: string;
   };
   dashboard: {
     actionFailedDeploymentsTitle: string;
@@ -417,6 +431,28 @@ export const en: TranslationKeys = {
   // Billing
   billing: {
     emailUpdated: 'Billing email updated successfully',
+    stripeNotConfigured: 'Stripe is not configured',
+  },
+
+  infraBilling: {
+    managedNotAllowed:
+      'Managed cloud servers require a paid plan. Upgrade your platform plan or connect your own server (BYOS).',
+    serverTierExceeded:
+      'This server size exceeds your plan limit. Choose a smaller size or upgrade your plan.',
+    insufficientWallet:
+      'Insufficient infrastructure credits. Add credits in Billing before provisioning a managed server.',
+    billingError: 'Infrastructure billing error',
+    topUpSuccess: 'Infrastructure credits added successfully',
+    invalidTopUpAmount: 'Invalid top-up amount',
+    serverStoppedInsufficientCredits:
+      'Stopped: insufficient infrastructure credits. Add credits in Billing to start again.',
+  },
+
+  organizationBilling: {
+    pastDue:
+      'Your platform subscription payment is past due. Update your payment method in Billing to create or deploy resources.',
+    suspended:
+      'Your platform subscription has ended. Renew your plan in Billing to resume servers, projects, and deployments.',
   },
 
   dashboard: {

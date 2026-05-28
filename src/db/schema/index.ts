@@ -42,3 +42,6 @@ export * from './databases';
 
 // Marketplace
 export * from './marketplace';
+
+// Infrastructure billing (wallet)
+export * from './infra-billing';

@@ -76,6 +76,13 @@ const envSchema = z.object({
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
   STRIPE_PUBLISHABLE_KEY: z.string().optional(),
 
+  /** Margin % on managed infra provider list price (default 20) */
+  INFRA_MARGIN_PERCENT: z.coerce.number().min(0).max(100).default(20),
+  /** EUR→USD rate for Hetzner list prices (default 1.08) */
+  INFRA_EUR_TO_USD_RATE: z.coerce.number().positive().default(1.08),
+  /** Warn by email when infra wallet balance falls below this (USD cents, default $10) */
+  INFRA_LOW_BALANCE_WARN_CENTS: z.coerce.number().int().min(0).default(1000),
+
   // Encryption
   ENCRYPTION_KEY: z.string().regex(/^[0-9a-fA-F]{64}$/, 'ENCRYPTION_KEY must be a 64-character hex string (use: openssl rand -hex 32)'),
 });

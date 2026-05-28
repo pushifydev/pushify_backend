@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
 import { billingService } from '../services/billing.service';
 import { stripeService } from '../services/stripe.service';
+import { infraBillingService } from '../services/infra-billing.service';
+import { INFRA_TOPUP_AMOUNTS_CENTS } from '../lib/infra-billing';
 import { authMiddleware } from '../middleware/auth';
 import { env } from '../config/env';
 import { t } from '../i18n';
@@ -110,6 +112,104 @@ billingRouter.post('/resume', async (c) => {
   await stripeService.resumeSubscription(organizationId);
 
   return c.json({ message: 'Subscription resumed' });
+});
+
+// Infrastructure wallet (managed Hetzner billing)
+billingRouter.get('/infra', async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const userId = c.get('userId')!;
+  const locale = c.get('locale');
+
+  await billingService.getBillingInfo(organizationId, userId, locale);
+
+  const wallet = await infraBillingService.getWalletSummary(organizationId);
+  const transactions = await infraBillingService.listTransactions(organizationId, 30);
+
+  return c.json({
+    data: {
+      wallet,
+      transactions: transactions.map((tx) => ({
+        id: tx.id,
+        type: tx.type,
+        amountCents: tx.amountCents,
+        balanceAfterCents: tx.balanceAfterCents,
+        description: tx.description,
+        serverId: tx.serverId,
+        createdAt: tx.createdAt.toISOString(),
+      })),
+    },
+  });
+});
+
+billingRouter.post('/infra/topup', async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const userId = c.get('userId')!;
+  const locale = c.get('locale');
+
+  if (!env.STRIPE_SECRET_KEY) {
+    return c.json(
+      { error: { code: 'STRIPE_NOT_CONFIGURED', message: t(locale, 'billing', 'stripeNotConfigured') } },
+      400,
+    );
+  }
+
+  const { amountCents } = await c.req.json<{ amountCents: number }>();
+
+  if (!amountCents || !INFRA_TOPUP_AMOUNTS_CENTS.includes(amountCents as (typeof INFRA_TOPUP_AMOUNTS_CENTS)[number])) {
+    return c.json(
+      { error: { code: 'INVALID_AMOUNT', message: t(locale, 'infraBilling', 'invalidTopUpAmount') } },
+      400,
+    );
+  }
+
+  const billingInfo = await billingService.getBillingInfo(organizationId, userId, locale);
+  const email = billingInfo.billingEmail || '';
+
+  try {
+    const url = await stripeService.createInfraTopUpSession(
+      organizationId,
+      userId,
+      email,
+      amountCents,
+    );
+    return c.json({ data: { url } });
+  } catch (err) {
+    if (err instanceof Error && err.message === 'INVALID_TOPUP_AMOUNT') {
+      return c.json(
+        { error: { code: 'INVALID_AMOUNT', message: t(locale, 'infraBilling', 'invalidTopUpAmount') } },
+        400,
+      );
+    }
+    throw err;
+  }
+});
+
+/** Confirm infra top-up after Stripe redirect (works without webhook, e.g. local dev). */
+billingRouter.post('/infra/confirm', async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+
+  if (!env.STRIPE_SECRET_KEY) {
+    return c.json(
+      { error: { code: 'STRIPE_NOT_CONFIGURED', message: t(locale, 'billing', 'stripeNotConfigured') } },
+      400,
+    );
+  }
+
+  const { sessionId } = await c.req.json<{ sessionId: string }>();
+  if (!sessionId?.trim()) {
+    return c.json({ error: { code: 'INVALID_SESSION', message: 'Missing sessionId' } }, 400);
+  }
+
+  try {
+    const result = await stripeService.confirmInfraTopUp(organizationId, sessionId.trim());
+    return c.json({ data: result });
+  } catch (err) {
+    if (err instanceof Error && err.message === 'CHECKOUT_ORG_MISMATCH') {
+      return c.json({ error: { code: 'FORBIDDEN', message: 'Checkout session does not belong to this organization' } }, 403);
+    }
+    throw err;
+  }
 });
 
 export { billingRouter as billingRoutes };

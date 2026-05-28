@@ -1,6 +1,7 @@
 import { db } from '../db';
 import { deployments } from '../db/schema/deployments';
 import { projects, environmentVariables } from '../db/schema/projects';
+import { organizations } from '../db/schema/organizations';
 import { gitIntegrations } from '../db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { decrypt } from '../lib/encryption';
@@ -243,6 +244,16 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
     // Check if project is active
     if (project.status !== 'active') {
       throw new Error('Project is not active');
+    }
+
+    const [org] = await db
+      .select({ billingStatus: organizations.billingStatus })
+      .from(organizations)
+      .where(eq(organizations.id, project.organizationId))
+      .limit(1);
+
+    if (org?.billingStatus === 'past_due' || org?.billingStatus === 'suspended') {
+      throw new Error('Organization billing does not allow deployments');
     }
 
     // Update status to building

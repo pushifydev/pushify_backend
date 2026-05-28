@@ -40,12 +40,19 @@ serverRouter.get('/providers/:provider/images', requireScope('servers:read'), as
   return c.json({ data: images });
 });
 
-// Get available sizes for a provider
+// Get available sizes for a provider (with plan limits + customer pricing)
 serverRouter.get('/providers/:provider/sizes', requireScope('servers:read'), async (c) => {
   const locale = c.get('locale');
+  const organizationId = c.get('organizationId')!;
   const provider = c.req.param('provider') as ProviderType;
+  const region = c.req.query('region') || 'fsn1';
 
-  const sizes = await serverService.getSizes(provider, locale);
+  const sizes = await serverService.getSizesForOrganization(
+    organizationId,
+    provider,
+    region,
+    locale,
+  );
 
   return c.json({ data: sizes });
 });

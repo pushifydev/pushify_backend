@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, timestamp, jsonb, pgEnum, text } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, jsonb, pgEnum, text, integer } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 import { users } from './users';
 import { projects } from './projects';
@@ -6,7 +6,10 @@ import { projects } from './projects';
 // Enums
 export const memberRoleEnum = pgEnum('member_role', ['owner', 'admin', 'member', 'viewer']);
 export const planTypeEnum = pgEnum('plan_type', ['free', 'hobby', 'pro', 'business', 'enterprise']);
+export const billingStatusEnum = pgEnum('billing_status', ['active', 'past_due', 'suspended']);
 export const invitationStatusEnum = pgEnum('invitation_status', ['pending', 'accepted', 'revoked']);
+
+export type BillingStatus = 'active' | 'past_due' | 'suspended';
 
 export const organizations = pgTable('organizations', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -17,6 +20,11 @@ export const organizations = pgTable('organizations', {
   stripeCustomerId: varchar('stripe_customer_id', { length: 255 }),
   stripeSubscriptionId: varchar('stripe_subscription_id', { length: 255 }),
   stripeCurrentPeriodEnd: timestamp('stripe_current_period_end', { withTimezone: true }),
+  /** Platform subscription payment state (Stripe retries = past_due; canceled = suspended) */
+  billingStatus: billingStatusEnum('billing_status').default('active').notNull(),
+  billingPaymentFailedNotifiedAt: timestamp('billing_payment_failed_notified_at', { withTimezone: true }),
+  /** Prepaid USD cents for managed cloud infrastructure (Hetzner, etc.) */
+  infraWalletBalanceCents: integer('infra_wallet_balance_cents').default(0).notNull(),
   settings: jsonb('settings').default({}).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
