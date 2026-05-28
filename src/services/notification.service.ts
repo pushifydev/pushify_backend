@@ -9,6 +9,7 @@ import { logger } from '../lib/logger';
 import { t, type SupportedLocale } from '../i18n';
 import { env } from '../config/env';
 import { addNotificationJob, isQueueAvailable } from '../lib/queue';
+import { renderNotificationEmail } from '../lib/email-templates';
 import type { NotificationChannel } from '../db/schema';
 
 // Gmail SMTP transporter (lazy initialized)
@@ -456,14 +457,13 @@ export const notificationService = {
         return false;
       }
 
-      const emoji = this.getEventEmoji(payload.event);
       const eventTitle = this.getEventTitle(payload.event);
 
       const mailOptions = {
         from: `"${env.GMAIL_FROM_NAME}" <${env.GMAIL_USER}>`,
         to: config.emails.join(', '),
-        subject: `${emoji} [Pushify] ${eventTitle} - ${payload.projectName}`,
-        html: this.buildEmailHtml(payload),
+        subject: `${this.getEventEmoji(payload.event)} Pushify — ${eventTitle} — ${payload.projectName}`,
+        html: renderNotificationEmail(payload),
       };
 
       await transporter.sendMail(mailOptions);
@@ -478,217 +478,6 @@ export const notificationService = {
       logger.error({ error }, 'Error sending email notification via Gmail');
       return false;
     }
-  },
-
-  /**
-   * Build HTML email template - Pushify Neo-Industrial Dark Theme
-   */
-  buildEmailHtml(payload: NotificationPayload): string {
-    const eventTitle = this.getEventTitle(payload.event);
-    const { accent, glow } = this.getEventColors(payload.event);
-    const statusIcon = this.getStatusIcon(payload.event);
-
-    return `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${eventTitle}</title>
-</head>
-<body style="margin: 0; padding: 0; background-color: #0c0c0e; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
-  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0c0c0e; padding: 40px 20px;">
-    <tr>
-      <td align="center">
-        <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width: 600px; width: 100%;">
-
-          <!-- Logo Header -->
-          <tr>
-            <td style="padding: 0 0 30px 0; text-align: center;">
-              <div style="display: inline-block; background: linear-gradient(135deg, #22d3ee 0%, #0891b2 100%); -webkit-background-clip: text; background-clip: text;">
-                <span style="font-size: 28px; font-weight: 800; color: #22d3ee; letter-spacing: -1px;">PUSHIFY</span>
-              </div>
-            </td>
-          </tr>
-
-          <!-- Main Card -->
-          <tr>
-            <td>
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #141418; border-radius: 16px; border: 1px solid #27272a; overflow: hidden;">
-
-                <!-- Status Header -->
-                <tr>
-                  <td style="padding: 32px 32px 24px 32px; border-bottom: 1px solid #27272a;">
-                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                      <tr>
-                        <td width="56" valign="top">
-                          <div style="width: 48px; height: 48px; background: ${accent}15; border-radius: 12px; display: flex; align-items: center; justify-content: center; text-align: center; line-height: 48px;">
-                            ${statusIcon}
-                          </div>
-                        </td>
-                        <td style="padding-left: 16px;" valign="middle">
-                          <h1 style="margin: 0; font-size: 22px; font-weight: 700; color: #f4f4f5; letter-spacing: -0.5px;">
-                            ${eventTitle}
-                          </h1>
-                          <p style="margin: 4px 0 0 0; font-size: 14px; color: #71717a;">
-                            ${new Date().toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}
-                          </p>
-                        </td>
-                      </tr>
-                    </table>
-                  </td>
-                </tr>
-
-                <!-- Details Section -->
-                <tr>
-                  <td style="padding: 24px 32px;">
-                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-
-                      <!-- Project -->
-                      <tr>
-                        <td style="padding: 12px 0; border-bottom: 1px solid #1a1a1f;">
-                          <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                            <tr>
-                              <td style="font-size: 13px; color: #71717a; text-transform: uppercase; letter-spacing: 0.5px;">Project</td>
-                              <td style="text-align: right; font-size: 15px; color: #f4f4f5; font-weight: 600;">${payload.projectName}</td>
-                            </tr>
-                          </table>
-                        </td>
-                      </tr>
-
-                      ${payload.branch ? `
-                      <!-- Branch -->
-                      <tr>
-                        <td style="padding: 12px 0; border-bottom: 1px solid #1a1a1f;">
-                          <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                            <tr>
-                              <td style="font-size: 13px; color: #71717a; text-transform: uppercase; letter-spacing: 0.5px;">Branch</td>
-                              <td style="text-align: right;">
-                                <span style="display: inline-block; background: #222228; padding: 4px 10px; border-radius: 6px; font-size: 13px; color: #22d3ee; font-family: 'JetBrains Mono', monospace;">${payload.branch}</span>
-                              </td>
-                            </tr>
-                          </table>
-                        </td>
-                      </tr>
-                      ` : ''}
-
-                      ${payload.commitHash ? `
-                      <!-- Commit -->
-                      <tr>
-                        <td style="padding: 12px 0; border-bottom: 1px solid #1a1a1f;">
-                          <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                            <tr>
-                              <td style="font-size: 13px; color: #71717a; text-transform: uppercase; letter-spacing: 0.5px;">Commit</td>
-                              <td style="text-align: right;">
-                                <code style="display: inline-block; background: #222228; padding: 4px 10px; border-radius: 6px; font-size: 13px; color: #a1a1aa; font-family: 'JetBrains Mono', monospace;">${payload.commitHash.substring(0, 7)}</code>
-                              </td>
-                            </tr>
-                          </table>
-                        </td>
-                      </tr>
-                      ` : ''}
-
-                      ${payload.status ? `
-                      <!-- Status -->
-                      <tr>
-                        <td style="padding: 12px 0; border-bottom: 1px solid #1a1a1f;">
-                          <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                            <tr>
-                              <td style="font-size: 13px; color: #71717a; text-transform: uppercase; letter-spacing: 0.5px;">Status</td>
-                              <td style="text-align: right;">
-                                <span style="display: inline-block; background: ${accent}20; color: ${accent}; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; text-transform: uppercase;">${payload.status}</span>
-                              </td>
-                            </tr>
-                          </table>
-                        </td>
-                      </tr>
-                      ` : ''}
-
-                    </table>
-                  </td>
-                </tr>
-
-                ${payload.message ? `
-                <!-- Message Box -->
-                <tr>
-                  <td style="padding: 0 32px 24px 32px;">
-                    <div style="background: #1a1a1f; border-left: 3px solid ${accent}; padding: 16px 20px; border-radius: 0 8px 8px 0;">
-                      <p style="margin: 0; font-size: 14px; color: #a1a1aa; line-height: 1.6;">${payload.message}</p>
-                    </div>
-                  </td>
-                </tr>
-                ` : ''}
-
-                ${payload.url ? `
-                <!-- CTA Button -->
-                <tr>
-                  <td style="padding: 8px 32px 32px 32px;">
-                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                      <tr>
-                        <td align="center">
-                          <a href="${payload.url}" style="display: inline-block; background: linear-gradient(135deg, ${accent} 0%, ${accent}cc 100%); color: #0c0c0e; padding: 14px 32px; border-radius: 8px; font-size: 14px; font-weight: 600; text-decoration: none; box-shadow: 0 4px 14px ${accent}40;">
-                            View Details
-                          </a>
-                        </td>
-                      </tr>
-                    </table>
-                  </td>
-                </tr>
-                ` : ''}
-
-              </table>
-            </td>
-          </tr>
-
-          <!-- Footer -->
-          <tr>
-            <td style="padding: 32px 0; text-align: center;">
-              <p style="margin: 0 0 8px 0; font-size: 12px; color: #52525b;">
-                Sent by <span style="color: #22d3ee; font-weight: 600;">Pushify</span> - Open Source Deployment Platform
-              </p>
-              <p style="margin: 0; font-size: 11px; color: #3f3f46;">
-                You received this email because you enabled notifications for this project.
-              </p>
-            </td>
-          </tr>
-
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>
-    `;
-  },
-
-  /**
-   * Get accent colors for event type - Pushify theme
-   */
-  getEventColors(event: string): { accent: string; glow: string } {
-    const colors: Record<string, { accent: string; glow: string }> = {
-      'deployment.started': { accent: '#3b82f6', glow: 'rgba(59, 130, 246, 0.3)' },
-      'deployment.success': { accent: '#22c55e', glow: 'rgba(34, 197, 94, 0.3)' },
-      'deployment.failed': { accent: '#ef4444', glow: 'rgba(239, 68, 68, 0.3)' },
-      'health.unhealthy': { accent: '#ef4444', glow: 'rgba(239, 68, 68, 0.3)' },
-      'health.recovered': { accent: '#22c55e', glow: 'rgba(34, 197, 94, 0.3)' },
-      test: { accent: '#a78bfa', glow: 'rgba(167, 139, 250, 0.3)' },
-    };
-    return colors[event] || { accent: '#22d3ee', glow: 'rgba(34, 211, 238, 0.3)' };
-  },
-
-  /**
-   * Get status icon SVG for email
-   */
-  getStatusIcon(event: string): string {
-    const icons: Record<string, string> = {
-      'deployment.started': '<span style="font-size: 24px;">&#128640;</span>',
-      'deployment.success': '<span style="font-size: 24px;">&#9989;</span>',
-      'deployment.failed': '<span style="font-size: 24px;">&#10060;</span>',
-      'health.unhealthy': '<span style="font-size: 24px;">&#128680;</span>',
-      'health.recovered': '<span style="font-size: 24px;">&#128154;</span>',
-      test: '<span style="font-size: 24px;">&#128276;</span>',
-    };
-    return icons[event] || '<span style="font-size: 24px;">&#128227;</span>';
   },
 
   /**

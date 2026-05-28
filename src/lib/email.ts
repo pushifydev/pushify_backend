@@ -1,6 +1,27 @@
 import nodemailer from 'nodemailer';
 import { env } from '../config/env';
 import { logger } from './logger';
+import {
+  renderTransactionalEmail,
+  renderNotificationEmail,
+  getNotificationEventEmoji,
+  getNotificationEventTitle,
+} from './email-templates';
+
+function esc(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// Re-export for notification worker / service
+export {
+  renderNotificationEmail,
+  getNotificationEventEmoji,
+  getNotificationEventTitle,
+};
 
 // ============ Transporter ============
 
@@ -16,182 +37,74 @@ const FROM_ADDRESS = env.GMAIL_USER
   ? `"${env.GMAIL_FROM_NAME}" <${env.GMAIL_USER}>`
   : '"Pushify" <noreply@pushify.dev>';
 
-// ============ Templates ============
-
-function baseTemplate(content: string): string {
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Pushify</title>
-</head>
-<body style="margin:0;padding:0;background-color:#0a0a0f;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#0a0a0f;min-height:100vh;">
-    <tr>
-      <td align="center" style="padding:48px 16px;">
-        <table width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;">
-
-          <!-- Logo -->
-          <tr>
-            <td align="center" style="padding-bottom:32px;">
-              <table cellpadding="0" cellspacing="0">
-                <tr>
-                  <td style="background-color:#06b6d4;border-radius:10px;width:40px;height:40px;text-align:center;vertical-align:middle;">
-                    <span style="color:#0a0a0f;font-weight:900;font-size:20px;line-height:40px;">P</span>
-                  </td>
-                  <td style="padding-left:10px;vertical-align:middle;">
-                    <span style="color:#ffffff;font-size:20px;font-weight:700;letter-spacing:-0.5px;">Pushify</span>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-
-          <!-- Card -->
-          <tr>
-            <td style="background-color:#111118;border:1px solid rgba(255,255,255,0.06);border-radius:16px;padding:40px 36px;">
-              ${content}
-            </td>
-          </tr>
-
-          <!-- Footer -->
-          <tr>
-            <td align="center" style="padding-top:24px;">
-              <p style="color:#4b5563;font-size:12px;margin:0;">
-                &copy; ${new Date().getFullYear()} Pushify. All rights reserved.
-              </p>
-            </td>
-          </tr>
-
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>`;
-}
+// ============ Transactional templates ============
 
 function passwordResetTemplate(resetUrl: string, locale: 'en' | 'tr'): string {
   const texts = {
     en: {
       title: 'Reset your password',
       greeting: 'Hi there,',
-      body: 'We received a request to reset the password for your Pushify account. Click the button below to set a new password.',
-      button: 'Reset Password',
-      expiry: 'This link will expire in <strong style="color:#e2e8f0;">1 hour</strong>.',
-      ignore: "If you didn't request a password reset, you can safely ignore this email — your password won't be changed.",
-      urlLabel: 'Or copy and paste this URL into your browser:',
+      body: 'We received a request to reset the password for your Pushify account. Click the button below to choose a new password.',
+      button: 'Reset password',
+      expiry: 'This link expires in <strong style="color:#fafafa;">1 hour</strong>.',
+      ignore: "If you didn't request this, you can ignore this email — your password will not change.",
+      urlLabel: 'Or copy this link into your browser:',
     },
     tr: {
       title: 'Şifrenizi sıfırlayın',
       greeting: 'Merhaba,',
-      body: 'Pushify hesabınız için şifre sıfırlama talebi aldık. Yeni bir şifre belirlemek için aşağıdaki butona tıklayın.',
-      button: 'Şifreyi Sıfırla',
-      expiry: 'Bu bağlantı <strong style="color:#e2e8f0;">1 saat</strong> içinde geçerliliğini yitirecektir.',
-      ignore: 'Şifre sıfırlama talebinde bulunmadıysanız bu e-postayı güvenle yok sayabilirsiniz — şifreniz değiştirilmeyecektir.',
-      urlLabel: "Ya da bu URL'yi tarayıcınıza kopyalayıp yapıştırın:",
+      body: 'Pushify hesabınız için şifre sıfırlama talebi aldık. Yeni şifre belirlemek için aşağıdaki butona tıklayın.',
+      button: 'Şifreyi sıfırla',
+      expiry: 'Bu bağlantı <strong style="color:#fafafa;">1 saat</strong> içinde geçersiz olur.',
+      ignore: 'Bu talebi siz yapmadıysanız e-postayı yok sayabilirsiniz — şifreniz değişmeyecektir.',
+      urlLabel: 'Bağlantıyı tarayıcıya yapıştırabilirsiniz:',
     },
   };
 
   const t = texts[locale] ?? texts.en;
 
-  return baseTemplate(`
-    <!-- Title -->
-    <h1 style="color:#ffffff;font-size:24px;font-weight:700;margin:0 0 8px 0;letter-spacing:-0.5px;">${t.title}</h1>
-
-    <!-- Greeting -->
-    <p style="color:#9ca3af;font-size:15px;line-height:1.6;margin:0 0 20px 0;">${t.greeting}</p>
-    <p style="color:#9ca3af;font-size:15px;line-height:1.6;margin:0 0 32px 0;">${t.body}</p>
-
-    <!-- Button -->
-    <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:32px;">
-      <tr>
-        <td align="center">
-          <a href="${resetUrl}"
-             style="display:inline-block;background-color:#06b6d4;color:#0a0a0f;text-decoration:none;font-size:15px;font-weight:700;padding:14px 32px;border-radius:10px;letter-spacing:-0.2px;">
-            ${t.button}
-          </a>
-        </td>
-      </tr>
-    </table>
-
-    <!-- Divider -->
-    <hr style="border:none;border-top:1px solid rgba(255,255,255,0.06);margin:0 0 24px 0;" />
-
-    <!-- Expiry -->
-    <p style="color:#6b7280;font-size:13px;line-height:1.6;margin:0 0 16px 0;">${t.expiry}</p>
-
-    <!-- Ignore note -->
-    <p style="color:#6b7280;font-size:13px;line-height:1.6;margin:0 0 24px 0;">${t.ignore}</p>
-
-    <!-- Raw URL fallback -->
-    <p style="color:#6b7280;font-size:12px;margin:0 0 8px 0;">${t.urlLabel}</p>
-    <p style="margin:0;">
-      <a href="${resetUrl}" style="color:#06b6d4;font-size:12px;word-break:break-all;text-decoration:none;">${resetUrl}</a>
-    </p>
-  `);
+  return renderTransactionalEmail({
+    title: t.title,
+    greeting: t.greeting,
+    body: t.body,
+    button: { href: resetUrl, label: t.button },
+    notes: [t.expiry, t.ignore],
+    urlFallback: { label: t.urlLabel, href: resetUrl },
+  });
 }
 
 function emailVerificationTemplate(verifyUrl: string, locale: 'en' | 'tr'): string {
   const texts = {
     en: {
-      title: 'Verify your email address',
+      title: 'Verify your email',
       greeting: 'Hi there,',
-      body: 'Thanks for signing up for Pushify! Please verify your email address by clicking the button below.',
-      button: 'Verify Email',
-      expiry: 'This link will expire in <strong style="color:#e2e8f0;">24 hours</strong>.',
-      ignore: "If you didn't create a Pushify account, you can safely ignore this email.",
-      urlLabel: 'Or copy and paste this URL into your browser:',
+      body: 'Thanks for signing up for Pushify. Confirm your email address to finish setting up your account.',
+      button: 'Verify email',
+      expiry: 'This link expires in <strong style="color:#fafafa;">24 hours</strong>.',
+      ignore: "If you didn't create an account, you can ignore this email.",
+      urlLabel: 'Or copy this link into your browser:',
     },
     tr: {
-      title: 'E-posta adresinizi doğrulayın',
+      title: 'E-postanızı doğrulayın',
       greeting: 'Merhaba,',
-      body: "Pushify'a kaydolduğunuz için teşekkürler! E-posta adresinizi aşağıdaki butona tıklayarak doğrulayın.",
-      button: 'E-postayı Doğrula',
-      expiry: 'Bu bağlantı <strong style="color:#e2e8f0;">24 saat</strong> içinde geçerliliğini yitirecektir.',
-      ignore: 'Bir Pushify hesabı oluşturmadıysanız bu e-postayı güvenle yok sayabilirsiniz.',
-      urlLabel: "Ya da bu URL'yi tarayıcınıza kopyalayıp yapıştırın:",
+      body: "Pushify'a hoş geldiniz. Hesabınızı tamamlamak için e-posta adresinizi doğrulayın.",
+      button: 'E-postayı doğrula',
+      expiry: 'Bu bağlantı <strong style="color:#fafafa;">24 saat</strong> içinde geçersiz olur.',
+      ignore: 'Hesap oluşturmadıysanız bu e-postayı yok sayabilirsiniz.',
+      urlLabel: 'Bağlantıyı tarayıcıya yapıştırabilirsiniz:',
     },
   };
 
   const t = texts[locale] ?? texts.en;
 
-  return baseTemplate(`
-    <!-- Title -->
-    <h1 style="color:#ffffff;font-size:24px;font-weight:700;margin:0 0 8px 0;letter-spacing:-0.5px;">${t.title}</h1>
-
-    <!-- Greeting -->
-    <p style="color:#9ca3af;font-size:15px;line-height:1.6;margin:0 0 20px 0;">${t.greeting}</p>
-    <p style="color:#9ca3af;font-size:15px;line-height:1.6;margin:0 0 32px 0;">${t.body}</p>
-
-    <!-- Button -->
-    <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:32px;">
-      <tr>
-        <td align="center">
-          <a href="${verifyUrl}"
-             style="display:inline-block;background-color:#06b6d4;color:#0a0a0f;text-decoration:none;font-size:15px;font-weight:700;padding:14px 32px;border-radius:10px;letter-spacing:-0.2px;">
-            ${t.button}
-          </a>
-        </td>
-      </tr>
-    </table>
-
-    <!-- Divider -->
-    <hr style="border:none;border-top:1px solid rgba(255,255,255,0.06);margin:0 0 24px 0;" />
-
-    <!-- Expiry -->
-    <p style="color:#6b7280;font-size:13px;line-height:1.6;margin:0 0 16px 0;">${t.expiry}</p>
-
-    <!-- Ignore note -->
-    <p style="color:#6b7280;font-size:13px;line-height:1.6;margin:0 0 24px 0;">${t.ignore}</p>
-
-    <!-- Raw URL fallback -->
-    <p style="color:#6b7280;font-size:12px;margin:0 0 8px 0;">${t.urlLabel}</p>
-    <p style="margin:0;">
-      <a href="${verifyUrl}" style="color:#06b6d4;font-size:12px;word-break:break-all;text-decoration:none;">${verifyUrl}</a>
-    </p>
-  `);
+  return renderTransactionalEmail({
+    title: t.title,
+    greeting: t.greeting,
+    body: t.body,
+    button: { href: verifyUrl, label: t.button },
+    notes: [t.expiry, t.ignore],
+    urlFallback: { label: t.urlLabel, href: verifyUrl },
+  });
 }
 
 function orgInvitationTemplate(
@@ -203,62 +116,40 @@ function orgInvitationTemplate(
 ): string {
   const texts = {
     en: {
-      title: `You've been invited to join ${orgName}`,
+      title: `Join ${orgName} on Pushify`,
       greeting: 'Hi there,',
-      body: `<strong style="color:#e2e8f0;">${inviterName}</strong> has invited you to join <strong style="color:#e2e8f0;">${orgName}</strong> as a <strong style="color:#e2e8f0;">${role}</strong>.`,
-      button: 'Accept Invitation',
-      expiry: 'This invitation will expire in <strong style="color:#e2e8f0;">7 days</strong>.',
-      ignore: "If you weren't expecting this invitation, you can safely ignore this email.",
-      urlLabel: 'Or copy and paste this URL into your browser:',
+      button: 'Accept invitation',
+      expiry: 'This invitation expires in <strong style="color:#fafafa;">7 days</strong>.',
+      ignore: "If you weren't expecting this, you can ignore this email.",
+      urlLabel: 'Or copy this link into your browser:',
     },
     tr: {
-      title: `${orgName} organizasyonuna davet edildiniz`,
+      title: `${orgName} — Pushify daveti`,
       greeting: 'Merhaba,',
-      body: `<strong style="color:#e2e8f0;">${inviterName}</strong> sizi <strong style="color:#e2e8f0;">${orgName}</strong> organizasyonuna <strong style="color:#e2e8f0;">${role}</strong> olarak katılmaya davet etti.`,
-      button: 'Daveti Kabul Et',
-      expiry: 'Bu davet <strong style="color:#e2e8f0;">7 gün</strong> içinde geçerliliğini yitirecektir.',
-      ignore: 'Bu daveti beklemiyorsanız bu e-postayı güvenle yok sayabilirsiniz.',
-      urlLabel: "Ya da bu URL'yi tarayıcınıza kopyalayıp yapıştırın:",
+      button: 'Daveti kabul et',
+      expiry: 'Bu davet <strong style="color:#fafafa;">7 gün</strong> içinde geçersiz olur.',
+      ignore: 'Bu daveti beklemiyorsanız e-postayı yok sayabilirsiniz.',
+      urlLabel: 'Bağlantıyı tarayıcıya yapıştırabilirsiniz:',
     },
   };
 
   const t = texts[locale] ?? texts.en;
+  const safeOrg = esc(orgName);
+  const safeInviter = esc(inviterName);
+  const safeRole = esc(role);
+  const bodyHtml =
+    locale === 'tr'
+      ? `<strong style="color:#fafafa;">${safeInviter}</strong>, sizi <strong style="color:#fafafa;">${safeOrg}</strong> organizasyonuna <strong style="color:#fafafa;">${safeRole}</strong> olarak davet etti.`
+      : `<strong style="color:#fafafa;">${safeInviter}</strong> invited you to join <strong style="color:#fafafa;">${safeOrg}</strong> as <strong style="color:#fafafa;">${safeRole}</strong>.`;
 
-  return baseTemplate(`
-    <!-- Title -->
-    <h1 style="color:#ffffff;font-size:24px;font-weight:700;margin:0 0 8px 0;letter-spacing:-0.5px;">${t.title}</h1>
-
-    <!-- Greeting -->
-    <p style="color:#9ca3af;font-size:15px;line-height:1.6;margin:0 0 20px 0;">${t.greeting}</p>
-    <p style="color:#9ca3af;font-size:15px;line-height:1.6;margin:0 0 32px 0;">${t.body}</p>
-
-    <!-- Button -->
-    <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:32px;">
-      <tr>
-        <td align="center">
-          <a href="${inviteUrl}"
-             style="display:inline-block;background-color:#06b6d4;color:#0a0a0f;text-decoration:none;font-size:15px;font-weight:700;padding:14px 32px;border-radius:10px;letter-spacing:-0.2px;">
-            ${t.button}
-          </a>
-        </td>
-      </tr>
-    </table>
-
-    <!-- Divider -->
-    <hr style="border:none;border-top:1px solid rgba(255,255,255,0.06);margin:0 0 24px 0;" />
-
-    <!-- Expiry -->
-    <p style="color:#6b7280;font-size:13px;line-height:1.6;margin:0 0 16px 0;">${t.expiry}</p>
-
-    <!-- Ignore note -->
-    <p style="color:#6b7280;font-size:13px;line-height:1.6;margin:0 0 24px 0;">${t.ignore}</p>
-
-    <!-- Raw URL fallback -->
-    <p style="color:#6b7280;font-size:12px;margin:0 0 8px 0;">${t.urlLabel}</p>
-    <p style="margin:0;">
-      <a href="${inviteUrl}" style="color:#06b6d4;font-size:12px;word-break:break-all;text-decoration:none;">${inviteUrl}</a>
-    </p>
-  `);
+  return renderTransactionalEmail({
+    title: locale === 'tr' ? `${safeOrg} — Pushify daveti` : `Join ${safeOrg} on Pushify`,
+    greeting: t.greeting,
+    bodyHtml,
+    button: { href: inviteUrl, label: t.button },
+    notes: [t.expiry, t.ignore],
+    urlFallback: { label: t.urlLabel, href: inviteUrl },
+  });
 }
 
 function billingPaymentFailedTemplate(
@@ -268,39 +159,33 @@ function billingPaymentFailedTemplate(
 ): string {
   const texts = {
     en: {
-      title: 'Payment failed for your Pushify subscription',
+      title: 'Payment failed',
       greeting: 'Hi there,',
-      body: `We could not process the latest payment for <strong style="color:#e2e8f0;">${orgName}</strong>. Please update your payment method to avoid service interruption.`,
       button: 'Manage billing',
       note: 'If you already updated your card, you can ignore this email.',
     },
     tr: {
-      title: 'Pushify abonelik ödemesi başarısız',
+      title: 'Ödeme başarısız',
       greeting: 'Merhaba,',
-      body: `<strong style="color:#e2e8f0;">${orgName}</strong> için son ödeme işlenemedi. Hizmet kesintisi yaşamamak için ödeme yönteminizi güncelleyin.`,
       button: 'Faturalamayı yönet',
       note: 'Kartınızı zaten güncellediyseniz bu e-postayı yok sayabilirsiniz.',
     },
   };
 
   const t = texts[locale] ?? texts.en;
+  const safeOrg = esc(orgName);
+  const bodyHtml =
+    locale === 'tr'
+      ? `<strong style="color:#fafafa;">${safeOrg}</strong> için son ödeme işlenemedi. Kesinti yaşamamak için ödeme yönteminizi güncelleyin.`
+      : `We couldn't process the latest payment for <strong style="color:#fafafa;">${safeOrg}</strong>. Update your payment method to avoid service interruption.`;
 
-  return baseTemplate(`
-    <h1 style="color:#ffffff;font-size:24px;font-weight:700;margin:0 0 8px 0;">${t.title}</h1>
-    <p style="color:#9ca3af;font-size:15px;line-height:1.6;margin:0 0 20px 0;">${t.greeting}</p>
-    <p style="color:#9ca3af;font-size:15px;line-height:1.6;margin:0 0 32px 0;">${t.body}</p>
-    <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:32px;">
-      <tr>
-        <td align="center">
-          <a href="${billingUrl}"
-             style="display:inline-block;background-color:#06b6d4;color:#0a0a0f;text-decoration:none;font-size:15px;font-weight:700;padding:14px 32px;border-radius:10px;">
-            ${t.button}
-          </a>
-        </td>
-      </tr>
-    </table>
-    <p style="color:#6b7280;font-size:13px;line-height:1.6;margin:0;">${t.note}</p>
-  `);
+  return renderTransactionalEmail({
+    title: t.title,
+    greeting: t.greeting,
+    bodyHtml,
+    button: { href: billingUrl, label: t.button },
+    notes: [t.note],
+  });
 }
 
 // ============ Send Functions ============
@@ -333,7 +218,6 @@ export async function sendPasswordResetEmail(
     logger.info({ to }, 'Password reset email sent');
   } catch (error) {
     logger.error({ error, to }, 'Failed to send password reset email');
-    // Don't throw — email failure shouldn't block the API response
   }
 }
 
@@ -350,8 +234,8 @@ export async function sendEmailVerificationEmail(
   const verifyUrl = `${env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
 
   const subjects = {
-    en: 'Verify your Pushify email address',
-    tr: 'Pushify e-posta adresinizi doğrulayın',
+    en: 'Verify your Pushify email',
+    tr: 'Pushify e-postanızı doğrulayın',
   };
 
   try {
@@ -384,8 +268,8 @@ export async function sendOrgInvitationEmail(
   const inviteUrl = `${env.FRONTEND_URL}/accept-invitation?token=${invitationToken}`;
 
   const subjects = {
-    en: `You've been invited to join ${orgName} on Pushify`,
-    tr: `Pushify'da ${orgName} organizasyonuna davet edildiniz`,
+    en: `Invitation to join ${orgName} on Pushify`,
+    tr: `Pushify — ${orgName} daveti`,
   };
 
   try {
