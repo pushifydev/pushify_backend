@@ -1,7 +1,8 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { domainService } from '../services/domain.service';
 import { activityService } from '../services/activity.service';
-import { authMiddleware } from '../middleware/auth';
+import { combinedAuthMiddleware } from '../middleware/auth';
+import { requireScope } from '../middleware/apikey-auth';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 
@@ -327,8 +328,18 @@ const deleteDomainRoute = createRoute({
 
 const domainRouter = new OpenAPIHono<AppEnv>();
 
-// All routes require authentication
-domainRouter.use('*', authMiddleware);
+// JWT or API key (pk_live_...)
+domainRouter.use('*', combinedAuthMiddleware);
+
+domainRouter.get('/', requireScope('domains:read'));
+domainRouter.post('/', requireScope('domains:write'));
+domainRouter.get('/:domainId', requireScope('domains:read'));
+domainRouter.post('/:domainId/primary', requireScope('domains:write'));
+domainRouter.post('/:domainId/verify', requireScope('domains:write'));
+domainRouter.get('/:domainId/dns-setup', requireScope('domains:read'));
+domainRouter.get('/:domainId/nginx-settings', requireScope('domains:read'));
+domainRouter.patch('/:domainId/nginx-settings', requireScope('domains:write'));
+domainRouter.delete('/:domainId', requireScope('domains:write'));
 
 // List domains
 domainRouter.openapi(listDomainsRoute, async (c) => {

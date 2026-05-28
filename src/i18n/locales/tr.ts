@@ -171,6 +171,7 @@ export const tr: TranslationKeys = {
     invalidKey: 'Geçersiz veya süresi dolmuş API anahtarı',
     invalidScopes: 'Geçersiz yetki kapsamı belirtildi',
     insufficientScope: 'API anahtarı gerekli izinlere sahip değil',
+    sessionOnly: 'Bu uç nokta API anahtarı yerine panel oturum tokenı gerektirir',
     limitReached: 'Maksimum API anahtarı sayısına ulaşıldı',
   },
 
