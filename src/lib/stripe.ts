@@ -17,13 +17,11 @@ export function getStripe(): Stripe {
   return stripeInstance;
 }
 
-// Map plan types to Stripe Price IDs (set these from your Stripe Dashboard)
-// Format: { monthly: 'price_xxx', yearly: 'price_yyy' }
-export const STRIPE_PRICE_IDS: Record<PlanType, { monthly: string; yearly: string } | null> = {
+const DEFAULT_STRIPE_PRICE_IDS: Record<PlanType, { monthly: string; yearly: string } | null> = {
   free: null,
   hobby: {
     monthly: 'price_1TDiioC34JPtjVa9kZjFTYVF',
-    yearly: 'price_1TDiioC34JPtjVa9kZjFTYVF', // Uses monthly price until yearly is created in Stripe
+    yearly: 'price_1TDiioC34JPtjVa9kZjFTYVF',
   },
   pro: {
     monthly: 'price_1TDijQC34JPtjVa9IfxvjlPe',
@@ -36,13 +34,32 @@ export const STRIPE_PRICE_IDS: Record<PlanType, { monthly: string; yearly: strin
   enterprise: null,
 };
 
+function priceFromEnv(monthly?: string, yearly?: string): { monthly: string; yearly: string } | null {
+  if (!monthly) return null;
+  return { monthly, yearly: yearly || monthly };
+}
+
+/** Plan → Stripe Price IDs (env overrides defaults for production) */
+export const STRIPE_PRICE_IDS: Record<PlanType, { monthly: string; yearly: string } | null> = {
+  free: null,
+  hobby:
+    priceFromEnv(env.STRIPE_PRICE_HOBBY_MONTHLY, env.STRIPE_PRICE_HOBBY_YEARLY) ??
+    DEFAULT_STRIPE_PRICE_IDS.hobby,
+  pro:
+    priceFromEnv(env.STRIPE_PRICE_PRO_MONTHLY, env.STRIPE_PRICE_PRO_YEARLY) ??
+    DEFAULT_STRIPE_PRICE_IDS.pro,
+  business:
+    priceFromEnv(env.STRIPE_PRICE_BUSINESS_MONTHLY, env.STRIPE_PRICE_BUSINESS_YEARLY) ??
+    DEFAULT_STRIPE_PRICE_IDS.business,
+  enterprise: null,
+};
+
 export function getPriceId(plan: PlanType, cycle: 'monthly' | 'yearly'): string | null {
   const prices = STRIPE_PRICE_IDS[plan];
   if (!prices) return null;
   return prices[cycle] || null;
 }
 
-// Reverse lookup: find plan type from Stripe Price ID
 export function getPlanFromPriceId(priceId: string): PlanType | null {
   for (const [plan, prices] of Object.entries(STRIPE_PRICE_IDS)) {
     if (!prices) continue;
@@ -53,10 +70,6 @@ export function getPlanFromPriceId(priceId: string): PlanType | null {
   return null;
 }
 
-/**
- * Stripe API 2025+ moved billing period fields onto subscription items.
- * Webhooks may omit top-level current_period_end on the subscription object.
- */
 export function getSubscriptionCurrentPeriodEnd(sub: Stripe.Subscription): Date | null {
   const legacyEnd = (sub as Stripe.Subscription & { current_period_end?: number }).current_period_end;
   if (typeof legacyEnd === 'number' && Number.isFinite(legacyEnd)) {

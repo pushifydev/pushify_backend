@@ -1,4 +1,4 @@
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, ne } from 'drizzle-orm';
 import { db } from '../db';
 import { projects, domains, environmentVariables } from '../db/schema/projects';
 import { servers } from '../db/schema/servers';
@@ -72,12 +72,12 @@ export const projectRepository = {
     });
   },
 
-  // Find all projects for organization
+  // Find all non-deleted projects for organization (active + paused)
   async findByOrganization(organizationId: string) {
     return db.query.projects.findMany({
       where: and(
         eq(projects.organizationId, organizationId),
-        eq(projects.status, 'active')
+        ne(projects.status, 'deleted')
       ),
       with: {
         domains: {

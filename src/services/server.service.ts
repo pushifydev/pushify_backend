@@ -4,6 +4,8 @@ import { db } from '../db';
 import { servers } from '../db/schema/servers';
 import { projects } from '../db/schema/projects';
 import { databases } from '../db/schema/databases';
+import { deployments } from '../db/schema/deployments';
+import type { ServerSize } from '../providers/cloud-provider.interface';
 import { organizationRepository } from '../repositories/organization.repository';
 import { organizations } from '../db/schema/organizations';
 import { createProvider, type ProviderType, type ServerConfig } from '../providers';
@@ -237,6 +239,13 @@ export interface ServerLocation {
   datacenter?: string;
 }
 
+export interface ServerInfraBillingDetails {
+  walletBalanceCents: number;
+  requiredStartCents: number;
+  estimatedMonthlyCents: number;
+  canStart: boolean;
+}
+
 export interface ServerWithDetails {
   id: string;
   name: string;
@@ -260,6 +269,7 @@ export interface ServerWithDetails {
   projectCount: number;
   databaseCount: number;
   isManaged: boolean;
+  infraBilling?: ServerInfraBillingDetails;
   createdAt: Date;
   updatedAt: Date;
   lastSeenAt: Date | null;
@@ -380,6 +390,23 @@ async function toServerDetails(
 }
 
 // Get provider API token from organization settings or env
+const SIZE_RANK: Record<ServerSize, number> = {
+  xs: 0,
+  sm: 1,
+  md: 2,
+  lg: 3,
+  xl: 4,
+  custom: 5,
+};
+
+function isUpgradeSize(current: ServerSize, next: ServerSize): boolean {
+  return SIZE_RANK[next] > SIZE_RANK[current];
+}
+
+function specsScore(vcpus: number, memoryMb: number): number {
+  return vcpus * 1_000_000 + memoryMb;
+}
+
 function getProviderToken(provider: ProviderType): string {
   // For now, use environment variables
   // In the future, this could be per-organization credentials (BYOC)
@@ -439,6 +466,8 @@ export const serverService = {
       throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
     }
 
+    await infraBillingService.clearInfraCreditsStoppedMessages(organizationId);
+
     const result = await db
       .select()
       .from(servers)
@@ -453,7 +482,12 @@ export const serverService = {
     const { projectCountMap, databaseCountMap } = await getServerUsageCounts(organizationId, [
       s.id,
     ]);
-    return mapServerRow(s, projectCountMap, databaseCountMap);
+    const row = mapServerRow(s, projectCountMap, databaseCountMap);
+    const infraBilling = await infraBillingService.getServerInfraBillingContext(
+      organizationId,
+      serverId,
+    );
+    return infraBilling ? { ...row, infraBilling } : row;
   },
 
   /**
@@ -833,11 +867,15 @@ export const serverService = {
         break;
     }
 
-    // Update status
+    // Update status; clear billing stop copy after a successful start
     const newStatus = action === 'reboot' ? 'rebooting' : action === 'start' ? 'running' : 'stopped';
     const [updated] = await db
       .update(servers)
-      .set({ status: newStatus, updatedAt: new Date() })
+      .set({
+        status: newStatus,
+        updatedAt: new Date(),
+        ...(action === 'start' ? { statusMessage: null } : {}),
+      })
       .where(eq(servers.id, serverId))
       .returning();
 
@@ -880,6 +918,11 @@ export const serverService = {
     // Get server from provider
     const providerServer = await provider.getServer(server.providerId);
 
+    const clearBillingStopMessage =
+      providerServer.status === 'running' &&
+      (server.statusMessage === 'infra_credits_stopped' ||
+        server.statusMessage === 'billing_suspended');
+
     // Update database
     const [updated] = await db
       .update(servers)
@@ -894,6 +937,7 @@ export const serverService = {
         providerData: providerServer.providerData,
         lastSeenAt: new Date(),
         updatedAt: new Date(),
+        ...(clearBillingStopMessage ? { statusMessage: null } : {}),
       })
       .where(eq(servers.id, serverId))
       .returning();
@@ -1064,6 +1108,401 @@ export const serverService = {
     } finally {
       ssh?.disconnect();
     }
+  },
+
+  async updateServer(
+    serverId: string,
+    organizationId: string,
+    userId: string,
+    input: { name?: string; description?: string | null },
+    locale: SupportedLocale = 'en',
+  ): Promise<ServerWithDetails> {
+    const membership = await organizationRepository.findMember(organizationId, userId);
+    if (!membership) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
+    }
+    if (!['owner', 'admin'].includes(membership.role)) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'adminRequired') });
+    }
+
+    const [server] = await db
+      .select()
+      .from(servers)
+      .where(and(eq(servers.id, serverId), eq(servers.organizationId, organizationId)))
+      .limit(1);
+
+    if (!server) {
+      throw new HTTPException(404, { message: t(locale, 'servers', 'notFound') });
+    }
+
+    const updates: Partial<typeof servers.$inferInsert> = { updatedAt: new Date() };
+    if (input.name !== undefined) {
+      const trimmed = input.name.trim();
+      if (!trimmed) {
+        throw new HTTPException(400, { message: t(locale, 'servers', 'nameRequired') });
+      }
+      updates.name = trimmed;
+    }
+    if (input.description !== undefined) {
+      updates.description = input.description?.trim() || null;
+    }
+
+    const [updated] = await db
+      .update(servers)
+      .set(updates)
+      .where(eq(servers.id, serverId))
+      .returning();
+
+    return toServerDetails(updated, organizationId);
+  },
+
+  async getResizeOptions(
+    serverId: string,
+    organizationId: string,
+    userId: string,
+    locale: SupportedLocale = 'en',
+  ) {
+    const membership = await organizationRepository.findMember(organizationId, userId);
+    if (!membership) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
+    }
+
+    const [server] = await db
+      .select()
+      .from(servers)
+      .where(and(eq(servers.id, serverId), eq(servers.organizationId, organizationId)))
+      .limit(1);
+
+    if (!server) {
+      throw new HTTPException(404, { message: t(locale, 'servers', 'notFound') });
+    }
+
+    if (!server.isManaged || server.provider !== 'hetzner') {
+      throw new HTTPException(400, { message: t(locale, 'servers', 'resizeNotSupported') });
+    }
+
+    const org = await organizationRepository.findById(organizationId);
+    const plan = (org?.plan || 'free') as PlanType;
+    const options = await infraBillingService.getSizedOptionsForOrganization(
+      organizationId,
+      plan,
+      server.provider as ProviderType,
+      server.region,
+      locale,
+    );
+
+    const currentScore = specsScore(server.vcpus, server.memoryMb);
+    return options.filter((opt) => {
+      if (!opt.allowedByPlan) return false;
+      const optScore = specsScore(opt.specs.vcpus, opt.specs.memoryMb);
+      if (optScore <= currentScore && !isUpgradeSize(server.size as ServerSize, opt.size)) {
+        return false;
+      }
+      return optScore > currentScore || isUpgradeSize(server.size as ServerSize, opt.size);
+    });
+  },
+
+  async resizeServer(
+    serverId: string,
+    organizationId: string,
+    userId: string,
+    size: ServerSize,
+    locale: SupportedLocale = 'en',
+  ): Promise<ServerWithDetails> {
+    const membership = await organizationRepository.findMember(organizationId, userId);
+    if (!membership) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
+    }
+    if (!['owner', 'admin'].includes(membership.role)) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'adminRequired') });
+    }
+
+    await assertOrganizationCanMutateResources(organizationId, locale);
+
+    const [server] = await db
+      .select()
+      .from(servers)
+      .where(and(eq(servers.id, serverId), eq(servers.organizationId, organizationId)))
+      .limit(1);
+
+    if (!server) {
+      throw new HTTPException(404, { message: t(locale, 'servers', 'notFound') });
+    }
+
+    if (!server.isManaged || server.provider !== 'hetzner' || !server.providerId) {
+      throw new HTTPException(400, { message: t(locale, 'servers', 'resizeNotSupported') });
+    }
+
+    if (server.status === 'deleting' || server.status === 'provisioning') {
+      throw new HTTPException(400, { message: t(locale, 'servers', 'resizeInvalidState') });
+    }
+
+    const org = await organizationRepository.findById(organizationId);
+    const plan = (org?.plan || 'free') as PlanType;
+
+    const options = await this.getResizeOptions(serverId, organizationId, userId, locale);
+    const target = options.find((o) => o.size === size);
+    if (!target) {
+      throw new HTTPException(400, { message: t(locale, 'servers', 'resizeInvalidSize') });
+    }
+
+    const quote = await infraBillingService.quoteManagedServer(
+      plan,
+      'hetzner',
+      server.region,
+      size,
+      locale,
+    );
+
+    const newMonthly = quote.customerPriceMonthlyCents;
+    const oldMonthly = server.customerPriceMonthlyCents ?? 0;
+    if (newMonthly > oldMonthly) {
+      await infraBillingService.assertWalletCanProvision(organizationId, plan, quote, locale);
+    }
+
+    const apiToken = getProviderToken('hetzner');
+    const provider = createProvider('hetzner', apiToken);
+
+    await db
+      .update(servers)
+      .set({ status: 'rebooting', statusMessage: 'resizing', updatedAt: new Date() })
+      .where(eq(servers.id, serverId));
+
+    try {
+      const providerServer = await provider.resize(server.providerId, size);
+      const pd = providerServer.providerData as { serverType?: { name?: string } };
+      const billingFields = infraBillingService.billingFieldsFromQuote(
+        quote,
+        pd.serverType?.name,
+      );
+
+      const [updated] = await db
+        .update(servers)
+        .set({
+          size,
+          vcpus: providerServer.vcpus,
+          memoryMb: providerServer.memoryMb,
+          diskGb: providerServer.diskGb,
+          providerData: providerServer.providerData,
+          status: providerServer.status,
+          statusMessage: null,
+          lastSeenAt: new Date(),
+          updatedAt: new Date(),
+          ...billingFields,
+        })
+        .where(eq(servers.id, serverId))
+        .returning();
+
+      wsManager.publish(`server:${serverId}`, {
+        type: 'server:status',
+        data: { serverId, status: updated.status, setupStatus: updated.setupStatus },
+      }).catch(() => {});
+
+      return toServerDetails(updated, organizationId);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Resize failed';
+      await db
+        .update(servers)
+        .set({
+          status: server.status,
+          statusMessage: errorMessage,
+          updatedAt: new Date(),
+        })
+        .where(eq(servers.id, serverId));
+
+      throw new HTTPException(500, {
+        message: t(locale, 'servers', 'resizeFailed'),
+      });
+    }
+  },
+
+  async listServerSnapshots(
+    serverId: string,
+    organizationId: string,
+    userId: string,
+    locale: SupportedLocale = 'en',
+  ) {
+    const membership = await organizationRepository.findMember(organizationId, userId);
+    if (!membership) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
+    }
+
+    const [server] = await db
+      .select()
+      .from(servers)
+      .where(and(eq(servers.id, serverId), eq(servers.organizationId, organizationId)))
+      .limit(1);
+
+    if (!server) {
+      throw new HTTPException(404, { message: t(locale, 'servers', 'notFound') });
+    }
+
+    if (!server.isManaged || !server.providerId || server.provider !== 'hetzner') {
+      return [];
+    }
+
+    const apiToken = getProviderToken('hetzner');
+    const provider = createProvider('hetzner', apiToken);
+    return provider.listSnapshots(server.providerId);
+  },
+
+  async createServerSnapshot(
+    serverId: string,
+    organizationId: string,
+    userId: string,
+    input: { name?: string; description?: string },
+    locale: SupportedLocale = 'en',
+  ) {
+    const membership = await organizationRepository.findMember(organizationId, userId);
+    if (!membership) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
+    }
+    if (!['owner', 'admin'].includes(membership.role)) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'adminRequired') });
+    }
+
+    const [server] = await db
+      .select()
+      .from(servers)
+      .where(and(eq(servers.id, serverId), eq(servers.organizationId, organizationId)))
+      .limit(1);
+
+    if (!server) {
+      throw new HTTPException(404, { message: t(locale, 'servers', 'notFound') });
+    }
+
+    if (!server.isManaged || !server.providerId || server.provider !== 'hetzner') {
+      throw new HTTPException(400, { message: t(locale, 'servers', 'snapshotsNotSupported') });
+    }
+
+    if (server.status !== 'running') {
+      throw new HTTPException(400, { message: t(locale, 'servers', 'snapshotRequiresRunning') });
+    }
+
+    const apiToken = getProviderToken('hetzner');
+    const provider = createProvider('hetzner', apiToken);
+    const label = input.name?.trim() || `pushify-${server.name}-${Date.now()}`;
+    return provider.createSnapshot(server.providerId, label, input.description);
+  },
+
+  async deleteServerSnapshot(
+    serverId: string,
+    organizationId: string,
+    userId: string,
+    snapshotId: string,
+    locale: SupportedLocale = 'en',
+  ): Promise<void> {
+    const membership = await organizationRepository.findMember(organizationId, userId);
+    if (!membership) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
+    }
+    if (!['owner', 'admin'].includes(membership.role)) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'adminRequired') });
+    }
+
+    const [server] = await db
+      .select()
+      .from(servers)
+      .where(and(eq(servers.id, serverId), eq(servers.organizationId, organizationId)))
+      .limit(1);
+
+    if (!server) {
+      throw new HTTPException(404, { message: t(locale, 'servers', 'notFound') });
+    }
+
+    if (!server.isManaged || server.provider !== 'hetzner') {
+      throw new HTTPException(400, { message: t(locale, 'servers', 'snapshotsNotSupported') });
+    }
+
+    const apiToken = getProviderToken('hetzner');
+    const provider = createProvider('hetzner', apiToken);
+    await provider.deleteSnapshot(snapshotId);
+  },
+
+  async getServerTimeline(
+    serverId: string,
+    organizationId: string,
+    userId: string,
+    locale: SupportedLocale = 'en',
+  ) {
+    const membership = await organizationRepository.findMember(organizationId, userId);
+    if (!membership) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
+    }
+
+    const [server] = await db
+      .select()
+      .from(servers)
+      .where(and(eq(servers.id, serverId), eq(servers.organizationId, organizationId)))
+      .limit(1);
+
+    if (!server) {
+      throw new HTTPException(404, { message: t(locale, 'servers', 'notFound') });
+    }
+
+    const serverProjects = await db
+      .select({ id: projects.id, name: projects.name, slug: projects.slug })
+      .from(projects)
+      .where(
+        and(
+          eq(projects.organizationId, organizationId),
+          eq(projects.serverId, serverId),
+          ne(projects.status, 'deleted'),
+        ),
+      );
+
+    const projectIds = serverProjects.map((p) => p.id);
+    let recentDeployments: Array<{
+      id: string;
+      status: string;
+      trigger: string;
+      createdAt: Date;
+      projectId: string;
+      projectName: string;
+      projectSlug: string;
+    }> = [];
+
+    if (projectIds.length > 0) {
+      const rows = await db
+        .select({
+          id: deployments.id,
+          status: deployments.status,
+          trigger: deployments.trigger,
+          createdAt: deployments.createdAt,
+          projectId: deployments.projectId,
+          projectName: projects.name,
+          projectSlug: projects.slug,
+        })
+        .from(deployments)
+        .innerJoin(projects, eq(deployments.projectId, projects.id))
+        .where(inArray(deployments.projectId, projectIds))
+        .orderBy(desc(deployments.createdAt))
+        .limit(15);
+
+      recentDeployments = rows;
+    }
+
+    const lifecycle: Array<{ type: string; at: Date; detail?: string }> = [
+      { type: 'created', at: server.createdAt },
+    ];
+
+    if (server.lastSeenAt) {
+      lifecycle.push({ type: 'synced', at: server.lastSeenAt });
+    }
+
+    if (server.statusMessage === 'resizing') {
+      lifecycle.push({ type: 'resizing', at: server.updatedAt });
+    }
+
+    if (server.status === 'stopped' && server.statusMessage === 'infra_credits_stopped') {
+      lifecycle.push({ type: 'infra_stopped', at: server.updatedAt, detail: server.statusMessage });
+    }
+
+    return {
+      lifecycle,
+      deployments: recentDeployments,
+      projects: serverProjects,
+    };
   },
 
 };
