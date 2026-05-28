@@ -73,6 +73,14 @@ export const API_KEY_SCOPES = {
   'domains:read': 'Read domain information',
   'domains:write': 'Add and remove domains',
 
+  // Servers
+  'servers:read': 'View servers and provider catalog',
+  'servers:write': 'Create, update, and control servers',
+
+  // Databases
+  'databases:read': 'View databases, credentials, and backups',
+  'databases:write': 'Manage databases, connections, and backups',
+
   // Logs
   'logs:read': 'Read deployment and container logs',
 

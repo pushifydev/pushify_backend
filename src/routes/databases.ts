@@ -1,17 +1,18 @@
 import { Hono } from 'hono';
 import { databaseService } from '../services/database.service';
 import { databaseBackupService } from '../services/database-backup.service';
-import { authMiddleware } from '../middleware/auth';
+import { combinedAuthMiddleware } from '../middleware/auth';
+import { requireScope } from '../middleware/apikey-auth';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 
 const databasesRouter = new Hono<AppEnv>();
 
-// All routes require authentication
-databasesRouter.use('*', authMiddleware);
+// JWT or API key (pk_live_...)
+databasesRouter.use('*', combinedAuthMiddleware);
 
 // Get all databases for organization
-databasesRouter.get('/', async (c) => {
+databasesRouter.get('/', requireScope('databases:read'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -22,13 +23,13 @@ databasesRouter.get('/', async (c) => {
 });
 
 // Get available database types
-databasesRouter.get('/types', async (c) => {
+databasesRouter.get('/types', requireScope('databases:read'), async (c) => {
   const types = databaseService.getAvailableTypes();
   return c.json({ data: types });
 });
 
 // Get single database
-databasesRouter.get('/:id', async (c) => {
+databasesRouter.get('/:id', requireScope('databases:read'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -40,7 +41,7 @@ databasesRouter.get('/:id', async (c) => {
 });
 
 // Get database connection details (with actual credentials)
-databasesRouter.get('/:id/credentials', async (c) => {
+databasesRouter.get('/:id/credentials', requireScope('databases:read'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -57,7 +58,7 @@ databasesRouter.get('/:id/credentials', async (c) => {
 });
 
 // Create database
-databasesRouter.post('/', async (c) => {
+databasesRouter.post('/', requireScope('databases:write'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -72,7 +73,7 @@ databasesRouter.post('/', async (c) => {
 });
 
 // Update database
-databasesRouter.patch('/:id', async (c) => {
+databasesRouter.patch('/:id', requireScope('databases:write'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -94,7 +95,7 @@ databasesRouter.patch('/:id', async (c) => {
 });
 
 // Delete database
-databasesRouter.delete('/:id', async (c) => {
+databasesRouter.delete('/:id', requireScope('databases:write'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -106,7 +107,7 @@ databasesRouter.delete('/:id', async (c) => {
 });
 
 // Connect database to project
-databasesRouter.post('/:id/connect', async (c) => {
+databasesRouter.post('/:id/connect', requireScope('databases:write'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -128,7 +129,7 @@ databasesRouter.post('/:id/connect', async (c) => {
 });
 
 // Disconnect database from project
-databasesRouter.delete('/connections/:connectionId', async (c) => {
+databasesRouter.delete('/connections/:connectionId', requireScope('databases:write'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -140,7 +141,7 @@ databasesRouter.delete('/connections/:connectionId', async (c) => {
 });
 
 // Toggle external access
-databasesRouter.post('/:id/external-access', async (c) => {
+databasesRouter.post('/:id/external-access', requireScope('databases:write'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -162,7 +163,7 @@ databasesRouter.post('/:id/external-access', async (c) => {
 });
 
 // Start database
-databasesRouter.post('/:id/start', async (c) => {
+databasesRouter.post('/:id/start', requireScope('databases:write'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -174,7 +175,7 @@ databasesRouter.post('/:id/start', async (c) => {
 });
 
 // Stop database
-databasesRouter.post('/:id/stop', async (c) => {
+databasesRouter.post('/:id/stop', requireScope('databases:write'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -186,7 +187,7 @@ databasesRouter.post('/:id/stop', async (c) => {
 });
 
 // Restart database
-databasesRouter.post('/:id/restart', async (c) => {
+databasesRouter.post('/:id/restart', requireScope('databases:write'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -198,7 +199,7 @@ databasesRouter.post('/:id/restart', async (c) => {
 });
 
 // Reset database password
-databasesRouter.post('/:id/reset-password', async (c) => {
+databasesRouter.post('/:id/reset-password', requireScope('databases:write'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -215,7 +216,7 @@ databasesRouter.post('/:id/reset-password', async (c) => {
 // ============ Backup Routes ============
 
 // List backups for a database
-databasesRouter.get('/:id/backups', async (c) => {
+databasesRouter.get('/:id/backups', requireScope('databases:read'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -227,7 +228,7 @@ databasesRouter.get('/:id/backups', async (c) => {
 });
 
 // Create manual backup
-databasesRouter.post('/:id/backups', async (c) => {
+databasesRouter.post('/:id/backups', requireScope('databases:write'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -242,7 +243,7 @@ databasesRouter.post('/:id/backups', async (c) => {
 });
 
 // Get single backup
-databasesRouter.get('/:id/backups/:backupId', async (c) => {
+databasesRouter.get('/:id/backups/:backupId', requireScope('databases:read'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -255,7 +256,7 @@ databasesRouter.get('/:id/backups/:backupId', async (c) => {
 });
 
 // Restore from backup
-databasesRouter.post('/:id/backups/:backupId/restore', async (c) => {
+databasesRouter.post('/:id/backups/:backupId/restore', requireScope('databases:write'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -268,7 +269,7 @@ databasesRouter.post('/:id/backups/:backupId/restore', async (c) => {
 });
 
 // Delete backup
-databasesRouter.delete('/:id/backups/:backupId', async (c) => {
+databasesRouter.delete('/:id/backups/:backupId', requireScope('databases:write'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -281,7 +282,7 @@ databasesRouter.delete('/:id/backups/:backupId', async (c) => {
 });
 
 // Download backup file
-databasesRouter.get('/:id/backups/:backupId/download', async (c) => {
+databasesRouter.get('/:id/backups/:backupId/download', requireScope('databases:read'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');

@@ -147,6 +147,7 @@ export interface TranslationKeys {
     invalidKey: string;
     invalidScopes: string;
     insufficientScope: string;
+    sessionOnly: string;
     limitReached: string;
   };
   twoFactor: {
@@ -396,6 +397,7 @@ export const en: TranslationKeys = {
     invalidKey: 'Invalid or expired API key',
     invalidScopes: 'Invalid scope(s) specified',
     insufficientScope: 'API key does not have required permissions',
+    sessionOnly: 'This endpoint requires a dashboard session token, not an API key',
     limitReached: 'Maximum number of API keys reached',
   },
 
