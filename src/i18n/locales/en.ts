@@ -208,6 +208,17 @@ export interface TranslationKeys {
     providerNotConfigured: string;
     notProvisioned: string;
     quotaExceeded: string;
+    updated: string;
+    nameRequired: string;
+    resized: string;
+    resizeFailed: string;
+    resizeNotSupported: string;
+    resizeInvalidState: string;
+    resizeInvalidSize: string;
+    snapshotsNotSupported: string;
+    snapshotRequiresRunning: string;
+    snapshotCreated: string;
+    snapshotDeleted: string;
   };
   databases: {
     notFound: string;
@@ -487,6 +498,17 @@ export const en: TranslationKeys = {
     providerNotConfigured: 'Cloud provider is not configured',
     notProvisioned: 'Server is not yet provisioned',
     quotaExceeded: 'Server limit reached. Please upgrade your plan to create more servers.',
+    updated: 'Server updated successfully',
+    nameRequired: 'Server name is required',
+    resized: 'Server resize started. It may reboot briefly.',
+    resizeFailed: 'Failed to resize server',
+    resizeNotSupported: 'Resize is only available for managed Hetzner servers',
+    resizeInvalidState: 'Server cannot be resized in its current state',
+    resizeInvalidSize: 'Invalid or unavailable size for upgrade',
+    snapshotsNotSupported: 'Snapshots are only available for managed Hetzner servers',
+    snapshotRequiresRunning: 'Server must be running to create a snapshot',
+    snapshotCreated: 'Snapshot creation started',
+    snapshotDeleted: 'Snapshot deleted successfully',
   },
 
   // Databases

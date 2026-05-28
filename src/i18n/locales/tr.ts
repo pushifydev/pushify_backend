@@ -247,6 +247,17 @@ export const tr: TranslationKeys = {
     providerNotConfigured: 'Bulut sağlayıcısı yapılandırılmamış',
     notProvisioned: 'Sunucu henüz hazırlanmadı',
     quotaExceeded: 'Sunucu limitine ulaşıldı. Daha fazla sunucu oluşturmak için planınızı yükseltin.',
+    updated: 'Sunucu başarıyla güncellendi',
+    nameRequired: 'Sunucu adı gerekli',
+    resized: 'Sunucu boyutu değiştiriliyor. Kısa süre yeniden başlayabilir.',
+    resizeFailed: 'Sunucu boyutu değiştirilemedi',
+    resizeNotSupported: 'Boyut değiştirme yalnızca yönetilen Hetzner sunucularında kullanılabilir',
+    resizeInvalidState: 'Sunucu mevcut durumda yeniden boyutlandırılamaz',
+    resizeInvalidSize: 'Geçersiz veya yükseltme için uygun olmayan boyut',
+    snapshotsNotSupported: 'Anlık görüntüler yalnızca yönetilen Hetzner sunucularında kullanılabilir',
+    snapshotRequiresRunning: 'Anlık görüntü için sunucu çalışıyor olmalı',
+    snapshotCreated: 'Anlık görüntü oluşturma başlatıldı',
+    snapshotDeleted: 'Anlık görüntü silindi',
   },
 
   // Databases
