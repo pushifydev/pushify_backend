@@ -52,3 +52,29 @@ export function getPlanFromPriceId(priceId: string): PlanType | null {
   }
   return null;
 }
+
+/**
+ * Stripe API 2025+ moved billing period fields onto subscription items.
+ * Webhooks may omit top-level current_period_end on the subscription object.
+ */
+export function getSubscriptionCurrentPeriodEnd(sub: Stripe.Subscription): Date | null {
+  const legacyEnd = (sub as Stripe.Subscription & { current_period_end?: number }).current_period_end;
+  if (typeof legacyEnd === 'number' && Number.isFinite(legacyEnd)) {
+    return new Date(legacyEnd * 1000);
+  }
+
+  for (const item of sub.items?.data ?? []) {
+    const itemEnd = (item as Stripe.SubscriptionItem & { current_period_end?: number }).current_period_end;
+    if (typeof itemEnd === 'number' && Number.isFinite(itemEnd)) {
+      return new Date(itemEnd * 1000);
+    }
+  }
+
+  return null;
+}
+
+export function getOrganizationIdFromSubscription(sub: Stripe.Subscription): string | null {
+  const fromMeta = sub.metadata?.organizationId;
+  if (fromMeta) return fromMeta;
+  return null;
+}

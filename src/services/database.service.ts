@@ -10,6 +10,7 @@ import { eq } from 'drizzle-orm';
 import { servers } from '../db/schema/servers';
 import type { DatabaseType, DatabaseStatus } from '../db/schema/databases';
 import { getPlanInfo, isUnlimited, type PlanType } from '../lib/plans';
+import { assertOrganizationCanMutateResources } from './organization-billing.service';
 import crypto from 'crypto';
 
 // ============ Types ============
@@ -175,6 +176,8 @@ export const databaseService = {
     if (!membership || !['owner', 'admin'].includes(membership.role)) {
       throw new HTTPException(403, { message: t(locale, 'errors', 'forbidden') });
     }
+
+    await assertOrganizationCanMutateResources(organizationId, locale);
 
     // Check database quota
     const org = await organizationRepository.findById(organizationId);

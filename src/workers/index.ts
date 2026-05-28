@@ -30,6 +30,11 @@ export {
   isBackupWorkerRunning,
 } from './backup.worker';
 
+export {
+  startInfraBillingWorker,
+  stopInfraBillingWorker,
+} from './infra-billing.worker';
+
 export { cloneRepository, cleanupRepository } from './git';
 export { buildImage, runContainer, stopContainer, removeContainer, isDockerAvailable } from './docker';
 export { generateDockerfile, hasDockerfile, writeDockerfile } from './dockerfile';

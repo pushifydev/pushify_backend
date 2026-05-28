@@ -10,6 +10,7 @@ import { generateSlug } from '../lib/utils';
 import { logger } from '../lib/logger';
 import { decrypt } from '../lib/encryption';
 import { t, type SupportedLocale } from '../i18n';
+import { assertOrganizationCanMutateResources } from './organization-billing.service';
 
 // Types
 interface CreateProjectInput {
@@ -57,6 +58,8 @@ export const projectService = {
     if (!membership) {
       throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
     }
+
+    await assertOrganizationCanMutateResources(organizationId, locale);
 
     // Generate slug from name
     let slug = generateSlug(input.name);

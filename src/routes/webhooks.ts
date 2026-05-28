@@ -3,6 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { projectRepository } from '../repositories/project.repository';
 import { deploymentRepository } from '../repositories/deployment.repository';
 import { previewService } from '../services/preview.service';
+import { canOrganizationDeploy } from '../services/organization-billing.service';
 import { webhookRateLimiter } from '../middleware/rate-limit';
 import { verifyGitHubSignature } from '../lib/github-webhook';
 import { claimGitHubWebhookDelivery } from '../lib/webhook-dedupe';
@@ -178,6 +179,10 @@ webhookRouter.openapi(webhookRoute, async (c) => {
     throw new HTTPException(400, { message: 'Invalid JSON payload' });
   }
 
+  if (!(await canOrganizationDeploy(project.organizationId))) {
+    return c.json({ message: 'Deployments blocked: organization billing is past due or suspended' });
+  }
+
   // Handle pull_request events for preview deployments
   if (event === 'pull_request') {
     const payload = rawPayload as GitHubPullRequestPayload;
@@ -284,8 +289,9 @@ webhookRouter.post('/stripe', async (c) => {
     await stripeService.handleWebhookEvent(rawBody, signature);
     return c.json({ received: true });
   } catch (err) {
-    logger.error({ err }, 'Stripe webhook error');
-    return c.json({ error: 'Webhook processing failed' }, 400);
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error({ err, message }, 'Stripe webhook error');
+    return c.json({ error: 'Webhook processing failed', message }, 400);
   }
 });
 

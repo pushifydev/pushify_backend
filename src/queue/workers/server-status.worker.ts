@@ -6,6 +6,7 @@ import { createProvider, type ProviderType } from '../../providers';
 import { createRedisConnection } from '../connection';
 import { QUEUE_NAMES, getServerSetupQueue, type ServerStatusJobData } from '../queues';
 import { wsManager } from '../../lib/ws';
+import { infraBillingService } from '../../services/infra-billing.service';
 
 // Get provider API token from environment
 function getProviderToken(provider: ProviderType): string {
@@ -88,6 +89,10 @@ async function processServerStatusJob(job: Job<ServerStatusJobData>): Promise<st
   // If server is still provisioning, throw error to retry
   if (providerServer.status === 'provisioning') {
     throw new Error('Server still provisioning, will retry');
+  }
+
+  if (providerServer.status === 'running') {
+    await infraBillingService.backfillServerBillingIfMissing(serverId);
   }
 
   // If server is now running, queue setup check job

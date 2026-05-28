@@ -10,6 +10,7 @@ import { t, type SupportedLocale } from '../i18n';
 import { stopContainer, removeContainer } from '../workers/docker';
 import { env } from '../config/env';
 import type { PreviewDeployment } from '../db/schema';
+import { canOrganizationDeploy } from './organization-billing.service';
 
 interface CreatePreviewInput {
   prNumber: number;
@@ -78,6 +79,10 @@ export const previewService = {
     const project = await projectRepository.findById(projectId);
     if (!project) {
       throw new Error('Project not found');
+    }
+
+    if (!(await canOrganizationDeploy(project.organizationId))) {
+      throw new Error('Organization billing does not allow deployments');
     }
 
     // Check if preview already exists

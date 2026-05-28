@@ -2,29 +2,23 @@ import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { organizations } from '../db/schema';
 import { env } from '../config/env';
-import { getStripe, getPriceId, getPlanFromPriceId } from '../lib/stripe';
+import {
+  getStripe,
+  getPriceId,
+  getPlanFromPriceId,
+  getSubscriptionCurrentPeriodEnd,
+  getOrganizationIdFromSubscription,
+} from '../lib/stripe';
 import { claimStripeWebhookEvent } from '../lib/stripe-webhook-dedupe';
-import { sendBillingPaymentFailedEmail } from '../lib/email';
+import { sendBillingPlanActivatedEmail, sendInfraCreditTopUpEmail } from '../lib/email';
+import { resolveBillingNotifyEmail } from '../lib/billing-notify';
 import { organizationRepository } from '../repositories/organization.repository';
-import { userRepository } from '../repositories/user.repository';
-import type { PlanType } from '../lib/plans';
+import { getPlanInfo, type PlanType } from '../lib/plans';
+import { INFRA_TOPUP_AMOUNTS_CENTS } from '../lib/infra-billing';
+import { infraBillingService } from './infra-billing.service';
+import { organizationBillingService } from './organization-billing.service';
 import type Stripe from 'stripe';
 import { logger } from '../lib/logger';
-
-async function resolveBillingNotifyEmail(organizationId: string): Promise<string | null> {
-  const org = await organizationRepository.findById(organizationId);
-  if (org?.billingEmail) {
-    return org.billingEmail;
-  }
-
-  const owner = await organizationRepository.findOwner(organizationId);
-  if (!owner) {
-    return null;
-  }
-
-  const user = await userRepository.findById(owner.userId);
-  return user?.email ?? null;
-}
 
 export const stripeService = {
   async getOrCreateCustomer(organizationId: string, email: string): Promise<string> {
@@ -88,6 +82,55 @@ export const stripeService = {
         },
       },
       allow_promotion_codes: true,
+    });
+
+    if (!session.url) {
+      throw new Error('Failed to create checkout session');
+    }
+
+    return session.url;
+  },
+
+  /**
+   * One-time checkout to add prepaid infrastructure credits (USD wallet).
+   */
+  async createInfraTopUpSession(
+    organizationId: string,
+    userId: string,
+    email: string,
+    amountCents: number,
+  ): Promise<string> {
+    if (!INFRA_TOPUP_AMOUNTS_CENTS.includes(amountCents as (typeof INFRA_TOPUP_AMOUNTS_CENTS)[number])) {
+      throw new Error('INVALID_TOPUP_AMOUNT');
+    }
+
+    const stripe = getStripe();
+    const customerId = await this.getOrCreateCustomer(organizationId, email);
+
+    const session = await stripe.checkout.sessions.create({
+      customer: customerId,
+      mode: 'payment',
+      line_items: [
+        {
+          price_data: {
+            currency: 'usd',
+            unit_amount: amountCents,
+            product_data: {
+              name: 'Pushify Infrastructure Credits',
+              description: `Prepaid cloud server credits ($${(amountCents / 100).toFixed(2)})`,
+            },
+          },
+          quantity: 1,
+        },
+      ],
+      success_url: `${env.FRONTEND_URL}/dashboard/billing?infra_topup=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${env.FRONTEND_URL}/dashboard/billing?infra_topup=cancelled`,
+      metadata: {
+        organizationId,
+        userId,
+        checkoutType: 'infra_credit',
+        amountCents: String(amountCents),
+      },
     });
 
     if (!session.url) {
@@ -191,6 +234,92 @@ export const stripeService = {
     };
   },
 
+  /**
+   * Credit infra wallet from a completed Stripe Checkout (payment mode).
+   * Idempotent per checkout session id. Used by webhooks and post-redirect confirm.
+   */
+  async applyInfraCreditFromCheckoutSession(
+    session: Stripe.Checkout.Session,
+    expectedOrganizationId?: string,
+  ): Promise<{ applied: boolean; created: boolean; newBalance: number; amountCents: number }> {
+    const organizationId = session.metadata?.organizationId;
+    const checkoutType = session.metadata?.checkoutType;
+
+    if (!organizationId || checkoutType !== 'infra_credit') {
+      return { applied: false, created: false, newBalance: 0, amountCents: 0 };
+    }
+
+    if (expectedOrganizationId && organizationId !== expectedOrganizationId) {
+      throw new Error('CHECKOUT_ORG_MISMATCH');
+    }
+
+    const amountCents = parseInt(session.metadata?.amountCents || '0', 10);
+    if (amountCents <= 0) {
+      return { applied: false, created: false, newBalance: 0, amountCents: 0 };
+    }
+
+    if (session.payment_status !== 'paid') {
+      return { applied: false, created: false, newBalance: 0, amountCents: 0 };
+    }
+
+    const sessionId = session.id;
+    if (!sessionId) {
+      throw new Error('CHECKOUT_SESSION_ID_MISSING');
+    }
+
+    const { balanceAfterCents, created } = await infraBillingService.creditWallet(
+      organizationId,
+      amountCents,
+      `Stripe top-up $${(amountCents / 100).toFixed(2)}`,
+      sessionId,
+    );
+
+    return { applied: true, created, newBalance: balanceAfterCents, amountCents };
+  },
+
+  async confirmInfraTopUp(organizationId: string, sessionId: string) {
+    const stripe = getStripe();
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+    const result = await this.applyInfraCreditFromCheckoutSession(session, organizationId);
+
+    if (!result.applied) {
+      const wallet = await infraBillingService.getWalletSummary(organizationId);
+      return {
+        credited: false,
+        paymentStatus: session.payment_status,
+        balanceCents: wallet.balanceCents,
+      };
+    }
+
+    if (result.created) {
+      const org = await organizationRepository.findById(organizationId);
+      const notifyEmail = await resolveBillingNotifyEmail(organizationId);
+      if (notifyEmail && org) {
+        await sendInfraCreditTopUpEmail(
+          notifyEmail,
+          org.name,
+          result.amountCents,
+          result.newBalance,
+          'en',
+        );
+      }
+
+      logger.info(
+        { organizationId, sessionId, amountCents: result.amountCents },
+        'Infra wallet credited via checkout confirm',
+      );
+    }
+
+    return {
+      credited: result.applied,
+      alreadyCredited: result.applied && !result.created,
+      paymentStatus: session.payment_status,
+      balanceCents: result.newBalance,
+      amountCents: result.amountCents,
+    };
+  },
+
   async handleWebhookEvent(payload: string, signature: string): Promise<void> {
     const stripe = getStripe();
 
@@ -209,9 +338,31 @@ export const stripeService = {
       case 'checkout.session.completed': {
         const session = event.data.object as Stripe.Checkout.Session;
         const organizationId = session.metadata?.organizationId;
-        const planType = session.metadata?.planType as PlanType | undefined;
+        const checkoutType = session.metadata?.checkoutType;
 
-        if (!organizationId || !planType) break;
+        if (!organizationId) break;
+
+        if (checkoutType === 'infra_credit') {
+          const result = await this.applyInfraCreditFromCheckoutSession(session);
+          if (result.applied && result.created) {
+            logger.info({ organizationId, amountCents: result.amountCents }, 'Infra wallet credited via Stripe webhook');
+            const org = await organizationRepository.findById(organizationId);
+            const notifyEmail = await resolveBillingNotifyEmail(organizationId);
+            if (notifyEmail && org) {
+              await sendInfraCreditTopUpEmail(
+                notifyEmail,
+                org.name,
+                result.amountCents,
+                result.newBalance,
+                'en',
+              );
+            }
+          }
+          break;
+        }
+
+        const planType = session.metadata?.planType as PlanType | undefined;
+        if (!planType) break;
 
         const subscriptionId = typeof session.subscription === 'string'
           ? session.subscription
@@ -219,47 +370,95 @@ export const stripeService = {
 
         if (subscriptionId) {
           const sub = await stripe.subscriptions.retrieve(subscriptionId);
+          const periodEnd = getSubscriptionCurrentPeriodEnd(sub);
           await db
             .update(organizations)
             .set({
               plan: planType,
               stripeSubscriptionId: subscriptionId,
-              stripeCurrentPeriodEnd: new Date((sub as any).current_period_end * 1000),
+              billingStatus: 'active',
+              billingPaymentFailedNotifiedAt: null,
+              ...(periodEnd ? { stripeCurrentPeriodEnd: periodEnd } : {}),
               updatedAt: new Date(),
             })
             .where(eq(organizations.id, organizationId));
+
+          const org = await organizationRepository.findById(organizationId);
+          const notifyEmail = await resolveBillingNotifyEmail(organizationId);
+          if (notifyEmail && org) {
+            const planName = getPlanInfo(planType).name;
+            await sendBillingPlanActivatedEmail(notifyEmail, org.name, planName, 'en');
+          }
         }
         break;
       }
 
       case 'customer.subscription.updated': {
         const sub = event.data.object as Stripe.Subscription;
-        const organizationId = sub.metadata?.organizationId;
+        let organizationId = getOrganizationIdFromSubscription(sub);
 
-        if (!organizationId) break;
+        if (!organizationId) {
+          const [org] = await db
+            .select({ id: organizations.id })
+            .from(organizations)
+            .where(eq(organizations.stripeSubscriptionId, sub.id))
+            .limit(1);
+          organizationId = org?.id ?? null;
+        }
+
+        if (!organizationId) {
+          logger.warn({ subscriptionId: sub.id }, 'subscription.updated: organization not found');
+          break;
+        }
 
         const priceId = sub.items.data[0]?.price?.id;
         const newPlan = priceId ? getPlanFromPriceId(priceId) : null;
+        const periodEnd = getSubscriptionCurrentPeriodEnd(sub);
 
         const updateData: Record<string, unknown> = {
-          stripeCurrentPeriodEnd: new Date((sub as any).current_period_end * 1000),
           updatedAt: new Date(),
+          stripeSubscriptionId: sub.id,
         };
+
+        if (periodEnd) {
+          updateData.stripeCurrentPeriodEnd = periodEnd;
+        }
 
         if (newPlan) {
           updateData.plan = newPlan;
+        }
+
+        if (sub.status === 'active' || sub.status === 'trialing') {
+          updateData.billingStatus = 'active';
+          updateData.billingPaymentFailedNotifiedAt = null;
+        } else if (sub.status === 'past_due' || sub.status === 'unpaid') {
+          updateData.billingStatus = 'past_due';
         }
 
         await db
           .update(organizations)
           .set(updateData)
           .where(eq(organizations.id, organizationId));
+
+        logger.info(
+          { organizationId, subscriptionId: sub.id, plan: newPlan, status: sub.status, periodEnd: periodEnd?.toISOString() },
+          'subscription.updated processed',
+        );
         break;
       }
 
       case 'customer.subscription.deleted': {
         const sub = event.data.object as Stripe.Subscription;
-        const organizationId = sub.metadata?.organizationId;
+        let organizationId = getOrganizationIdFromSubscription(sub);
+
+        if (!organizationId) {
+          const [org] = await db
+            .select({ id: organizations.id })
+            .from(organizations)
+            .where(eq(organizations.stripeSubscriptionId, sub.id))
+            .limit(1);
+          organizationId = org?.id ?? null;
+        }
 
         if (!organizationId) break;
 
@@ -272,6 +471,29 @@ export const stripeService = {
             updatedAt: new Date(),
           })
           .where(eq(organizations.id, organizationId));
+
+        await organizationBillingService.suspendOrganization(organizationId);
+        logger.info({ organizationId }, 'subscription.deleted: organization suspended');
+        break;
+      }
+
+      case 'invoice.paid': {
+        const invoice = event.data.object as Stripe.Invoice;
+        const customerId =
+          typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
+
+        if (!customerId) break;
+
+        const [org] = await db
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(eq(organizations.stripeCustomerId, customerId))
+          .limit(1);
+
+        if (org) {
+          await organizationBillingService.markActive(org.id);
+          logger.info({ organizationId: org.id }, 'invoice.paid: billing status cleared');
+        }
         break;
       }
 
@@ -293,11 +515,10 @@ export const stripeService = {
 
         if (!org) break;
 
-        const notifyEmail = await resolveBillingNotifyEmail(org.id);
-        if (notifyEmail) {
-          await sendBillingPaymentFailedEmail(notifyEmail, org.name);
-        } else {
-          logger.warn({ organizationId: org.id }, 'No billing email for payment_failed notification');
+        await organizationBillingService.markPastDue(org.id);
+        const emailed = await organizationBillingService.notifyPaymentFailedIfDue(org.id, org.name);
+        if (!emailed) {
+          logger.warn({ organizationId: org.id }, 'payment_failed: notification skipped or no billing email');
         }
         break;
       }

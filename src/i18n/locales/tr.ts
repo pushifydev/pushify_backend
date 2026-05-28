@@ -191,6 +191,28 @@ export const tr: TranslationKeys = {
   // Billing
   billing: {
     emailUpdated: 'Fatura e-postası başarıyla güncellendi',
+    stripeNotConfigured: 'Stripe yapılandırılmamış',
+  },
+
+  infraBilling: {
+    managedNotAllowed:
+      'Yönetilen bulut sunucuları ücretli bir plan gerektirir. Platform planınızı yükseltin veya kendi sunucunuzu bağlayın (BYOS).',
+    serverTierExceeded:
+      'Bu sunucu boyutu plan limitinizi aşıyor. Daha küçük bir boyut seçin veya planınızı yükseltin.',
+    insufficientWallet:
+      'Yetersiz altyapı kredisi. Yönetilen sunucu oluşturmadan önce Faturalandırma sayfasından kredi ekleyin.',
+    billingError: 'Altyapı faturalandırma hatası',
+    topUpSuccess: 'Altyapı kredileri başarıyla eklendi',
+    invalidTopUpAmount: 'Geçersiz yükleme tutarı',
+    serverStoppedInsufficientCredits:
+      'Durduruldu: yetersiz altyapı kredisi. Tekrar başlatmak için Faturalandırma sayfasından kredi ekleyin.',
+  },
+
+  organizationBilling: {
+    pastDue:
+      'Platform abonelik ödemeniz gecikmiş durumda. Kaynak oluşturmak veya dağıtmak için Faturalandırma sayfasından ödeme yönteminizi güncelleyin.',
+    suspended:
+      'Platform aboneliğiniz sona erdi. Sunucuları, projeleri ve dağıtımları yeniden kullanmak için Faturalandırma sayfasından planınızı yenileyin.',
   },
 
   dashboard: {
