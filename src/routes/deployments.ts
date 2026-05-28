@@ -6,8 +6,8 @@ import { requireScope } from '../middleware/apikey-auth';
 import { createDeploymentRateLimiter } from '../middleware/rate-limit';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
-import { streamContainerLogs, isContainerRunning } from '../workers/docker';
-import { getContainerLogs as getRemoteContainerLogs, isContainerRunning as isRemoteContainerRunning } from '../workers/remote-docker';
+import { streamContainerLogs } from '../workers/docker';
+import { getContainerLogs as getRemoteContainerLogs } from '../workers/remote-docker';
 import { getHistoricalLogs } from '../workers/log-collector';
 import { SSHClient } from '../utils/ssh';
 import { db } from '../db';
@@ -15,6 +15,7 @@ import { servers } from '../db/schema/servers';
 import { projects } from '../db/schema/projects';
 import { eq } from 'drizzle-orm';
 import { decrypt } from '../lib/encryption';
+import { resolvePushifyContainerName } from '../lib/container-resolve';
 
 // Rate limiter for deployment operations
 const deploymentRateLimiter = createDeploymentRateLimiter();
@@ -539,8 +540,6 @@ deploymentRouter.get('/:deploymentId/container-logs/stream', async (c) => {
     return c.json({ error: 'Project not found' }, 404);
   }
 
-  const containerName = `pushify-${project.slug}`;
-
   // Check if this is a remote deployment (project has a server assigned)
   if (project.serverId) {
     // Get server details
@@ -563,9 +562,8 @@ deploymentRouter.get('/:deploymentId/container-logs/stream', async (c) => {
         privateKey: decrypt(server.sshPrivateKey),
       });
 
-      // Check if container is running on remote server
-      const running = await isRemoteContainerRunning(ssh, containerName);
-      if (!running) {
+      const containerName = await resolvePushifyContainerName(project.slug, ssh);
+      if (!containerName) {
         ssh.disconnect();
         return c.json({ error: 'Container is not running on remote server' }, 400);
       }
@@ -619,9 +617,9 @@ deploymentRouter.get('/:deploymentId/container-logs/stream', async (c) => {
     }
   }
 
-  // Local deployment - check if container is actually running
-  const running = await isContainerRunning(containerName);
-  if (!running) {
+  // Local deployment — resolve blue/green/compose container name
+  const containerName = await resolvePushifyContainerName(project.slug, null);
+  if (!containerName) {
     return c.json({ error: 'Container is not running' }, 400);
   }
 
