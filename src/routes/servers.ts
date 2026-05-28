@@ -163,6 +163,117 @@ serverRouter.post('/:serverId/sync', requireScope('servers:write'), async (c) =>
   return c.json({ data: server });
 });
 
+// Update name / description
+serverRouter.patch('/:serverId', requireScope('servers:write'), async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const serverId = c.req.param('serverId');
+  const body = await c.req.json<{ name?: string; description?: string | null }>();
+
+  const server = await serverService.updateServer(serverId, organizationId, userId, body, locale);
+
+  return c.json({ data: server, message: t(locale, 'servers', 'updated') });
+});
+
+// Resize (upgrade) managed server
+serverRouter.get('/:serverId/resize-options', requireScope('servers:read'), async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const serverId = c.req.param('serverId');
+
+  const options = await serverService.getResizeOptions(serverId, organizationId, userId, locale);
+
+  return c.json({ data: options });
+});
+
+serverRouter.post('/:serverId/resize', requireScope('servers:write'), async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const serverId = c.req.param('serverId');
+  const body = await c.req.json<{ size: string }>();
+
+  if (!body.size) {
+    return c.json({ error: { code: 'INVALID_INPUT', message: 'size is required' } }, 400);
+  }
+
+  const server = await serverService.resizeServer(
+    serverId,
+    organizationId,
+    userId,
+    body.size as 'xs' | 'sm' | 'md' | 'lg' | 'xl' | 'custom',
+    locale,
+  );
+
+  return c.json({ data: server, message: t(locale, 'servers', 'resized') });
+});
+
+// Snapshots (managed Hetzner)
+serverRouter.get('/:serverId/snapshots', requireScope('servers:read'), async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const serverId = c.req.param('serverId');
+
+  const snapshots = await serverService.listServerSnapshots(
+    serverId,
+    organizationId,
+    userId,
+    locale,
+  );
+
+  return c.json({ data: snapshots });
+});
+
+serverRouter.post('/:serverId/snapshots', requireScope('servers:write'), async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const serverId = c.req.param('serverId');
+  const body = await c.req.json<{ name?: string; description?: string }>();
+
+  const snapshot = await serverService.createServerSnapshot(
+    serverId,
+    organizationId,
+    userId,
+    body,
+    locale,
+  );
+
+  return c.json({ data: snapshot, message: t(locale, 'servers', 'snapshotCreated') }, 201);
+});
+
+serverRouter.delete('/:serverId/snapshots/:snapshotId', requireScope('servers:write'), async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const serverId = c.req.param('serverId');
+  const snapshotId = c.req.param('snapshotId');
+
+  await serverService.deleteServerSnapshot(serverId, organizationId, userId, snapshotId, locale);
+
+  return c.json({ message: t(locale, 'servers', 'snapshotDeleted') });
+});
+
+// Timeline (lifecycle + deployments on this server)
+serverRouter.get('/:serverId/timeline', requireScope('servers:read'), async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const serverId = c.req.param('serverId');
+
+  const timeline = await serverService.getServerTimeline(
+    serverId,
+    organizationId,
+    userId,
+    locale,
+  );
+
+  return c.json({ data: timeline });
+});
+
 // ============ SSH Key Download ============
 
 // Get SSH connection info (IP, username, public key)
