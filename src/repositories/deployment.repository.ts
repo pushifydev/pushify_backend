@@ -245,6 +245,7 @@ export const deploymentRepository = {
         and(
           eq(deployments.status, 'running'),
           eq(deployments.isPreview, false),
+          eq(projects.status, 'active'),
           ne(projects.status, 'deleted')
         )
       )

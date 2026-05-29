@@ -23,7 +23,7 @@ export function buildRemoteTeardownScript(slug: string, isCompose: boolean): str
   const projectDir = `/opt/pushify/apps/${safeSlug}`;
 
   const stopAllMatching = [
-    `ids=$(docker ps -aq --filter "name=${base}" 2>/dev/null)`,
+    `ids=$(docker ps -aq --format '{{.Names}}' | grep -E '^${base}(-|$)|^pushify-preview-${safeSlug}' || true)`,
     'if [ -n "$ids" ]; then docker rm -f $ids 2>/dev/null || true; fi',
     `docker rm -f ${base} ${base}-blue ${base}-green ${base}-db 2>/dev/null || true`,
     `docker rm -f $(docker ps -aq --filter "name=pushify-preview-${safeSlug}" 2>/dev/null) 2>/dev/null || true`,
@@ -140,10 +140,11 @@ export async function pauseProjectContainersOnServer(ssh: SSHClient, slug: strin
   const safeSlug = shellEscapeSlug(slug);
   const base = `pushify-${safeSlug}`;
   const projectDir = `/opt/pushify/apps/${safeSlug}`;
+  const stopNames = `docker ps -q --format '{{.Names}}' | grep -E '^${base}(-|$)|^${base}-blue$|^${base}-green$' || true`;
   await ssh.exec(
     [
       `cd ${projectDir} 2>/dev/null && docker compose -p ${base} stop 2>/dev/null || true`,
-      `ids=$(docker ps -q --filter "name=${base}" 2>/dev/null); if [ -n "$ids" ]; then docker stop $ids 2>/dev/null; fi`,
+      `ids=$(${stopNames}); if [ -n "$ids" ]; then docker stop $ids 2>/dev/null; fi`,
     ].join('; ')
   );
 }

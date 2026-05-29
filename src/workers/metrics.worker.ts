@@ -13,6 +13,8 @@ import {
   normalizeDockerStatsName,
   resolvePushifyContainerName,
 } from '../lib/container-resolve';
+import { isContainerRunning } from './docker';
+import { isContainerRunning as isRemoteContainerRunning } from './remote-docker';
 import type { NewContainerMetric } from '../db/schema';
 
 const POLL_INTERVAL = 15000; // 15 seconds
@@ -92,9 +94,33 @@ async function pollForMetrics(): Promise<void> {
           const resolved: Array<(typeof projects)[number] & { resolvedContainerName: string }> =
             [];
           for (const project of projects) {
-            const resolvedName = await resolvePushifyContainerName(project.slug, ssh);
+            let resolvedName = await resolvePushifyContainerName(project.slug, ssh);
+            if (!resolvedName) {
+              // Fallback: exact app container name (deploy default)
+              const fallback = `pushify-${project.slug}`;
+              const running = ssh
+                ? await isRemoteContainerRunning(ssh, fallback)
+                : await isContainerRunning(fallback);
+              if (running) resolvedName = fallback;
+            }
             if (resolvedName) {
               resolved.push({ ...project, resolvedContainerName: resolvedName });
+            } else {
+              metricsToInsert.push({
+                projectId: project.projectId,
+                deploymentId: project.deploymentId,
+                containerName: `pushify-${project.slug}`,
+                cpuPercent: 0,
+                memoryUsageBytes: 0,
+                memoryLimitBytes: 0,
+                memoryPercent: 0,
+                networkRxBytes: 0,
+                networkTxBytes: 0,
+                blockReadBytes: 0,
+                blockWriteBytes: 0,
+                containerStatus: 'stopped',
+                pids: 0,
+              });
             }
           }
 
