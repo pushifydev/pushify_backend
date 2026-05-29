@@ -37,6 +37,7 @@ export interface NotificationJobData {
     branch?: string;
     status?: string;
     message?: string;
+    logTail?: string;
     url?: string;
   };
   config: Record<string, unknown>;

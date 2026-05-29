@@ -33,8 +33,14 @@ export async function cloneRepository(options: CloneOptions): Promise<CloneResul
   // Prepare authenticated URL if access token provided
   let cloneUrl = repoUrl;
   if (accessToken && repoUrl.includes('github.com')) {
-    // Convert https://github.com/user/repo.git to https://token@github.com/user/repo.git
     cloneUrl = repoUrl.replace('https://github.com/', `https://${accessToken}@github.com/`);
+  } else if (accessToken && repoUrl.includes('gitlab')) {
+    try {
+      const parsed = new URL(repoUrl);
+      cloneUrl = `${parsed.protocol}//oauth2:${accessToken}@${parsed.host}${parsed.pathname}`;
+    } catch {
+      cloneUrl = repoUrl.replace('https://', `https://oauth2:${accessToken}@`);
+    }
   }
 
   // Clone command - if branch is specified, use it; otherwise clone default branch

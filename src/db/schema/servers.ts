@@ -93,6 +93,10 @@ export const servers = pgTable('servers', {
   customerPriceHourlyCents: integer('customer_price_hourly_cents'),
   infraLastChargedAt: timestamp('infra_last_charged_at', { withTimezone: true }),
 
+  /** Weekly automatic Hetzner snapshots (Pro+ with snapshot quota) */
+  autoSnapshotEnabled: boolean('auto_snapshot_enabled').default(false).notNull(),
+  lastAutoSnapshotAt: timestamp('last_auto_snapshot_at', { withTimezone: true }),
+
   // Timestamps
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

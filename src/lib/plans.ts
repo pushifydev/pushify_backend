@@ -13,6 +13,8 @@ export interface PlanLimits {
   storageGb: number;
   bandwidthGb: number;
   buildMinutesPerMonth: number;
+  /** Max Hetzner snapshots retained per managed server (-1 = unlimited) */
+  snapshotsPerServer: number;
   previewDeployments: boolean;
   healthChecks: boolean;
   prioritySupport: boolean;
@@ -43,6 +45,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
       storageGb: 1,
       bandwidthGb: 5,
       buildMinutesPerMonth: 30,
+      snapshotsPerServer: 0,
       previewDeployments: false,
       healthChecks: false,
       prioritySupport: false,
@@ -62,6 +65,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
       storageGb: 5,
       bandwidthGb: 50,
       buildMinutesPerMonth: 200,
+      snapshotsPerServer: 2,
       previewDeployments: true,
       healthChecks: true,
       prioritySupport: false,
@@ -81,6 +85,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
       storageGb: 25,
       bandwidthGb: 250,
       buildMinutesPerMonth: 750,
+      snapshotsPerServer: 5,
       previewDeployments: true,
       healthChecks: true,
       prioritySupport: true,
@@ -100,6 +105,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
       storageGb: 100,
       bandwidthGb: 1000,
       buildMinutesPerMonth: 3000,
+      snapshotsPerServer: 10,
       previewDeployments: true,
       healthChecks: true,
       prioritySupport: true,
@@ -119,6 +125,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
       storageGb: -1,
       bandwidthGb: -1,
       buildMinutesPerMonth: -1,
+      snapshotsPerServer: -1,
       previewDeployments: true,
       healthChecks: true,
       prioritySupport: true,

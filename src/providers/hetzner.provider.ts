@@ -119,6 +119,13 @@ interface HetznerSnapshot {
   os_flavor: string;
 }
 
+interface HetznerAction {
+  id: number;
+  status: string;
+  progress: number;
+  command: string;
+}
+
 interface HetznerServerType {
   id: number;
   name: string;
@@ -465,14 +472,30 @@ export class HetznerProvider implements ICloudProvider {
       }
     );
 
+    const action = response.action as HetznerAction | undefined;
+
     return {
       id: response.image.id.toString(),
       name,
       description: response.image.description,
       sizeGb: Math.ceil(response.image.image_size || response.image.disk_size),
       status: response.image.status,
+      progress: action?.progress ?? null,
       createdAt: new Date(response.image.created),
     };
+  }
+
+  private async getSnapshotProgress(imageId: string): Promise<number | null> {
+    try {
+      const response = await this.request<{ actions: HetznerAction[] }>(
+        `/images/${imageId}/actions?status=running`
+      );
+      const action =
+        response.actions.find((a) => a.command === 'create_image') ?? response.actions[0];
+      return action?.progress ?? null;
+    } catch {
+      return null;
+    }
   }
 
   async deleteSnapshot(snapshotId: string): Promise<void> {
@@ -488,14 +511,24 @@ export class HetznerProvider implements ICloudProvider {
 
     const response = await this.request<{ images: HetznerSnapshot[] }>(endpoint);
 
-    return response.images.map((snap) => ({
-      id: snap.id.toString(),
-      name: snap.description || `Snapshot ${snap.id}`,
-      description: snap.description,
-      sizeGb: Math.ceil(snap.image_size || snap.disk_size),
-      status: snap.status,
-      createdAt: new Date(snap.created),
-    }));
+    const snapshots = await Promise.all(
+      response.images.map(async (snap) => {
+        const progress =
+          snap.status === 'creating' ? await this.getSnapshotProgress(snap.id.toString()) : null;
+
+        return {
+          id: snap.id.toString(),
+          name: snap.description || `Snapshot ${snap.id}`,
+          description: snap.description,
+          sizeGb: Math.ceil(snap.image_size || snap.disk_size),
+          status: snap.status,
+          progress,
+          createdAt: new Date(snap.created),
+        };
+      })
+    );
+
+    return snapshots;
   }
 
   async restoreSnapshot(providerId: string, snapshotId: string): Promise<void> {

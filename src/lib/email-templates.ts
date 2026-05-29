@@ -157,6 +157,7 @@ export interface NotificationEmailPayload {
   commitHash?: string;
   status?: string;
   message?: string;
+  logTail?: string;
   url?: string;
 }
 
@@ -245,6 +246,14 @@ export function renderNotificationEmail(
       </div>`
     : '';
 
+  const logTailBlock = payload.logTail
+    ? `
+      <div style="margin-top:16px;padding:12px 14px;background-color:${E.inset};border:1px solid ${E.borderSubtle};border-radius:${E.radiusSm};">
+        <p style="margin:0 0 8px 0;font-size:11px;color:${E.textMuted};text-transform:uppercase;letter-spacing:0.06em;">Recent logs</p>
+        <pre style="margin:0;font-family:${E.fontMono};font-size:11px;line-height:1.45;color:${E.textSecondary};white-space:pre-wrap;word-break:break-word;">${escapeHtml(payload.logTail)}</pre>
+      </div>`
+    : '';
+
   const inner = `
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
       <tr>
@@ -261,6 +270,7 @@ export function renderNotificationEmail(
     </table>
 
     ${messageBlock}
+    ${logTailBlock}
     ${payload.url ? renderEmailButton(payload.url, ctaLabel) : ''}
   `;
 

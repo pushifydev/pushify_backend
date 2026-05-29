@@ -4,6 +4,8 @@ import { projectRepository } from '../repositories/project.repository';
 import { organizationRepository } from '../repositories/organization.repository';
 import { deploymentRepository } from '../repositories/deployment.repository';
 import { githubService } from './github.service';
+import { gitlabService } from './gitlab.service';
+import { getProjectGitAccessToken } from './git-provider-access.service';
 import { decrypt } from '../lib/encryption';
 import { logger } from '../lib/logger';
 import { t, type SupportedLocale } from '../i18n';
@@ -171,9 +173,8 @@ export const previewService = {
       hostPort: hostPort || preview.hostPort,
     });
 
-    // If running, post GitHub comment with preview URL
     if (status === 'running' && !preview.githubCommentId) {
-      await this.postGitHubComment(projectId, prNumber, preview.previewUrl!);
+      await this.postPreviewComment(projectId, prNumber, preview.previewUrl!);
     }
   },
 
@@ -203,18 +204,18 @@ export const previewService = {
     // Mark preview as closed
     await previewRepository.close(preview.id);
 
-    // Update GitHub comment to indicate preview was closed
-    await this.updateGitHubComment(projectId, prNumber, 'closed');
+    await this.updatePreviewComment(projectId, prNumber, 'closed');
   },
 
   /**
    * Generate preview URL for a PR
    */
   generatePreviewUrl(projectSlug: string, prNumber: number): string {
-    // In production, this would be a subdomain like: pr-123-project.preview.pushify.dev
-    // For local development, we use localhost with dynamic port
-    const baseUrl = env.PREVIEW_BASE_URL || 'http://localhost';
-    return `${baseUrl}/preview/${projectSlug}/pr-${prNumber}`;
+    const base = env.PREVIEW_BASE_URL?.replace(/^https?:\/\//, '').replace(/\/$/, '');
+    if (base) {
+      return `https://pr-${prNumber}-${projectSlug}.${base}`;
+    }
+    return `http://localhost/preview/${projectSlug}/pr-${prNumber}`;
   },
 
   /**
@@ -241,121 +242,149 @@ export const previewService = {
     }
   },
 
-  /**
-   * Post a comment on GitHub PR with preview URL
-   */
-  async postGitHubComment(
-    projectId: string,
-    prNumber: number,
-    previewUrl: string
-  ): Promise<void> {
-    try {
-      const project = await projectRepository.findById(projectId);
-      if (!project || !project.gitRepoUrl?.includes('github.com')) return;
+  previewCommentBody(previewUrl: string, kind: 'ready' | 'updated' | 'closed'): string {
+    if (kind === 'closed') {
+      return `## Preview Deployment Closed 🔴
 
-      // Get GitHub access token for this project
-      const accessToken = await this.getProjectGitHubToken(projectId);
-      if (!accessToken) {
-        logger.warn({ projectId }, 'No GitHub token available for preview comment');
-        return;
-      }
+This preview deployment has been removed because the merge request was closed.
 
-      // Parse owner/repo from URL
-      const repoInfo = githubService.parseRepoFromUrl(project.gitRepoUrl);
-      if (!repoInfo) return;
+---
+*Managed by [Pushify](https://pushify.dev)*`;
+    }
+    if (kind === 'updated') {
+      return `## Preview Deployment Updated 🔄
 
-      const { owner, repo } = repoInfo;
+Your preview deployment has been updated:
 
-      // Post comment using githubService
-      const commentBody = `## Preview Deployment Ready 🚀
+**Preview URL:** ${previewUrl}
+
+This preview will be automatically updated when you push new commits to this merge request.
+
+---
+*Deployed by [Pushify](https://pushify.dev)*`;
+    }
+    return `## Preview Deployment Ready 🚀
 
 Your preview deployment is now available:
 
 **Preview URL:** ${previewUrl}
 
-This preview will be automatically updated when you push new commits to this PR.
+This preview will be automatically updated when you push new commits to this merge request.
 
 ---
 *Deployed by [Pushify](https://pushify.dev)*`;
+  },
+
+  async postPreviewComment(
+    projectId: string,
+    prNumber: number,
+    previewUrl: string,
+  ): Promise<void> {
+    try {
+      const project = await projectRepository.findById(projectId);
+      if (!project?.gitRepoUrl) return;
+
+      const auth = await getProjectGitAccessToken(projectId);
+      if (!auth) {
+        logger.warn({ projectId }, 'No git token available for preview comment');
+        return;
+      }
+
+      const body = this.previewCommentBody(previewUrl, 'ready');
+
+      if (auth.provider === 'gitlab' || project.gitRepoUrl.includes('gitlab')) {
+        const repoInfo = gitlabService.parseRepoFromUrl(project.gitRepoUrl);
+        if (!repoInfo) return;
+        const noteId = await gitlabService.postMergeRequestNote(
+          auth.token,
+          repoInfo.pathWithNamespace,
+          prNumber,
+          body,
+        );
+        if (noteId) {
+          await previewRepository.updateByProjectAndPr(projectId, prNumber, {
+            githubCommentId: noteId,
+          });
+          logger.info({ projectId, prNumber, noteId }, 'Posted GitLab preview note');
+        }
+        return;
+      }
+
+      if (!project.gitRepoUrl.includes('github.com')) return;
+
+      const repoInfo = githubService.parseRepoFromUrl(project.gitRepoUrl);
+      if (!repoInfo) return;
 
       const commentId = await githubService.postPRComment(
-        accessToken,
-        owner,
-        repo,
+        auth.token,
+        repoInfo.owner,
+        repoInfo.repo,
         prNumber,
-        commentBody
+        body,
       );
 
       if (commentId) {
-        // Store comment ID for updates
         await previewRepository.updateByProjectAndPr(projectId, prNumber, {
           githubCommentId: commentId,
         });
         logger.info({ projectId, prNumber, commentId }, 'Posted GitHub preview comment');
       }
     } catch (error) {
-      logger.error({ error, projectId, prNumber }, 'Failed to post GitHub preview comment');
+      logger.error({ error, projectId, prNumber }, 'Failed to post preview comment');
     }
   },
 
-  /**
-   * Update GitHub comment when preview status changes
-   */
-  async updateGitHubComment(
+  async updatePreviewComment(
     projectId: string,
     prNumber: number,
-    status: 'updated' | 'closed'
+    status: 'updated' | 'closed',
   ): Promise<void> {
     try {
       const preview = await previewRepository.findByProjectAndPr(projectId, prNumber);
       if (!preview?.githubCommentId) return;
 
       const project = await projectRepository.findById(projectId);
-      if (!project || !project.gitRepoUrl?.includes('github.com')) return;
+      if (!project?.gitRepoUrl) return;
 
-      // Get GitHub access token for this project
-      const accessToken = await this.getProjectGitHubToken(projectId);
-      if (!accessToken) return;
+      const auth = await getProjectGitAccessToken(projectId);
+      if (!auth) return;
 
-      // Parse owner/repo from URL
+      const body =
+        status === 'closed'
+          ? this.previewCommentBody('', 'closed')
+          : this.previewCommentBody(preview.previewUrl || '', 'updated');
+
+      if (auth.provider === 'gitlab' || project.gitRepoUrl.includes('gitlab')) {
+        const repoInfo = gitlabService.parseRepoFromUrl(project.gitRepoUrl);
+        if (!repoInfo) return;
+        await gitlabService.postMergeRequestNote(
+          auth.token,
+          repoInfo.pathWithNamespace,
+          prNumber,
+          body,
+          Number(preview.githubCommentId),
+        );
+        logger.info({ projectId, prNumber, status }, 'Updated GitLab preview note');
+        return;
+      }
+
+      if (!project.gitRepoUrl.includes('github.com')) return;
+
       const repoInfo = githubService.parseRepoFromUrl(project.gitRepoUrl);
       if (!repoInfo) return;
 
-      const { owner, repo } = repoInfo;
-
-      let body: string;
-      if (status === 'closed') {
-        body = `## Preview Deployment Closed 🔴
-
-This preview deployment has been removed because the PR was closed.
-
----
-*Managed by [Pushify](https://pushify.dev)*`;
-      } else {
-        body = `## Preview Deployment Updated 🔄
-
-Your preview deployment has been updated:
-
-**Preview URL:** ${preview.previewUrl}
-
-This preview will be automatically updated when you push new commits to this PR.
-
----
-*Deployed by [Pushify](https://pushify.dev)*`;
-      }
-
       await githubService.postPRComment(
-        accessToken,
-        owner,
-        repo,
+        auth.token,
+        repoInfo.owner,
+        repoInfo.repo,
         prNumber,
         body,
-        Number(preview.githubCommentId)
+        Number(preview.githubCommentId),
       );
 
       logger.info({ projectId, prNumber, status }, 'Updated GitHub preview comment');
     } catch (error) {
-      logger.error({ error, projectId, prNumber }, 'Failed to update GitHub preview comment');
+      logger.error({ error, projectId, prNumber }, 'Failed to update preview comment');
     }
   },
 

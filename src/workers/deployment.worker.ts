@@ -7,7 +7,16 @@ import { eq, and, inArray } from 'drizzle-orm';
 import { decrypt } from '../lib/encryption';
 import { logger } from '../lib/logger';
 import { cloneRepository, cleanupRepository } from './git';
-import { buildImage, runContainer, isDockerAvailable, isContainerRunning, findAvailablePort } from './docker';
+import {
+  buildImage,
+  runContainer,
+  isDockerAvailable,
+  isContainerRunning,
+  findAvailablePort,
+  getDockerImageSizeBytes,
+} from './docker';
+import { usageMeteringService } from '../services/usage-metering.service';
+import { extractLogTail } from '../lib/log-tail';
 import { generateDockerfile, hasDockerfile, writeDockerfile } from './dockerfile';
 import { deployToRemoteServer, canDeployToServer, quickRollbackToDeployment } from './remote-deployment';
 import { buildMarketplaceDeployConfig } from '../marketplace/deploy-config';
@@ -16,7 +25,22 @@ import path from 'path';
 import { githubService } from '../services/github.service';
 import { notificationService } from '../services/notification.service';
 import { activityService } from '../services/activity.service';
+import { previewService } from '../services/preview.service';
+import { previewRepository } from '../repositories/preview.repository';
+import { getProjectGitAccessToken } from '../services/git-provider-access.service';
 import { env } from '../config/env';
+import { normalizeRootDirectory } from '../lib/normalize-root-directory';
+import {
+  buildQueueSnapshots,
+  formatQueueStatusLine,
+  mergeQueueLineIntoLogs,
+} from '../lib/deploy-queue';
+import {
+  classifyDeployFailure,
+  failureCategoryLogLine,
+  formatClassifiedErrorMessage,
+} from '../lib/deploy-failure-classify';
+import { detectNextStandaloneFromConfig } from '../buildpacks/remote-detect';
 import { wsManager } from '../lib/ws';
 
 /**
@@ -76,7 +100,52 @@ interface DeploymentJob {
   triggeredById: string | null;
   rollbackFromDeploymentId: string | null; // For quick rollback
   serverId: string | null; // Server ID for concurrency tracking
+  isPreview: boolean;
+  previewPrNumber: number | null;
 }
+
+interface PreviewDeployContext {
+  prNumber: number;
+  containerName: string;
+  previewUrl: string;
+  deploySuffix: string;
+}
+
+async function loadPreviewDeployContext(
+  job: DeploymentJob,
+  projectSlug: string,
+): Promise<PreviewDeployContext | null> {
+  if (!job.isPreview || job.previewPrNumber == null) return null;
+
+  const preview = await previewRepository.findByProjectAndPr(job.projectId, job.previewPrNumber);
+  if (!preview) return null;
+
+  const deploySuffix = `-pr-${preview.prNumber}`;
+  return {
+    prNumber: preview.prNumber,
+    containerName: preview.containerName || `pushify-preview-${projectSlug}${deploySuffix}`,
+    previewUrl:
+      preview.previewUrl || previewService.generatePreviewUrl(projectSlug, preview.prNumber),
+    deploySuffix,
+  };
+}
+
+async function markPreviewBuilding(projectId: string, prNumber: number): Promise<void> {
+  const preview = await previewRepository.findByProjectAndPr(projectId, prNumber);
+  if (!preview) return;
+  await previewRepository.update(preview.id, { status: 'building' });
+}
+
+const deploymentJobSelect = {
+  id: deployments.id,
+  projectId: deployments.projectId,
+  branch: deployments.branch,
+  triggeredById: deployments.triggeredById,
+  rollbackFromDeploymentId: deployments.rollbackFromDeploymentId,
+  isPreview: deployments.isPreview,
+  previewPrNumber: deployments.previewPrNumber,
+  serverId: projects.serverId,
+};
 
 interface GitHubStatusContext {
   accessToken: string;
@@ -116,9 +185,54 @@ export function stopDeploymentWorker(): void {
 /**
  * Poll for pending deployments
  */
+async function detectNextStandaloneLocal(workDir: string, rootDirectory: string): Promise<boolean> {
+  const base = path.join(workDir, rootDirectory === '.' ? '' : rootDirectory);
+  for (const name of ['next.config.ts', 'next.config.mjs', 'next.config.js', 'next.config.cjs']) {
+    try {
+      const content = await fs.readFile(path.join(base, name), 'utf-8');
+      if (detectNextStandaloneFromConfig(content)) return true;
+    } catch {
+      /* no config file */
+    }
+  }
+  return false;
+}
+
+async function refreshPendingDeploymentQueueLogs(): Promise<void> {
+  const pending = await db
+    .select({
+      id: deployments.id,
+      serverId: projects.serverId,
+      buildLogs: deployments.buildLogs,
+    })
+    .from(deployments)
+    .innerJoin(projects, eq(deployments.projectId, projects.id))
+    .where(eq(deployments.status, 'pending'))
+    .orderBy(deployments.createdAt);
+
+  if (pending.length === 0) return;
+
+  const snapshots = buildQueueSnapshots(
+    pending.map((p) => ({ id: p.id, serverId: p.serverId })),
+    activeDeploymentsPerServer,
+    activeDeployments
+  );
+
+  for (const snap of snapshots) {
+    const row = pending.find((p) => p.id === snap.deploymentId);
+    const merged = mergeQueueLineIntoLogs(row?.buildLogs ?? null, formatQueueStatusLine(snap));
+    await db
+      .update(deployments)
+      .set({ buildLogs: merged })
+      .where(eq(deployments.id, snap.deploymentId));
+  }
+}
+
 async function pollForDeployments(): Promise<void> {
   while (isRunning) {
     try {
+      await refreshPendingDeploymentQueueLogs();
+
       if (activeDeployments >= env.MAX_CONCURRENT_DEPLOYS_TOTAL) {
         // Global limit reached, skip this cycle
         logger.debug(
@@ -159,14 +273,7 @@ async function pollForDeployments(): Promise<void> {
  */
 async function getNextPendingDeployment(): Promise<DeploymentJob | null> {
   const result = await db
-    .select({
-      id: deployments.id,
-      projectId: deployments.projectId,
-      branch: deployments.branch,
-      triggeredById: deployments.triggeredById,
-      rollbackFromDeploymentId: deployments.rollbackFromDeploymentId,
-      serverId: projects.serverId,
-    })
+    .select(deploymentJobSelect)
     .from(deployments)
     .innerJoin(projects, eq(deployments.projectId, projects.id))
     .where(eq(deployments.status, 'pending'))
@@ -182,14 +289,7 @@ async function getNextPendingDeployment(): Promise<DeploymentJob | null> {
  */
 async function getNextEligibleDeployment(): Promise<DeploymentJob | null> {
   const pending = await db
-    .select({
-      id: deployments.id,
-      projectId: deployments.projectId,
-      branch: deployments.branch,
-      triggeredById: deployments.triggeredById,
-      rollbackFromDeploymentId: deployments.rollbackFromDeploymentId,
-      serverId: projects.serverId,
-    })
+    .select(deploymentJobSelect)
     .from(deployments)
     .innerJoin(projects, eq(deployments.projectId, projects.id))
     .where(eq(deployments.status, 'pending'))
@@ -241,6 +341,12 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
       throw new Error('Project not found');
     }
 
+    const previewCtx = await loadPreviewDeployContext(job, project.slug);
+    if (previewCtx) {
+      addLog(`🔍 Preview deployment for PR #${previewCtx.prNumber}`);
+      await markPreviewBuilding(job.projectId, previewCtx.prNumber);
+    }
+
     // Check if project is active
     if (project.status !== 'active') {
       throw new Error('Project is not active');
@@ -273,12 +379,15 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
     const projectSettings = project.settings as Record<string, unknown>;
     const prStatusChecksEnabled = projectSettings?.prStatusChecksEnabled === true;
 
-    if (project.gitRepoUrl?.includes('github.com') && job.triggeredById) {
-      // Get the GitHub integration for the user who triggered the deployment
+    const projectGitAuth = await getProjectGitAccessToken(job.projectId);
+    if (projectGitAuth) {
+      accessToken = projectGitAuth.token;
+      addLog(`🔑 Using ${projectGitAuth.provider} credentials from organization owner`);
+    } else if (project.gitRepoUrl?.includes('github.com') && job.triggeredById) {
       const integration = await db.query.gitIntegrations.findFirst({
         where: and(
           eq(gitIntegrations.userId, job.triggeredById),
-          eq(gitIntegrations.provider, 'github')
+          eq(gitIntegrations.provider, 'github'),
         ),
       });
 
@@ -497,26 +606,43 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
           )
         : undefined;
 
+      let deployFramework = (projectSettings?.framework as string) || undefined;
+      let deployBuildpackId: string | undefined;
+      if (localClone) {
+        const { detectBuildpack } = await import('../buildpacks');
+        const localDetection = await detectBuildpack(
+          localClone.workDir,
+          normalizeRootDirectory(project.rootDirectory)
+        );
+        if (localDetection && localDetection.buildpackId !== 'custom') {
+          deployFramework = localDetection.framework;
+          deployBuildpackId = localDetection.buildpackId;
+          addLog(`✅ Detected: ${localDetection.buildpackId} (${localDetection.framework})`);
+        }
+      }
+
       const remoteResult = await deployToRemoteServer({
         serverId: project.serverId,
         projectId: project.id,
         projectSlug: project.slug,
         deploymentId: job.id,
         repoUrl: project.gitRepoUrl || '',
-        branch: localClone?.branch || 'main',
+        branch: localClone?.branch || job.branch || 'main',
         commitHash: localClone?.commitHash || 'marketplace',
         port: project.port || 3000,
         envVars: envVarsDecrypted,
         buildCommand: project.buildCommand || undefined,
         startCommand: project.startCommand || undefined,
         installCommand: project.installCommand || (projectSettings?.installCommand as string) || 'npm install --legacy-peer-deps',
-        rootDirectory: project.rootDirectory || '.',
+        rootDirectory: normalizeRootDirectory(project.rootDirectory),
         dockerfilePath: project.dockerfilePath || undefined,
         outputDirectory: (projectSettings?.outputDirectory as string) || undefined,
-        framework: (projectSettings?.framework as string) || undefined,
+        framework: deployFramework,
+        buildpackId: deployBuildpackId,
         accessToken,
         onProgress: onRemoteProgress,
         marketplace: marketplaceConfig,
+        deploySuffix: previewCtx?.deploySuffix,
       });
 
       if (!remoteResult.success) {
@@ -535,35 +661,46 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
         })
         .where(eq(deployments.id, job.id));
 
-      // Update project with production URL (+ refresh marketplace compose from latest template)
-      const settingsUpdate: Record<string, unknown> = {
-        ...(project.settings as Record<string, unknown>),
-        productionUrl: remoteResult.deploymentUrl,
-        lastDeploymentId: job.id,
-      };
-      if (marketplaceConfig && projectSettings?.marketplaceTemplateId) {
-        settingsUpdate.composeFile = marketplaceConfig.composeFile ?? settingsUpdate.composeFile;
-        settingsUpdate.composePublicService =
-          marketplaceConfig.composePublicService ?? settingsUpdate.composePublicService;
-        settingsUpdate.composePublicPort =
-          marketplaceConfig.composePublicPort ?? settingsUpdate.composePublicPort;
-        settingsUpdate.extraFiles = marketplaceConfig.extraFiles ?? settingsUpdate.extraFiles;
+      const successUrl = previewCtx ? previewCtx.previewUrl : remoteResult.deploymentUrl;
+
+      if (previewCtx) {
+        await previewService.updatePreviewStatus(
+          job.projectId,
+          previewCtx.prNumber,
+          'running',
+          remoteResult.containerPort ?? undefined,
+        );
+        addLog(`✅ Preview deployment live: ${successUrl}`);
+      } else {
+        // Update project with production URL (+ refresh marketplace compose from latest template)
+        const settingsUpdate: Record<string, unknown> = {
+          ...(project.settings as Record<string, unknown>),
+          productionUrl: remoteResult.deploymentUrl,
+          lastDeploymentId: job.id,
+        };
+        if (marketplaceConfig && projectSettings?.marketplaceTemplateId) {
+          settingsUpdate.composeFile = marketplaceConfig.composeFile ?? settingsUpdate.composeFile;
+          settingsUpdate.composePublicService =
+            marketplaceConfig.composePublicService ?? settingsUpdate.composePublicService;
+          settingsUpdate.composePublicPort =
+            marketplaceConfig.composePublicPort ?? settingsUpdate.composePublicPort;
+          settingsUpdate.extraFiles = marketplaceConfig.extraFiles ?? settingsUpdate.extraFiles;
+        }
+        await db
+          .update(projects)
+          .set({
+            settings: settingsUpdate,
+            updatedAt: new Date(),
+          })
+          .where(eq(projects.id, job.projectId));
+        addLog(`✅ Remote deployment successful! URL: ${remoteResult.deploymentUrl}`);
       }
-      await db
-        .update(projects)
-        .set({
-          settings: settingsUpdate,
-          updatedAt: new Date(),
-        })
-        .where(eq(projects.id, job.projectId));
 
       // Publish running status via WebSocket
       wsManager.publish(`project:${job.projectId}`, {
         type: 'deployment:status',
         data: { projectId: job.projectId, deploymentId: job.id, status: 'running' },
       }).catch(() => {});
-
-      addLog(`✅ Remote deployment successful! URL: ${remoteResult.deploymentUrl}`);
       logger.info(`Deployment ${job.id} completed successfully (remote)`);
 
       // Log activity
@@ -589,14 +726,16 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
       }
 
       // Send deployment success notification
-      await notificationService.sendNotifications(job.projectId, 'deployment.success', {
-        deploymentId: job.id,
-        branch: localClone?.branch || 'main',
-        commitHash: localClone?.commitHash || 'marketplace',
-        status: 'running',
-        message: 'Deployment completed successfully',
-        url: remoteResult.deploymentUrl,
-      });
+      if (!previewCtx) {
+        await notificationService.sendNotifications(job.projectId, 'deployment.success', {
+          deploymentId: job.id,
+          branch: localClone?.branch || 'main',
+          commitHash: localClone?.commitHash || 'marketplace',
+          status: 'running',
+          message: 'Deployment completed successfully',
+          url: remoteResult.deploymentUrl,
+        });
+      }
 
       return; // Exit early for remote deployment
     }
@@ -692,6 +831,25 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
       const detection = await detectBuildpack(workDir, project.rootDirectory || '.');
 
       let dockerfileContent: string;
+      const fw = detection?.framework;
+      const nextStandalone =
+        fw === 'nextjs'
+          ? await detectNextStandaloneLocal(workDir, project.rootDirectory || '.')
+          : false;
+      if (nextStandalone) addLog('📦 Next.js standalone detected — smaller production image');
+
+      const dockerGenBase = {
+        buildCommand: project.buildCommand,
+        installCommand:
+          project.installCommand ||
+          (project.settings as Record<string, string>)?.installCommand ||
+          'npm install --legacy-peer-deps',
+        startCommand: project.startCommand,
+        outputDirectory: (project.settings as Record<string, string>)?.outputDirectory || null,
+        rootDirectory: project.rootDirectory || '.',
+        envVars: envVarsDecrypted,
+        nextStandalone,
+      };
 
       if (detection && detection.buildpackId !== 'custom') {
         const buildpack = getBuildpack(detection.buildpackId);
@@ -699,39 +857,24 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
           addLog(`✅ Detected: ${buildpack.name} (${detection.framework})`);
           addLog('📄 Generating optimized Dockerfile...');
           dockerfileContent = buildpack.generateDockerfile({
+            ...dockerGenBase,
             framework: detection.framework,
-            buildCommand: project.buildCommand,
-            installCommand: project.installCommand || (project.settings as Record<string, string>)?.installCommand,
-            startCommand: project.startCommand,
-            outputDirectory: (project.settings as Record<string, string>)?.outputDirectory || null,
             port: project.port || buildpack.getDefaultPort(detection.framework),
-            rootDirectory: project.rootDirectory || '.',
-            envVars: envVarsDecrypted,
           } as any);
         } else {
           addLog('⚠️ Buildpack not found, falling back to generic');
           dockerfileContent = generateDockerfile({
+            ...dockerGenBase,
             framework: null,
-            buildCommand: project.buildCommand,
-            installCommand: project.installCommand || (project.settings as Record<string, string>)?.installCommand || 'npm install --legacy-peer-deps',
-            startCommand: project.startCommand,
-            outputDirectory: (project.settings as Record<string, string>)?.outputDirectory || null,
             port: project.port || 3000,
-            rootDirectory: project.rootDirectory || '.',
-            envVars: envVarsDecrypted,
           });
         }
       } else {
         addLog('⚠️ Could not detect language, falling back to Node.js');
         dockerfileContent = generateDockerfile({
+          ...dockerGenBase,
           framework: 'nodejs',
-          buildCommand: project.buildCommand,
-          installCommand: project.installCommand || (project.settings as Record<string, string>)?.installCommand || 'npm install --legacy-peer-deps',
-          startCommand: project.startCommand,
-          outputDirectory: (project.settings as Record<string, string>)?.outputDirectory || null,
           port: project.port || 3000,
-          rootDirectory: project.rootDirectory || '.',
-          envVars: envVarsDecrypted,
         });
       }
 
@@ -742,7 +885,8 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
     }
 
     // Build Docker image
-    const imageName = `pushify/${project.slug}`;
+    const imageSlug = previewCtx ? `${project.slug}${previewCtx.deploySuffix}` : project.slug;
+    const imageName = `pushify/${imageSlug}`;
     const imageTag = cloneResult.commitHash.substring(0, 7);
 
     addLog(`🔨 Building image: ${imageName}:${imageTag}`);
@@ -760,12 +904,20 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
       onProgress: addLog,
     });
 
+    try {
+      const imageBytes = await getDockerImageSizeBytes(`${imageName}:${imageTag}`);
+      await usageMeteringService.addDeployStorageBytes(project.organizationId, imageBytes);
+    } catch {
+      // Non-fatal — metering must not block deploy
+    }
+
     // Update status to deploying
     await updateDeploymentStatus(job.id, 'deploying', logBuffer.join('\n'), job.projectId);
     addLog('🚀 Status: Deploying');
 
     // Run container (envVarsDecrypted already loaded above)
-    const containerName = `pushify-${project.slug}`;
+    const containerName =
+      previewCtx?.containerName ?? `pushify-${project.slug}`;
 
     // Container port is what the app listens on inside the container
     const containerPort = project.port || 3000;
@@ -794,8 +946,14 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
     }
 
     // Create auto subdomain if no domain exists
-    let deploymentUrl = `http://localhost:${hostPort}`;
+    let deploymentUrl = previewCtx
+      ? previewCtx.previewUrl
+      : `http://localhost:${hostPort}`;
     try {
+      if (previewCtx) {
+        addLog(`🌐 Preview URL: ${deploymentUrl}`);
+      }
+
       const { domainService } = await import('../services/domain.service');
       const { domains: domainsTable } = await import('../db/schema/projects');
       const existingDomain = await db.query.domains.findFirst({
@@ -803,7 +961,47 @@ async function processDeployment(job: DeploymentJob): Promise<void> {
         orderBy: (domains, { desc }) => [desc(domains.isPrimary)],
       });
 
-      if (existingDomain) {
+      if (previewCtx && env.PREVIEW_BASE_URL) {
+        const domainName = deploymentUrl.replace(/^https?:\/\//, '').split('/')[0];
+        addLog(`🌐 Configuring Nginx for preview: ${domainName}`);
+        const sslCertPath =
+          env.WILDCARD_SSL_PATH || `/etc/letsencrypt/live/${env.PREVIEW_BASE_URL}`;
+        const nginxConfig = `# Pushify preview: ${project.slug} PR ${previewCtx.prNumber}
+server {
+    listen 80;
+    server_name ${domainName};
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name ${domainName};
+
+    ssl_certificate ${sslCertPath}/fullchain.pem;
+    ssl_certificate_key ${sslCertPath}/privkey.pem;
+
+    location / {
+        proxy_pass http://localhost:${hostPort};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+`;
+        try {
+          const { execSync } = await import('child_process');
+          const confPath = `/etc/nginx/conf.d/preview-${project.slug}-pr-${previewCtx.prNumber}.conf`;
+          await fs.writeFile(confPath, nginxConfig);
+          execSync('nginx -t && nginx -s reload', { timeout: 10000 });
+          addLog(`✅ Nginx configured for preview ${domainName}`);
+        } catch (nginxError) {
+          addLog(
+            `⚠️ Preview nginx skipped: ${nginxError instanceof Error ? nginxError.message : 'Unknown error'}`,
+          );
+        }
+      } else if (existingDomain) {
         deploymentUrl = `https://${existingDomain.domain}`;
         addLog(`🌐 Using existing domain: ${existingDomain.domain}`);
       } else if (env.PREVIEW_BASE_URL) {
@@ -871,27 +1069,36 @@ server {
       })
       .where(eq(deployments.id, job.id));
 
-    // Update project with production URL
-    await db
-      .update(projects)
-      .set({
-        settings: {
-          ...(project.settings as Record<string, unknown>),
-          productionUrl: deploymentUrl,
-          lastDeploymentId: job.id,
-        },
-        updatedAt: new Date(),
-      })
-      .where(eq(projects.id, job.projectId));
+    if (previewCtx) {
+      await previewService.updatePreviewStatus(
+        job.projectId,
+        previewCtx.prNumber,
+        'running',
+        hostPort,
+      );
+      addLog(`✅ Preview deployment successful! URL: ${deploymentUrl}`);
+    } else {
+      await db
+        .update(projects)
+        .set({
+          settings: {
+            ...(project.settings as Record<string, unknown>),
+            productionUrl: deploymentUrl,
+            lastDeploymentId: job.id,
+          },
+          updatedAt: new Date(),
+        })
+        .where(eq(projects.id, job.projectId));
+      addLog(`✅ Deployment successful! URL: ${deploymentUrl}`);
+    }
+
+    logger.info(`Deployment ${job.id} completed successfully`);
 
     // Publish running status via WebSocket
     wsManager.publish(`project:${job.projectId}`, {
       type: 'deployment:status',
       data: { projectId: job.projectId, deploymentId: job.id, status: 'running' },
     }).catch(() => {});
-
-    addLog(`✅ Deployment successful! URL: ${deploymentUrl}`);
-    logger.info(`Deployment ${job.id} completed successfully`);
 
     // Log activity
     await activityService.logDeploymentSucceeded(
@@ -915,18 +1122,23 @@ server {
       addLog('📋 GitHub status: success');
     }
 
-    // Send deployment success notification
-    await notificationService.sendNotifications(job.projectId, 'deployment.success', {
-      deploymentId: job.id,
-      branch: cloneResult.branch,
-      commitHash: cloneResult.commitHash,
-      status: 'running',
-      message: 'Deployment completed successfully',
-      url: deploymentUrl,
-    });
+    if (!previewCtx) {
+      await notificationService.sendNotifications(job.projectId, 'deployment.success', {
+        deploymentId: job.id,
+        branch: cloneResult.branch,
+        commitHash: cloneResult.commitHash,
+        status: 'running',
+        message: 'Deployment completed successfully',
+        url: deploymentUrl,
+      });
+    }
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    addLog(`❌ Deployment failed: ${errorMessage}`);
+    const rawError = error instanceof Error ? error.message : String(error);
+    const classified = classifyDeployFailure(logBuffer.join('\n'), rawError);
+    addLog(failureCategoryLogLine(classified.category));
+    addLog(`💡 ${classified.userHint}`);
+    addLog(`❌ Deployment failed: ${rawError}`);
+    const errorMessage = formatClassifiedErrorMessage(classified, rawError);
 
     // Get project for organizationId
     const failedProject = await db
@@ -936,14 +1148,11 @@ server {
       .limit(1)
       .then((r) => r[0]);
 
-    await db
-      .update(deployments)
-      .set({
-        status: 'failed',
-        errorMessage,
-        buildLogs: logBuffer.join('\n'),
-      })
-      .where(eq(deployments.id, job.id));
+    await markDeploymentFailed(job.id, errorMessage, logBuffer.join('\n'));
+
+    if (job.isPreview && job.previewPrNumber != null) {
+      await previewService.updatePreviewStatus(job.projectId, job.previewPrNumber, 'failed');
+    }
 
     // Publish failed status via WebSocket
     wsManager.publish(`project:${job.projectId}`, {
@@ -976,12 +1185,14 @@ server {
       addLog('📋 GitHub status: failure');
     }
 
-    // Send deployment failed notification
+    const logTail = extractLogTail(logBuffer.join('\n'), 20);
+
     await notificationService.sendNotifications(job.projectId, 'deployment.failed', {
       deploymentId: job.id,
       branch: job.branch || undefined,
       status: 'failed',
       message: errorMessage,
+      logTail,
       url: `${env.FRONTEND_URL}/dashboard/projects/${job.projectId}?tab=deployments&deployment=${job.id}`,
     });
 
@@ -1001,6 +1212,42 @@ server {
       })
       .where(eq(deployments.id, job.id));
   }
+}
+
+/**
+ * Mark deployment failed and close build window for quota metering when a build had started.
+ */
+async function markDeploymentFailed(
+  deploymentId: string,
+  errorMessage: string,
+  buildLogs: string,
+): Promise<void> {
+  const [row] = await db
+    .select({
+      buildStartedAt: deployments.buildStartedAt,
+      buildFinishedAt: deployments.buildFinishedAt,
+    })
+    .from(deployments)
+    .where(eq(deployments.id, deploymentId))
+    .limit(1);
+
+  const now = new Date();
+  const patch: {
+    status: 'failed';
+    errorMessage: string;
+    buildLogs: string;
+    buildFinishedAt?: Date;
+  } = {
+    status: 'failed',
+    errorMessage,
+    buildLogs,
+  };
+
+  if (row?.buildStartedAt && !row?.buildFinishedAt) {
+    patch.buildFinishedAt = now;
+  }
+
+  await db.update(deployments).set(patch).where(eq(deployments.id, deploymentId));
 }
 
 /**
@@ -1026,6 +1273,21 @@ async function updateDeploymentStatus(
     case 'running':
       updateData.deployFinishedAt = now;
       break;
+    case 'failed':
+    case 'cancelled': {
+      const [row] = await db
+        .select({
+          buildStartedAt: deployments.buildStartedAt,
+          buildFinishedAt: deployments.buildFinishedAt,
+        })
+        .from(deployments)
+        .where(eq(deployments.id, deploymentId))
+        .limit(1);
+      if (row?.buildStartedAt && !row?.buildFinishedAt) {
+        updateData.buildFinishedAt = now;
+      }
+      break;
+    }
   }
 
   if (logs) {

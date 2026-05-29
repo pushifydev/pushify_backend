@@ -25,6 +25,12 @@ const envSchema = z.object({
   GITHUB_CLIENT_SECRET: z.string().optional(),
   GITHUB_CALLBACK_URL: z.string().url().optional(),
 
+  // GitLab OAuth (gitlab.com or self-hosted)
+  GITLAB_CLIENT_ID: z.string().optional(),
+  GITLAB_CLIENT_SECRET: z.string().optional(),
+  GITLAB_CALLBACK_URL: z.string().url().optional(),
+  GITLAB_BASE_URL: z.string().url().optional(),
+
   // Google OAuth
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
@@ -65,11 +71,15 @@ const envSchema = z.object({
   MAX_CONCURRENT_DEPLOYS_TOTAL: z.coerce.number().default(5),
 
   // Docker Resource Limits
-  DOCKER_MEMORY_LIMIT: z.string().default('512m'),
+  DOCKER_MEMORY_LIMIT: z.string().default('768m'),
   DOCKER_CPU_LIMIT: z.string().default('0.5'),
-  DOCKER_BUILD_MEMORY_LIMIT: z.string().default('1g'),
+  DOCKER_BUILD_MEMORY_LIMIT: z.string().default('2g'),
   DOCKER_BUILD_CPU_LIMIT: z.string().default('1'),
   DOCKER_BUILD_TIMEOUT: z.coerce.number().default(600), // seconds
+
+  /** Root FS usage % on deploy servers — warn / block deploy */
+  SERVER_DISK_WARN_PERCENT: z.coerce.number().default(85),
+  SERVER_DISK_CRITICAL_PERCENT: z.coerce.number().default(95),
 
   // Stripe (optional — for payment processing)
   STRIPE_SECRET_KEY: z.string().optional(),

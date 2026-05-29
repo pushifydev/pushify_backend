@@ -6,6 +6,8 @@ import { projects } from '../db/schema/projects';
 import { servers } from '../db/schema/servers';
 import { organizationRepository } from '../repositories/organization.repository';
 import { billingService, type UsageStats } from './billing.service';
+import { infraBillingService } from './infra-billing.service';
+import { planLimitsService } from './plan-limits.service';
 import { t, type SupportedLocale } from '../i18n';
 
 export interface DeploymentCounts {
@@ -41,11 +43,18 @@ export interface UsageWarning {
   percent: number;
 }
 
+export interface DashboardInfraWalletAlert {
+  isLowBalance: boolean;
+  balanceCents: number;
+  runwayDays: number | null;
+}
+
 export interface DashboardOverview {
   deployments: DeploymentCounts;
   recentFailures: RecentFailedDeployment[];
   actionItems: DashboardActionItem[];
   usageWarnings: UsageWarning[];
+  infraWallet: DashboardInfraWalletAlert | null;
 }
 
 const IN_PROGRESS_STATUSES = ['pending', 'building', 'deploying'] as const;
@@ -143,8 +152,18 @@ class DashboardService {
         )
       );
 
-    const usage = await billingService.getUsageStats(organizationId, plan);
+    const effectiveLimits = await planLimitsService.getEffectiveLimits(organizationId);
+    const usage = await billingService.getUsageStats(organizationId, effectiveLimits);
     const usageWarnings = this.buildUsageWarnings(usage);
+    const wallet = await infraBillingService.getWalletSummary(organizationId);
+    const infraWallet: DashboardInfraWalletAlert | null = wallet.isLowBalance
+      ? {
+          isLowBalance: true,
+          balanceCents: wallet.balanceCents,
+          runwayDays: wallet.runwayDays,
+        }
+      : null;
+
     const actionItems = this.buildActionItems({
       locale,
       failedLast24h: failed24Row[0]?.count ?? 0,
@@ -153,6 +172,7 @@ class DashboardService {
       serverIssues: serverIssueRows,
       usageWarnings,
       recentFailures: recentFailureRows,
+      infraWallet,
     });
 
     return {
@@ -172,6 +192,7 @@ class DashboardService {
       })),
       actionItems,
       usageWarnings,
+      infraWallet,
     };
   }
 
@@ -199,9 +220,26 @@ class DashboardService {
     serverIssues: { id: string; name: string; status: string; setupStatus: string }[];
     usageWarnings: UsageWarning[];
     recentFailures: { projectId: string; projectName: string }[];
+    infraWallet: DashboardInfraWalletAlert | null;
   }): DashboardActionItem[] {
     const items: DashboardActionItem[] = [];
     const { locale } = input;
+
+    if (input.infraWallet?.isLowBalance) {
+      const runway =
+        input.infraWallet.runwayDays != null && input.infraWallet.runwayDays > 0
+          ? fillTemplate(t(locale, 'billing', 'infraRunwayDays'), {
+              days: String(input.infraWallet.runwayDays),
+            })
+          : t(locale, 'billing', 'infraLowBalanceWarning');
+      items.push({
+        id: 'infra-low-balance',
+        severity: 'warning',
+        title: t(locale, 'dashboard', 'infraLowBalanceTitle'),
+        description: runway,
+        href: '/dashboard/billing',
+      });
+    }
 
     if (input.failedLast24h > 0) {
       items.push({
@@ -254,6 +292,9 @@ class DashboardService {
       deploymentsThisMonth: t(locale, 'dashboard', 'usageResourceDeployments'),
       teamMembers: t(locale, 'dashboard', 'usageResourceTeamMembers'),
       customDomains: t(locale, 'dashboard', 'usageResourceCustomDomains'),
+      buildMinutesThisMonth: t(locale, 'dashboard', 'usageResourceBuildMinutes'),
+      storageGb: t(locale, 'dashboard', 'usageResourceStorage'),
+      bandwidthGb: t(locale, 'dashboard', 'usageResourceBandwidth'),
     };
 
     for (const warning of input.usageWarnings.slice(0, 2)) {

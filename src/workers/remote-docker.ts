@@ -1,5 +1,6 @@
 import type { SSHClient } from '../utils/ssh';
 import { env } from '../config/env';
+import { dockerBuildKitPrefix, getBuildMemoryLimit, getRunMemoryLimit } from '../lib/platform-docker';
 
 export interface BuildImageOptions {
   workDir: string;
@@ -7,6 +8,9 @@ export interface BuildImageOptions {
   tag: string;
   dockerfilePath?: string;
   buildArgs?: Record<string, string>;
+  /** From buildpack detection — tunes build memory limits */
+  framework?: string;
+  buildpackId?: string;
   onProgress?: (message: string) => void;
 }
 
@@ -19,6 +23,8 @@ export interface RunContainerOptions {
   volumes?: string[];
   networkMode?: string;
   restart?: 'no' | 'always' | 'unless-stopped' | 'on-failure';
+  framework?: string;
+  buildpackId?: string;
   onProgress?: (message: string) => void;
 }
 
@@ -31,6 +37,14 @@ export interface ContainerInfo {
   createdAt: string;
 }
 
+/** Escape a string for use inside bash single quotes. */
+function shSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/** Prefer real docker binary; bypass broken shell aliases (e.g. timeout DOCKER_BUILDKIT=1 docker). */
+const REMOTE_DOCKER_BIN = '/usr/bin/docker';
+
 /**
  * Build a Docker image on a remote server with BuildKit caching
  */
@@ -38,39 +52,57 @@ export async function buildImage(
   ssh: SSHClient,
   options: BuildImageOptions
 ): Promise<{ success: boolean; logs: string }> {
-  const { workDir, imageName, tag, dockerfilePath, buildArgs, onProgress } = options;
+  const { workDir, imageName, tag, dockerfilePath, buildArgs, framework, buildpackId, onProgress } =
+    options;
+  const buildMemory = getBuildMemoryLimit(framework, buildpackId);
 
-  // Enable Docker BuildKit for better caching and performance
-  // BuildKit provides:
-  // - Parallelized layer builds
-  // - Better cache management
-  // - Inline cache export/import for cross-build caching
-  let buildCmd = `cd "${workDir}" && timeout ${env.DOCKER_BUILD_TIMEOUT} DOCKER_BUILDKIT=1 docker build`;
+  const diag = await ssh.exec(
+    `/bin/bash --noprofile --norc -c ${shSingleQuote(
+      `command -v docker 2>/dev/null; type docker 2>/dev/null; ls -la ${REMOTE_DOCKER_BIN} 2>/dev/null; ${REMOTE_DOCKER_BIN} --version 2>/dev/null`,
+    )}`,
+  );
+  const diagLine = `${diag.stdout}${diag.stderr}`.trim().replace(/\s+/g, ' ');
+  if (diagLine) {
+    onProgress?.(`🩺 Docker on server: ${diagLine.slice(0, 400)}`);
+  }
 
-  // Build resource limits (--cpus not supported by buildx, only --memory)
-  buildCmd += ` --memory ${env.DOCKER_BUILD_MEMORY_LIMIT}`;
+  let dockerArgs = `${dockerBuildKitPrefix()} ${REMOTE_DOCKER_BIN} build --memory ${buildMemory}`;
+  dockerArgs += ` --build-arg BUILDKIT_INLINE_CACHE=1`;
 
-  // Enable inline cache for faster subsequent builds
-  buildCmd += ` --build-arg BUILDKIT_INLINE_CACHE=1`;
-
-  // Use cache from previous builds of this image
-  buildCmd += ` --cache-from ${imageName}:latest`;
-  buildCmd += ` --cache-from ${imageName}:${tag}`;
+  // Only reuse local image cache when the tag already exists (avoids registry pull errors)
+  const cacheProbe = await ssh.exec(
+    `/bin/bash --noprofile --norc -c ${shSingleQuote(
+      `docker image inspect ${imageName}:latest >/dev/null 2>&1 && echo latest; docker image inspect ${imageName}:${tag} >/dev/null 2>&1 && echo tag`,
+    )}`,
+  );
+  const cacheHits = `${cacheProbe.stdout}${cacheProbe.stderr}`;
+  if (cacheHits.includes('latest')) {
+    dockerArgs += ` --cache-from ${imageName}:latest`;
+  }
+  if (cacheHits.includes('tag')) {
+    dockerArgs += ` --cache-from ${imageName}:${tag}`;
+  }
 
   if (dockerfilePath) {
-    buildCmd += ` -f "${dockerfilePath}"`;
+    dockerArgs += ` -f ${shSingleQuote(dockerfilePath)}`;
   }
 
   if (buildArgs) {
     for (const [key, value] of Object.entries(buildArgs)) {
-      buildCmd += ` --build-arg ${key}="${value}"`;
+      dockerArgs += ` --build-arg ${key}=${shSingleQuote(value)}`;
     }
   }
 
-  buildCmd += ` -t ${imageName}:${tag} .`;
+  dockerArgs += ` -t ${imageName}:${tag} .`;
 
-  onProgress?.(`Building Docker image with BuildKit: ${imageName}:${tag}`);
+  // bash --noprofile: skip .bashrc aliases; /usr/bin/docker: real binary (not a "docker" alias)
+  const inner = `cd ${shSingleQuote(workDir)} && ${dockerArgs}`;
+  const buildCmd = `/bin/bash --noprofile --norc -c ${shSingleQuote(inner)}`;
+
+  onProgress?.(`Building Docker image: ${imageName}:${tag}`);
+  onProgress?.(`📦 Build memory limit: ${buildMemory}`);
   onProgress?.('📦 Using layer caching for faster builds');
+  onProgress?.('🔧 Pushify docker build v7 (BuildKit cache, glibc targets)');
 
   let logs = '';
 
@@ -108,8 +140,12 @@ export async function runContainer(
     volumes,
     networkMode,
     restart = 'unless-stopped',
+    framework,
+    buildpackId,
     onProgress,
   } = options;
+
+  const runMemory = getRunMemoryLimit(framework, buildpackId);
 
   // Stop and remove existing container with same name
   onProgress?.(`Stopping existing container: ${containerName}`);
@@ -120,8 +156,8 @@ export async function runContainer(
   let runCmd = `docker run -d --name ${containerName}`;
 
   // Resource limits
-  runCmd += ` --memory ${env.DOCKER_MEMORY_LIMIT}`;
-  runCmd += ` --memory-swap 1g`;
+  runCmd += ` --memory ${runMemory}`;
+  runCmd += ` --memory-swap ${runMemory}`;
   runCmd += ` --cpus ${env.DOCKER_CPU_LIMIT}`;
   runCmd += ` --pids-limit 256`;
 
@@ -247,6 +283,63 @@ export async function getContainerLogs(
 
   const result = await ssh.exec(cmd);
   return result.stdout || result.stderr;
+}
+
+export interface StreamContainerLogsOptions {
+  tail?: number;
+  since?: string;
+  signal?: AbortSignal;
+}
+
+/**
+ * Stream container logs in real-time over SSH (`docker logs -f`).
+ */
+export async function streamContainerLogs(
+  ssh: SSHClient,
+  containerName: string,
+  onLog: (line: string) => void,
+  options: StreamContainerLogsOptions = {}
+): Promise<void> {
+  const { tail = 100, since, signal } = options;
+
+  let cmd = `docker logs -f --tail ${tail}`;
+  if (since) {
+    cmd = `docker logs -f --since '${since.replace(/'/g, "'\\''")}'`;
+  }
+  cmd += ` ${containerName} 2>&1`;
+
+  let buffer = '';
+  const flushChunk = (chunk: string) => {
+    buffer += chunk;
+    const parts = buffer.split('\n');
+    buffer = parts.pop() ?? '';
+    for (const line of parts) {
+      onLog(line);
+    }
+  };
+
+  const streamPromise = ssh.execStream(
+    cmd,
+    (data) => flushChunk(data),
+    (data) => flushChunk(data)
+  );
+
+  const onAbort = () => {
+    ssh.disconnect();
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
+
+  try {
+    const code = await streamPromise;
+    if (buffer) {
+      onLog(buffer);
+    }
+    if (code !== 0 && !signal?.aborted) {
+      throw new Error(`docker logs exited with code ${code}`);
+    }
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+  }
 }
 
 /**
@@ -522,7 +615,11 @@ export async function runContainerFromImage(
     restart = 'unless-stopped',
     onProgress,
     skipStopExisting = false,
+    framework,
+    buildpackId,
   } = options;
+
+  const runMemory = getRunMemoryLimit(framework, buildpackId);
 
   if (!skipStopExisting) {
     // Stop and remove existing container with same name
@@ -535,8 +632,8 @@ export async function runContainerFromImage(
   let runCmd = `docker run -d --name ${containerName}`;
 
   // Resource limits
-  runCmd += ` --memory ${env.DOCKER_MEMORY_LIMIT}`;
-  runCmd += ` --memory-swap 1g`;
+  runCmd += ` --memory ${runMemory}`;
+  runCmd += ` --memory-swap ${runMemory}`;
   runCmd += ` --cpus ${env.DOCKER_CPU_LIMIT}`;
   runCmd += ` --pids-limit 256`;
 
@@ -618,6 +715,8 @@ export interface BlueGreenDeployOptions {
   restart?: 'no' | 'always' | 'unless-stopped' | 'on-failure';
   healthCheckPath?: string; // Optional HTTP health check path (e.g., "/health")
   healthCheckTimeout?: number; // Timeout in seconds (default: 60)
+  framework?: string;
+  buildpackId?: string;
   onProgress?: (message: string) => void;
 }
 
@@ -649,8 +748,12 @@ export async function blueGreenDeploy(
     restart = 'unless-stopped',
     healthCheckPath,
     healthCheckTimeout = 60,
+    framework,
+    buildpackId,
     onProgress,
   } = options;
+
+  const runMemory = getRunMemoryLimit(framework, buildpackId);
 
   // Determine current active slot (blue or green)
   const blueExists = (await ssh.exec(`docker inspect ${containerName}-blue 2>/dev/null`)).code === 0;
@@ -706,8 +809,8 @@ export async function blueGreenDeploy(
   let runCmd = `docker run -d --name ${newContainerName}`;
 
   // Resource limits
-  runCmd += ` --memory ${env.DOCKER_MEMORY_LIMIT}`;
-  runCmd += ` --memory-swap 1g`;
+  runCmd += ` --memory ${runMemory}`;
+  runCmd += ` --memory-swap ${runMemory}`;
   runCmd += ` --cpus ${env.DOCKER_CPU_LIMIT}`;
   runCmd += ` --pids-limit 256`;
 

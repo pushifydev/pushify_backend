@@ -91,6 +91,8 @@ export const deploymentService = {
     await assertOrganizationCanMutateResources(organizationId, locale);
     await planLimitsService.assertDeploymentsQuota(organizationId, locale);
     await planLimitsService.assertBuildMinutesQuota(organizationId, locale);
+    await planLimitsService.assertStorageQuota(organizationId, locale);
+    await planLimitsService.assertBandwidthQuota(organizationId, locale);
 
     // Check if project is paused
     if (project.status === 'paused') {

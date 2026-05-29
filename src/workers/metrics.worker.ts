@@ -1,4 +1,5 @@
 import { metricsService } from '../services/metrics.service';
+import { usageMeteringService } from '../services/usage-metering.service';
 import { metricsRepository } from '../repositories/metrics.repository';
 import { execCommand } from './shell';
 import { db } from '../db';
@@ -12,6 +13,8 @@ import {
   normalizeDockerStatsName,
   resolvePushifyContainerName,
 } from '../lib/container-resolve';
+import { isContainerRunning } from './docker';
+import { isContainerRunning as isRemoteContainerRunning } from './remote-docker';
 import type { NewContainerMetric } from '../db/schema';
 
 const POLL_INTERVAL = 15000; // 15 seconds
@@ -19,6 +22,8 @@ const CLEANUP_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
 
 let isRunning = false;
 let lastCleanup = Date.now();
+let lastStorageSync = Date.now();
+const STORAGE_SYNC_INTERVAL = 6 * 60 * 60 * 1000;
 
 /**
  * Parse docker stats output (JSON format)
@@ -89,9 +94,33 @@ async function pollForMetrics(): Promise<void> {
           const resolved: Array<(typeof projects)[number] & { resolvedContainerName: string }> =
             [];
           for (const project of projects) {
-            const resolvedName = await resolvePushifyContainerName(project.slug, ssh);
+            let resolvedName = await resolvePushifyContainerName(project.slug, ssh);
+            if (!resolvedName) {
+              // Fallback: exact app container name (deploy default)
+              const fallback = `pushify-${project.slug}`;
+              const running = ssh
+                ? await isRemoteContainerRunning(ssh, fallback)
+                : await isContainerRunning(fallback);
+              if (running) resolvedName = fallback;
+            }
             if (resolvedName) {
               resolved.push({ ...project, resolvedContainerName: resolvedName });
+            } else {
+              metricsToInsert.push({
+                projectId: project.projectId,
+                deploymentId: project.deploymentId,
+                containerName: `pushify-${project.slug}`,
+                cpuPercent: 0,
+                memoryUsageBytes: 0,
+                memoryLimitBytes: 0,
+                memoryPercent: 0,
+                networkRxBytes: 0,
+                networkTxBytes: 0,
+                blockReadBytes: 0,
+                blockWriteBytes: 0,
+                containerStatus: 'stopped',
+                pids: 0,
+              });
             }
           }
 
@@ -149,8 +178,8 @@ async function pollForMetrics(): Promise<void> {
           }
         }
 
-        // Bulk insert metrics
         if (metricsToInsert.length > 0) {
+          await usageMeteringService.recordBandwidthFromMetrics(metricsToInsert);
           await metricsService.recordBulkMetrics(metricsToInsert);
           logger.debug({ count: metricsToInsert.length }, 'Metrics recorded');
 
@@ -176,6 +205,15 @@ async function pollForMetrics(): Promise<void> {
         const deleted = await metricsRepository.cleanAllOldMetrics(7);
         logger.info({ deleted }, 'Old metrics cleaned up');
         lastCleanup = Date.now();
+      }
+
+      if (Date.now() - lastStorageSync > STORAGE_SYNC_INTERVAL) {
+        try {
+          await usageMeteringService.syncDockerDiskUsageFromServers();
+        } catch (error) {
+          logger.error({ err: error }, 'Docker disk usage sync failed');
+        }
+        lastStorageSync = Date.now();
       }
     } catch (error) {
       logger.error({ err: error }, 'Error polling for metrics');
