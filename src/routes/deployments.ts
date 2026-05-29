@@ -17,6 +17,7 @@ import { projects } from '../db/schema/projects';
 import { eq } from 'drizzle-orm';
 import { decrypt } from '../lib/encryption';
 import { resolvePushifyContainerName } from '../lib/container-resolve';
+import { enrichDeploymentWithQueue } from '../lib/deploy-queue';
 
 // Rate limiter for deployment operations
 const deploymentRateLimiter = createDeploymentRateLimiter();
@@ -327,7 +328,9 @@ deploymentRouter.openapi(listDeploymentsRoute, async (c) => {
     offset ?? 0
   );
 
-  return c.json({ data: deployments });
+  return c.json({
+    data: deployments.map((d) => enrichDeploymentWithQueue(d)),
+  });
 });
 
 // Create deployment
@@ -382,7 +385,7 @@ deploymentRouter.openapi(getDeploymentRoute, async (c) => {
     locale
   );
 
-  return c.json({ data: deployment });
+  return c.json({ data: enrichDeploymentWithQueue(deployment) });
 });
 
 // Cancel deployment

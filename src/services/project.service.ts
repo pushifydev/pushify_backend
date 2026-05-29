@@ -254,9 +254,11 @@ export const projectService = {
     }
 
     // Best-effort cleanup of running containers / compose stacks
+    let containersCleanedUp = true;
     try {
       await this.cleanupProjectContainers(existing);
     } catch (err) {
+      containersCleanedUp = false;
       logger.warn({ projectId, err }, 'Failed to cleanup containers — continuing with delete');
     }
 
@@ -271,7 +273,9 @@ export const projectService = {
 
     await projectRepository.softDelete(projectId);
 
-    logger.info({ projectId, userId }, 'Project deleted');
+    logger.info({ projectId, userId, containersCleanedUp }, 'Project deleted');
+
+    return { containersCleanedUp };
   },
 
   /**
@@ -332,11 +336,27 @@ export const projectService = {
       throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });
     }
 
+    const { pauseProjectContainers, resumeProjectContainers } = await import(
+      '../lib/project-remote-cleanup'
+    );
+
+    let containersSynced = true;
+    try {
+      if (status === 'paused') {
+        await pauseProjectContainers(existing);
+      } else {
+        containersSynced = await resumeProjectContainers(existing);
+      }
+    } catch (err) {
+      containersSynced = false;
+      logger.warn({ projectId, status, err }, 'Container pause/resume failed');
+    }
+
     const project = await projectRepository.updateStatus(projectId, status);
 
-    logger.info({ projectId, userId, status }, 'Project status updated');
+    logger.info({ projectId, userId, status, containersSynced }, 'Project status updated');
 
-    return project;
+    return { project, containersSynced };
   },
 
   /**
@@ -373,6 +393,61 @@ export const projectService = {
     logger.info({ projectId, userId }, 'Webhook secret regenerated');
 
     return { secret };
+  },
+
+  /**
+   * Install or update GitHub repository webhook for this project (org owner's token).
+   */
+  async installGitHubWebhook(
+    projectId: string,
+    organizationId: string,
+    userId: string,
+    locale: SupportedLocale = 'en'
+  ) {
+    const membership = await organizationRepository.findMember(organizationId, userId);
+    if (!membership) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
+    }
+
+    const project = await projectRepository.findById(projectId);
+    if (!project || project.organizationId !== organizationId || project.status === 'deleted') {
+      throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });
+    }
+
+    if (!project.gitRepoUrl?.includes('github.com')) {
+      throw new HTTPException(400, { message: t(locale, 'projects', 'githubRepoRequired') });
+    }
+
+    if (!project.webhookSecret) {
+      throw new HTTPException(400, { message: t(locale, 'projects', 'webhookSecretRequired') });
+    }
+
+    const { getProjectGitAccessToken } = await import('./git-provider-access.service');
+    const gitAuth = await getProjectGitAccessToken(projectId);
+    if (!gitAuth || gitAuth.provider !== 'github') {
+      throw new HTTPException(400, { message: t(locale, 'integrations', 'notConnected') });
+    }
+
+    const { githubService } = await import('./github.service');
+    const parsed = githubService.parseRepoUrl(project.gitRepoUrl);
+    if (!parsed) {
+      throw new HTTPException(400, { message: t(locale, 'projects', 'invalidGitRepoUrl') });
+    }
+
+    const baseUrl = process.env.API_BASE_URL || 'http://localhost:4000';
+    const webhookUrl = `${baseUrl}/api/v1/webhooks/github/${project.id}`;
+
+    const result = await githubService.ensureRepoWebhook(
+      gitAuth.token,
+      parsed.owner,
+      parsed.repo,
+      webhookUrl,
+      project.webhookSecret
+    );
+
+    logger.info({ projectId, hookId: result.hookId, created: result.created }, 'GitHub webhook installed');
+
+    return { webhookUrl, ...result };
   },
 
   /**

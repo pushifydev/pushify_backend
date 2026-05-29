@@ -46,6 +46,45 @@ export function mergeQueueLineIntoLogs(existingLogs: string | null, queueLine: s
   return body ? `${header}\n${body}` : header;
 }
 
+export function parseQueueInfoFromLogs(logs: string | null | undefined): {
+  inQueue: boolean;
+  queueMessage: string | null;
+  queuePosition: number | null;
+} {
+  if (!logs) {
+    return { inQueue: false, queueMessage: null, queuePosition: null };
+  }
+
+  for (const line of logs.split('\n')) {
+    if (!line.includes(QUEUE_LINE_PREFIX)) continue;
+    const idx = line.indexOf(QUEUE_LINE_PREFIX);
+    const queueMessage = line.slice(idx + QUEUE_LINE_PREFIX.length).trim() || null;
+    const posMatch = queueMessage?.match(/server queue #(\d+)/);
+    return {
+      inQueue: true,
+      queueMessage,
+      queuePosition: posMatch ? parseInt(posMatch[1], 10) : null,
+    };
+  }
+
+  return { inQueue: false, queueMessage: null, queuePosition: null };
+}
+
+export function enrichDeploymentWithQueue<T extends { status: string; buildLogs?: string | null }>(
+  deployment: T
+): T & {
+  inQueue: boolean;
+  queueMessage: string | null;
+  queuePosition: number | null;
+} {
+  const queue =
+    deployment.status === 'pending'
+      ? parseQueueInfoFromLogs(deployment.buildLogs)
+      : { inQueue: false, queueMessage: null, queuePosition: null };
+
+  return { ...deployment, ...queue };
+}
+
 export function buildQueueSnapshots(
   pendingDeploymentIds: { id: string; serverId: string | null }[],
   serverActiveCounts: Map<string, number>,

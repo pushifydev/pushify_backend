@@ -56,6 +56,11 @@ export interface TranslationKeys {
     updated: string;
     deleted: string;
     webhookRegenerated: string;
+    githubRepoRequired: string;
+    webhookSecretRequired: string;
+    invalidGitRepoUrl: string;
+    githubWebhookInstalled: string;
+    githubWebhookUpdated: string;
     settingsUpdated: string;
     invalidServer: string;
     serverNotReady: string;
@@ -239,6 +244,7 @@ export interface TranslationKeys {
     snapshotDeleted: string;
     snapshotRestoreStarted: string;
     snapshotRestoreInvalidState: string;
+    notReadyForDeploy: string;
   };
   databases: {
     notFound: string;
@@ -335,6 +341,11 @@ export const en: TranslationKeys = {
     updated: 'Project updated successfully',
     deleted: 'Project deleted successfully',
     webhookRegenerated: 'Webhook secret regenerated successfully',
+    githubRepoRequired: 'This project must use a GitHub repository',
+    webhookSecretRequired: 'Generate a webhook secret before installing the GitHub webhook',
+    invalidGitRepoUrl: 'Could not parse the GitHub repository URL',
+    githubWebhookInstalled: 'GitHub webhook installed successfully',
+    githubWebhookUpdated: 'GitHub webhook updated successfully',
     settingsUpdated: 'Project settings updated successfully',
     invalidServer: 'Selected server does not exist or does not belong to this organization',
     serverNotReady: 'Selected server is not ready for deployment',
@@ -556,6 +567,7 @@ export const en: TranslationKeys = {
     snapshotRestoreStarted:
       'Server rebuild from snapshot started. The disk will be replaced; apps may need to be redeployed.',
     snapshotRestoreInvalidState: 'Cannot restore a snapshot while the server is being created or deleted',
+    notReadyForDeploy: 'Server setup must be completed before running a health scan',
   },
 
   // Databases

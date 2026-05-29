@@ -433,6 +433,88 @@ class GitHubService {
     return integration !== null;
   }
 
+  /**
+   * Parse owner/repo from a GitHub HTTPS or SSH clone URL.
+   */
+  parseRepoUrl(gitRepoUrl: string): { owner: string; repo: string } | null {
+    const trimmed = gitRepoUrl.replace(/\.git$/i, '').trim();
+    const match = trimmed.match(/github\.com[/:]([^/]+)\/([^/]+)/i);
+    if (!match) return null;
+    return { owner: match[1], repo: match[2] };
+  }
+
+  /**
+   * Create or update the Pushify webhook on a GitHub repository.
+   */
+  async ensureRepoWebhook(
+    accessToken: string,
+    owner: string,
+    repo: string,
+    webhookUrl: string,
+    secret: string
+  ): Promise<{ hookId: number; created: boolean }> {
+    const headers = {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/vnd.github.v3+json',
+      'Content-Type': 'application/json',
+    };
+
+    const listRes = await fetch(`${GITHUB_API_URL}/repos/${owner}/${repo}/hooks`, { headers });
+    if (!listRes.ok) {
+      const err = await listRes.text();
+      logger.warn({ owner, repo, err }, 'Failed to list GitHub webhooks');
+      throw new HTTPException(502, { message: 'Could not list repository webhooks on GitHub' });
+    }
+
+    const hooks = (await listRes.json()) as Array<{
+      id: number;
+      config?: { url?: string };
+    }>;
+
+    const existing = hooks.find((h) => h.config?.url === webhookUrl);
+    const body = {
+      config: {
+        url: webhookUrl,
+        content_type: 'json',
+        secret,
+        insecure_ssl: '0',
+      },
+      events: ['push'],
+      active: true,
+    };
+
+    if (existing) {
+      const patchRes = await fetch(
+        `${GITHUB_API_URL}/repos/${owner}/${repo}/hooks/${existing.id}`,
+        { method: 'PATCH', headers, body: JSON.stringify(body) }
+      );
+      if (!patchRes.ok) {
+        throw new HTTPException(502, { message: 'Could not update GitHub webhook' });
+      }
+      return { hookId: existing.id, created: false };
+    }
+
+    const createRes = await fetch(`${GITHUB_API_URL}/repos/${owner}/${repo}/hooks`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        name: 'web',
+        ...body,
+      }),
+    });
+
+    if (!createRes.ok) {
+      const err = await createRes.text();
+      logger.warn({ owner, repo, err }, 'Failed to create GitHub webhook');
+      throw new HTTPException(502, {
+        message: 'Could not create GitHub webhook. Ensure GitHub is connected with repo access.',
+      });
+    }
+
+    const created = (await createRes.json()) as { id: number };
+    return { hookId: created.id, created: true };
+  }
+
   // ============ Commit Status (PR Status Checks) ============
 
   /**

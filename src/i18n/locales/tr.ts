@@ -64,6 +64,11 @@ export const tr: TranslationKeys = {
     updated: 'Proje başarıyla güncellendi',
     deleted: 'Proje başarıyla silindi',
     webhookRegenerated: 'Webhook anahtarı başarıyla yenilendi',
+    githubRepoRequired: 'Bu proje bir GitHub deposu kullanmalıdır',
+    webhookSecretRequired: 'GitHub webhook kurmadan önce webhook gizli anahtarı oluşturun',
+    invalidGitRepoUrl: 'GitHub depo URL\'si okunamadı',
+    githubWebhookInstalled: 'GitHub webhook başarıyla kuruldu',
+    githubWebhookUpdated: 'GitHub webhook başarıyla güncellendi',
     settingsUpdated: 'Proje ayarları başarıyla güncellendi',
     invalidServer: 'Seçilen sunucu mevcut değil veya bu organizasyona ait değil',
     serverNotReady: 'Seçilen sunucu deployment için hazır değil',
@@ -287,6 +292,7 @@ export const tr: TranslationKeys = {
       'Anlık görüntüden sunucu yeniden oluşturma başlatıldı. Disk değişecek; uygulamaları yeniden dağıtmanız gerekebilir.',
     snapshotRestoreInvalidState:
       'Sunucu oluşturulurken veya silinirken anlık görüntü geri yüklenemez',
+    notReadyForDeploy: 'Sağlık taraması için sunucu kurulumunun tamamlanması gerekir',
   },
 
   // Databases

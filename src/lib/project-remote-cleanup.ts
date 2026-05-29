@@ -135,6 +135,96 @@ export async function resolveDeployServerForCleanup(
   return null;
 }
 
+/** Stop running containers for a project (pause) without removing them. */
+export async function pauseProjectContainersOnServer(ssh: SSHClient, slug: string): Promise<void> {
+  const safeSlug = shellEscapeSlug(slug);
+  const base = `pushify-${safeSlug}`;
+  const projectDir = `/opt/pushify/apps/${safeSlug}`;
+  await ssh.exec(
+    [
+      `cd ${projectDir} 2>/dev/null && docker compose -p ${base} stop 2>/dev/null || true`,
+      `ids=$(docker ps -q --filter "name=${base}" 2>/dev/null); if [ -n "$ids" ]; then docker stop $ids 2>/dev/null; fi`,
+    ].join('; ')
+  );
+}
+
+/** Start stopped containers for a project (resume). */
+export async function resumeProjectContainersOnServer(ssh: SSHClient, slug: string): Promise<boolean> {
+  const safeSlug = shellEscapeSlug(slug);
+  const base = `pushify-${safeSlug}`;
+  const projectDir = `/opt/pushify/apps/${safeSlug}`;
+  const result = await ssh.exec(
+    [
+      `cd ${projectDir} 2>/dev/null && docker compose -p ${base} start 2>/dev/null || true`,
+      `ids=$(docker ps -aq --filter "name=${base}" 2>/dev/null); if [ -n "$ids" ]; then docker start $ids 2>/dev/null; fi`,
+    ].join('; ')
+  );
+  const check = await ssh.exec(
+    `docker ps -q --filter "name=${base}" 2>/dev/null | head -1`
+  );
+  return !!check.stdout.trim() || result.code === 0;
+}
+
+export async function pauseProjectContainers(project: ProjectRow): Promise<boolean> {
+  const remoteServer = await resolveDeployServerForCleanup(project);
+  if (remoteServer?.ipv4 && remoteServer.sshPrivateKey) {
+    const ssh = new SSHClient();
+    try {
+      await ssh.connect({
+        host: remoteServer.ipv4,
+        port: 22,
+        username: 'root',
+        privateKey: decrypt(remoteServer.sshPrivateKey),
+      });
+      await pauseProjectContainersOnServer(ssh, project.slug);
+      logger.info({ projectId: project.id, slug: project.slug }, 'Paused remote containers');
+      return true;
+    } finally {
+      ssh.disconnect();
+    }
+  }
+
+  const { exec } = await import('child_process');
+  const { promisify } = await import('util');
+  const execAsync = promisify(exec);
+  const safeSlug = shellEscapeSlug(project.slug);
+  const base = `pushify-${safeSlug}`;
+  await execAsync(
+    `ids=$(docker ps -q --filter "name=${base}" 2>/dev/null); if [ -n "$ids" ]; then docker stop $ids; fi`
+  ).catch(() => undefined);
+  return true;
+}
+
+export async function resumeProjectContainers(project: ProjectRow): Promise<boolean> {
+  const remoteServer = await resolveDeployServerForCleanup(project);
+  if (remoteServer?.ipv4 && remoteServer.sshPrivateKey) {
+    const ssh = new SSHClient();
+    try {
+      await ssh.connect({
+        host: remoteServer.ipv4,
+        port: 22,
+        username: 'root',
+        privateKey: decrypt(remoteServer.sshPrivateKey),
+      });
+      return await resumeProjectContainersOnServer(ssh, project.slug);
+    } finally {
+      ssh.disconnect();
+    }
+  }
+
+  const { execCommand } = await import('../workers/shell');
+  const safeSlug = shellEscapeSlug(project.slug);
+  const base = `pushify-${safeSlug}`;
+  await execCommand(
+    `ids=$(docker ps -aq --filter "name=${base}" 2>/dev/null); if [ -n "$ids" ]; then docker start $ids; fi`,
+    { timeout: 30000 }
+  ).catch(() => undefined);
+  const { stdout } = await execCommand(`docker ps -q --filter "name=${base}" | head -1`, {
+    timeout: 5000,
+  });
+  return !!stdout.trim();
+}
+
 export async function teardownProjectOnRemoteServer(
   server: typeof servers.$inferSelect,
   project: ProjectRow
