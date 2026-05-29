@@ -25,6 +25,10 @@ export const organizations = pgTable('organizations', {
   billingPaymentFailedNotifiedAt: timestamp('billing_payment_failed_notified_at', { withTimezone: true }),
   /** Prepaid USD cents for managed cloud infrastructure (Hetzner, etc.) */
   infraWalletBalanceCents: integer('infra_wallet_balance_cents').default(0).notNull(),
+  /** Until this time, legacy (more generous) plan limits apply for paid tiers */
+  grandfatheredUntil: timestamp('grandfathered_until', { withTimezone: true }),
+  /** Optional per-limit overrides merged on top of effective plan limits */
+  planLimitsOverride: jsonb('plan_limits_override').$type<Partial<Record<string, number | boolean>>>(),
   settings: jsonb('settings').default({}).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

@@ -1,4 +1,5 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { HTTPException } from 'hono/http-exception';
 import { authService } from '../services/auth.service';
 import { organizationService } from '../services/organization.service';
 import { authMiddleware } from '../middleware/auth';
@@ -128,24 +129,28 @@ const ChangePasswordRequestSchema = z
 const GithubLoginCallbackRequestSchema = z
   .object({
     code: z.string().min(1).openapi({ description: 'OAuth code from GitHub' }),
+    state: z.string().min(16).openapi({ description: 'OAuth state from authorization redirect' }),
   })
   .openapi('GithubLoginCallbackRequest');
 
 const GithubLoginUrlResponseSchema = z
   .object({
     url: z.string().url(),
+    state: z.string().min(16),
   })
   .openapi('GithubLoginUrlResponse');
 
 const GoogleLoginUrlResponseSchema = z
   .object({
     url: z.string().url(),
+    state: z.string().min(16),
   })
   .openapi('GoogleLoginUrlResponse');
 
 const GoogleLoginCallbackRequestSchema = z
   .object({
     code: z.string().min(1),
+    state: z.string().min(16),
   })
   .openapi('GoogleLoginCallbackRequest');
 
@@ -762,16 +767,22 @@ authRouter.openapi(logoutRoute, async (c) => {
 // GitHub OAuth Login URL
 authRouter.openapi(githubLoginUrlRoute, async (c) => {
   const { githubService } = await import('../services/github.service');
-  const state = Math.random().toString(36).substring(2);
+  const { createOAuthState } = await import('../lib/oauth-state-store');
+  const state = await createOAuthState({ kind: 'github_login' });
   const url = githubService.getAuthorizationUrl(state);
-  return c.json({ url });
+  return c.json({ url, state });
 });
 
 // GitHub OAuth Login Callback
 authRouter.use('/github/login-callback', authRateLimiter);
 authRouter.openapi(githubLoginCallbackRoute, async (c) => {
-  const { code } = c.req.valid('json');
+  const { code, state } = c.req.valid('json');
   const locale = c.get('locale');
+  const { consumeOAuthState, validateOAuthStateRecord } = await import('../lib/oauth-state-store');
+  const stored = await consumeOAuthState(state);
+  if (!validateOAuthStateRecord(stored, { kind: 'github_login' })) {
+    throw new HTTPException(400, { message: t(locale, 'integrations', 'invalidState') });
+  }
   const ipAddress = c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip');
   const userAgent = c.req.header('user-agent');
 
@@ -790,16 +801,22 @@ authRouter.openapi(githubLoginCallbackRoute, async (c) => {
 // Google OAuth Login URL
 authRouter.openapi(googleLoginUrlRoute, async (c) => {
   const { googleService } = await import('../services/google.service');
-  const state = Math.random().toString(36).substring(2);
+  const { createOAuthState } = await import('../lib/oauth-state-store');
+  const state = await createOAuthState({ kind: 'google_login' });
   const url = googleService.getAuthorizationUrl(state);
-  return c.json({ url });
+  return c.json({ url, state });
 });
 
 // Google OAuth Login Callback
 authRouter.use('/google/login-callback', authRateLimiter);
 authRouter.openapi(googleLoginCallbackRoute, async (c) => {
-  const { code } = c.req.valid('json');
+  const { code, state } = c.req.valid('json');
   const locale = c.get('locale');
+  const { consumeOAuthState, validateOAuthStateRecord } = await import('../lib/oauth-state-store');
+  const stored = await consumeOAuthState(state);
+  if (!validateOAuthStateRecord(stored, { kind: 'google_login' })) {
+    throw new HTTPException(400, { message: t(locale, 'integrations', 'invalidState') });
+  }
   const ipAddress = c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip');
   const userAgent = c.req.header('user-agent');
 

@@ -225,6 +225,10 @@ export const tr: TranslationKeys = {
     customDomains: 'Özel alan adı limitine ulaşıldı. Daha fazla domain için planınızı yükseltin.',
     buildMinutesPerMonth:
       'Aylık build süresi limitine ulaşıldı. Planınızı yükseltin veya gelecek ayı bekleyin.',
+    storageGb:
+      'Aylık depolama limitine ulaşıldı. Eski imajları temizleyin veya planınızı yükseltin.',
+    bandwidthGb:
+      'Aylık bant genişliği limitine ulaşıldı. Planınızı yükseltin veya gelecek ayı bekleyin.',
     previewDeployments:
       'Planınızda önizleme dağıtımları yok. Hobby veya üzeri bir plana geçin.',
     healthChecks:
@@ -232,6 +236,7 @@ export const tr: TranslationKeys = {
   },
 
   dashboard: {
+    infraLowBalanceTitle: 'Düşük altyapı kredisi',
     actionFailedDeploymentsTitle: '{count} başarısız dağıtım',
     actionFailedDeploymentsDesc: 'Logları inceleyin ve proje veya aktivite sayfasından yeniden dağıtın.',
     actionFailedLatestDesc: 'Son hata: {project} — dağıtım loglarını kontrol edin.',
@@ -248,6 +253,9 @@ export const tr: TranslationKeys = {
     usageResourceDeployments: 'Bu ayki dağıtımlar',
     usageResourceTeamMembers: 'Ekip üyeleri',
     usageResourceCustomDomains: 'Özel alan adları',
+    usageResourceBuildMinutes: 'Bu ayki build dakikası',
+    usageResourceStorage: 'Bu ayki depolama',
+    usageResourceBandwidth: 'Bu ayki bant genişliği',
   },
 
   // Servers
@@ -271,9 +279,14 @@ export const tr: TranslationKeys = {
     resizeInvalidState: 'Sunucu mevcut durumda yeniden boyutlandırılamaz',
     resizeInvalidSize: 'Geçersiz veya yükseltme için uygun olmayan boyut',
     snapshotsNotSupported: 'Anlık görüntüler yalnızca yönetilen Hetzner sunucularında kullanılabilir',
+    autoSnapshotPlanRequired: 'Otomatik anlık görüntü için anlık görüntü kotası olan bir plan gerekir (Hobby ve üzeri).',
     snapshotRequiresRunning: 'Anlık görüntü için sunucu çalışıyor olmalı',
     snapshotCreated: 'Anlık görüntü oluşturma başlatıldı',
     snapshotDeleted: 'Anlık görüntü silindi',
+    snapshotRestoreStarted:
+      'Anlık görüntüden sunucu yeniden oluşturma başlatıldı. Disk değişecek; uygulamaları yeniden dağıtmanız gerekebilir.',
+    snapshotRestoreInvalidState:
+      'Sunucu oluşturulurken veya silinirken anlık görüntü geri yüklenemez',
   },
 
   // Databases

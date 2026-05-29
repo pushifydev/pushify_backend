@@ -14,6 +14,8 @@ import {
 import { buildCalcomImageScript, calcomImageTag } from '../marketplace/calcom-image';
 import { getOrAssignPort } from './port-manager';
 import { generateDockerfile } from './dockerfile';
+import { normalizeRootDirectory } from '../lib/normalize-root-directory';
+import { checkServerDiskSpace } from '../lib/server-disk-check';
 import { domainService } from '../services/domain.service';
 import path from 'path';
 
@@ -34,8 +36,12 @@ export interface RemoteDeploymentConfig {
   dockerfilePath?: string;
   outputDirectory?: string;
   framework?: string;
+  /** From local/remote buildpack detection */
+  buildpackId?: string;
   accessToken?: string;
   onProgress: (message: string) => void;
+  /** e.g. `-pr-42` for preview deployments (separate container/image from production) */
+  deploySuffix?: string;
   // Marketplace fields
   marketplace?: {
     id?: string;
@@ -234,13 +240,18 @@ export async function deployToRemoteServer(
     buildCommand,
     startCommand,
     installCommand = 'npm install --legacy-peer-deps',
-    rootDirectory = '.',
+    rootDirectory: rootDirectoryInput = '.',
     dockerfilePath,
     outputDirectory,
-    framework = 'nodejs',
+    framework: frameworkHint,
+    buildpackId: configBuildpackId,
     accessToken,
     onProgress,
+    deploySuffix = '',
   } = config;
+
+  const rootDirectory = normalizeRootDirectory(rootDirectoryInput);
+  const deploySlug = `${projectSlug}${deploySuffix}`;
 
   // Determine container port: prefer PORT from env vars, then config port, then default 3000
   const envPort = envVars?.PORT ? parseInt(envVars.PORT, 10) : null;
@@ -277,7 +288,7 @@ export async function deployToRemoteServer(
 
     // ── Marketplace COMPOSE deploy: deploy multi-container stack ──
     if (config.marketplace?.deploymentType === 'docker-compose' && config.marketplace.composeFile) {
-      const stackName = `pushify-${projectSlug}`;
+      const stackName = `pushify-${deploySlug}`;
       onProgress(`📦 Deploying Docker Compose stack: ${stackName}`);
 
       // Check docker compose plugin
@@ -532,9 +543,9 @@ export async function deployToRemoteServer(
     if (config.marketplace) {
       const { dockerImage, dockerCommand, volumes } = config.marketplace;
       if (!dockerImage) throw new Error('Marketplace deploy requires dockerImage');
-      const imageName = `pushify-${projectSlug}`;
-      const containerName = `pushify-${projectSlug}`;
-      const dbContainerName = `pushify-${projectSlug}-db`;
+      const imageName = `pushify-${deploySlug}`;
+      const containerName = `pushify-${deploySlug}`;
+      const dbContainerName = `pushify-${deploySlug}-db`;
 
       // Check if app requires a database and start one
       const requiresDb = config.marketplace.requiresDatabase;
@@ -674,7 +685,7 @@ export async function deployToRemoteServer(
       await ssh.exec(`docker stop ${containerName} 2>/dev/null; docker rm ${containerName} 2>/dev/null`);
 
       // Create Docker network for app <-> db communication
-      const networkName = `pushify-${projectSlug}-net`;
+      const networkName = `pushify-${deploySlug}-net`;
       await ssh.exec(`docker network create ${networkName} 2>/dev/null || true`);
       if (requiresDb) {
         await ssh.exec(`docker network connect ${networkName} ${dbContainerName} 2>/dev/null || true`);
@@ -726,6 +737,13 @@ export async function deployToRemoteServer(
     let cloneUrl = repoUrl;
     if (accessToken && repoUrl.includes('github.com')) {
       cloneUrl = repoUrl.replace('https://', `https://${accessToken}@`);
+    } else if (accessToken && repoUrl.includes('gitlab')) {
+      try {
+        const parsed = new URL(repoUrl);
+        cloneUrl = `${parsed.protocol}//oauth2:${accessToken}@${parsed.host}${parsed.pathname}`;
+      } catch {
+        cloneUrl = repoUrl.replace('https://', `https://oauth2:${accessToken}@`);
+      }
     }
 
     const cloneCmd = branch
@@ -738,6 +756,14 @@ export async function deployToRemoteServer(
     }
     onProgress('✅ Repository cloned');
 
+    const disk = await checkServerDiskSpace(ssh);
+    onProgress(disk.message);
+    if (!disk.ok) {
+      throw new Error(
+        `Server disk is critically full (${disk.usedPercent}% used, ${disk.availGb} GB free). Free space on the server before deploying.`
+      );
+    }
+
     // Check if Dockerfile exists
     const workDir = rootDirectory === '.' ? repoDir : path.posix.join(repoDir, rootDirectory);
     const dockerfileCheckPath = dockerfilePath
@@ -746,34 +772,61 @@ export async function deployToRemoteServer(
 
     const hasDockerfile = await ssh.fileExists(dockerfileCheckPath);
 
+    let resolvedBuildpackId = configBuildpackId || 'nodejs';
+    let resolvedFramework = frameworkHint || 'nodejs';
+
     if (!hasDockerfile) {
       // Use buildpack system for detection and Dockerfile generation
-      const { detectBuildpack, getBuildpack } = await import('../buildpacks');
+      const { detectBuildpackRemote, detectNextStandaloneRemote, getBuildpack } =
+        await import('../buildpacks');
 
       onProgress('🔍 Auto-detecting language and framework...');
-      const detection = await detectBuildpack(repoDir, rootDirectory);
+      let detection = await detectBuildpackRemote(ssh, repoDir, rootDirectory);
+      if (!detection && frameworkHint) {
+        detection = {
+          buildpackId: configBuildpackId || 'nodejs',
+          framework: frameworkHint,
+          confidence: 80,
+        };
+      }
 
       let dockerfileContent: string;
+      resolvedFramework = detection?.framework || frameworkHint || 'nodejs';
+      resolvedBuildpackId = detection?.buildpackId || configBuildpackId || 'nodejs';
+
+      let nextStandalone = false;
+      if (resolvedFramework === 'nextjs') {
+        nextStandalone = await detectNextStandaloneRemote(ssh, repoDir, rootDirectory);
+        if (nextStandalone) {
+          onProgress('📦 Next.js standalone detected — smaller production image');
+        }
+      }
+
+      const dockerGenOpts = {
+        framework: resolvedFramework,
+        buildCommand,
+        installCommand,
+        startCommand,
+        outputDirectory,
+        port: containerPort,
+        rootDirectory: '.',
+        envVars,
+        nextStandalone,
+      };
 
       if (detection && detection.buildpackId !== 'custom') {
         const buildpack = getBuildpack(detection.buildpackId);
         if (buildpack) {
           onProgress(`✅ Detected: ${buildpack.name} (${detection.framework})`);
           dockerfileContent = buildpack.generateDockerfile({
+            ...dockerGenOpts,
             framework: detection.framework,
-            buildCommand,
-            installCommand,
-            startCommand,
-            outputDirectory,
-            port: containerPort,
-            rootDirectory,
-            envVars,
           } as any);
         } else {
-          dockerfileContent = generateDockerfile({ framework, buildCommand, installCommand, startCommand, outputDirectory, port: containerPort, rootDirectory, envVars });
+          dockerfileContent = generateDockerfile(dockerGenOpts);
         }
       } else {
-        dockerfileContent = generateDockerfile({ framework, buildCommand, installCommand, startCommand, outputDirectory, port: containerPort, rootDirectory, envVars });
+        dockerfileContent = generateDockerfile(dockerGenOpts);
       }
 
       onProgress('📄 Uploading Dockerfile...');
@@ -784,7 +837,7 @@ export async function deployToRemoteServer(
     }
 
     // Build Docker image
-    const imageName = `pushify-${projectSlug}`;
+    const imageName = `pushify-${deploySlug}`;
     const imageTag = commitHash.substring(0, 7);
 
     onProgress(`🔨 Building Docker image: ${imageName}:${imageTag}`);
@@ -792,12 +845,18 @@ export async function deployToRemoteServer(
     // Pass all env vars as build args
     const buildArgs: Record<string, string> = envVars ? { ...envVars } : {};
 
+    onProgress(
+      `📋 Build target: ${resolvedBuildpackId} (${resolvedFramework}) — glibc Linux images, tuned memory`
+    );
+
     const buildResult = await buildImage(ssh, {
       workDir,
       imageName,
       tag: imageTag,
       dockerfilePath: dockerfilePath ? path.posix.join(repoDir, dockerfilePath) : undefined,
       buildArgs: Object.keys(buildArgs).length > 0 ? buildArgs : undefined,
+      framework: resolvedFramework,
+      buildpackId: resolvedBuildpackId,
       onProgress,
     });
 
@@ -845,7 +904,7 @@ export async function deployToRemoteServer(
     } else {
       // No PORT specified - assign dynamically
       onProgress('🔍 Assigning port...');
-      const { port: assignedPort, isNew } = await getOrAssignPort(ssh, projectSlug);
+      const { port: assignedPort, isNew } = await getOrAssignPort(ssh, deploySlug);
       hostPort = assignedPort;
       portSource = isNew ? 'newly assigned' : 'existing';
       onProgress(`✅ Port assigned: ${hostPort} (${portSource})`);
@@ -856,12 +915,14 @@ export async function deployToRemoteServer(
 
     const blueGreenResult = await blueGreenDeploy(ssh, {
       imageName: `${imageName}:${imageTag}`,
-      containerName: `pushify-${projectSlug}`,
+      containerName: `pushify-${deploySlug}`,
       hostPort,
       containerPort,
       envVars,
       restart: 'unless-stopped',
       healthCheckTimeout: 60, // 60 seconds to become healthy
+      framework: resolvedFramework,
+      buildpackId: resolvedBuildpackId,
       onProgress,
     });
 

@@ -7,6 +7,7 @@ import { createRedisConnection } from '../connection';
 import { QUEUE_NAMES, getServerSetupQueue, type ServerStatusJobData } from '../queues';
 import { wsManager } from '../../lib/ws';
 import { infraBillingService } from '../../services/infra-billing.service';
+import { usageMeteringService } from '../../services/usage-metering.service';
 
 // Get provider API token from environment
 function getProviderToken(provider: ProviderType): string {
@@ -57,6 +58,14 @@ async function processServerStatusJob(job: Job<ServerStatusJobData>): Promise<st
   // Get latest status from provider
   const providerServer = await providerInstance.getServer(providerId);
 
+  const providerData =
+    serverRecord.provider === 'hetzner' && serverRecord.isManaged
+      ? await usageMeteringService.mergeHetznerTrafficProviderData(
+          serverRecord.organizationId,
+          providerServer.providerData,
+        )
+      : providerServer.providerData;
+
   // Update database with latest info
   await db
     .update(servers)
@@ -68,7 +77,7 @@ async function processServerStatusJob(job: Job<ServerStatusJobData>): Promise<st
       vcpus: providerServer.vcpus,
       memoryMb: providerServer.memoryMb,
       diskGb: providerServer.diskGb,
-      providerData: providerServer.providerData,
+      providerData,
       lastSeenAt: new Date(),
       updatedAt: new Date(),
     })

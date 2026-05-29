@@ -1,5 +1,6 @@
 import { promises as fs } from 'fs';
 import path from 'path';
+import { goModDownloadRun } from '../lib/platform-docker';
 import type { Buildpack, BuildpackDetectResult, BuildpackConfig } from './types';
 
 export const goBuildpack: Buildpack = {
@@ -37,7 +38,7 @@ RUN apk add --no-cache gcc musl-dev
 WORKDIR ${workdir}
 
 COPY ${copyPrefix}go.mod ${copyPrefix}go.sum* ./
-RUN go mod download
+${goModDownloadRun()}
 
 COPY ${rootDir === '.' ? '.' : rootDir} .
 

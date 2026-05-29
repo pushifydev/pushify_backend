@@ -169,7 +169,11 @@ serverRouter.patch('/:serverId', requireScope('servers:write'), async (c) => {
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
   const serverId = c.req.param('serverId');
-  const body = await c.req.json<{ name?: string; description?: string | null }>();
+  const body = await c.req.json<{
+    name?: string;
+    description?: string | null;
+    autoSnapshotEnabled?: boolean;
+  }>();
 
   const server = await serverService.updateServer(serverId, organizationId, userId, body, locale);
 
@@ -256,6 +260,28 @@ serverRouter.delete('/:serverId/snapshots/:snapshotId', requireScope('servers:wr
 
   return c.json({ message: t(locale, 'servers', 'snapshotDeleted') });
 });
+
+serverRouter.post(
+  '/:serverId/snapshots/:snapshotId/restore',
+  requireScope('servers:write'),
+  async (c) => {
+    const userId = c.get('userId')!;
+    const organizationId = c.get('organizationId')!;
+    const locale = c.get('locale');
+    const serverId = c.req.param('serverId');
+    const snapshotId = c.req.param('snapshotId');
+
+    const server = await serverService.restoreServerSnapshot(
+      serverId,
+      organizationId,
+      userId,
+      snapshotId,
+      locale,
+    );
+
+    return c.json({ data: server, message: t(locale, 'servers', 'snapshotRestoreStarted') }, 200);
+  },
+);
 
 // Timeline (lifecycle + deployments on this server)
 serverRouter.get('/:serverId/timeline', requireScope('servers:read'), async (c) => {

@@ -478,11 +478,16 @@ projectRouter.get('/:projectId/webhook', async (c) => {
   const project = await projectService.getById(projectId, organizationId, userId, locale);
 
   const baseUrl = process.env.API_BASE_URL || 'http://localhost:4000';
-  const webhookUrl = `${baseUrl}/api/v1/webhooks/github/${project.id}`;
+  const gitProvider =
+    project.gitProvider ||
+    (project.gitRepoUrl?.includes('gitlab') ? 'gitlab' : 'github');
+  const webhookPath = gitProvider === 'gitlab' ? 'gitlab' : 'github';
+  const webhookUrl = `${baseUrl}/api/v1/webhooks/${webhookPath}/${project.id}`;
 
   return c.json({
     data: {
       webhookUrl,
+      gitProvider,
       hasSecret: !!project.webhookSecret,
       autoDeploy: project.autoDeploy,
     },

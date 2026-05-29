@@ -59,6 +59,8 @@ interface NotificationPayload {
   branch?: string;
   status?: string;
   message?: string;
+  /** Last lines of build logs (deployment.failed) */
+  logTail?: string;
   url?: string;
 }
 
@@ -421,6 +423,15 @@ export const notificationService = {
                 : []),
               ...(payload.message
                 ? [{ title: 'Message', value: payload.message, short: false }]
+                : []),
+              ...(payload.logTail
+                ? [
+                    {
+                      title: 'Recent logs',
+                      value: `\`\`\`\n${payload.logTail}\n\`\`\``,
+                      short: false,
+                    },
+                  ]
                 : []),
             ],
             actions: payload.url

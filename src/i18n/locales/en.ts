@@ -186,10 +186,13 @@ export interface TranslationKeys {
     teamMembers: string;
     customDomains: string;
     buildMinutesPerMonth: string;
+    storageGb: string;
+    bandwidthGb: string;
     previewDeployments: string;
     healthChecks: string;
   };
   dashboard: {
+    infraLowBalanceTitle: string;
     actionFailedDeploymentsTitle: string;
     actionFailedDeploymentsDesc: string;
     actionFailedLatestDesc: string;
@@ -206,6 +209,9 @@ export interface TranslationKeys {
     usageResourceDeployments: string;
     usageResourceTeamMembers: string;
     usageResourceCustomDomains: string;
+    usageResourceBuildMinutes: string;
+    usageResourceStorage: string;
+    usageResourceBandwidth: string;
   };
   servers: {
     notFound: string;
@@ -227,9 +233,12 @@ export interface TranslationKeys {
     resizeInvalidState: string;
     resizeInvalidSize: string;
     snapshotsNotSupported: string;
+    autoSnapshotPlanRequired: string;
     snapshotRequiresRunning: string;
     snapshotCreated: string;
     snapshotDeleted: string;
+    snapshotRestoreStarted: string;
+    snapshotRestoreInvalidState: string;
   };
   databases: {
     notFound: string;
@@ -487,12 +496,17 @@ export const en: TranslationKeys = {
     customDomains: 'Custom domain limit reached. Upgrade your plan to add more domains.',
     buildMinutesPerMonth:
       'Monthly build time limit reached. Upgrade your plan or wait until next month.',
+    storageGb:
+      'Monthly storage limit reached. Remove old images or upgrade your plan.',
+    bandwidthGb:
+      'Monthly bandwidth limit reached. Upgrade your plan or wait until next month.',
     previewDeployments:
       'Preview deployments are not included on your plan. Upgrade to Hobby or higher.',
     healthChecks: 'Health checks are not included on your plan. Upgrade to Hobby or higher.',
   },
 
   dashboard: {
+    infraLowBalanceTitle: 'Low infrastructure credits',
     actionFailedDeploymentsTitle: '{count} failed deployment(s)',
     actionFailedDeploymentsDesc: 'Review logs and redeploy from the project or activity page.',
     actionFailedLatestDesc: 'Latest failure on {project} — check deployment logs.',
@@ -509,6 +523,9 @@ export const en: TranslationKeys = {
     usageResourceDeployments: 'Deployments this month',
     usageResourceTeamMembers: 'Team members',
     usageResourceCustomDomains: 'Custom domains',
+    usageResourceBuildMinutes: 'Build minutes this month',
+    usageResourceStorage: 'Storage this month',
+    usageResourceBandwidth: 'Bandwidth this month',
   },
 
   // Servers
@@ -532,9 +549,13 @@ export const en: TranslationKeys = {
     resizeInvalidState: 'Server cannot be resized in its current state',
     resizeInvalidSize: 'Invalid or unavailable size for upgrade',
     snapshotsNotSupported: 'Snapshots are only available for managed Hetzner servers',
+    autoSnapshotPlanRequired: 'Automatic snapshots require a plan with snapshot quota (Hobby or higher).',
     snapshotRequiresRunning: 'Server must be running to create a snapshot',
     snapshotCreated: 'Snapshot creation started',
     snapshotDeleted: 'Snapshot deleted successfully',
+    snapshotRestoreStarted:
+      'Server rebuild from snapshot started. The disk will be replaced; apps may need to be redeployed.',
+    snapshotRestoreInvalidState: 'Cannot restore a snapshot while the server is being created or deleted',
   },
 
   // Databases

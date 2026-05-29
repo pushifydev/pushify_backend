@@ -1,4 +1,5 @@
 import { metricsService } from '../services/metrics.service';
+import { usageMeteringService } from '../services/usage-metering.service';
 import { metricsRepository } from '../repositories/metrics.repository';
 import { execCommand } from './shell';
 import { db } from '../db';
@@ -19,6 +20,8 @@ const CLEANUP_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
 
 let isRunning = false;
 let lastCleanup = Date.now();
+let lastStorageSync = Date.now();
+const STORAGE_SYNC_INTERVAL = 6 * 60 * 60 * 1000;
 
 /**
  * Parse docker stats output (JSON format)
@@ -149,8 +152,8 @@ async function pollForMetrics(): Promise<void> {
           }
         }
 
-        // Bulk insert metrics
         if (metricsToInsert.length > 0) {
+          await usageMeteringService.recordBandwidthFromMetrics(metricsToInsert);
           await metricsService.recordBulkMetrics(metricsToInsert);
           logger.debug({ count: metricsToInsert.length }, 'Metrics recorded');
 
@@ -176,6 +179,15 @@ async function pollForMetrics(): Promise<void> {
         const deleted = await metricsRepository.cleanAllOldMetrics(7);
         logger.info({ deleted }, 'Old metrics cleaned up');
         lastCleanup = Date.now();
+      }
+
+      if (Date.now() - lastStorageSync > STORAGE_SYNC_INTERVAL) {
+        try {
+          await usageMeteringService.syncDockerDiskUsageFromServers();
+        } catch (error) {
+          logger.error({ err: error }, 'Docker disk usage sync failed');
+        }
+        lastStorageSync = Date.now();
       }
     } catch (error) {
       logger.error({ err: error }, 'Error polling for metrics');

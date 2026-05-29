@@ -1,13 +1,16 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import type { BuildpackDetectResult } from './types';
 import { buildpackRegistry } from './index';
+import { detectNodeFrameworkFromPackageJson } from './nodejs-detect';
 
 export interface DetectionResult {
   buildpackId: string;
   framework: string;
   confidence: number;
 }
+
+export { detectNodeFrameworkFromPackageJson } from './nodejs-detect';
+export { detectBuildpackRemote } from './remote-detect';
 
 /**
  * Auto-detect the project's language and framework.

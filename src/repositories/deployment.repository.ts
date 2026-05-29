@@ -153,7 +153,6 @@ export const deploymentRepository = {
   async updateStatus(id: string, status: DeploymentStatus, errorMessage?: string) {
     const updateData: UpdateDeploymentInput = { status };
 
-    // Set timestamps based on status
     const now = new Date();
     switch (status) {
       case 'building':
@@ -168,10 +167,25 @@ export const deploymentRepository = {
         break;
       case 'failed':
         updateData.errorMessage = errorMessage;
+        await this.closeBuildWindowIfOpen(id, updateData, now);
+        break;
+      case 'cancelled':
+        await this.closeBuildWindowIfOpen(id, updateData, now);
         break;
     }
 
     return this.update(id, updateData);
+  },
+
+  async closeBuildWindowIfOpen(
+    id: string,
+    updateData: UpdateDeploymentInput,
+    now: Date,
+  ): Promise<void> {
+    const row = await this.findById(id);
+    if (row?.buildStartedAt && !row?.buildFinishedAt) {
+      updateData.buildFinishedAt = now;
+    }
   },
 
   /**
