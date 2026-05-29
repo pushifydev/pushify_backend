@@ -32,4 +32,10 @@ export function getBuildpack(id: string): Buildpack | undefined {
 }
 
 export type { Buildpack, BuildpackDetectResult, BuildpackConfig } from './types';
-export { detectBuildpack } from './detector';
+export {
+  detectBuildpack,
+  detectBuildpackRemote,
+  detectNodeFrameworkFromPackageJson,
+} from './detector';
+export { detectNextStandaloneRemote, detectNextStandaloneFromConfig } from './remote-detect';
+export type { DetectionResult } from './detector';

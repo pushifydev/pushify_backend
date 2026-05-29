@@ -1,5 +1,6 @@
 import { promises as fs } from 'fs';
 import path from 'path';
+import { pipInstallRun } from '../lib/platform-docker';
 import type { Buildpack, BuildpackDetectResult, BuildpackConfig } from './types';
 
 export const pythonBuildpack: Buildpack = {
@@ -104,7 +105,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
 WORKDIR ${workdir}
 
 COPY ${copyPrefix}requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+${pipInstallRun('pip install --no-cache-dir -r requirements.txt')}
 
 COPY ${rootDir === '.' ? '.' : rootDir} .
 
@@ -123,7 +124,7 @@ CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:${port}", "--work
 WORKDIR ${workdir}
 
 COPY ${copyPrefix}requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+${pipInstallRun('pip install --no-cache-dir -r requirements.txt')}
 
 COPY ${rootDir === '.' ? '.' : rootDir} .
 
@@ -140,7 +141,7 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "${port}", "--workers
 WORKDIR ${workdir}
 
 COPY ${copyPrefix}requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+${pipInstallRun('pip install --no-cache-dir -r requirements.txt')}
 
 COPY ${rootDir === '.' ? '.' : rootDir} .
 

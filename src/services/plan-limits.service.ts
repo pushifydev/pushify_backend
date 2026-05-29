@@ -8,8 +8,10 @@ import { servers } from '../db/schema/servers';
 import { databases } from '../db/schema/databases';
 import { organizationRepository } from '../repositories/organization.repository';
 import { projectRepository } from '../repositories/project.repository';
-import { getPlanInfo, isUnlimited, type PlanType, type PlanLimits } from '../lib/plans';
+import { getEffectivePlanLimits } from '../lib/effective-plan-limits';
+import { isUnlimited, type PlanType, type PlanLimits } from '../lib/plans';
 import { t, type SupportedLocale } from '../i18n';
+import { usageMeteringService } from './usage-metering.service';
 
 export type CountablePlanLimit = keyof Pick<
   PlanLimits,
@@ -25,6 +27,18 @@ export const planLimitsService = {
   async getPlan(organizationId: string): Promise<PlanType> {
     const org = await organizationRepository.findById(organizationId);
     return (org?.plan || 'free') as PlanType;
+  },
+
+  async getEffectiveLimits(organizationId: string): Promise<PlanLimits> {
+    const org = await organizationRepository.findById(organizationId);
+    if (!org) {
+      return getEffectivePlanLimits({ plan: 'free' });
+    }
+    return getEffectivePlanLimits({
+      plan: (org.plan || 'free') as PlanType,
+      grandfatheredUntil: org.grandfatheredUntil,
+      planLimitsOverride: org.planLimitsOverride as Partial<Record<string, number | boolean>> | null,
+    });
   },
 
   async countProjects(organizationId: string): Promise<number> {
@@ -119,8 +133,8 @@ export const planLimitsService = {
     locale: SupportedLocale,
     getCurrentCount: () => Promise<number>,
   ): Promise<void> {
-    const plan = await this.getPlan(organizationId);
-    const limit = getPlanInfo(plan).limits[limitKey];
+    const limits = await this.getEffectiveLimits(organizationId);
+    const limit = limits[limitKey];
     if (isUnlimited(limit)) return;
 
     const current = await getCurrentCount();
@@ -156,14 +170,40 @@ export const planLimitsService = {
   },
 
   async assertBuildMinutesQuota(organizationId: string, locale: SupportedLocale): Promise<void> {
-    const plan = await this.getPlan(organizationId);
-    const limit = getPlanInfo(plan).limits.buildMinutesPerMonth;
+    const limits = await this.getEffectiveLimits(organizationId);
+    const limit = limits.buildMinutesPerMonth;
     if (isUnlimited(limit)) return;
 
     const used = await this.countBuildMinutesThisMonth(organizationId);
     if (used >= limit) {
       throw new HTTPException(403, {
         message: t(locale, 'planLimits', 'buildMinutesPerMonth'),
+      });
+    }
+  },
+
+  async assertStorageQuota(organizationId: string, locale: SupportedLocale): Promise<void> {
+    const limits = await this.getEffectiveLimits(organizationId);
+    const limit = limits.storageGb;
+    if (isUnlimited(limit)) return;
+
+    const { storageGb } = await usageMeteringService.getMonthlyUsageGb(organizationId);
+    if (storageGb >= limit) {
+      throw new HTTPException(403, {
+        message: t(locale, 'planLimits', 'storageGb'),
+      });
+    }
+  },
+
+  async assertBandwidthQuota(organizationId: string, locale: SupportedLocale): Promise<void> {
+    const limits = await this.getEffectiveLimits(organizationId);
+    const limit = limits.bandwidthGb;
+    if (isUnlimited(limit)) return;
+
+    const { bandwidthGb } = await usageMeteringService.getMonthlyUsageGb(organizationId);
+    if (bandwidthGb >= limit) {
+      throw new HTTPException(403, {
+        message: t(locale, 'planLimits', 'bandwidthGb'),
       });
     }
   },
@@ -184,8 +224,8 @@ export const planLimitsService = {
     organizationId: string,
     locale: SupportedLocale,
   ): Promise<void> {
-    const plan = await this.getPlan(organizationId);
-    if (!getPlanInfo(plan).limits.previewDeployments) {
+    const limits = await this.getEffectiveLimits(organizationId);
+    if (!limits.previewDeployments) {
       throw new HTTPException(403, {
         message: t(locale, 'planLimits', 'previewDeployments'),
       });
@@ -193,8 +233,8 @@ export const planLimitsService = {
   },
 
   async assertHealthChecksAllowed(organizationId: string, locale: SupportedLocale): Promise<void> {
-    const plan = await this.getPlan(organizationId);
-    if (!getPlanInfo(plan).limits.healthChecks) {
+    const limits = await this.getEffectiveLimits(organizationId);
+    if (!limits.healthChecks) {
       throw new HTTPException(403, {
         message: t(locale, 'planLimits', 'healthChecks'),
       });

@@ -92,6 +92,7 @@ export async function buildImage(options: BuildOptions): Promise<void> {
 
   const streamOptions: StreamingCommandOptions = {
     cwd: workDir,
+    env: { DOCKER_BUILDKIT: '1' },
     onStdout: (data) => onProgress?.(data.trim()),
     onStderr: (data) => onProgress?.(data.trim()),
     timeout: buildTimeoutMs,
@@ -235,47 +236,72 @@ export async function getContainerLogs(
 export async function streamContainerLogs(
   containerName: string,
   onLog: (log: string) => void,
-  options: { tail?: number; signal?: AbortSignal } = {}
+  options: { tail?: number; since?: string; signal?: AbortSignal } = {}
 ): Promise<void> {
-  const { tail = 100, signal } = options;
+  const { tail = 100, since, signal } = options;
   const { spawn } = await import('child_process');
 
   return new Promise((resolve, reject) => {
-    const args = ['logs', '-f', '--tail', String(tail), containerName];
+    const args = ['logs', '-f'];
+    if (since) {
+      args.push('--since', since);
+    } else {
+      args.push('--tail', String(tail));
+    }
+    args.push(containerName);
+
     const proc = spawn('docker', args);
 
-    const handleData = (data: Buffer) => {
-      const lines = data.toString().split('\n');
-      for (const line of lines) {
-        if (line.trim()) {
-          onLog(line);
-        }
+    let buffer = '';
+    const flushChunk = (chunk: string) => {
+      buffer += chunk;
+      const parts = buffer.split('\n');
+      buffer = parts.pop() ?? '';
+      for (const line of parts) {
+        onLog(line);
       }
     };
 
-    proc.stdout.on('data', handleData);
-    proc.stderr.on('data', handleData);
+    proc.stdout.on('data', (data: Buffer) => flushChunk(data.toString()));
+    proc.stderr.on('data', (data: Buffer) => flushChunk(data.toString()));
 
     proc.on('error', (err) => {
       reject(err);
     });
 
     proc.on('close', (code) => {
-      if (code === 0 || signal?.aborted) {
+      if (buffer) {
+        onLog(buffer);
+      }
+      // 0 = normal end; 143 = SIGTERM when client disconnects
+      if (code === 0 || code === 143 || signal?.aborted) {
         resolve();
       } else {
         reject(new Error(`Docker logs exited with code ${code}`));
       }
     });
 
-    // Handle abort signal
     if (signal) {
-      signal.addEventListener('abort', () => {
-        proc.kill('SIGTERM');
-        resolve();
-      });
+      signal.addEventListener(
+        'abort',
+        () => {
+          proc.kill('SIGTERM');
+        },
+        { once: true }
+      );
     }
   });
+}
+
+/** Total size in bytes of a local Docker image (0 if missing). */
+export async function getDockerImageSizeBytes(imageRef: string): Promise<number> {
+  const result = await execCommand(
+    `docker image inspect ${imageRef} --format '{{.Size}}'`,
+    { timeout: 15000 },
+  );
+  if (result.exitCode !== 0) return 0;
+  const parsed = parseInt(result.stdout.trim(), 10);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 /**

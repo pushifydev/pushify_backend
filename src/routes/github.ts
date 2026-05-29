@@ -4,7 +4,11 @@ import { authMiddleware } from '../middleware/auth';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 import { HTTPException } from 'hono/http-exception';
-import crypto from 'crypto';
+import {
+  createOAuthState,
+  consumeOAuthState,
+  validateOAuthStateRecord,
+} from '../lib/oauth-state-store';
 
 // ============ Schemas ============
 
@@ -249,9 +253,6 @@ const githubRouter = new OpenAPIHono<AppEnv>();
 // All routes require authentication
 githubRouter.use('*', authMiddleware);
 
-// In-memory state store (in production, use Redis or database)
-const oauthStates = new Map<string, { userId: string; expiresAt: number }>();
-
 // Get status
 githubRouter.openapi(statusRoute, async (c) => {
   const userId = c.get('userId')!;
@@ -270,14 +271,7 @@ githubRouter.openapi(authUrlRoute, async (c) => {
   const userId = c.get('userId')!;
   const locale = c.get('locale');
 
-  // Generate random state
-  const state = crypto.randomBytes(32).toString('hex');
-
-  // Store state with expiration (10 minutes)
-  oauthStates.set(state, {
-    userId,
-    expiresAt: Date.now() + 10 * 60 * 1000,
-  });
+  const state = await createOAuthState({ kind: 'github_integration', userId });
 
   try {
     const url = githubService.getAuthorizationUrl(state);
@@ -293,13 +287,10 @@ githubRouter.openapi(callbackRoute, async (c) => {
   const userId = c.get('userId')!;
   const locale = c.get('locale');
 
-  // Verify state
-  const storedState = oauthStates.get(state);
-  if (!storedState || storedState.userId !== userId || storedState.expiresAt < Date.now()) {
-    oauthStates.delete(state);
+  const stored = await consumeOAuthState(state);
+  if (!validateOAuthStateRecord(stored, { kind: 'github_integration', userId })) {
     throw new HTTPException(400, { message: t(locale, 'integrations', 'invalidState') });
   }
-  oauthStates.delete(state);
 
   try {
     // Exchange code for token

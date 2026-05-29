@@ -93,6 +93,39 @@ serverRouter.post('/', requireScope('servers:write'), async (c) => {
   return c.json({ data: server }, 201);
 });
 
+// Deployment host health: disk usage + orphan Pushify containers
+serverRouter.get('/:serverId/health', requireScope('servers:read'), async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const serverId = c.req.param('serverId');
+
+  const server = await serverService.getServer(serverId, organizationId, userId, locale);
+
+  if (server.setupStatus !== 'completed') {
+    return c.json(
+      { error: { code: 'SERVER_NOT_READY', message: t(locale, 'servers', 'notReadyForDeploy') } },
+      400
+    );
+  }
+
+  const serverRow = await db.query.servers.findFirst({
+    where: eq(servers.id, serverId),
+  });
+
+  if (!serverRow?.sshPrivateKey || !serverRow.ipv4) {
+    return c.json(
+      { error: { code: 'SSH_UNAVAILABLE', message: t(locale, 'servers', 'notReadyForDeploy') } },
+      400
+    );
+  }
+
+  const { scanServerHealth } = await import('../lib/server-health-scan');
+  const report = await scanServerHealth(serverRow, organizationId);
+
+  return c.json({ data: report });
+});
+
 // Get a single server
 serverRouter.get('/:serverId', requireScope('servers:read'), async (c) => {
   const userId = c.get('userId')!;
@@ -169,7 +202,11 @@ serverRouter.patch('/:serverId', requireScope('servers:write'), async (c) => {
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
   const serverId = c.req.param('serverId');
-  const body = await c.req.json<{ name?: string; description?: string | null }>();
+  const body = await c.req.json<{
+    name?: string;
+    description?: string | null;
+    autoSnapshotEnabled?: boolean;
+  }>();
 
   const server = await serverService.updateServer(serverId, organizationId, userId, body, locale);
 
@@ -256,6 +293,28 @@ serverRouter.delete('/:serverId/snapshots/:snapshotId', requireScope('servers:wr
 
   return c.json({ message: t(locale, 'servers', 'snapshotDeleted') });
 });
+
+serverRouter.post(
+  '/:serverId/snapshots/:snapshotId/restore',
+  requireScope('servers:write'),
+  async (c) => {
+    const userId = c.get('userId')!;
+    const organizationId = c.get('organizationId')!;
+    const locale = c.get('locale');
+    const serverId = c.req.param('serverId');
+    const snapshotId = c.req.param('snapshotId');
+
+    const server = await serverService.restoreServerSnapshot(
+      serverId,
+      organizationId,
+      userId,
+      snapshotId,
+      locale,
+    );
+
+    return c.json({ data: server, message: t(locale, 'servers', 'snapshotRestoreStarted') }, 200);
+  },
+);
 
 // Timeline (lifecycle + deployments on this server)
 serverRouter.get('/:serverId/timeline', requireScope('servers:read'), async (c) => {

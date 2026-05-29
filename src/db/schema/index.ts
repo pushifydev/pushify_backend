@@ -45,3 +45,6 @@ export * from './marketplace';
 
 // Infrastructure billing (wallet)
 export * from './infra-billing';
+
+// Plan usage metering
+export * from './usage';

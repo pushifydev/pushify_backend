@@ -55,6 +55,10 @@ export interface InfraWalletSummary {
   estimatedMonthlyBurnCents: number;
   runningManagedServers: number;
   topUpAmountsCents: readonly number[];
+  /** True when balance is below warn threshold or below ~1 month of running-server burn */
+  isLowBalance: boolean;
+  /** Estimated days until wallet empty at current burn (null if no burn) */
+  runwayDays: number | null;
 }
 
 export interface ServerInfraBillingContext {
@@ -128,12 +132,16 @@ export const infraBillingService = {
 
   async getWalletSummary(organizationId: string): Promise<InfraWalletSummary> {
     const [org] = await db
-      .select({ balance: organizations.infraWalletBalanceCents })
+      .select({
+        balance: organizations.infraWalletBalanceCents,
+        plan: organizations.plan,
+      })
       .from(organizations)
       .where(eq(organizations.id, organizationId))
       .limit(1);
 
     const balanceCents = org?.balance ?? 0;
+    const plan = (org?.plan || 'free') as PlanType;
 
     const running = await db
       .select({
@@ -153,6 +161,16 @@ export const infraBillingService = {
       return sum + hourly * 730;
     }, 0);
 
+    const isLowBalance =
+      plan !== 'enterprise' &&
+      (balanceCents < INFRA_LOW_BALANCE_WARN_CENTS ||
+        (estimatedMonthlyBurnCents > 0 && balanceCents < estimatedMonthlyBurnCents));
+
+    const runwayDays =
+      estimatedMonthlyBurnCents > 0
+        ? Math.floor((balanceCents / estimatedMonthlyBurnCents) * 30)
+        : null;
+
     return {
       balanceCents,
       balanceUsd: (balanceCents / 100).toFixed(2),
@@ -160,6 +178,8 @@ export const infraBillingService = {
       estimatedMonthlyBurnCents,
       runningManagedServers: running.length,
       topUpAmountsCents: INFRA_TOPUP_AMOUNTS_CENTS,
+      isLowBalance,
+      runwayDays,
     };
   },
 

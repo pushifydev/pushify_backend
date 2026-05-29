@@ -68,6 +68,8 @@ export interface Snapshot {
   description?: string;
   sizeGb: number;
   status: string;
+  /** Hetzner action progress 0–100 while status is creating */
+  progress?: number | null;
   createdAt: Date;
 }
 

@@ -169,6 +169,20 @@
       "when": 1779981517251,
       "tag": "0024_demonic_albert_cleary",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1780000000000,
+      "tag": "0025_usage_metering",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1780100000000,
+      "tag": "0026_server_auto_snapshot",
+      "breakpoints": true
     }
   ]
 }

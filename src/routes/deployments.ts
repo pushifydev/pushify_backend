@@ -7,7 +7,8 @@ import { createDeploymentRateLimiter } from '../middleware/rate-limit';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 import { streamContainerLogs } from '../workers/docker';
-import { getContainerLogs as getRemoteContainerLogs } from '../workers/remote-docker';
+import { streamContainerLogs as streamRemoteContainerLogs } from '../workers/remote-docker';
+import { createContainerLogSseResponse } from '../lib/container-log-sse';
 import { getHistoricalLogs } from '../workers/log-collector';
 import { SSHClient } from '../utils/ssh';
 import { db } from '../db';
@@ -16,6 +17,7 @@ import { projects } from '../db/schema/projects';
 import { eq } from 'drizzle-orm';
 import { decrypt } from '../lib/encryption';
 import { resolvePushifyContainerName } from '../lib/container-resolve';
+import { enrichDeploymentWithQueue } from '../lib/deploy-queue';
 
 // Rate limiter for deployment operations
 const deploymentRateLimiter = createDeploymentRateLimiter();
@@ -326,7 +328,9 @@ deploymentRouter.openapi(listDeploymentsRoute, async (c) => {
     offset ?? 0
   );
 
-  return c.json({ data: deployments });
+  return c.json({
+    data: deployments.map((d) => enrichDeploymentWithQueue(d)),
+  });
 });
 
 // Create deployment
@@ -381,7 +385,7 @@ deploymentRouter.openapi(getDeploymentRoute, async (c) => {
     locale
   );
 
-  return c.json({ data: deployment });
+  return c.json({ data: enrichDeploymentWithQueue(deployment) });
 });
 
 // Cancel deployment
@@ -526,10 +530,8 @@ deploymentRouter.get('/:deploymentId/container-logs/stream', async (c) => {
     locale
   );
 
-  // Only allow streaming for running deployments
-  if (deployment.status !== 'running') {
-    return c.json({ error: 'Container is not running' }, 400);
-  }
+  const tail = Math.min(Math.max(parseInt(c.req.query('tail') || '100', 10) || 100, 1), 1000);
+  const since = c.req.query('since') || undefined;
 
   // Get project with server info
   const project = await db.query.projects.findFirst({
@@ -551,7 +553,6 @@ deploymentRouter.get('/:deploymentId/container-logs/stream', async (c) => {
       return c.json({ error: 'Server not configured properly' }, 400);
     }
 
-    // Connect via SSH and get logs
     let ssh: SSHClient | null = null;
     try {
       ssh = new SSHClient();
@@ -568,52 +569,30 @@ deploymentRouter.get('/:deploymentId/container-logs/stream', async (c) => {
         return c.json({ error: 'Container is not running on remote server' }, 400);
       }
 
-      // Get logs from remote server
-      const logs = await getRemoteContainerLogs(ssh, containerName, { tail: 100 });
-      ssh.disconnect();
-
-      // Return logs as SSE response
-      return new Response(
-        new ReadableStream({
-          start(controller) {
-            const encoder = new TextEncoder();
-
-            // Send initial message
-            controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ type: 'connected', containerName, remote: true })}\n\n`)
-            );
-
-            // Send logs line by line
-            const logLines = logs.split('\n');
-            for (const line of logLines) {
-              if (line.trim()) {
-                controller.enqueue(
-                  encoder.encode(`data: ${JSON.stringify({ type: 'log', message: line })}\n\n`)
-                );
-              }
-            }
-
-            // Send end message
-            controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ type: 'end', message: 'Log stream ended' })}\n\n`)
-            );
-
-            controller.close();
-          },
-        }),
-        {
-          headers: {
-            'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache',
-            Connection: 'keep-alive',
-          },
-        }
-      );
+      const sshClient = ssh;
+      return createContainerLogSseResponse({
+        containerName,
+        remote: true,
+        clientSignal: c.req.raw.signal,
+        stream: (onLog, signal) =>
+          streamRemoteContainerLogs(sshClient, containerName, onLog, {
+            tail,
+            since,
+            signal,
+          }).finally(() => {
+            sshClient.disconnect();
+          }),
+      });
     } catch (error) {
       if (ssh) {
         ssh.disconnect();
       }
-      return c.json({ error: `Failed to get remote logs: ${error instanceof Error ? error.message : 'Unknown error'}` }, 500);
+      return c.json(
+        {
+          error: `Failed to stream remote logs: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        },
+        500
+      );
     }
   }
 
@@ -623,50 +602,12 @@ deploymentRouter.get('/:deploymentId/container-logs/stream', async (c) => {
     return c.json({ error: 'Container is not running' }, 400);
   }
 
-  // Set up SSE for container logs
-  return new Response(
-    new ReadableStream({
-      async start(controller) {
-        const encoder = new TextEncoder();
-        const abortController = new AbortController();
-
-        // Send initial message
-        controller.enqueue(
-          encoder.encode(`data: ${JSON.stringify({ type: 'connected', containerName })}\n\n`)
-        );
-
-        try {
-          await streamContainerLogs(
-            containerName,
-            (log) => {
-              try {
-                controller.enqueue(
-                  encoder.encode(`data: ${JSON.stringify({ type: 'log', message: log })}\n\n`)
-                );
-              } catch {
-                // Controller closed
-                abortController.abort();
-              }
-            },
-            { tail: 100, signal: abortController.signal }
-          );
-        } catch (error) {
-          controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ type: 'error', message: String(error) })}\n\n`)
-          );
-        }
-
-        controller.close();
-      },
-    }),
-    {
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive',
-      },
-    }
-  );
+  return createContainerLogSseResponse({
+    containerName,
+    clientSignal: c.req.raw.signal,
+    stream: (onLog, signal) =>
+      streamContainerLogs(containerName, onLog, { tail, since, signal }),
+  });
 });
 
 // Stream deployment build logs (SSE)

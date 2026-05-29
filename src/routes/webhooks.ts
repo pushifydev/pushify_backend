@@ -6,6 +6,7 @@ import { previewService } from '../services/preview.service';
 import { canOrganizationDeploy } from '../services/organization-billing.service';
 import { webhookRateLimiter } from '../middleware/rate-limit';
 import { verifyGitHubSignature } from '../lib/github-webhook';
+import { verifyGitLabWebhookToken } from '../lib/gitlab-webhook';
 import { claimGitHubWebhookDelivery } from '../lib/webhook-dedupe';
 import { logger } from '../lib/logger';
 import type { AppEnv } from '../types';
@@ -268,6 +269,152 @@ webhookRouter.openapi(webhookRoute, async (c) => {
     { projectId: project.id, deploymentId: deployment.id, projectName: project.name },
     'Deployment created from GitHub push webhook'
   );
+
+  return c.json({
+    message: 'Deployment triggered',
+    deploymentId: deployment.id,
+  });
+});
+
+interface GitLabPushPayload {
+  object_kind: 'push';
+  ref: string;
+  checkout_sha: string | null;
+  project: { id: number; path_with_namespace: string };
+  commits?: { id: string; message: string }[];
+}
+
+interface GitLabMergeRequestPayload {
+  object_kind: 'merge_request';
+  object_attributes: {
+    action: string;
+    iid: number;
+    title: string;
+    source_branch: string;
+    target_branch: string;
+    state: string;
+    last_commit: { id: string };
+  };
+}
+
+const gitlabWebhookRoute = createRoute({
+  method: 'post',
+  path: '/gitlab/{projectId}',
+  tags: ['Webhooks'],
+  summary: 'GitLab webhook endpoint',
+  request: {
+    params: z.object({ projectId: z.string().uuid() }),
+  },
+  responses: {
+    200: {
+      description: 'Webhook processed',
+      content: { 'application/json': { schema: WebhookResponseSchema } },
+    },
+  },
+});
+
+webhookRouter.openapi(gitlabWebhookRoute, async (c) => {
+  const { projectId } = c.req.valid('param');
+  const rawBody = await c.req.text();
+  const token = c.req.header('X-Gitlab-Token');
+  const event = c.req.header('X-Gitlab-Event') ?? '';
+  const deliveryId = c.req.header('X-Gitlab-Event-UUID') ?? c.req.header('X-Gitlab-Delivery-UUID');
+
+  const project = await projectRepository.findById(projectId);
+  if (!project || project.status === 'deleted') {
+    throw new HTTPException(404, { message: 'Project not found' });
+  }
+
+  if (!project.webhookSecret) {
+    throw new HTTPException(401, {
+      message:
+        'Webhook secret is not configured. Regenerate the secret in Pushify and set it as the GitLab webhook Secret Token.',
+    });
+  }
+
+  if (!verifyGitLabWebhookToken(token, project.webhookSecret)) {
+    throw new HTTPException(400, { message: 'Invalid GitLab webhook token' });
+  }
+
+  const processDelivery = await claimGitHubWebhookDelivery(deliveryId || `gitlab-${Date.now()}`);
+  if (!processDelivery) {
+    return c.json({ message: 'Duplicate webhook delivery ignored' });
+  }
+
+  let rawPayload: unknown;
+  try {
+    rawPayload = JSON.parse(rawBody);
+  } catch {
+    throw new HTTPException(400, { message: 'Invalid JSON payload' });
+  }
+
+  const payload = rawPayload as { object_kind?: string };
+
+  if (!(await canOrganizationDeploy(project.organizationId))) {
+    return c.json({ message: 'Deployments blocked: organization billing is past due or suspended' });
+  }
+
+  if (payload.object_kind === 'merge_request') {
+    const mr = rawPayload as GitLabMergeRequestPayload;
+    const previewEnabled = await previewService.isPreviewEnabled(project.id);
+    if (!previewEnabled) {
+      return c.json({ message: 'Preview deployments are disabled for this project' });
+    }
+
+    const action = mr.object_attributes.action;
+    const prNumber = mr.object_attributes.iid;
+    logger.info({ projectId, prNumber, action }, 'Processing GitLab merge_request event');
+
+    if (action === 'open' || action === 'update' || action === 'reopen') {
+      const preview = await previewService.createOrUpdatePreview(project.id, {
+        prNumber,
+        prTitle: mr.object_attributes.title,
+        prBranch: mr.object_attributes.source_branch,
+        baseBranch: mr.object_attributes.target_branch,
+        commitHash: mr.object_attributes.last_commit.id,
+      });
+      return c.json({
+        message: `Preview deployment updated for MR !${prNumber}`,
+        previewId: preview.id,
+      });
+    }
+
+    if (action === 'close' || action === 'merge') {
+      await previewService.cleanupPreview(project.id, prNumber);
+      return c.json({ message: `Preview cleaned up for MR !${prNumber}` });
+    }
+
+    return c.json({ message: `Merge request action '${action}' ignored` });
+  }
+
+  if (payload.object_kind !== 'push') {
+    return c.json({ message: `Event '${event}' ignored` });
+  }
+
+  if (!project.autoDeploy) {
+    return c.json({ message: 'Auto-deploy is disabled for this project' });
+  }
+
+  const push = rawPayload as GitLabPushPayload;
+  const branch = push.ref.replace('refs/heads/', '');
+  if (project.gitBranch && branch !== project.gitBranch) {
+    return c.json({ message: `Push to '${branch}' ignored, project tracks '${project.gitBranch}'` });
+  }
+
+  const commitHash = push.checkout_sha || push.commits?.[0]?.id;
+  if (!commitHash) {
+    return c.json({ message: 'No commit in push, skipping deployment' });
+  }
+
+  const deployment = await deploymentRepository.create({
+    projectId: project.id,
+    trigger: 'git_push',
+    commitHash,
+    commitMessage: push.commits?.[0]?.message?.substring(0, 500),
+    branch,
+  });
+
+  logger.info({ projectId, deploymentId: deployment.id }, 'Deployment from GitLab push');
 
   return c.json({
     message: 'Deployment triggered',

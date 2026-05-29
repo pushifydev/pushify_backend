@@ -6,6 +6,7 @@ import { envVarRoutes } from './envvars';
 import { domainRoutes } from './domains';
 import { deploymentRoutes } from './deployments';
 import { githubRoutes } from './github';
+import { gitlabRoutes } from './gitlab';
 import { webhookRoutes } from './webhooks';
 import { notificationRoutes } from './notifications';
 import { healthCheckRoutes } from './healthchecks';
@@ -49,6 +50,7 @@ export function registerRoutes(app: OpenAPIHono<any>) {
   app.route('/api/v1/servers', serverRoutes);
   app.route('/api/v1/databases', databaseRoutes);
   app.route('/api/v1/integrations/github', githubRoutes);
+  app.route('/api/v1/integrations/gitlab', gitlabRoutes);
 
   app.route('/api/v1/ai', aiRoutes);
   app.route('/api/v1/auth/cli', cliAuthRoutes);

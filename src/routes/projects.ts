@@ -307,6 +307,7 @@ projectRouter.delete('/:projectId', requireScope('projects:write'));
 projectRouter.patch('/:projectId/status', requireScope('projects:write'));
 projectRouter.get('/:projectId/webhook', requireScope('projects:read'));
 projectRouter.post('/:projectId/webhook/regenerate', requireScope('projects:write'));
+projectRouter.post('/:projectId/webhook/github/install', requireScope('projects:write'));
 projectRouter.patch('/:projectId/settings', requireScope('projects:write'));
 
 // List projects
@@ -425,7 +426,12 @@ projectRouter.openapi(deleteProjectRoute, async (c) => {
   // Get project name before deleting
   const project = await projectService.getById(projectId, organizationId, userId, locale);
 
-  await projectService.delete(projectId, organizationId, userId, locale);
+  const { containersCleanedUp } = await projectService.delete(
+    projectId,
+    organizationId,
+    userId,
+    locale
+  );
 
   // Log activity
   await activityService.logProjectDeleted(
@@ -437,7 +443,10 @@ projectRouter.openapi(deleteProjectRoute, async (c) => {
     c.req.header('user-agent')
   );
 
-  return c.json({ message: t(locale, 'projects', 'deleted') });
+  return c.json({
+    message: t(locale, 'projects', 'deleted'),
+    containersCleanedUp,
+  });
 });
 
 // Update status
@@ -448,7 +457,13 @@ projectRouter.openapi(updateStatusRoute, async (c) => {
   const { projectId } = c.req.valid('param');
   const { status } = c.req.valid('json');
 
-  const project = await projectService.updateStatus(projectId, organizationId, userId, status, locale);
+  const { project, containersSynced } = await projectService.updateStatus(
+    projectId,
+    organizationId,
+    userId,
+    status,
+    locale
+  );
 
   // Log activity
   const action = status === 'paused' ? 'project.paused' : 'project.resumed';
@@ -458,12 +473,12 @@ projectRouter.openapi(updateStatusRoute, async (c) => {
     projectId,
     action: action as any,
     description: status === 'paused' ? `Paused project "${project.name}"` : `Resumed project "${project.name}"`,
-    metadata: { status },
+    metadata: { status, containersSynced },
     ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
     userAgent: c.req.header('user-agent'),
   });
 
-  return c.json({ data: omitWebhookSecret(project) });
+  return c.json({ data: omitWebhookSecret(project), containersSynced });
 });
 
 // ============ Webhook Management ============
@@ -478,14 +493,41 @@ projectRouter.get('/:projectId/webhook', async (c) => {
   const project = await projectService.getById(projectId, organizationId, userId, locale);
 
   const baseUrl = process.env.API_BASE_URL || 'http://localhost:4000';
-  const webhookUrl = `${baseUrl}/api/v1/webhooks/github/${project.id}`;
+  const gitProvider =
+    project.gitProvider ||
+    (project.gitRepoUrl?.includes('gitlab') ? 'gitlab' : 'github');
+  const webhookPath = gitProvider === 'gitlab' ? 'gitlab' : 'github';
+  const webhookUrl = `${baseUrl}/api/v1/webhooks/${webhookPath}/${project.id}`;
 
   return c.json({
     data: {
       webhookUrl,
+      gitProvider,
       hasSecret: !!project.webhookSecret,
       autoDeploy: project.autoDeploy,
     },
+  });
+});
+
+// Install GitHub repo webhook via API (org owner's GitHub token)
+projectRouter.post('/:projectId/webhook/github/install', async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const projectId = c.req.param('projectId') as string;
+
+  const result = await projectService.installGitHubWebhook(
+    projectId,
+    organizationId,
+    userId,
+    locale
+  );
+
+  return c.json({
+    data: result,
+    message: result.created
+      ? t(locale, 'projects', 'githubWebhookInstalled')
+      : t(locale, 'projects', 'githubWebhookUpdated'),
   });
 });
 

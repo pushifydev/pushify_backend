@@ -8,7 +8,6 @@ import { projectRepository } from '../repositories/project.repository';
 import { organizationRepository } from '../repositories/organization.repository';
 import { generateSlug } from '../lib/utils';
 import { logger } from '../lib/logger';
-import { decrypt } from '../lib/encryption';
 import { t, type SupportedLocale } from '../i18n';
 import { assertOrganizationCanMutateResources } from './organization-billing.service';
 import { planLimitsService } from './plan-limits.service';
@@ -255,9 +254,11 @@ export const projectService = {
     }
 
     // Best-effort cleanup of running containers / compose stacks
+    let containersCleanedUp = true;
     try {
       await this.cleanupProjectContainers(existing);
     } catch (err) {
+      containersCleanedUp = false;
       logger.warn({ projectId, err }, 'Failed to cleanup containers — continuing with delete');
     }
 
@@ -272,7 +273,9 @@ export const projectService = {
 
     await projectRepository.softDelete(projectId);
 
-    logger.info({ projectId, userId }, 'Project deleted');
+    logger.info({ projectId, userId, containersCleanedUp }, 'Project deleted');
+
+    return { containersCleanedUp };
   },
 
   /**
@@ -281,52 +284,30 @@ export const projectService = {
    * on local Docker or remote SSH server.
    */
   async cleanupProjectContainers(project: typeof projects.$inferSelect): Promise<void> {
-    const settings = (project.settings || {}) as Record<string, any>;
+    const {
+      resolveDeployServerForCleanup,
+      teardownProjectOnRemoteServer,
+      buildRemoteTeardownScript,
+    } = await import('../lib/project-remote-cleanup');
+
+    const settings = (project.settings || {}) as Record<string, unknown>;
     const isCompose = settings.deploymentType === 'docker-compose';
-    const stackName = `pushify-${project.slug}`;
-    const containerName = `pushify-${project.slug}`;
-    const dbContainerName = `pushify-${project.slug}-db`;
-    const projectDir = `/opt/pushify/apps/${project.slug}`;
 
-    // Cleanup commands — combine container teardown + filesystem + nginx
-    const composeCleanup = [
-      `cd ${projectDir} 2>/dev/null && docker compose -p ${stackName} down -v 2>/dev/null || docker compose -p ${stackName} down -v 2>/dev/null || true`,
-      `docker rm -f $(docker ps -aq --filter "name=^${stackName}-") 2>/dev/null || true`,
-      `rm -rf ${projectDir}`,
-      // Remove any nginx configs created for this project's auto subdomain
-      `rm -f /etc/nginx/conf.d/${project.slug}.pushify.dev.conf /etc/nginx/sites-enabled/${project.slug}.pushify.dev.conf /etc/nginx/sites-available/${project.slug}.pushify.dev.conf 2>/dev/null || true`,
-      `nginx -t 2>/dev/null && nginx -s reload 2>/dev/null || true`,
-    ].join('; ');
-
-    const containerCleanup = [
-      `docker stop ${containerName} ${dbContainerName} 2>/dev/null`,
-      `docker rm -f ${containerName} ${dbContainerName} 2>/dev/null`,
-      `docker network rm pushify-${project.slug}-net 2>/dev/null`,
-      `rm -rf ${projectDir}`,
-      `rm -f /etc/nginx/conf.d/${project.slug}.pushify.dev.conf /etc/nginx/sites-enabled/${project.slug}.pushify.dev.conf /etc/nginx/sites-available/${project.slug}.pushify.dev.conf 2>/dev/null || true`,
-      `nginx -t 2>/dev/null && nginx -s reload 2>/dev/null || true`,
-    ].join('; ');
-
-    if (project.serverId) {
-      // Remote server — connect via SSH
-      const { getSSHConnection } = await import('../utils/ssh');
-      const server = await db.query.servers.findFirst({ where: eq(servers.id, project.serverId) });
-      if (!server || !server.ipv4) return;
-      const sshKey = server.sshPrivateKey ? decrypt(server.sshPrivateKey) : null;
-      if (!sshKey) return;
-      const ssh = await getSSHConnection({ host: server.ipv4, username: 'root', privateKey: sshKey });
-      const cmd = isCompose ? composeCleanup : containerCleanup;
-      await ssh.exec(cmd);
-      logger.info({ projectId: project.id, stackName }, 'Cleaned up remote containers, files, and nginx');
-    } else {
-      // Local Docker
-      const { exec } = await import('child_process');
-      const { promisify } = await import('util');
-      const execAsync = promisify(exec);
-      const cmd = isCompose ? composeCleanup : containerCleanup;
-      await execAsync(cmd).catch(() => undefined);
-      logger.info({ projectId: project.id, stackName }, 'Cleaned up local containers');
+    const remoteServer = await resolveDeployServerForCleanup(project);
+    if (remoteServer) {
+      await teardownProjectOnRemoteServer(remoteServer, project);
+      return;
     }
+
+    // No remote server — local Docker (dev / same-host deploy)
+    const { exec } = await import('child_process');
+    const { promisify } = await import('util');
+    const execAsync = promisify(exec);
+    const cmd = buildRemoteTeardownScript(project.slug, !!isCompose);
+    await execAsync(cmd).catch((err) => {
+      logger.warn({ projectId: project.id, err }, 'Local container cleanup had errors');
+    });
+    logger.info({ projectId: project.id, slug: project.slug }, 'Cleaned up local containers');
   },
 
   /**
@@ -355,11 +336,27 @@ export const projectService = {
       throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });
     }
 
+    const { pauseProjectContainers, resumeProjectContainers } = await import(
+      '../lib/project-remote-cleanup'
+    );
+
+    let containersSynced = true;
+    try {
+      if (status === 'paused') {
+        await pauseProjectContainers(existing);
+      } else {
+        containersSynced = await resumeProjectContainers(existing);
+      }
+    } catch (err) {
+      containersSynced = false;
+      logger.warn({ projectId, status, err }, 'Container pause/resume failed');
+    }
+
     const project = await projectRepository.updateStatus(projectId, status);
 
-    logger.info({ projectId, userId, status }, 'Project status updated');
+    logger.info({ projectId, userId, status, containersSynced }, 'Project status updated');
 
-    return project;
+    return { project, containersSynced };
   },
 
   /**
@@ -399,6 +396,61 @@ export const projectService = {
   },
 
   /**
+   * Install or update GitHub repository webhook for this project (org owner's token).
+   */
+  async installGitHubWebhook(
+    projectId: string,
+    organizationId: string,
+    userId: string,
+    locale: SupportedLocale = 'en'
+  ) {
+    const membership = await organizationRepository.findMember(organizationId, userId);
+    if (!membership) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
+    }
+
+    const project = await projectRepository.findById(projectId);
+    if (!project || project.organizationId !== organizationId || project.status === 'deleted') {
+      throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });
+    }
+
+    if (!project.gitRepoUrl?.includes('github.com')) {
+      throw new HTTPException(400, { message: t(locale, 'projects', 'githubRepoRequired') });
+    }
+
+    if (!project.webhookSecret) {
+      throw new HTTPException(400, { message: t(locale, 'projects', 'webhookSecretRequired') });
+    }
+
+    const { getProjectGitAccessToken } = await import('./git-provider-access.service');
+    const gitAuth = await getProjectGitAccessToken(projectId);
+    if (!gitAuth || gitAuth.provider !== 'github') {
+      throw new HTTPException(400, { message: t(locale, 'integrations', 'notConnected') });
+    }
+
+    const { githubService } = await import('./github.service');
+    const parsed = githubService.parseRepoUrl(project.gitRepoUrl);
+    if (!parsed) {
+      throw new HTTPException(400, { message: t(locale, 'projects', 'invalidGitRepoUrl') });
+    }
+
+    const baseUrl = process.env.API_BASE_URL || 'http://localhost:4000';
+    const webhookUrl = `${baseUrl}/api/v1/webhooks/github/${project.id}`;
+
+    const result = await githubService.ensureRepoWebhook(
+      gitAuth.token,
+      parsed.owner,
+      parsed.repo,
+      webhookUrl,
+      project.webhookSecret
+    );
+
+    logger.info({ projectId, hookId: result.hookId, created: result.created }, 'GitHub webhook installed');
+
+    return { webhookUrl, ...result };
+  },
+
+  /**
    * Update project settings
    */
   async updateSettings(
@@ -427,6 +479,10 @@ export const projectService = {
     // Only allow certain roles to update
     if (!['owner', 'admin', 'member'].includes(membership.role)) {
       throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
+    }
+
+    if (settings.previewDeploymentsEnabled === true) {
+      await planLimitsService.assertPreviewDeploymentsAllowed(organizationId, locale);
     }
 
     const project = await projectRepository.updateSettings(projectId, settings);

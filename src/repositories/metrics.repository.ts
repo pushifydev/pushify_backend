@@ -20,6 +20,18 @@ export const metricsRepository = {
     await db.insert(containerMetrics).values(data);
   },
 
+  async findLatestNetworkTxByDeployment(
+    deploymentId: string,
+  ): Promise<{ networkTxBytes: number } | undefined> {
+    const row = await db.query.containerMetrics.findFirst({
+      where: eq(containerMetrics.deploymentId, deploymentId),
+      orderBy: [desc(containerMetrics.recordedAt)],
+      columns: { networkTxBytes: true },
+    });
+    if (!row) return undefined;
+    return { networkTxBytes: Number(row.networkTxBytes) };
+  },
+
   // Get latest metrics for a project
   async findLatestByProject(projectId: string): Promise<ContainerMetric | undefined> {
     return db.query.containerMetrics.findFirst({

@@ -14,6 +14,8 @@ import { getServerStatusQueue } from '../queue';
 import { generateSSHKeyPair } from '../utils/ssh';
 import { encrypt, decrypt } from '../lib/encryption';
 import { type PlanType } from '../lib/plans';
+import { getEffectivePlanLimits } from '../lib/effective-plan-limits';
+import { usageMeteringService } from './usage-metering.service';
 import { planLimitsService } from './plan-limits.service';
 import { getPlanInfraLimits } from '../lib/infra-billing';
 import { infraBillingService } from './infra-billing.service';
@@ -270,6 +272,8 @@ export interface ServerWithDetails {
   projectCount: number;
   databaseCount: number;
   isManaged: boolean;
+  autoSnapshotEnabled: boolean;
+  lastAutoSnapshotAt: Date | null;
   infraBilling?: ServerInfraBillingDetails;
   createdAt: Date;
   updatedAt: Date;
@@ -374,6 +378,8 @@ function mapServerRow(
     projectCount: projectCountMap.get(s.id) ?? 0,
     databaseCount: databaseCountMap.get(s.id) ?? 0,
     isManaged: s.isManaged,
+    autoSnapshotEnabled: s.autoSnapshotEnabled,
+    lastAutoSnapshotAt: s.lastAutoSnapshotAt,
     createdAt: s.createdAt,
     updatedAt: s.updatedAt,
     lastSeenAt: s.lastSeenAt,
@@ -907,6 +913,14 @@ export const serverService = {
       (server.statusMessage === 'infra_credits_stopped' ||
         server.statusMessage === 'billing_suspended');
 
+    const providerData =
+      server.provider === 'hetzner' && server.isManaged
+        ? await usageMeteringService.mergeHetznerTrafficProviderData(
+            organizationId,
+            providerServer.providerData,
+          )
+        : providerServer.providerData;
+
     // Update database
     const [updated] = await db
       .update(servers)
@@ -918,7 +932,7 @@ export const serverService = {
         vcpus: providerServer.vcpus,
         memoryMb: providerServer.memoryMb,
         diskGb: providerServer.diskGb,
-        providerData: providerServer.providerData,
+        providerData,
         lastSeenAt: new Date(),
         updatedAt: new Date(),
         ...(clearBillingStopMessage ? { statusMessage: null } : {}),
@@ -1098,7 +1112,7 @@ export const serverService = {
     serverId: string,
     organizationId: string,
     userId: string,
-    input: { name?: string; description?: string | null },
+    input: { name?: string; description?: string | null; autoSnapshotEnabled?: boolean },
     locale: SupportedLocale = 'en',
   ): Promise<ServerWithDetails> {
     const membership = await organizationRepository.findMember(organizationId, userId);
@@ -1129,6 +1143,21 @@ export const serverService = {
     }
     if (input.description !== undefined) {
       updates.description = input.description?.trim() || null;
+    }
+    if (input.autoSnapshotEnabled !== undefined) {
+      const { serverSnapshotAutomationService } = await import(
+        './server-snapshot-automation.service'
+      );
+      const limit = await serverSnapshotAutomationService.getOrgSnapshotLimit(organizationId);
+      if (input.autoSnapshotEnabled && limit <= 0) {
+        throw new HTTPException(400, {
+          message: t(locale, 'servers', 'autoSnapshotPlanRequired'),
+        });
+      }
+      if (!server.isManaged || server.provider !== 'hetzner') {
+        throw new HTTPException(400, { message: t(locale, 'servers', 'snapshotsNotSupported') });
+      }
+      updates.autoSnapshotEnabled = input.autoSnapshotEnabled;
     }
 
     const [updated] = await db
@@ -1366,7 +1395,33 @@ export const serverService = {
     const apiToken = getProviderToken('hetzner');
     const provider = createProvider('hetzner', apiToken);
     const label = input.name?.trim() || `pushify-${server.name}-${Date.now()}`;
-    return provider.createSnapshot(server.providerId, label, input.description);
+    const snapshot = await provider.createSnapshot(server.providerId, label, input.description);
+
+    const { serverSnapshotAutomationService } = await import('./server-snapshot-automation.service');
+    const [org] = await db
+      .select({
+        plan: organizations.plan,
+        grandfatheredUntil: organizations.grandfatheredUntil,
+        planLimitsOverride: organizations.planLimitsOverride,
+      })
+      .from(organizations)
+      .where(eq(organizations.id, organizationId))
+      .limit(1);
+    if (org) {
+      const limits = getEffectivePlanLimits({
+        plan: (org.plan || 'free') as PlanType,
+        grandfatheredUntil: org.grandfatheredUntil,
+        planLimitsOverride: org.planLimitsOverride as Record<string, number | boolean> | null,
+      });
+      const all = await provider.listSnapshots(server.providerId);
+      await serverSnapshotAutomationService.pruneSnapshots(
+        provider,
+        all,
+        limits.snapshotsPerServer,
+      );
+    }
+
+    return snapshot;
   },
 
   async deleteServerSnapshot(
@@ -1401,6 +1456,50 @@ export const serverService = {
     const apiToken = getProviderToken('hetzner');
     const provider = createProvider('hetzner', apiToken);
     await provider.deleteSnapshot(snapshotId);
+  },
+
+  async restoreServerSnapshot(
+    serverId: string,
+    organizationId: string,
+    userId: string,
+    snapshotId: string,
+    locale: SupportedLocale = 'en',
+  ): Promise<ServerWithDetails> {
+    const membership = await organizationRepository.findMember(organizationId, userId);
+    if (!membership) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
+    }
+    if (!['owner', 'admin'].includes(membership.role)) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'adminRequired') });
+    }
+
+    await assertOrganizationCanMutateResources(organizationId, locale);
+
+    const [server] = await db
+      .select()
+      .from(servers)
+      .where(and(eq(servers.id, serverId), eq(servers.organizationId, organizationId)))
+      .limit(1);
+
+    if (!server) {
+      throw new HTTPException(404, { message: t(locale, 'servers', 'notFound') });
+    }
+
+    if (!server.isManaged || !server.providerId || server.provider !== 'hetzner') {
+      throw new HTTPException(400, { message: t(locale, 'servers', 'snapshotsNotSupported') });
+    }
+
+    if (server.status === 'provisioning' || server.status === 'deleting') {
+      throw new HTTPException(400, { message: t(locale, 'servers', 'snapshotRestoreInvalidState') });
+    }
+
+    const apiToken = getProviderToken('hetzner');
+    const provider = createProvider('hetzner', apiToken);
+    await provider.restoreSnapshot(server.providerId, snapshotId);
+
+    logger.info({ serverId, snapshotId, userId }, 'Server snapshot restore started');
+
+    return this.syncServer(serverId, organizationId, userId, locale);
   },
 
   async getServerTimeline(

@@ -163,6 +163,7 @@ export const healthService = {
       timestamp: new Date().toISOString(),
       service: 'pushify-api',
       version: process.env.npm_package_version || '0.1.0',
+      deployBuildScript: 'v7-buildkit-glibc-queue-classify',
       uptime: Math.floor((Date.now() - startTime) / 1000),
     };
   },
