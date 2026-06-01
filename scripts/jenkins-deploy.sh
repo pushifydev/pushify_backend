@@ -3,7 +3,37 @@
 # Prerequisites: Node 20+, npm, pm2, PostgreSQL client, .env on server, ecosystem.config.cjs
 set -euo pipefail
 
-BACKEND_DIR="${BACKEND_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+resolve_backend_dir() {
+  if [[ -n "${BACKEND_DIR:-}" ]] && [[ -f "${BACKEND_DIR}/package.json" ]]; then
+    echo "$BACKEND_DIR"
+    return
+  fi
+
+  # Monorepo: workspace is repo root, backend in subdirectory
+  if [[ -n "${WORKSPACE:-}" ]] && [[ -f "${WORKSPACE}/pushify_backend/package.json" ]]; then
+    echo "${WORKSPACE}/pushify_backend"
+    return
+  fi
+
+  # Standalone pushify_backend repo (Jenkins job checks out backend only)
+  if [[ -n "${WORKSPACE:-}" ]] && [[ -f "${WORKSPACE}/package.json" ]]; then
+    echo "${WORKSPACE}"
+    return
+  fi
+
+  # Invoked as bash scripts/jenkins-deploy.sh from repo root
+  local script_root
+  script_root="$(cd "$(dirname "$0")/.." && pwd)"
+  if [[ -f "${script_root}/package.json" ]]; then
+    echo "$script_root"
+    return
+  fi
+
+  echo "ERROR: Could not find pushify_backend (package.json). Set BACKEND_DIR or run from repo root." >&2
+  exit 1
+}
+
+BACKEND_DIR="$(resolve_backend_dir)"
 cd "$BACKEND_DIR"
 
 echo "==> Deploy pushify_backend in $(pwd)"
@@ -19,6 +49,12 @@ if [[ -f package-lock.json ]]; then
 else
   echo "WARN: no package-lock.json — using npm install"
   npm install
+fi
+
+# tsup → rollup native optional dep (lockfile often built on macOS; npm ci on Linux skips it)
+if [[ "$(uname -s)" == "Linux" ]] && [[ ! -d node_modules/@rollup/rollup-linux-x64-gnu ]]; then
+  echo "==> Installing Rollup Linux native binary for tsup build"
+  npm install @rollup/rollup-linux-x64-gnu@4.57.0 --no-save
 fi
 
 npm run build

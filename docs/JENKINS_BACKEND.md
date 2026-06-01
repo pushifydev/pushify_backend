@@ -1,6 +1,12 @@
 # Jenkins — Pushify backend deploy
 
-Backend is **Node + PM2**, not Rollup. Do **not** use `@rollup/rollup-linux-x64-gnu` here (that is for the Next.js frontend).
+Backend build uses **tsup** (Rollup). On Linux CI, if `npm ci` fails with missing `@rollup/rollup-linux-x64-gnu`, run after `npm ci`:
+
+```bash
+npm install @rollup/rollup-linux-x64-gnu@4.57.0 --no-save
+```
+
+(`package.json` optionalDependencies + `jenkins-deploy.sh` handle this automatically.)
 
 ## One-time server setup
 
@@ -31,9 +37,30 @@ Edit only non-secret overrides in `ecosystem.config.cjs` if needed; secrets stay
 
 ## Jenkins job (recommended shell)
 
-**Repository:** monorepo root or `pushify_backend` only.
+### Standalone repo (`pushifydev/pushify_backend`) — your setup
 
-If Jenkins checks out the **monorepo root**, set build step to:
+Jenkins workspace **is** the backend root (`/var/lib/jenkins/workspace/pushify_backend`).
+Do **not** `cd` into `pushify_backend/pushify_backend` (that path does not exist).
+
+```bash
+set -euo pipefail
+chmod +x "${WORKSPACE}/scripts/jenkins-deploy.sh"
+sudo -E bash "${WORKSPACE}/scripts/jenkins-deploy.sh"
+```
+
+Or inline (no nested `cd`):
+
+```bash
+set -euo pipefail
+cd "${WORKSPACE}"
+npm ci
+npm run build
+npm run db:migrate
+sudo pm2 reload ecosystem.config.cjs --update-env || sudo pm2 start ecosystem.config.cjs
+sudo pm2 save
+```
+
+### Monorepo (backend in subdirectory)
 
 ```bash
 export BACKEND_DIR="${WORKSPACE}/pushify_backend"
@@ -41,12 +68,7 @@ chmod +x "${BACKEND_DIR}/scripts/jenkins-deploy.sh"
 sudo -E bash "${BACKEND_DIR}/scripts/jenkins-deploy.sh"
 ```
 
-If the job already `cd pushify_backend`:
-
-```bash
-chmod +x scripts/jenkins-deploy.sh
-sudo -E bash scripts/jenkins-deploy.sh
-```
+`jenkins-deploy.sh` auto-detects `WORKSPACE` (standalone vs monorepo).
 
 Use `sudo` only if Jenkins user ≠ user that owns PM2; otherwise drop `sudo`.
 
