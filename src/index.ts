@@ -5,38 +5,26 @@ import { env } from './config/env';
 import { logger } from './lib/logger';
 import { wsManager } from './lib/ws';
 import { createWSRoute } from './routes/ws';
-import {
-  startDeploymentWorker,
-  stopDeploymentWorker,
-  startHealthCheckWorker,
-  stopHealthCheckWorker,
-  startMetricsWorker,
-  stopMetricsWorker,
-  startLogCollector,
-  stopLogCollector,
-  startBackupWorker,
-  stopBackupWorker,
-  startInfraBillingWorker,
-  stopInfraBillingWorker,
-  startSnapshotAutomationWorker,
-  stopSnapshotAutomationWorker,
-} from './workers';
-import { startNotificationWorker, stopNotificationWorker } from './workers/notification.worker';
-import { closeQueues } from './lib/queue';
 import { closeOptionalRedis } from './lib/redis-client';
-import {
-  startServerStatusWorker,
-  stopServerStatusWorker,
-  startServerSetupWorker,
-  stopServerSetupWorker,
-  shutdownQueues as shutdownServerQueues,
-} from './queue';
+import { closeDatabasePool } from './db';
+import { startBackgroundWorkers, stopBackgroundWorkers } from './runtime/background-workers';
+import { runStartupChecks } from './runtime/startup-checks';
+import { runsApiServer, runsBackgroundWorkers } from './runtime/process-role';
+
+await runStartupChecks(env.PROCESS_ROLE);
+
+if (!runsApiServer()) {
+  logger.error(
+    { role: env.PROCESS_ROLE },
+    'index.ts is for API only — use worker.ts with PROCESS_ROLE=worker for background jobs',
+  );
+  process.exit(1);
+}
 
 const port = env.PORT;
 
-logger.info(`Starting Pushify API on port ${port}`);
+logger.info({ port, role: env.PROCESS_ROLE }, 'Starting Pushify API');
 
-// WebSocket setup
 const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
 app.route('/api/v1/ws', createWSRoute(upgradeWebSocket));
 
@@ -50,83 +38,21 @@ wsManager.initialize();
 
 logger.info(`Pushify API is running on http://localhost:${port}`);
 
-// Start the deployment worker
-startDeploymentWorker().catch((error) => {
-  logger.error('Failed to start deployment worker:', error);
-});
-
-// Start the health check worker
-startHealthCheckWorker().catch((error) => {
-  logger.error('Failed to start health check worker:', error);
-});
-
-startInfraBillingWorker().catch((error) => {
-  logger.error('Failed to start infra billing worker:', error);
-});
-
-startSnapshotAutomationWorker().catch((error) => {
-  logger.error('Failed to start snapshot automation worker:', error);
-});
-
-// Start the metrics worker
-startMetricsWorker().catch((error) => {
-  logger.error('Failed to start metrics worker:', error);
-});
-
-// Start the log collector worker (collects container logs for persistence)
-startLogCollector().catch((error) => {
-  logger.error('Failed to start log collector:', error);
-});
-
-// Start the backup worker
-startBackupWorker().catch((error) => {
-  logger.error('Failed to start backup worker:', error);
-});
-
-// Start the notification worker (BullMQ - requires Redis)
-const notificationWorker = startNotificationWorker();
-if (notificationWorker) {
-  logger.info('Notification queue worker started');
+if (runsBackgroundWorkers()) {
+  await startBackgroundWorkers();
 } else {
-  logger.warn('Notification queue worker not started (Redis not configured)');
+  logger.info('Background workers disabled on this process (run worker.ts separately)');
 }
 
-// Start the server status worker (BullMQ - requires Redis)
-try {
-  startServerStatusWorker();
-  logger.info('Server status queue worker started');
-} catch (error) {
-  logger.warn(`Server status queue worker not started (Redis not configured): ${error}`);
-}
-
-// Start the server setup worker (BullMQ - requires Redis)
-try {
-  startServerSetupWorker();
-  logger.info('Server setup queue worker started');
-} catch (error) {
-  logger.warn(`Server setup queue worker not started (Redis not configured): ${error}`);
-}
-
-// Graceful shutdown
 async function gracefulShutdown(signal: string) {
   logger.info(`${signal} received, shutting down...`);
 
-  // Stop workers
-  stopDeploymentWorker();
-  stopHealthCheckWorker();
-  stopMetricsWorker();
-  stopLogCollector();
-  stopBackupWorker();
-  stopInfraBillingWorker();
-  stopSnapshotAutomationWorker();
-  await stopNotificationWorker();
-  await stopServerStatusWorker();
-  await stopServerSetupWorker();
+  if (runsBackgroundWorkers()) {
+    await stopBackgroundWorkers();
+  }
 
-  // Close queues and WebSocket
-  await closeQueues();
-  await shutdownServerQueues();
   await wsManager.shutdown();
+  await closeDatabasePool();
   await closeOptionalRedis();
 
   process.exit(0);

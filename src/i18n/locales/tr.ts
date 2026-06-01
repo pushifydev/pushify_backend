@@ -259,7 +259,7 @@ export const tr: TranslationKeys = {
     usageResourceTeamMembers: 'Ekip üyeleri',
     usageResourceCustomDomains: 'Özel alan adları',
     usageResourceBuildMinutes: 'Bu ayki build dakikası',
-    usageResourceStorage: 'Bu ayki depolama',
+    usageResourceStorage: 'Depolama kotası',
     usageResourceBandwidth: 'Bu ayki bant genişliği',
   },
 

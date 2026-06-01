@@ -8,9 +8,20 @@ const envSchema = z.object({
 
   // Database
   DATABASE_URL: z.string().url(),
+  /** Max connections per process (API and worker each have their own pool) */
+  PG_POOL_MAX: z.coerce.number().int().min(1).max(100).default(20),
+  PG_POOL_IDLE_TIMEOUT_MS: z.coerce.number().int().min(1000).default(30_000),
+  PG_POOL_CONNECTION_TIMEOUT_MS: z.coerce.number().int().min(1000).default(10_000),
 
   // Redis
   REDIS_URL: z.string().url().optional(),
+
+  /**
+   * api — HTTP + WebSocket only (scale behind load balancer)
+   * worker — background jobs only (deploy, metrics, queues)
+   * all — single process (local dev)
+   */
+  PROCESS_ROLE: z.enum(['api', 'worker', 'all']).default('all'),
 
   // JWT
   JWT_SECRET: z.string().min(32),
