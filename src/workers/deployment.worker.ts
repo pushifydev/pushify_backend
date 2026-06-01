@@ -42,6 +42,10 @@ import {
 } from '../lib/deploy-failure-classify';
 import { detectNextStandaloneFromConfig } from '../buildpacks/remote-detect';
 import { wsManager } from '../lib/ws';
+import {
+  tryHoldDeployWorkerLeadership,
+  releaseDeployWorkerLeadership,
+} from '../lib/deploy-worker-lock';
 
 /**
  * Auto-detect framework from package.json
@@ -179,6 +183,7 @@ export async function startDeploymentWorker(): Promise<void> {
  */
 export function stopDeploymentWorker(): void {
   isRunning = false;
+  void releaseDeployWorkerLeadership();
   logger.info('Deployment worker stopped');
 }
 
@@ -231,6 +236,12 @@ async function refreshPendingDeploymentQueueLogs(): Promise<void> {
 async function pollForDeployments(): Promise<void> {
   while (isRunning) {
     try {
+      const isLeader = await tryHoldDeployWorkerLeadership();
+      if (!isLeader) {
+        await sleep(POLL_INTERVAL);
+        continue;
+      }
+
       await refreshPendingDeploymentQueueLogs();
 
       if (activeDeployments >= env.MAX_CONCURRENT_DEPLOYS_TOTAL) {
