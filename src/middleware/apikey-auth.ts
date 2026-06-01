@@ -5,15 +5,46 @@ import { t, type SupportedLocale } from '../i18n';
 import type { ApiKeyScope } from '../db/schema';
 import { applyPlanApiRateLimit } from './rate-limit';
 
-const API_KEY_PREFIX = 'pk_live_';
+export const API_KEY_PREFIX = 'pk_live_';
 
 /**
- * Check if the authorization header contains an API key
+ * Extract bearer / API key token from Authorization, X-API-Key, or ?token=
+ */
+export function extractAuthToken(c: Context): string | null {
+  const authHeader = c.req.header('Authorization');
+  if (authHeader) {
+    const bearer = authHeader.match(/^Bearer\s+(.+)$/i);
+    if (bearer) {
+      return bearer[1].trim();
+    }
+  }
+
+  const apiKeyHeader = c.req.header('X-API-Key');
+  if (apiKeyHeader?.trim()) {
+    return apiKeyHeader.trim();
+  }
+
+  const queryToken = c.req.query('token');
+  return queryToken?.trim() ?? null;
+}
+
+export function isApiKeyToken(token: string): boolean {
+  return token.startsWith(API_KEY_PREFIX);
+}
+
+/**
+ * Check if the request carries a Pushify API key (pk_live_...)
  */
 export function isApiKeyAuth(authHeader: string | undefined): boolean {
   if (!authHeader) return false;
-  const token = authHeader.replace('Bearer ', '');
-  return token.startsWith(API_KEY_PREFIX);
+  const bearer = authHeader.match(/^Bearer\s+(.+)$/i);
+  const token = bearer ? bearer[1].trim() : authHeader.trim();
+  return isApiKeyToken(token);
+}
+
+export function isApiKeyRequest(c: Context): boolean {
+  const token = extractAuthToken(c);
+  return !!token && isApiKeyToken(token);
 }
 
 /**
@@ -22,23 +53,20 @@ export function isApiKeyAuth(authHeader: string | undefined): boolean {
  */
 export async function apiKeyAuthMiddleware(c: Context, next: Next) {
   const locale: SupportedLocale = c.get('locale') || 'en';
-  const authHeader = c.req.header('Authorization');
+  const token = extractAuthToken(c);
 
-  if (!authHeader) {
+  if (!token) {
     throw new HTTPException(401, {
       message: t(locale, 'auth', 'missingAuthHeader'),
     });
   }
 
-  const token = authHeader.replace('Bearer ', '');
-
-  if (!token.startsWith(API_KEY_PREFIX)) {
+  if (!isApiKeyToken(token)) {
     throw new HTTPException(401, {
       message: t(locale, 'apiKeys', 'invalidKey'),
     });
   }
 
-  // Validate the API key
   const result = await apiKeyService.validate(token);
 
   if (!result) {
@@ -47,7 +75,6 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     });
   }
 
-  // Set context variables
   c.set('userId', result.userId);
   c.set('organizationId', result.organizationId);
   c.set('apiKey', result.apiKey);
@@ -57,20 +84,16 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
 }
 
 /**
- * Combined auth middleware that accepts both JWT tokens and API keys
- * Prefers JWT if both are present
+ * Combined auth middleware factory (JWT + API key)
  */
-export function createCombinedAuthMiddleware(jwtAuthMiddleware: (c: Context, next: Next) => Promise<void>) {
+export function createCombinedAuthMiddleware(
+  jwtAuthMiddleware: (c: Context, next: Next) => Promise<void | Response>,
+) {
   return async (c: Context, next: Next) => {
-    const authHeader = c.req.header('Authorization');
-
-    if (isApiKeyAuth(authHeader)) {
-      // Use API key auth
+    if (isApiKeyRequest(c)) {
       return apiKeyAuthMiddleware(c, next);
-    } else {
-      // Use JWT auth
-      return jwtAuthMiddleware(c, next);
     }
+    return jwtAuthMiddleware(c, next);
   };
 }
 
@@ -83,7 +106,6 @@ export function requireScope(...requiredScopes: ApiKeyScope[]) {
     const locale: SupportedLocale = c.get('locale') || 'en';
     const isApiKey = c.get('isApiKeyAuth');
 
-    // If not API key auth (e.g., JWT), allow all
     if (!isApiKey) {
       return next();
     }
@@ -95,7 +117,6 @@ export function requireScope(...requiredScopes: ApiKeyScope[]) {
       });
     }
 
-    // Check if the key has any of the required scopes
     const hasRequiredScope = requiredScopes.some((scope) => hasScope(apiKey.scopes, scope));
 
     if (!hasRequiredScope) {
@@ -110,7 +131,6 @@ export function requireScope(...requiredScopes: ApiKeyScope[]) {
 
 /**
  * Block API key auth on interactive or highly sensitive routes (SSH keys, web terminal).
- * JWT session auth still works.
  */
 export function rejectApiKeyAuth() {
   return async (c: Context, next: Next) => {

@@ -1,35 +1,41 @@
 import type { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { verifyToken } from '../lib/jwt';
-import { isApiKeyAuth, apiKeyAuthMiddleware } from './apikey-auth';
+import {
+  apiKeyAuthMiddleware,
+  extractAuthToken,
+  isApiKeyRequest,
+  isApiKeyToken,
+} from './apikey-auth';
 import { applyPlanApiRateLimit } from './rate-limit';
+import { t, type SupportedLocale } from '../i18n';
 
 export async function authMiddleware(c: Context, next: Next) {
-  const authHeader = c.req.header('Authorization');
+  const locale: SupportedLocale = c.get('locale') || 'en';
 
-  // Support token from query param (for SSE connections)
-  const queryToken = c.req.query('token');
-
-  let token: string | null = null;
-
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    token = authHeader.substring(7);
-  } else if (queryToken) {
-    token = queryToken;
+  if (isApiKeyRequest(c)) {
+    return apiKeyAuthMiddleware(c, next);
   }
 
+  const token = extractAuthToken(c);
+
   if (!token) {
-    throw new HTTPException(401, { message: 'Missing or invalid authorization header' });
+    throw new HTTPException(401, {
+      message: t(locale, 'auth', 'missingAuthHeader'),
+    });
+  }
+
+  if (isApiKeyToken(token)) {
+    return apiKeyAuthMiddleware(c, next);
   }
 
   try {
     const payload = await verifyToken(token);
 
     if (payload.type !== 'access') {
-      throw new HTTPException(401, { message: 'Invalid token type' });
+      throw new HTTPException(401, { message: t(locale, 'auth', 'invalidTokenType') });
     }
 
-    // Set user info in context
     c.set('userId', payload.sub);
     if (payload.org) {
       c.set('organizationId', payload.org);
@@ -40,17 +46,14 @@ export async function authMiddleware(c: Context, next: Next) {
     if (error instanceof HTTPException) {
       throw error;
     }
-    throw new HTTPException(401, { message: 'Invalid or expired token' });
+    throw new HTTPException(401, { message: t(locale, 'auth', 'invalidToken') });
   }
 }
 
-// Optional auth - doesn't throw if no token
 export async function optionalAuthMiddleware(c: Context, next: Next) {
-  const authHeader = c.req.header('Authorization');
+  const token = extractAuthToken(c);
 
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.substring(7);
-
+  if (token && !isApiKeyToken(token)) {
     try {
       const payload = await verifyToken(token);
 
@@ -68,15 +71,9 @@ export async function optionalAuthMiddleware(c: Context, next: Next) {
   await next();
 }
 
-// Combined auth - supports both JWT and API key authentication
 export async function combinedAuthMiddleware(c: Context, next: Next) {
-  const authHeader = c.req.header('Authorization');
-
-  // Check if it's an API key
-  if (isApiKeyAuth(authHeader)) {
+  if (isApiKeyRequest(c)) {
     return apiKeyAuthMiddleware(c, next);
   }
-
-  // Fall back to JWT auth
   return authMiddleware(c, next);
 }
