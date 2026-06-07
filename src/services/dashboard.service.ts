@@ -9,6 +9,8 @@ import { billingService, type UsageStats } from './billing.service';
 import { infraBillingService } from './infra-billing.service';
 import { planLimitsService } from './plan-limits.service';
 import { t, type SupportedLocale } from '../i18n';
+import { env } from '../config/env';
+import { getCachedJson } from '../lib/read-through-cache';
 
 export interface DeploymentCounts {
   running: number;
@@ -69,6 +71,19 @@ function fillTemplate(template: string, vars: Record<string, string>): string {
 
 class DashboardService {
   async getOverview(
+    organizationId: string,
+    userId: string,
+    locale: SupportedLocale = 'en'
+  ): Promise<DashboardOverview> {
+    const cacheKey = `cache:dashboard:overview:${organizationId}:${locale}`;
+    const ttl = env.DASHBOARD_OVERVIEW_CACHE_TTL_SEC;
+
+    return getCachedJson(cacheKey, ttl, () =>
+      this.loadOverview(organizationId, userId, locale),
+    );
+  }
+
+  private async loadOverview(
     organizationId: string,
     userId: string,
     locale: SupportedLocale = 'en'

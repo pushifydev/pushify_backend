@@ -559,7 +559,12 @@ export const serverService = {
         .returning();
 
       // Try to connect and setup the server in background
-      this.setupBYOSServer(dbServer.id, input.ipv4, input.sshPrivateKey || sshKeyPair.privateKey, sshKeyPair.publicKey, input.rootPassword).catch((err) => {
+      this.setupBYOSServer(dbServer.id, {
+        ipv4: input.ipv4,
+        pushifyPublicKey: sshKeyPair.publicKey,
+        userPrivateKey: input.sshPrivateKey,
+        rootPassword: input.rootPassword,
+      }).catch((err) => {
         logger.error({ err, serverId: dbServer.id }, 'BYOS server setup failed');
       });
 
@@ -1021,26 +1026,48 @@ export const serverService = {
   /**
    * Setup a BYOS (Bring Your Own Server) — connect via SSH, install Docker + Nginx
    */
-  async setupBYOSServer(serverId: string, ipv4: string, privateKey: string, publicKey: string, rootPassword?: string): Promise<void> {
+  async setupBYOSServer(
+    serverId: string,
+    input: {
+      ipv4: string;
+      pushifyPublicKey: string;
+      userPrivateKey?: string;
+      rootPassword?: string;
+    },
+  ): Promise<void> {
+    const { ipv4, pushifyPublicKey, userPrivateKey, rootPassword } = input;
     let ssh: SSHClient | null = null;
 
     try {
       await db.update(servers).set({ setupStatus: 'installing', statusMessage: 'Connecting to server...' }).where(eq(servers.id, serverId));
 
       ssh = new SSHClient();
-      const connectConfig: any = { host: ipv4, port: 22, username: 'root' };
-      if (rootPassword) {
+      const connectConfig: {
+        host: string;
+        port: number;
+        username: string;
+        privateKey?: string;
+        password?: string;
+      } = { host: ipv4, port: 22, username: 'root' };
+
+      const trimmedKey = userPrivateKey?.trim();
+      if (trimmedKey && trimmedKey.includes('BEGIN')) {
+        connectConfig.privateKey = trimmedKey;
+      } else if (rootPassword) {
         connectConfig.password = rootPassword;
+      } else {
+        throw new Error('BYOS setup requires root password or a valid SSH private key');
       }
-      if (privateKey && privateKey.includes('BEGIN')) {
-        connectConfig.privateKey = privateKey;
-      }
+
       await ssh.connect(connectConfig);
 
       await db.update(servers).set({ statusMessage: 'Connected. Installing dependencies...' }).where(eq(servers.id, serverId));
 
-      // Add public key to authorized_keys
-      await ssh.exec(`mkdir -p ~/.ssh && echo '${publicKey}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`);
+      // Add Pushify public key to authorized_keys (idempotent)
+      const escapedKey = pushifyPublicKey.replace(/'/g, `'\\''`);
+      await ssh.exec(
+        `mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && grep -qF '${escapedKey}' ~/.ssh/authorized_keys || echo '${escapedKey}' >> ~/.ssh/authorized_keys`,
+      );
 
       // Check if Docker is installed
       const dockerCheck = await ssh.exec('docker --version');
@@ -1106,6 +1133,81 @@ export const serverService = {
     } finally {
       ssh?.disconnect();
     }
+  },
+
+  /**
+   * Re-run BYOS setup after a failed attempt (uses stored root password unless new credentials are sent).
+   */
+  async retryByosSetup(
+    serverId: string,
+    organizationId: string,
+    userId: string,
+    credentials?: { rootPassword?: string; sshPrivateKey?: string },
+    locale: SupportedLocale = 'en',
+  ): Promise<ServerWithDetails> {
+    const membership = await organizationRepository.findMember(organizationId, userId);
+    if (!membership || !['owner', 'admin'].includes(membership.role)) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'adminRequired') });
+    }
+
+    const [server] = await db
+      .select()
+      .from(servers)
+      .where(and(eq(servers.id, serverId), eq(servers.organizationId, organizationId)))
+      .limit(1);
+
+    if (!server) {
+      throw new HTTPException(404, { message: t(locale, 'servers', 'notFound') });
+    }
+
+    if (server.provider !== 'self_hosted') {
+      throw new HTTPException(400, { message: 'Retry setup is only for self-hosted (BYOS) servers' });
+    }
+
+    if (!server.ipv4 || !server.sshPublicKey) {
+      throw new HTTPException(400, { message: t(locale, 'servers', 'notReadyForDeploy') });
+    }
+
+    if (server.setupStatus === 'completed') {
+      throw new HTTPException(400, { message: 'Server setup is already completed' });
+    }
+
+    let rootPassword = credentials?.rootPassword?.trim() || undefined;
+    const userPrivateKey = credentials?.sshPrivateKey?.trim() || undefined;
+
+    if (!rootPassword && !userPrivateKey && server.rootPassword) {
+      rootPassword = decrypt(server.rootPassword);
+    }
+
+    if (!rootPassword && !userPrivateKey) {
+      throw new HTTPException(400, {
+        message: 'Provide root password or SSH private key to retry setup',
+      });
+    }
+
+    if (credentials?.rootPassword) {
+      await db
+        .update(servers)
+        .set({ rootPassword: encrypt(credentials.rootPassword), updatedAt: new Date() })
+        .where(eq(servers.id, serverId));
+    }
+
+    await db
+      .update(servers)
+      .set({ setupStatus: 'pending', statusMessage: 'Retrying connection...', updatedAt: new Date() })
+      .where(eq(servers.id, serverId));
+
+    void this.setupBYOSServer(serverId, {
+      ipv4: server.ipv4,
+      pushifyPublicKey: server.sshPublicKey,
+      userPrivateKey,
+      rootPassword,
+    });
+
+    const refreshed = await db.query.servers.findFirst({ where: eq(servers.id, serverId) });
+    return toServerDetails(refreshed!, organizationId, {
+      statusMessage: 'Retrying server setup...',
+    });
   },
 
   async updateServer(

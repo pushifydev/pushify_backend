@@ -10,6 +10,7 @@ import { t, type SupportedLocale } from '../i18n';
 import { logger } from '../lib/logger';
 import { sendBillingPaymentFailedEmail, sendBillingSuspendedEmail } from '../lib/email';
 import { resolveBillingNotifyEmail } from '../lib/billing-notify';
+import { pauseProjectContainers } from '../lib/project-remote-cleanup';
 
 const PAYMENT_FAILED_EMAIL_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
@@ -145,11 +146,13 @@ export const organizationBillingService = {
   async suspendOrganization(organizationId: string): Promise<{
     serversStopped: number;
     projectsPaused: number;
+    containersPaused: number;
   }> {
     await this.markSuspended(organizationId);
 
     let serversStopped = 0;
     let projectsPaused = 0;
+    let containersPaused = 0;
 
     const managedServers = await db
       .select()
@@ -169,12 +172,21 @@ export const organizationBillingService = {
     }
 
     const activeProjects = await db
-      .select({ id: projects.id })
+      .select()
       .from(projects)
       .where(and(eq(projects.organizationId, organizationId), eq(projects.status, 'active')));
 
-    for (const p of activeProjects) {
-      await projectRepository.updateStatus(p.id, 'paused');
+    for (const project of activeProjects) {
+      try {
+        const stopped = await pauseProjectContainers(project);
+        if (stopped) containersPaused++;
+      } catch (err) {
+        logger.warn(
+          { err, projectId: project.id, organizationId },
+          'Failed to pause containers during billing suspension',
+        );
+      }
+      await projectRepository.updateStatus(project.id, 'paused');
       projectsPaused++;
     }
 
@@ -184,7 +196,10 @@ export const organizationBillingService = {
       await sendBillingSuspendedEmail(notifyEmail, org.name, 'en');
     }
 
-    logger.info({ organizationId, serversStopped, projectsPaused }, 'Organization suspended for billing');
-    return { serversStopped, projectsPaused };
+    logger.info(
+      { organizationId, serversStopped, projectsPaused, containersPaused },
+      'Organization suspended for billing',
+    );
+    return { serversStopped, projectsPaused, containersPaused };
   },
 };

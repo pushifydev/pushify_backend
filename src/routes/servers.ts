@@ -184,6 +184,19 @@ serverRouter.post('/:serverId/reboot', requireScope('servers:write'), async (c) 
   return c.json({ data: server, message: t(locale, 'servers', 'rebooted') });
 });
 
+// Retry BYOS setup after failed SSH connection / install
+serverRouter.post('/:serverId/retry-setup', requireScope('servers:write'), async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const serverId = c.req.param('serverId');
+  const body = await c.req.json<{ rootPassword?: string; sshPrivateKey?: string }>().catch(() => ({}));
+
+  const server = await serverService.retryByosSetup(serverId, organizationId, userId, body, locale);
+
+  return c.json({ data: server, message: 'Server setup retry started' });
+});
+
 // Sync server status from provider
 serverRouter.post('/:serverId/sync', requireScope('servers:write'), async (c) => {
   const userId = c.get('userId')!;

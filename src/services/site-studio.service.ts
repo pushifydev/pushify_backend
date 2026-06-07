@@ -7,6 +7,7 @@ import { marketplaceService } from './marketplace.service';
 import { domainService } from './domain.service';
 import { getTemplateById } from '../marketplace/templates';
 import { logger } from '../lib/logger';
+import { siteEditorService } from './site-editor.service';
 
 export const siteStudioService = {
   getTemplates(category?: string, search?: string, stack?: string) {
@@ -144,6 +145,20 @@ export const siteStudioService = {
       } catch (err: any) {
         logger.warn({ projectId, domain: normalizedDomain, err: err.message }, 'Site Studio: domain attach failed');
       }
+    }
+
+    try {
+      await siteEditorService.initializeForProject(
+        projectId,
+        siteTemplate.id,
+        params.name,
+        {
+          title: params.name,
+          description: siteTemplate.tagline,
+        },
+      );
+    } catch (err) {
+      logger.warn({ err, projectId }, 'Site Studio: site editor init failed');
     }
 
     logger.info(

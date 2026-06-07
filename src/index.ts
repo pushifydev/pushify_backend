@@ -5,6 +5,7 @@ import { env } from './config/env';
 import { logger } from './lib/logger';
 import { wsManager } from './lib/ws';
 import { createWSRoute } from './routes/ws';
+import { createServerTerminalWSRoute, closeAllTerminalSessions } from './routes/server-terminal-ws';
 import { closeOptionalRedis } from './lib/redis-client';
 import { closeDatabasePool } from './db';
 import { startBackgroundWorkers, stopBackgroundWorkers } from './runtime/background-workers';
@@ -26,7 +27,9 @@ const port = env.PORT;
 logger.info({ port, role: env.PROCESS_ROLE }, 'Starting Pushify API');
 
 const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
-app.route('/api/v1/ws', createWSRoute(upgradeWebSocket));
+const wsApp = createWSRoute(upgradeWebSocket);
+wsApp.route('/', createServerTerminalWSRoute(upgradeWebSocket));
+app.route('/api/v1/ws', wsApp);
 
 const server = serve({
   fetch: app.fetch,
@@ -51,6 +54,7 @@ async function gracefulShutdown(signal: string) {
     await stopBackgroundWorkers();
   }
 
+  closeAllTerminalSessions();
   await wsManager.shutdown();
   await closeDatabasePool();
   await closeOptionalRedis();

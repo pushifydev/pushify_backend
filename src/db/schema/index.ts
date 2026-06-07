@@ -48,3 +48,6 @@ export * from './infra-billing';
 
 // Plan usage metering
 export * from './usage';
+
+// Site Editor (Site Studio)
+export * from './site-editor';

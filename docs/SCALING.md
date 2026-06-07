@@ -62,8 +62,18 @@ Heavy builds share CPU with other workers on the same machine — prefer a dedic
 5. Scale API horizontally; keep 1–2 worker replicas (Redis deploy lock prevents duplicate deploy polling).
 6. Monitor: CPU, memory, 429 rate, deploy queue time, Postgres connections.
 
-## Next improvements (roadmap)
+## Deploy queue (BullMQ)
 
-- Move deployment polling fully to BullMQ (remove DB poll)
-- Read-through cache for dashboard overview (Redis TTL)
-- Stagger metrics SSH collection by server
+When `REDIS_URL` is set, pending deployments are enqueued immediately (`deploy-{id}` job dedupe) and processed by a BullMQ worker. A reconcile loop every 15s re-queues any orphaned `pending` rows. Concurrency slots use Redis counters (global + per-server) so multiple worker VMs stay safe.
+
+Without Redis, the worker falls back to the legacy 5s DB poll loop.
+
+Env: `MAX_CONCURRENT_DEPLOYS_TOTAL`, `MAX_CONCURRENT_DEPLOYS_PER_SERVER`.
+
+## Dashboard cache
+
+`GET /dashboard/overview` is cached in Redis per org + locale (`DASHBOARD_OVERVIEW_CACHE_TTL_SEC`, default 45). Set `0` to disable.
+
+## Metrics collection
+
+SSH/docker stats are collected per deploy server with `METRICS_SERVER_STAGGER_MS` delay between servers (default 2000ms) to avoid connection storms.

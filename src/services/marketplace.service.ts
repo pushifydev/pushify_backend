@@ -162,6 +162,9 @@ export const marketplaceService = {
       })
       .returning();
 
+    const { scheduleDeploymentProcessing } = await import('../lib/deployment-scheduler');
+    await scheduleDeploymentProcessing(deployment.id, project.id);
+
     logger.info(`Marketplace deploy: ${template.name} -> project ${project.id}`);
 
     return {

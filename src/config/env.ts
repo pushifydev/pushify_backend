@@ -5,6 +5,12 @@ const envSchema = z.object({
   // Server
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().default(4000),
+  /** Public API origin (no trailing slash) — GitHub/GitLab webhook install URLs */
+  API_BASE_URL: z
+    .string()
+    .url()
+    .transform((url) => url.replace(/\/$/, ''))
+    .optional(),
 
   // Database
   DATABASE_URL: z.string().url(),
@@ -15,6 +21,10 @@ const envSchema = z.object({
 
   // Redis
   REDIS_URL: z.string().url().optional(),
+  /** Dashboard GET /overview cache TTL (seconds); 0 disables */
+  DASHBOARD_OVERVIEW_CACHE_TTL_SEC: z.coerce.number().int().min(0).max(300).default(45),
+  /** Delay between SSH metrics collection per deploy server (ms) */
+  METRICS_SERVER_STAGGER_MS: z.coerce.number().int().min(0).max(60_000).default(2000),
 
   /**
    * api — HTTP + WebSocket only (scale behind load balancer)

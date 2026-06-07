@@ -5,7 +5,10 @@ export interface SSHConnectionConfig {
   host: string;
   port?: number;
   username: string;
-  privateKey: string;
+  /** Password auth (BYOS initial setup with root password) */
+  password?: string;
+  /** Key auth — omit when using password-only first connect */
+  privateKey?: string;
 }
 
 export interface ExecResult {
@@ -34,14 +37,26 @@ export class SSHClient {
     this.config = config;
 
     return new Promise((resolve, reject) => {
+      if (!config.privateKey && !config.password) {
+        reject(new Error('SSH connection requires privateKey or password'));
+        return;
+      }
+
       const connectConfig: ConnectConfig = {
         host: config.host,
         port: config.port || 22,
         username: config.username,
-        privateKey: config.privateKey,
-        readyTimeout: 30000, // 30 second timeout
-        keepaliveInterval: 10000, // Send keepalive every 10 seconds
+        readyTimeout: 30000,
+        keepaliveInterval: 10000,
+        tryKeyboard: false,
       };
+
+      if (config.privateKey) {
+        connectConfig.privateKey = config.privateKey;
+      }
+      if (config.password) {
+        connectConfig.password = config.password;
+      }
 
       this.client.on('ready', () => {
         this.connected = true;
