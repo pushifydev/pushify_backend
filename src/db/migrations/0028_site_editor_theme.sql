@@ -1,0 +1,1 @@
+ALTER TABLE "project_site_editor" ADD COLUMN IF NOT EXISTS "theme" jsonb DEFAULT '{"primaryColor":"#6366f1","accentColor":"#818cf8","backgroundColor":"#fafafa","surfaceColor":"#ffffff","textColor":"#18181b","mutedColor":"#71717a","fontFamily":"system","borderRadius":"md","maxWidth":"default"}'::jsonb NOT NULL;

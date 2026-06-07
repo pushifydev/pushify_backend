@@ -112,7 +112,8 @@ export const deploymentService = {
       rollbackFromDeploymentId: input.rollbackFromDeploymentId,
     });
 
-    // Deployment worker polls for pending deployments and processes them automatically
+    const { scheduleDeploymentProcessing } = await import('../lib/deployment-scheduler');
+    await scheduleDeploymentProcessing(deployment.id, projectId);
 
     return deployment;
   },

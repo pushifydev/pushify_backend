@@ -23,6 +23,7 @@ import { aiRoutes } from './ai';
 import { cliAuthRoutes } from './cli-auth';
 import { marketplaceRoutes } from './marketplace';
 import { siteStudioRoutes } from './site-studio';
+import { siteEditorRoutes } from './site-editor';
 import { dashboardRoutes } from './dashboard';
 import { alertsRoutes } from './alerts';
 
@@ -35,6 +36,7 @@ export function registerRoutes(app: OpenAPIHono<any>) {
   // Sub-routers with specific paths must be registered BEFORE the generic
   // project router, otherwise /{projectId} catches /overview, etc.
   app.route('/api/v1/projects', metricsRoutes);
+  app.route('/api/v1/projects', siteEditorRoutes);
   app.route('/api/v1/projects', notificationRoutes);
   app.route('/api/v1/projects', healthCheckRoutes);
   app.route('/api/v1/projects', previewRoutes);

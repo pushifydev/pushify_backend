@@ -10,6 +10,7 @@ import { generateSlug } from '../lib/utils';
 import { logger } from '../lib/logger';
 import { t, type SupportedLocale } from '../i18n';
 import { assertOrganizationCanMutateResources } from './organization-billing.service';
+import { getApiBaseUrl } from '../lib/api-base-url';
 import { planLimitsService } from './plan-limits.service';
 
 // Types
@@ -434,7 +435,7 @@ export const projectService = {
       throw new HTTPException(400, { message: t(locale, 'projects', 'invalidGitRepoUrl') });
     }
 
-    const baseUrl = process.env.API_BASE_URL || 'http://localhost:4000';
+    const baseUrl = getApiBaseUrl();
     const webhookUrl = `${baseUrl}/api/v1/webhooks/github/${project.id}`;
 
     const result = await githubService.ensureRepoWebhook(

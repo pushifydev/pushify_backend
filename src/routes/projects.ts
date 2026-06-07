@@ -4,6 +4,7 @@ import { activityService } from '../services/activity.service';
 import { combinedAuthMiddleware } from '../middleware/auth';
 import { requireScope } from '../middleware/apikey-auth';
 import { omitWebhookSecret } from '../lib/project-public';
+import { getApiBaseUrl } from '../lib/api-base-url';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 
@@ -492,7 +493,7 @@ projectRouter.get('/:projectId/webhook', async (c) => {
 
   const project = await projectService.getById(projectId, organizationId, userId, locale);
 
-  const baseUrl = process.env.API_BASE_URL || 'http://localhost:4000';
+  const baseUrl = getApiBaseUrl();
   const gitProvider =
     project.gitProvider ||
     (project.gitRepoUrl?.includes('gitlab') ? 'gitlab' : 'github');

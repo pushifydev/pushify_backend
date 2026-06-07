@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.2.0-beta.12] - 2026-06-08
+
+### Added
+- **Site Editor** API: block CRUD, theme, publish to `/pushify-site/`, asset upload (SSH → container assets).
+- Headless CMS bridge (Strapi/Directus URLs) and optional CMS sync on publish.
+- Block types: hero, features, banner, stats, pricing, FAQ, CTA, footer; HTML renderer + default blocks.
+- Migrations `0027_project_site_editor`, `0028_site_editor_theme`.
+- Server terminal WebSocket (`/api/v1/servers/:id/terminal/ws`) with shell session helper.
+- Deployment queue worker, scheduler, and deploy concurrency limits.
+- Read-through cache helper; dashboard attention summary fields.
+
+### Fixed
+- BullMQ deploy job IDs: `deploy-{id}` (colons rejected by BullMQ — fixes Site Studio launch queue errors).
+
+### Improved
+- Site Studio launch initializes `project_site_editor` row.
+- Deployment worker scheduling; metrics worker filters; SSH utilities for asset upload.
+
 ## [0.2.0-beta.11] - 2026-05-27
 
 ### Added

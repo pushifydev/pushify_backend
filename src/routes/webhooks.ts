@@ -265,6 +265,9 @@ webhookRouter.openapi(webhookRoute, async (c) => {
     branch,
   });
 
+  const { scheduleDeploymentProcessing } = await import('../lib/deployment-scheduler');
+  await scheduleDeploymentProcessing(deployment.id, project.id);
+
   logger.info(
     { projectId: project.id, deploymentId: deployment.id, projectName: project.name },
     'Deployment created from GitHub push webhook'
@@ -413,6 +416,9 @@ webhookRouter.openapi(gitlabWebhookRoute, async (c) => {
     commitMessage: push.commits?.[0]?.message?.substring(0, 500),
     branch,
   });
+
+  const { scheduleDeploymentProcessing } = await import('../lib/deployment-scheduler');
+  await scheduleDeploymentProcessing(deployment.id, project.id);
 
   logger.info({ projectId, deploymentId: deployment.id }, 'Deployment from GitLab push');
 

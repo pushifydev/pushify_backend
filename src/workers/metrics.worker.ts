@@ -8,6 +8,7 @@ import { eq } from 'drizzle-orm';
 import { SSHClient } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
 import { logger } from '../lib/logger';
+import { env } from '../config/env';
 import { wsManager } from '../lib/ws';
 import {
   normalizeDockerStatsName,
@@ -84,7 +85,15 @@ async function pollForMetrics(): Promise<void> {
 
         const metricsToInsert: NewContainerMetric[] = [];
 
-        for (const [serverId, projects] of serverGroups) {
+        const serverEntries = [...serverGroups.entries()].sort(([a], [b]) =>
+          String(a ?? '').localeCompare(String(b ?? '')),
+        );
+
+        for (let i = 0; i < serverEntries.length; i++) {
+          const [serverId, projects] = serverEntries[i];
+          if (i > 0 && env.METRICS_SERVER_STAGGER_MS > 0) {
+            await sleep(env.METRICS_SERVER_STAGGER_MS);
+          }
           let ssh: SSHClient | null = null;
           if (serverId) {
             ssh = await connectServerSsh(serverId);
