@@ -46,6 +46,15 @@ import {
   tryHoldDeployWorkerLeadership,
   releaseDeployWorkerLeadership,
 } from '../lib/deploy-worker-lock';
+import {
+  tryAcquireDeploySlots,
+  releaseDeploySlots,
+  hasDeploySlotAvailable,
+  getMemoryActiveDeploymentCount,
+  getGlobalDeployActiveCount,
+  getServerDeployActiveCount,
+} from '../lib/deploy-concurrency';
+import { isQueueAvailable } from '../lib/queue';
 
 /**
  * Auto-detect framework from package.json
@@ -77,27 +86,9 @@ async function detectFramework(workDir: string, rootDirectory: string = '.'): Pr
 const POLL_INTERVAL = 5000; // 5 seconds
 
 let isRunning = false;
-let activeDeployments = 0;
+let useBullMqDeploy = false;
 
-// Per-server concurrency tracking
-const activeDeploymentsPerServer = new Map<string, number>();
-
-function canDeployToServerSlot(serverId: string): boolean {
-  const active = activeDeploymentsPerServer.get(serverId) || 0;
-  return active < env.MAX_CONCURRENT_DEPLOYS_PER_SERVER;
-}
-
-function incrementServerDeploys(serverId: string): void {
-  const active = activeDeploymentsPerServer.get(serverId) || 0;
-  activeDeploymentsPerServer.set(serverId, active + 1);
-}
-
-function decrementServerDeploys(serverId: string): void {
-  const active = activeDeploymentsPerServer.get(serverId) || 0;
-  activeDeploymentsPerServer.set(serverId, Math.max(0, active - 1));
-}
-
-interface DeploymentJob {
+export interface DeploymentJob {
   id: string;
   projectId: string;
   branch: string | null;
@@ -106,6 +97,7 @@ interface DeploymentJob {
   serverId: string | null; // Server ID for concurrency tracking
   isPreview: boolean;
   previewPrNumber: number | null;
+  status?: string;
 }
 
 interface PreviewDeployContext {
@@ -172,10 +164,16 @@ export async function startDeploymentWorker(): Promise<void> {
   // Remote deployments use SSH to execute Docker commands on the remote server
 
   isRunning = true;
-  logger.info('🚀 Deployment worker started');
+  useBullMqDeploy = isQueueAvailable();
 
-  // Start polling for new deployments
-  pollForDeployments();
+  if (useBullMqDeploy) {
+    const { startDeploymentQueueWorker } = await import('./deployment-queue.worker');
+    startDeploymentQueueWorker();
+    logger.info('🚀 Deployment worker started (BullMQ queue + reconcile loop)');
+  } else {
+    logger.info('🚀 Deployment worker started (DB poll — set REDIS_URL for BullMQ)');
+    pollForDeployments();
+  }
 }
 
 /**
@@ -183,6 +181,9 @@ export async function startDeploymentWorker(): Promise<void> {
  */
 export function stopDeploymentWorker(): void {
   isRunning = false;
+  if (useBullMqDeploy) {
+    void import('./deployment-queue.worker').then((m) => m.stopDeploymentQueueWorker());
+  }
   void releaseDeployWorkerLeadership();
   logger.info('Deployment worker stopped');
 }
@@ -203,7 +204,7 @@ async function detectNextStandaloneLocal(workDir: string, rootDirectory: string)
   return false;
 }
 
-async function refreshPendingDeploymentQueueLogs(): Promise<void> {
+export async function refreshPendingDeploymentQueueLogs(): Promise<void> {
   const pending = await db
     .select({
       id: deployments.id,
@@ -217,10 +218,19 @@ async function refreshPendingDeploymentQueueLogs(): Promise<void> {
 
   if (pending.length === 0) return;
 
+  const globalActive = await getGlobalDeployActiveCount();
+  const perServer = new Map<string, number>();
+  for (const p of pending) {
+    const sid = p.serverId || '__local__';
+    if (!perServer.has(sid)) {
+      perServer.set(sid, await getServerDeployActiveCount(sid));
+    }
+  }
+
   const snapshots = buildQueueSnapshots(
     pending.map((p) => ({ id: p.id, serverId: p.serverId })),
-    activeDeploymentsPerServer,
-    activeDeployments
+    perServer,
+    globalActive,
   );
 
   for (const snap of snapshots) {
@@ -244,30 +254,20 @@ async function pollForDeployments(): Promise<void> {
 
       await refreshPendingDeploymentQueueLogs();
 
-      if (activeDeployments >= env.MAX_CONCURRENT_DEPLOYS_TOTAL) {
-        // Global limit reached, skip this cycle
-        logger.debug(
-          { activeDeployments, limit: env.MAX_CONCURRENT_DEPLOYS_TOTAL },
-          'Global deployment concurrency limit reached, waiting...'
-        );
-      } else {
-        const job = await getNextEligibleDeployment();
-        if (job) {
-          const serverId = job.serverId || '__local__';
-          activeDeployments++;
-          incrementServerDeploys(serverId);
-          logger.info(
-            { deploymentId: job.id, serverId, activeDeployments, serverActive: activeDeploymentsPerServer.get(serverId) },
-            'Deployment slot acquired'
+      const job = await getNextEligibleDeployment();
+      if (job) {
+        const serverId = job.serverId || '__local__';
+        const acquired = await tryAcquireDeploySlots(serverId);
+        if (!acquired) {
+          logger.debug(
+            { deploymentId: job.id, serverId, limit: env.MAX_CONCURRENT_DEPLOYS_TOTAL },
+            'Deploy concurrency limit reached, waiting...',
           );
-
-          processDeployment(job).finally(() => {
-            activeDeployments--;
-            decrementServerDeploys(serverId);
-            logger.info(
-              { deploymentId: job.id, serverId, activeDeployments, serverActive: activeDeploymentsPerServer.get(serverId) },
-              'Deployment slot released'
-            );
+        } else {
+          logger.info({ deploymentId: job.id, serverId }, 'Deployment slot acquired (poll mode)');
+          void executeDeploymentJob(job).finally(() => {
+            void releaseDeploySlots(serverId);
+            logger.info({ deploymentId: job.id, serverId }, 'Deployment slot released (poll mode)');
           });
         }
       }
@@ -309,24 +309,37 @@ async function getNextEligibleDeployment(): Promise<DeploymentJob | null> {
 
   for (const job of pending) {
     const serverId = job.serverId || '__local__';
-
-    if (canDeployToServerSlot(serverId)) {
+    if (await hasDeploySlotAvailable(serverId)) {
       return job;
     }
 
     logger.debug(
-      { deploymentId: job.id, serverId, serverActive: activeDeploymentsPerServer.get(serverId) },
-      'Server concurrency limit reached, skipping deployment this cycle'
+      { deploymentId: job.id, serverId },
+      'Server concurrency limit reached, skipping deployment this cycle',
     );
   }
 
   return null;
 }
 
+export async function loadDeploymentJobById(deploymentId: string): Promise<DeploymentJob | null> {
+  const result = await db
+    .select({
+      ...deploymentJobSelect,
+      status: deployments.status,
+    })
+    .from(deployments)
+    .innerJoin(projects, eq(deployments.projectId, projects.id))
+    .where(eq(deployments.id, deploymentId))
+    .limit(1);
+
+  return result[0] || null;
+}
+
 /**
  * Process a deployment
  */
-async function processDeployment(job: DeploymentJob): Promise<void> {
+export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
   const logBuffer: string[] = [];
   const addLog = (message: string) => {
     const timestamp = new Date().toISOString();
@@ -1338,5 +1351,5 @@ export function isWorkerRunning(): boolean {
  * Get current number of active deployments
  */
 export function getActiveDeploymentCount(): number {
-  return activeDeployments;
+  return getMemoryActiveDeploymentCount();
 }

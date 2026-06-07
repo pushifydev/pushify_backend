@@ -30,4 +30,10 @@ export async function runStartupChecks(role: typeof env.PROCESS_ROLE): Promise<v
   if (role === 'api' && env.NODE_ENV === 'production') {
     logger.info('API-only process — background workers should run on a separate PROCESS_ROLE=worker service');
   }
+
+  if (env.NODE_ENV === 'production' && role !== 'worker' && !env.API_BASE_URL) {
+    logger.warn(
+      'API_BASE_URL is not set — webhook install URLs will use http://localhost. Set API_BASE_URL=https://api.yourdomain.com',
+    );
+  }
 }

@@ -47,7 +47,6 @@ export interface NotificationJobData {
 export interface DeploymentJobData {
   deploymentId: string;
   projectId: string;
-  action: 'build' | 'deploy' | 'cleanup';
 }
 
 export interface HealthCheckJobData {
@@ -170,14 +169,26 @@ export async function addNotificationJob(data: NotificationJobData): Promise<Job
   return job;
 }
 
-// Add deployment job to queue
-export async function addDeploymentJob(data: DeploymentJobData): Promise<Job<DeploymentJobData> | null> {
+/** Enqueue a pending deployment (deduped by deployment id). */
+export async function addDeploymentProcessingJob(
+  data: DeploymentJobData,
+): Promise<Job<DeploymentJobData> | null> {
   const queue = getDeploymentQueue();
   if (!queue) return null;
 
-  const job = await queue.add(`deployment-${data.action}`, data);
+  const job = await queue.add('process', data, {
+    // BullMQ rejects custom jobIds containing ':' (except repeatable 3-part ids)
+    jobId: `deploy-${data.deploymentId}`,
+    removeOnComplete: true,
+    removeOnFail: false,
+  });
   logger.debug({ jobId: job.id, deploymentId: data.deploymentId }, 'Deployment job added to queue');
   return job;
+}
+
+/** @deprecated Use addDeploymentProcessingJob */
+export async function addDeploymentJob(data: DeploymentJobData): Promise<Job<DeploymentJobData> | null> {
+  return addDeploymentProcessingJob(data);
 }
 
 // Add health check job to queue

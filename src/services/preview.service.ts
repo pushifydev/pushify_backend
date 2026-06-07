@@ -113,6 +113,9 @@ export const previewService = {
         previewPrNumber: input.prNumber,
       });
 
+      const { scheduleDeploymentProcessing } = await import('../lib/deployment-scheduler');
+      await scheduleDeploymentProcessing(deployment.id, projectId);
+
       // Update preview record
       const preview = await previewRepository.update(existing.id, {
         deploymentId: deployment.id,
@@ -135,6 +138,9 @@ export const previewService = {
       isPreview: true,
       previewPrNumber: input.prNumber,
     });
+
+    const { scheduleDeploymentProcessing } = await import('../lib/deployment-scheduler');
+    await scheduleDeploymentProcessing(deployment.id, projectId);
 
     // Generate preview URL and container name
     const previewUrl = this.generatePreviewUrl(project.slug, input.prNumber);
