@@ -9,7 +9,7 @@ import { getCmsBridgeUrls } from '../lib/cms-bridge-urls';
 import { renderSiteHtml } from '../lib/site-html-renderer';
 import { publishSiteHtmlToServer, getProjectProductionUrl } from '../lib/site-editor-publish';
 import { syncToHeadlessCms } from '../lib/cms-sync';
-import { defaultBlocksForTemplate } from '../sites/default-blocks';
+import { defaultBlocksForTemplate, defaultThemeForTemplate } from '../sites/default-blocks';
 import type { SiteBlock, SiteSeo, CmsConfig, CmsMode } from '../sites/block-types';
 import { normalizeSiteTheme, type SiteTheme } from '../sites/theme';
 import type { SiteStudioStack } from '../sites/types';
@@ -69,6 +69,7 @@ export const siteEditorService = {
     if (existing) return;
 
     const blocks = defaultBlocksForTemplate(siteTemplateId, siteName);
+    const theme = normalizeSiteTheme(defaultThemeForTemplate(siteTemplateId));
     await db.insert(projectSiteEditor).values({
       projectId,
       seo: {
@@ -78,6 +79,7 @@ export const siteEditorService = {
         keywords: seo?.keywords ?? '',
       },
       blocks,
+      theme,
       cmsConfig: { mode: 'builtin' },
     });
   },

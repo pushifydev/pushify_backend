@@ -1,5 +1,6 @@
 import type { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
+import { getConnInfo } from '@hono/node-server/conninfo';
 import { getOptionalRedis } from '../lib/redis-client';
 import { redisFixedWindowHit } from '../lib/rate-limit-redis';
 import { logger } from '../lib/logger';
@@ -35,18 +36,36 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
+function getSocketIp(c: Context): string {
+  try {
+    return getConnInfo(c).remote.address || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+/**
+ * Derive the client IP for rate limiting.
+ *
+ * X-Forwarded-For is client-controllable, so it is ONLY trusted when TRUSTED_PROXY_HOPS
+ * is configured (the number of reverse proxies in front of the app). With the default of
+ * 0 we use the real socket address and ignore the header entirely — otherwise an attacker
+ * could rotate X-Forwarded-For to get a fresh counter per request and bypass the limit (H-3).
+ */
 function getClientIp(c: Context): string {
-  const xForwardedFor = c.req.header('x-forwarded-for');
-  if (xForwardedFor) {
-    return xForwardedFor.split(',')[0].trim();
+  const hops = env.TRUSTED_PROXY_HOPS;
+  if (hops > 0) {
+    const xff = c.req.header('x-forwarded-for');
+    if (xff) {
+      const ips = xff.split(',').map((s) => s.trim()).filter(Boolean);
+      // Each trusted proxy appends the peer it saw, so the real client is `hops` from the
+      // right. Anything further left is attacker-supplied and must not be trusted.
+      const idx = ips.length - hops;
+      if (idx >= 0 && idx < ips.length) return ips[idx];
+      if (ips.length > 0) return ips[0];
+    }
   }
-
-  const xRealIp = c.req.header('x-real-ip');
-  if (xRealIp) {
-    return xRealIp;
-  }
-
-  return c.req.header('cf-connecting-ip') || 'unknown';
+  return getSocketIp(c);
 }
 
 function defaultKeyGenerator(c: Context): string {

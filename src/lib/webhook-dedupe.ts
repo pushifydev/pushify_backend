@@ -27,7 +27,10 @@ export async function claimGitHubWebhookDelivery(deliveryId: string | undefined)
     }
     return true;
   } catch (err) {
-    logger.warn({ err, deliveryId }, 'Webhook dedupe Redis failed; processing delivery anyway');
-    return true;
+    // Redis is configured but unreachable. Fail CLOSED: rethrow so the webhook returns a
+    // non-2xx and GitHub retries the delivery instead of us processing it with no dedupe
+    // (which could create duplicate deployments). (No Redis configured → return true above.) — H-6
+    logger.error({ err, deliveryId }, 'Webhook dedupe store unavailable; deferring for retry');
+    throw err;
   }
 }

@@ -730,8 +730,11 @@ deploymentRouter.get('/:deploymentId/container-logs/history', async (c) => {
   const locale = c.get('locale');
   const projectId = c.req.param('projectId') as string;
   const deploymentId = c.req.param('deploymentId') as string;
-  const limit = parseInt(c.req.query('limit') || '10');
-  const offset = parseInt(c.req.query('offset') || '0');
+  // Bound limit/offset — an unbounded limit would pull every log chunk into memory (H-10 DoS).
+  const rawLimit = parseInt(c.req.query('limit') || '10', 10);
+  const rawOffset = parseInt(c.req.query('offset') || '0', 10);
+  const limit = Number.isFinite(rawLimit) ? Math.min(100, Math.max(1, rawLimit)) : 10;
+  const offset = Number.isFinite(rawOffset) ? Math.max(0, rawOffset) : 0;
 
   // Validate access
   await deploymentService.getDeploymentForStreaming(

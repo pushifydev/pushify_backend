@@ -6,7 +6,44 @@ function escapeHtml(text: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+const SAFE_URL_SCHEMES = new Set(['http:', 'https:', 'mailto:', 'tel:']);
+
+/**
+ * Allow only relative/anchor URLs and http(s)/mailto/tel absolute URLs.
+ * Blocks javascript:, data:, vbscript: and similar XSS vectors (CR-5).
+ */
+function sanitizeUrl(url: string): string {
+  // Strip control chars / whitespace used to obfuscate schemes (e.g. "java\tscript:").
+  const cleaned = (url ?? '').trim().replace(/[\u0000-\u0020\u007f]/g, '');
+  if (!cleaned) return '';
+  const scheme = cleaned.match(/^([a-z][a-z0-9+.-]*):/i);
+  if (scheme && !SAFE_URL_SCHEMES.has(scheme[1].toLowerCase() + ':')) {
+    return '';
+  }
+  return cleaned;
+}
+
+/**
+ * Sanitize a URL for use inside a CSS url('...') context. HTML-escaping is not
+ * enough there (entities are decoded before the CSS parser runs), so percent-encode
+ * any character that could break out of url('...').
+ */
+function sanitizeCssUrl(url: string): string {
+  return sanitizeUrl(url).replace(
+    /['"()\\\s<>]/g,
+    (c) => '%' + c.charCodeAt(0).toString(16).padStart(2, '0'),
+  );
+}
+
+/** Clamp an arbitrary value to a CSS-safe opacity in [0, 1]. */
+function clampOpacity(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0.4;
+  return Math.min(1, Math.max(0, n));
 }
 
 function renderBlock(block: SiteBlock): string {
@@ -15,11 +52,11 @@ function renderBlock(block: SiteBlock): string {
       return `<section class="hero">
   <h1>${escapeHtml(block.headline)}</h1>
   <p class="sub">${escapeHtml(block.subheadline)}</p>
-  <a class="btn" href="${escapeHtml(block.ctaUrl)}">${escapeHtml(block.ctaText)}</a>
+  <a class="btn" href="${escapeHtml(sanitizeUrl(block.ctaUrl))}">${escapeHtml(block.ctaText)}</a>
 </section>`;
     case 'banner':
-      return `<section class="banner" style="--overlay:${block.overlayOpacity}">
-  <div class="banner-bg" style="background-image:url('${escapeHtml(block.imageUrl)}')"></div>
+      return `<section class="banner" style="--overlay:${clampOpacity(block.overlayOpacity)}">
+  <div class="banner-bg" style="background-image:url('${escapeHtml(sanitizeCssUrl(block.imageUrl))}')"></div>
   <div class="banner-content">
     <h2>${escapeHtml(block.headline)}</h2>
     <p>${escapeHtml(block.subheadline)}</p>
@@ -54,7 +91,7 @@ function renderBlock(block: SiteBlock): string {
     <h3>${escapeHtml(p.name)}</h3>
     <p class="plan-price"><span>${escapeHtml(p.price)}</span><small>${escapeHtml(p.period)}</small></p>
     <ul>${p.features.map((f) => `<li>${escapeHtml(f)}</li>`).join('')}</ul>
-    <a class="btn${p.highlighted ? '' : ' btn-outline'}" href="${escapeHtml(p.ctaUrl)}">${escapeHtml(p.ctaText)}</a>
+    <a class="btn${p.highlighted ? '' : ' btn-outline'}" href="${escapeHtml(sanitizeUrl(p.ctaUrl))}">${escapeHtml(p.ctaText)}</a>
   </article>`,
     )
     .join('')}</div>
@@ -72,13 +109,13 @@ function renderBlock(block: SiteBlock): string {
       return `<section class="cta">
   <h2>${escapeHtml(block.title)}</h2>
   <p>${escapeHtml(block.description)}</p>
-  <a class="btn" href="${escapeHtml(block.buttonUrl)}">${escapeHtml(block.buttonText)}</a>
+  <a class="btn" href="${escapeHtml(sanitizeUrl(block.buttonUrl))}">${escapeHtml(block.buttonText)}</a>
 </section>`;
     case 'footer':
       return `<footer>
   <p>${escapeHtml(block.copyright)}</p>
   <nav>${block.links
-    .map((l) => `<a href="${escapeHtml(l.url)}">${escapeHtml(l.label)}</a>`)
+    .map((l) => `<a href="${escapeHtml(sanitizeUrl(l.url))}">${escapeHtml(l.label)}</a>`)
     .join('')}</nav>
 </footer>`;
     default:
@@ -141,7 +178,7 @@ export function renderSiteHtml(
   const theme = normalizeSiteTheme(themeInput);
   const title = seo.title || siteName;
   const description = seo.description || '';
-  const ogImage = seo.ogImage ? `<meta property="og:image" content="${escapeHtml(seo.ogImage)}"/>` : '';
+  const ogImage = seo.ogImage ? `<meta property="og:image" content="${escapeHtml(sanitizeUrl(seo.ogImage))}"/>` : '';
   const googleFont =
     theme.fontFamily === 'rounded'
       ? '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap"/>'

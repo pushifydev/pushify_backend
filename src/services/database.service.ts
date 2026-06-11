@@ -371,15 +371,24 @@ export const databaseService = {
       throw new HTTPException(404, { message: t(locale, 'databases', 'notFound') });
     }
 
+    // Whitelist updatable fields — the route forwards the raw request body, so without this
+    // an attacker could set host/password/connectionString/serverId/status via the body (M-4).
+    const safeInput: UpdateDatabaseInput = {};
+    if (typeof input.name === 'string') safeInput.name = input.name;
+    if (typeof input.description === 'string') safeInput.description = input.description;
+    if (typeof input.backupEnabled === 'boolean') safeInput.backupEnabled = input.backupEnabled;
+    if (typeof input.backupRetentionDays === 'number') safeInput.backupRetentionDays = input.backupRetentionDays;
+    if (typeof input.externalAccess === 'boolean') safeInput.externalAccess = input.externalAccess;
+
     // Check name uniqueness if changing
-    if (input.name && input.name !== database.name) {
-      const existing = await databaseRepository.findByName(organizationId, input.name);
+    if (safeInput.name && safeInput.name !== database.name) {
+      const existing = await databaseRepository.findByName(organizationId, safeInput.name);
       if (existing) {
         throw new HTTPException(400, { message: t(locale, 'databases', 'nameExists') });
       }
     }
 
-    const updated = await databaseRepository.update(databaseId, input);
+    const updated = await databaseRepository.update(databaseId, safeInput);
     return {
       ...updated,
       password: '••••••••',
@@ -465,7 +474,7 @@ export const databaseService = {
     locale: SupportedLocale
   ) {
     const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
+    if (!membership || !['owner', 'admin'].includes(membership.role)) {
       throw new HTTPException(403, { message: t(locale, 'errors', 'forbidden') });
     }
 
@@ -503,12 +512,20 @@ export const databaseService = {
     locale: SupportedLocale
   ) {
     const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
+    if (!membership || !['owner', 'admin'].includes(membership.role)) {
       throw new HTTPException(403, { message: t(locale, 'errors', 'forbidden') });
     }
 
     const connection = await databaseRepository.findConnectionById(connectionId);
     if (!connection) {
+      throw new HTTPException(404, { message: t(locale, 'databases', 'connectionNotFound') });
+    }
+
+    // Verify the connection's database belongs to this organization.
+    // databaseConnections has no organizationId, so without this check any user
+    // could delete another tenant's connection by id (H-2 IDOR).
+    const database = await databaseRepository.findById(connection.databaseId);
+    if (!database || database.organizationId !== organizationId) {
       throw new HTTPException(404, { message: t(locale, 'databases', 'connectionNotFound') });
     }
 

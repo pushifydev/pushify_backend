@@ -1,6 +1,6 @@
 {
   "name": "pushify-backend",
-  "version": "0.2.0-beta.12",
+  "version": "0.2.0-beta.13",
   "private": true,
   "description": "Pushify cloud deployment platform — API server",
   "license": "MIT",

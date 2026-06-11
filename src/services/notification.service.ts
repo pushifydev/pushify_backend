@@ -5,6 +5,7 @@ import { notificationRepository } from '../repositories/notification.repository'
 import { projectRepository } from '../repositories/project.repository';
 import { organizationRepository } from '../repositories/organization.repository';
 import { encrypt, decrypt } from '../lib/encryption';
+import { assertPublicUrl } from '../lib/ssrf-guard';
 import { logger } from '../lib/logger';
 import { t, type SupportedLocale } from '../i18n';
 import { env } from '../config/env';
@@ -175,6 +176,12 @@ export const notificationService = {
       throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
     }
 
+    // Verify project belongs to organization (prevents cross-tenant access via a forged projectId)
+    const project = await projectRepository.findById(projectId);
+    if (!project || project.organizationId !== organizationId) {
+      throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });
+    }
+
     // Verify channel exists and belongs to project
     const channel = await notificationRepository.findChannelById(channelId);
     if (!channel || channel.projectId !== projectId) {
@@ -222,6 +229,12 @@ export const notificationService = {
       throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
     }
 
+    // Verify project belongs to organization (prevents cross-tenant access via a forged projectId)
+    const project = await projectRepository.findById(projectId);
+    if (!project || project.organizationId !== organizationId) {
+      throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });
+    }
+
     // Verify channel exists and belongs to project
     const channel = await notificationRepository.findChannelById(channelId);
     if (!channel || channel.projectId !== projectId) {
@@ -255,9 +268,9 @@ export const notificationService = {
       throw new HTTPException(404, { message: t(locale, 'notifications', 'notFound') });
     }
 
-    // Get project name
+    // Get project and verify it belongs to the organization (prevents cross-tenant access)
     const project = await projectRepository.findById(projectId);
-    if (!project) {
+    if (!project || project.organizationId !== organizationId) {
       throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });
     }
 
@@ -293,6 +306,12 @@ export const notificationService = {
     const membership = await organizationRepository.findMember(organizationId, userId);
     if (!membership) {
       throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
+    }
+
+    // Verify project belongs to organization (prevents cross-tenant access via a forged projectId)
+    const project = await projectRepository.findById(projectId);
+    if (!project || project.organizationId !== organizationId) {
+      throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });
     }
 
     // Verify channel exists and belongs to project
@@ -443,9 +462,13 @@ export const notificationService = {
         ],
       };
 
+      // SSRF guard: block Slack webhook URLs that resolve to private/internal addresses.
+      await assertPublicUrl(config.webhookUrl);
+
       const response = await fetch(config.webhookUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        redirect: 'manual',
         body: JSON.stringify(slackPayload),
       });
 
@@ -511,9 +534,13 @@ export const notificationService = {
         headers['X-Pushify-Signature'] = `sha256=${signature}`;
       }
 
+      // SSRF guard: block webhook URLs that resolve to private/internal addresses.
+      await assertPublicUrl(config.url);
+
       const response = await fetch(config.url, {
         method: 'POST',
         headers,
+        redirect: 'manual',
         body: JSON.stringify({
           event: payload.event,
           timestamp: new Date().toISOString(),

@@ -202,6 +202,19 @@ export const authService = {
     const userId = payload.sub!;
     const organizationId = payload.org;
 
+    // Brute-force guard: cap failed 2FA attempts per user within the token window (H-8).
+    // Without this, the 5-minute token could be replayed to guess the 6-digit TOTP / backup codes.
+    const { getOptionalRedis } = await import('../lib/redis-client');
+    const twoFactorRedis = getOptionalRedis();
+    const attemptKey = `2fa:attempts:${userId}`;
+    const MAX_2FA_ATTEMPTS = 5;
+    if (twoFactorRedis) {
+      const attempts = Number(await twoFactorRedis.get(attemptKey)) || 0;
+      if (attempts >= MAX_2FA_ATTEMPTS) {
+        throw new HTTPException(429, { message: t(locale, 'errors', 'tooManyRequests') });
+      }
+    }
+
     // Find user
     const fullUser = await userRepository.findById(userId);
     if (!fullUser) {
@@ -220,8 +233,15 @@ export const authService = {
     }
 
     if (!isValid) {
+      if (twoFactorRedis) {
+        const n = await twoFactorRedis.incr(attemptKey);
+        if (n === 1) await twoFactorRedis.expire(attemptKey, 300);
+      }
       throw new HTTPException(401, { message: t(locale, 'twoFactor', 'invalidCode') });
     }
+
+    // Successful 2FA — reset the failed-attempt counter.
+    if (twoFactorRedis) await twoFactorRedis.del(attemptKey);
 
     // Get organization details
     const membership = await organizationRepository.findUserFirstOrganization(userId);

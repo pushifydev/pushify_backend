@@ -27,7 +27,10 @@ export async function claimStripeWebhookEvent(eventId: string | undefined): Prom
     }
     return true;
   } catch (err) {
-    logger.warn({ err, eventId }, 'Stripe webhook dedupe Redis failed; processing event anyway');
-    return true;
+    // Redis is configured but unreachable. Fail CLOSED: rethrow so the webhook returns a
+    // non-2xx and Stripe retries later (it retries for days) instead of processing the event
+    // with no dedupe. (When Redis is simply not configured we return true above.) — H-6
+    logger.error({ err, eventId }, 'Stripe webhook dedupe store unavailable; deferring for retry');
+    throw err;
   }
 }

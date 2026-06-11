@@ -1,7 +1,10 @@
 import { Redis } from 'ioredis';
 import { randomUUID } from 'crypto';
+import { eq } from 'drizzle-orm';
 import { logger } from './logger';
 import { env } from '../config/env';
+import { db } from '../db';
+import { projects, servers, databases } from '../db/schema';
 import type { WSEvent, WSServerMessage, WSClientMessage } from '../types/ws';
 
 const WS_CHANNEL_PREFIX = 'ws:';
@@ -76,7 +79,7 @@ class WebSocketManager {
     });
 
     // Auto-subscribe to org channel
-    this.subscribe(clientId, `org:${organizationId}`);
+    void this.subscribe(clientId, `org:${organizationId}`);
 
     logger.info({ clientId, userId, clients: this.clients.size }, 'WS client connected');
   }
@@ -95,14 +98,17 @@ class WebSocketManager {
 
   // ============ Subscriptions ============
 
-  subscribe(clientId: string, channel: string) {
+  async subscribe(clientId: string, channel: string) {
     const client = this.clients.get(clientId);
     if (!client) return;
 
-    if (!this.canAccessChannel(client, channel)) {
+    if (!(await this.canAccessChannel(client, channel))) {
       this.sendTo(clientId, { type: 'error', message: `Access denied: ${channel}` });
       return;
     }
+
+    // Re-check the client is still connected after the async ownership lookup.
+    if (!this.clients.has(clientId)) return;
 
     client.subscriptions.add(channel);
     this.subscribeRedis(channel);
@@ -212,12 +218,39 @@ class WebSocketManager {
     }
   }
 
-  private canAccessChannel(client: WSClient, channel: string): boolean {
-    if (channel.startsWith('org:')) {
-      return channel === `org:${client.organizationId}`;
+  /**
+   * Authorize a channel subscription. project/server/database channels are resolved
+   * to their owning organization and matched against the client's org — without this
+   * any authenticated user could subscribe to another tenant's live logs/events (H-1).
+   */
+  private async canAccessChannel(client: WSClient, channel: string): Promise<boolean> {
+    const sep = channel.indexOf(':');
+    if (sep === -1) return false;
+    const namespace = channel.slice(0, sep);
+    const id = channel.slice(sep + 1);
+    if (!id) return false;
+
+    if (namespace === 'org') return id === client.organizationId;
+    if (namespace === 'user') return id === client.userId;
+    if (!client.organizationId) return false;
+
+    try {
+      let orgId: string | undefined;
+      if (namespace === 'project') {
+        orgId = (await db.query.projects.findFirst({ where: eq(projects.id, id) }))?.organizationId;
+      } else if (namespace === 'server') {
+        orgId = (await db.query.servers.findFirst({ where: eq(servers.id, id) }))?.organizationId;
+      } else if (namespace === 'database') {
+        orgId = (await db.query.databases.findFirst({ where: eq(databases.id, id) }))?.organizationId;
+      } else {
+        // Unknown channel namespace — deny by default.
+        return false;
+      }
+      return orgId === client.organizationId;
+    } catch {
+      // Invalid id (e.g. malformed UUID) or DB error — deny.
+      return false;
     }
-    // project/server channels: trust org membership
-    return true;
   }
 
   private sendTo(clientId: string, message: WSServerMessage) {

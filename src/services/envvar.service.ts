@@ -42,12 +42,18 @@ export const envVarService = {
     projectId: string,
     organizationId: string,
     userId: string,
-    locale: SupportedLocale
+    locale: SupportedLocale,
+    requireWrite = false
   ) {
     // Verify organization membership
     const membership = await organizationRepository.findMember(organizationId, userId);
     if (!membership) {
       throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
+    }
+
+    // Writes (create/update/delete) require a non-viewer role — viewer is read-only (M-3).
+    if (requireWrite && !['owner', 'admin', 'member'].includes(membership.role)) {
+      throw new HTTPException(403, { message: t(locale, 'errors', 'forbidden') });
     }
 
     // Verify project exists and belongs to organization
@@ -129,7 +135,7 @@ export const envVarService = {
     input: CreateEnvVarInput,
     locale: SupportedLocale
   ) {
-    await this.checkProjectAccess(projectId, organizationId, userId, locale);
+    await this.checkProjectAccess(projectId, organizationId, userId, locale, true);
 
     const environment = input.environment || 'production';
 
@@ -177,7 +183,7 @@ export const envVarService = {
     input: BulkCreateInput,
     locale: SupportedLocale
   ) {
-    await this.checkProjectAccess(projectId, organizationId, userId, locale);
+    await this.checkProjectAccess(projectId, organizationId, userId, locale, true);
 
     const environment = input.environment || 'production';
     const results: Array<{
@@ -245,7 +251,7 @@ export const envVarService = {
     input: UpdateEnvVarInput,
     locale: SupportedLocale
   ) {
-    await this.checkProjectAccess(projectId, organizationId, userId, locale);
+    await this.checkProjectAccess(projectId, organizationId, userId, locale, true);
 
     const envVar = await envVarRepository.findById(envVarId);
     if (!envVar || envVar.projectId !== projectId) {
@@ -287,7 +293,7 @@ export const envVarService = {
     userId: string,
     locale: SupportedLocale
   ) {
-    await this.checkProjectAccess(projectId, organizationId, userId, locale);
+    await this.checkProjectAccess(projectId, organizationId, userId, locale, true);
 
     const envVar = await envVarRepository.findById(envVarId);
     if (!envVar || envVar.projectId !== projectId) {
@@ -306,7 +312,7 @@ export const envVarService = {
     overwrite: boolean = false,
     locale?: SupportedLocale,
   ): Promise<{ copied: number; skipped: number; overwritten: number }> {
-    await this.checkProjectAccess(projectId, organizationId, userId, locale as SupportedLocale);
+    await this.checkProjectAccess(projectId, organizationId, userId, locale as SupportedLocale, true);
 
     // Get source env vars
     const sourceVars = await envVarRepository.findByProject(projectId, sourceEnv);
