@@ -125,6 +125,16 @@ export type SiteBlock =
   | StatsBlock
   | FooterBlock;
 
+/** A single page of a multi-page site. The first page (slug '') is the home page. */
+export interface SitePage {
+  id: string;
+  title: string;
+  /** URL path segment. Empty string = home (served at /). */
+  slug: string;
+  blocks: SiteBlock[];
+  seo: SiteSeo;
+}
+
 export type CmsMode = 'builtin' | 'strapi' | 'directus';
 
 export interface CmsConfig {

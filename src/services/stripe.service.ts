@@ -371,10 +371,24 @@ export const stripeService = {
         if (subscriptionId) {
           const sub = await stripe.subscriptions.retrieve(subscriptionId);
           const periodEnd = getSubscriptionCurrentPeriodEnd(sub);
+
+          // Derive the plan from the subscription's actual Price ID rather than trusting
+          // the client-supplied metadata.planType (H-4). Fall back to metadata only if the
+          // price isn't in our map.
+          const priceId = sub.items.data[0]?.price?.id;
+          const pricePlan = priceId ? getPlanFromPriceId(priceId) : null;
+          if (pricePlan && pricePlan !== planType) {
+            logger.warn(
+              { organizationId, metadataPlan: planType, pricePlan, priceId },
+              'checkout.session.completed: metadata planType disagrees with paid price; using price',
+            );
+          }
+          const effectivePlan = pricePlan ?? planType;
+
           await db
             .update(organizations)
             .set({
-              plan: planType,
+              plan: effectivePlan,
               stripeSubscriptionId: subscriptionId,
               billingStatus: 'active',
               billingPaymentFailedNotifiedAt: null,
@@ -386,7 +400,7 @@ export const stripeService = {
           const org = await organizationRepository.findById(organizationId);
           const notifyEmail = await resolveBillingNotifyEmail(organizationId);
           if (notifyEmail && org) {
-            const planName = getPlanInfo(planType).name;
+            const planName = getPlanInfo(effectivePlan).name;
             await sendBillingPlanActivatedEmail(notifyEmail, org.name, planName, 'en');
           }
         }
@@ -395,16 +409,15 @@ export const stripeService = {
 
       case 'customer.subscription.updated': {
         const sub = event.data.object as Stripe.Subscription;
-        let organizationId = getOrganizationIdFromSubscription(sub);
-
-        if (!organizationId) {
-          const [org] = await db
-            .select({ id: organizations.id })
-            .from(organizations)
-            .where(eq(organizations.stripeSubscriptionId, sub.id))
-            .limit(1);
-          organizationId = org?.id ?? null;
-        }
+        // Authoritative mapping is OUR stored subscription→org link, not the mutable Stripe
+        // metadata (which an attacker could point at another tenant). Use the DB first and
+        // fall back to metadata only when we have no stored link yet (first event). — H-5
+        const [orgBySub] = await db
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(eq(organizations.stripeSubscriptionId, sub.id))
+          .limit(1);
+        const organizationId = orgBySub?.id ?? getOrganizationIdFromSubscription(sub);
 
         if (!organizationId) {
           logger.warn({ subscriptionId: sub.id }, 'subscription.updated: organization not found');
@@ -449,16 +462,15 @@ export const stripeService = {
 
       case 'customer.subscription.deleted': {
         const sub = event.data.object as Stripe.Subscription;
-        let organizationId = getOrganizationIdFromSubscription(sub);
-
-        if (!organizationId) {
-          const [org] = await db
-            .select({ id: organizations.id })
-            .from(organizations)
-            .where(eq(organizations.stripeSubscriptionId, sub.id))
-            .limit(1);
-          organizationId = org?.id ?? null;
-        }
+        // Authoritative mapping is OUR stored subscription→org link, not the mutable Stripe
+        // metadata (which an attacker could point at another tenant). Use the DB first and
+        // fall back to metadata only when we have no stored link yet (first event). — H-5
+        const [orgBySub] = await db
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(eq(organizations.stripeSubscriptionId, sub.id))
+          .limit(1);
+        const organizationId = orgBySub?.id ?? getOrganizationIdFromSubscription(sub);
 
         if (!organizationId) break;
 

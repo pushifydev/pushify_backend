@@ -443,8 +443,9 @@ webhookRouter.post('/stripe', async (c) => {
     return c.json({ received: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
+    // Log detail server-side; don't echo internal error messages to the caller (L2).
     logger.error({ err, message }, 'Stripe webhook error');
-    return c.json({ error: 'Webhook processing failed', message }, 400);
+    return c.json({ error: 'Webhook processing failed' }, 400);
   }
 });
 

@@ -53,12 +53,18 @@ export const domainService = {
     projectId: string,
     organizationId: string,
     userId: string,
-    locale: SupportedLocale
+    locale: SupportedLocale,
+    requireWrite = false
   ) {
     // Verify organization membership
     const membership = await organizationRepository.findMember(organizationId, userId);
     if (!membership) {
       throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
+    }
+
+    // Writes (create/delete/setPrimary/verify/nginx) require a non-viewer role (M-3).
+    if (requireWrite && !['owner', 'admin', 'member'].includes(membership.role)) {
+      throw new HTTPException(403, { message: t(locale, 'errors', 'forbidden') });
     }
 
     // Verify project exists and belongs to organization
@@ -223,7 +229,7 @@ export const domainService = {
     input: CreateDomainInput,
     locale: SupportedLocale
   ) {
-    await this.checkProjectAccess(projectId, organizationId, userId, locale);
+    await this.checkProjectAccess(projectId, organizationId, userId, locale, true);
 
     // Validate domain format
     const domainName = input.domain.toLowerCase().trim();
@@ -268,7 +274,7 @@ export const domainService = {
     userId: string,
     locale: SupportedLocale
   ) {
-    await this.checkProjectAccess(projectId, organizationId, userId, locale);
+    await this.checkProjectAccess(projectId, organizationId, userId, locale, true);
 
     const domain = await domainRepository.findById(domainId);
     if (!domain || domain.projectId !== projectId) {
@@ -288,7 +294,7 @@ export const domainService = {
     userId: string,
     locale: SupportedLocale
   ) {
-    const project = await this.checkProjectAccess(projectId, organizationId, userId, locale);
+    const project = await this.checkProjectAccess(projectId, organizationId, userId, locale, true);
 
     const domain = await domainRepository.findById(domainId);
     if (!domain || domain.projectId !== projectId) {
@@ -463,7 +469,7 @@ export const domainService = {
     userId: string,
     locale: SupportedLocale
   ) {
-    const project = await this.checkProjectAccess(projectId, organizationId, userId, locale);
+    const project = await this.checkProjectAccess(projectId, organizationId, userId, locale, true);
 
     const domain = await domainRepository.findById(domainId);
     if (!domain || domain.projectId !== projectId) {
@@ -548,7 +554,7 @@ export const domainService = {
     settings: Record<string, unknown>,
     locale: SupportedLocale
   ) {
-    const project = await this.checkProjectAccess(projectId, organizationId, userId, locale);
+    const project = await this.checkProjectAccess(projectId, organizationId, userId, locale, true);
 
     const domain = await domainRepository.findById(domainId);
     if (!domain || domain.projectId !== projectId) {

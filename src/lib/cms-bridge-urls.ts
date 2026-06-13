@@ -7,7 +7,9 @@ export interface CmsBridgeUrls {
   label: string;
 }
 
-const STACK_PATHS: Record<SiteStudioStack, { path: string; label: string; docs?: string }> = {
+// `static` sites have no CMS admin, so they intentionally have no entry — getCmsBridgeUrls
+// returns a null adminUrl for any stack not listed here.
+const STACK_PATHS: Partial<Record<SiteStudioStack, { path: string; label: string; docs?: string }>> = {
   wordpress: { path: '/wp-admin/', label: 'WordPress Admin', docs: 'https://wordpress.org/documentation/' },
   ghost: { path: '/ghost/', label: 'Ghost Admin', docs: 'https://ghost.org/docs/' },
   strapi: { path: '/admin', label: 'Strapi Admin', docs: 'https://docs.strapi.io/' },
@@ -25,6 +27,9 @@ export function getCmsBridgeUrls(
   }
 
   const meta = STACK_PATHS[stack as SiteStudioStack];
+  if (!meta) {
+    return { adminUrl: null, previewUrl: baseUrl, docsUrl: null, label: 'CMS' };
+  }
   const origin = baseUrl.replace(/\/$/, '');
 
   return {

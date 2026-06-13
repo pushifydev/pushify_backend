@@ -4,6 +4,7 @@ import { projectRepository } from '../repositories/project.repository';
 import { organizationRepository } from '../repositories/organization.repository';
 import { notificationService } from './notification.service';
 import { restartPushifyContainer } from '../lib/container-resolve';
+import { assertPublicUrl } from '../lib/ssrf-guard';
 import { logger } from '../lib/logger';
 import { t, type SupportedLocale } from '../i18n';
 import { planLimitsService } from './plan-limits.service';
@@ -159,12 +160,16 @@ export const healthCheckService = {
     const startTime = Date.now();
 
     try {
+      // SSRF guard: reject health-check URLs that resolve to private/internal addresses.
+      await assertPublicUrl(healthCheckUrl);
+
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
 
       const response = await fetch(healthCheckUrl, {
         method: 'GET',
         signal: controller.signal,
+        redirect: 'manual',
         headers: {
           'User-Agent': 'Pushify-HealthCheck/1.0',
         },
@@ -173,8 +178,12 @@ export const healthCheckService = {
       clearTimeout(timeout);
       const responseTimeMs = Date.now() - startTime;
 
+      // With redirect:'manual', a 3xx surfaces as an opaque redirect (status 0) — treat it
+      // as "up" so SSRF protection doesn't flip legitimately-redirecting endpoints unhealthy.
+      const healthy = response.ok || response.type === 'opaqueredirect';
+
       return {
-        healthy: response.ok,
+        healthy,
         responseTimeMs,
         statusCode: response.status,
       };

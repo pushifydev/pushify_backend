@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { eq } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { db } from '../db';
@@ -6,11 +7,12 @@ import { projectSiteEditor } from '../db/schema/site-editor';
 import { organizationRepository } from '../repositories/organization.repository';
 import { encrypt } from '../lib/encryption';
 import { getCmsBridgeUrls } from '../lib/cms-bridge-urls';
-import { renderSiteHtml } from '../lib/site-html-renderer';
-import { publishSiteHtmlToServer, getProjectProductionUrl } from '../lib/site-editor-publish';
+import { renderSiteHtml, renderSiteFiles } from '../lib/site-html-renderer';
+import { publishSiteFilesToServer, getProjectProductionUrl } from '../lib/site-editor-publish';
 import { syncToHeadlessCms } from '../lib/cms-sync';
-import { defaultBlocksForTemplate } from '../sites/default-blocks';
-import type { SiteBlock, SiteSeo, CmsConfig, CmsMode } from '../sites/block-types';
+import { defaultBlocksForTemplate, defaultThemeForTemplate } from '../sites/default-blocks';
+import { getDesignByKey, listDesigns } from '../sites/site-templates';
+import type { SiteBlock, SiteSeo, CmsConfig, CmsMode, SitePage } from '../sites/block-types';
 import { normalizeSiteTheme, type SiteTheme } from '../sites/theme';
 import type { SiteStudioStack } from '../sites/types';
 import { t, type SupportedLocale } from '../i18n';
@@ -25,6 +27,12 @@ function redactCmsConfig(cms: CmsConfig): CmsConfig {
     apiToken: undefined,
     hasApiToken: Boolean(cms.apiToken),
   };
+}
+
+/** Pages for a row, falling back to a single home page built from the legacy blocks/seo. */
+function ensurePages(row: { pages: SitePage[]; blocks: SiteBlock[]; seo: SiteSeo }): SitePage[] {
+  if (Array.isArray(row.pages) && row.pages.length > 0) return row.pages;
+  return [{ id: randomUUID(), title: 'Home', slug: '', blocks: row.blocks, seo: row.seo }];
 }
 
 export const siteEditorService = {
@@ -69,15 +77,19 @@ export const siteEditorService = {
     if (existing) return;
 
     const blocks = defaultBlocksForTemplate(siteTemplateId, siteName);
+    const theme = normalizeSiteTheme(defaultThemeForTemplate(siteTemplateId));
+    const seoValue: SiteSeo = {
+      title: seo?.title ?? siteName,
+      description: seo?.description ?? '',
+      ogImage: seo?.ogImage ?? '',
+      keywords: seo?.keywords ?? '',
+    };
     await db.insert(projectSiteEditor).values({
       projectId,
-      seo: {
-        title: seo?.title ?? siteName,
-        description: seo?.description ?? '',
-        ogImage: seo?.ogImage ?? '',
-        keywords: seo?.keywords ?? '',
-      },
+      seo: seoValue,
       blocks,
+      theme,
+      pages: [{ id: randomUUID(), title: 'Home', slug: '', blocks, seo: seoValue }],
       cmsConfig: { mode: 'builtin' },
     });
   },
@@ -121,6 +133,7 @@ export const siteEditorService = {
       stack: stack ?? null,
       seo: row!.seo,
       blocks: row!.blocks,
+      pages: ensurePages(row!),
       theme: normalizeSiteTheme(row!.theme),
       cmsConfig: redactCmsConfig(row!.cmsConfig),
       publishedAt: row!.publishedAt,
@@ -176,6 +189,29 @@ export const siteEditorService = {
     return { blocks };
   },
 
+  /** Replace the full page list. pages[0] is the home page (mirrored to blocks/seo). */
+  async updatePages(
+    projectId: string,
+    organizationId: string,
+    userId: string,
+    pages: SitePage[],
+    locale: SupportedLocale,
+  ) {
+    await this.assertProjectAccess(projectId, organizationId, userId, locale);
+
+    if (!Array.isArray(pages) || pages.length === 0) {
+      throw new HTTPException(400, { message: 'At least one page is required' });
+    }
+
+    const home = pages[0];
+    await db
+      .update(projectSiteEditor)
+      .set({ pages, blocks: home.blocks, seo: home.seo, updatedAt: new Date() })
+      .where(eq(projectSiteEditor.projectId, projectId));
+
+    return { pages };
+  },
+
   async updateTheme(
     projectId: string,
     organizationId: string,
@@ -202,6 +238,55 @@ export const siteEditorService = {
       .where(eq(projectSiteEditor.projectId, projectId));
 
     return { theme: next };
+  },
+
+  /** List the design templates available to apply in the editor. */
+  async getDesigns(
+    projectId: string,
+    organizationId: string,
+    userId: string,
+    locale: SupportedLocale,
+  ) {
+    await this.assertProjectAccess(projectId, organizationId, userId, locale);
+    return listDesigns();
+  },
+
+  /**
+   * Replace the project's blocks + theme with a chosen design template (start fresh from a
+   * design). Returns the new blocks and theme.
+   */
+  async applyTemplate(
+    projectId: string,
+    organizationId: string,
+    userId: string,
+    designKey: string,
+    locale: SupportedLocale,
+  ) {
+    const { project } = await this.assertProjectAccess(projectId, organizationId, userId, locale);
+
+    const design = getDesignByKey(designKey);
+    if (!design) {
+      throw new HTTPException(400, { message: `Unknown design: ${designKey}` });
+    }
+
+    const [row] = await db
+      .select()
+      .from(projectSiteEditor)
+      .where(eq(projectSiteEditor.projectId, projectId))
+      .limit(1);
+    if (!row) {
+      throw new HTTPException(404, { message: 'Site editor not initialized' });
+    }
+
+    const blocks = design.blocks(project.name);
+    const theme = normalizeSiteTheme(design.theme);
+
+    await db
+      .update(projectSiteEditor)
+      .set({ blocks, theme, updatedAt: new Date() })
+      .where(eq(projectSiteEditor.projectId, projectId));
+
+    return { blocks, theme };
   },
 
   async updateCmsConfig(
@@ -246,12 +331,14 @@ export const siteEditorService = {
     userId: string,
     locale: SupportedLocale,
   ) {
-    const { project } = await this.assertProjectAccess(
+    const { project, settings } = await this.assertProjectAccess(
       projectId,
       organizationId,
       userId,
       locale,
     );
+
+    const isStatic = settings.siteStudioStack === 'static' || settings.static === true;
 
     const [row] = await db
       .select()
@@ -263,19 +350,27 @@ export const siteEditorService = {
       throw new HTTPException(404, { message: 'Site editor not initialized' });
     }
 
-    const html = renderSiteHtml(row.seo, row.blocks, project.name, row.theme);
-    const cmsSync = await syncToHeadlessCms(row.cmsConfig, row.seo, row.blocks);
-    const sshResult = await publishSiteHtmlToServer(
+    const pages = ensurePages(row);
+    const home = pages[0];
+
+    // Static sites are served at the domain root and support multiple pages with a nav.
+    // CMS-attached block sites live under /pushify-site/ and publish the home page only.
+    const files = isStatic
+      ? renderSiteFiles(pages, project.name, row.theme)
+      : [{ path: 'index.html', html: renderSiteHtml(home.seo, home.blocks, project.name, row.theme) }];
+
+    const cmsSync = await syncToHeadlessCms(row.cmsConfig, home.seo, home.blocks);
+    const sshResult = await publishSiteFilesToServer(
       projectId,
       project.slug,
       project.serverId,
-      html,
+      files,
     );
 
     await db
       .update(projectSiteEditor)
       .set({
-        publishedHtml: html,
+        publishedHtml: files[0]?.html ?? '',
         publishedAt: new Date(),
         updatedAt: new Date(),
       })
@@ -287,7 +382,12 @@ export const siteEditorService = {
       publishedAt: new Date(),
       cmsSync,
       sshPublish: sshResult,
-      liveUrl: sshResult && baseUrl ? `${baseUrl.replace(/\/$/, '')}${sshResult.publicPath}` : null,
+      // Static sites are served at the domain root; CMS-attached sites live under /pushify-site/.
+      liveUrl: isStatic
+        ? (baseUrl ? baseUrl.replace(/\/$/, '') : null)
+        : sshResult && baseUrl
+          ? `${baseUrl.replace(/\/$/, '')}${sshResult.publicPath}`
+          : null,
     };
   },
 
