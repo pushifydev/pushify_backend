@@ -80,7 +80,7 @@ export interface RemoteDeploymentResult {
  * open the port in their cloud provider's firewall / security group (which we can't reach
  * over SSH).
  */
-async function openFirewallPort(
+export async function openFirewallPort(
   ssh: SSHClient,
   port: number,
   onProgress: (message: string) => void,

@@ -1,6 +1,90 @@
 import type { SiteStudioTemplate } from './types';
 
 export const siteStudioTemplates: SiteStudioTemplate[] = [
+  // ── Static sites (Pushify-native, no CMS app) ────────────────────────────
+  // Published as static HTML and served directly by Nginx. Built and edited entirely
+  // in the Pushify Site Editor — no WordPress/Strapi/etc. to run or maintain.
+  {
+    id: 'static-business',
+    name: 'Business Website',
+    tagline: 'A polished one-page site for any business',
+    description: 'A fast, no-maintenance marketing site you edit visually in Pushify and publish as static HTML.',
+    longDescription: 'Perfect for small businesses and landing pages. No database, no app to keep updated — just a clean, fast site served straight from Nginx. Edit everything in the drag-and-drop Site Editor and hit Publish.',
+    category: 'corporate',
+    stack: 'static',
+    icon: 'Globe',
+    accent: '#2563eb',
+    deployment: 'static',
+    featured: true,
+    estimatedMinutes: 2,
+    features: ['No CMS to maintain', 'Instant, static-fast loads', 'Drag-and-drop editing', 'Custom domain + SSL'],
+    setupGuide: [
+      { title: 'Pick your design', description: 'Your site starts from a ready-made layout — edit any text or block.' },
+      { title: 'Edit visually', description: 'Use the Site Editor to drag, drop and rewrite content.' },
+      { title: 'Publish', description: 'Hit Publish to push the static site live on your domain.' },
+    ],
+  },
+  {
+    id: 'static-agency',
+    name: 'Agency / Studio',
+    tagline: 'Showcase your work and win clients',
+    description: 'A bold, modern studio site — services, work and a clear call to action — published as static HTML.',
+    longDescription: 'For agencies, studios and freelancers. A confident dark design that puts your work front and centre, with zero backend to maintain.',
+    category: 'portfolio',
+    stack: 'static',
+    icon: 'Sparkles',
+    accent: '#7c3aed',
+    deployment: 'static',
+    featured: true,
+    estimatedMinutes: 2,
+    features: ['Distinctive design', 'Portfolio-ready', 'No CMS to maintain', 'Custom domain + SSL'],
+    setupGuide: [
+      { title: 'Pick your design', description: 'Start from the agency layout and make it yours.' },
+      { title: 'Add your work', description: 'Edit the highlights, stats and services in the Site Editor.' },
+      { title: 'Publish', description: 'Go live on your domain in seconds.' },
+    ],
+  },
+  {
+    id: 'static-portfolio',
+    name: 'Personal Portfolio',
+    tagline: 'A striking personal site',
+    description: 'A dark, elegant portfolio for designers, developers and makers — static and lightning fast.',
+    longDescription: 'Show your work, tell your story and share contact details. No CMS, no maintenance — just a beautiful personal site you fully control.',
+    category: 'portfolio',
+    stack: 'static',
+    icon: 'User',
+    accent: '#f59e0b',
+    deployment: 'static',
+    featured: false,
+    estimatedMinutes: 2,
+    features: ['Elegant dark theme', 'Project highlights', 'No CMS to maintain', 'Custom domain + SSL'],
+    setupGuide: [
+      { title: 'Pick your design', description: 'Start from the portfolio layout.' },
+      { title: 'Make it yours', description: 'Edit your bio, work and links in the Site Editor.' },
+      { title: 'Publish', description: 'Share your live site on your own domain.' },
+    ],
+  },
+  {
+    id: 'static-event',
+    name: 'Event / Landing',
+    tagline: 'Promote an event and drive sign-ups',
+    description: 'An energetic event page with schedule, speakers and a strong call to action — static and fast.',
+    longDescription: 'For conferences, meetups and product launches. A focused landing page designed to convert visitors into registrations, with nothing to maintain.',
+    category: 'corporate',
+    stack: 'static',
+    icon: 'CalendarDays',
+    accent: '#db2777',
+    deployment: 'static',
+    featured: false,
+    estimatedMinutes: 2,
+    features: ['Conversion-focused', 'Schedule & speakers', 'No CMS to maintain', 'Custom domain + SSL'],
+    setupGuide: [
+      { title: 'Pick your design', description: 'Start from the event layout.' },
+      { title: 'Add details', description: 'Edit the date, speakers and CTA in the Site Editor.' },
+      { title: 'Publish', description: 'Launch your event page on your domain.' },
+    ],
+  },
+
   // ── WordPress (4) ─────────────────────────────────────────────
   {
     id: 'ecommerce-store',

@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import type { SiteBlock } from './block-types';
-import type { SiteTheme } from './theme';
+import { DEFAULT_SITE_THEME, type SiteTheme } from './theme';
 
 const id = () => randomUUID();
 const year = () => new Date().getFullYear();
@@ -185,20 +185,171 @@ export const SITE_TEMPLATE_DESIGNS: Record<string, SiteTemplateDesign> = {
       footer(name),
     ],
   },
+
+  // ── Agency — confident, modern, dark accents ────────────────────────────
+  agency: {
+    theme: { primaryColor: '#7c3aed', accentColor: '#a855f7', backgroundColor: '#0b0b0f', surfaceColor: '#16161d', textColor: '#f4f4f5', mutedColor: '#a1a1aa', fontFamily: 'rounded', borderRadius: 'lg', maxWidth: 'wide' },
+    blocks: (name) => [
+      { id: id(), type: 'hero', headline: `${name} — ideas that move`, subheadline: 'A creative studio crafting brands, websites and campaigns that get results.', ctaText: 'See our work', ctaUrl: '#work' },
+      { id: id(), type: 'features', title: 'What we do', items: [
+        { title: 'Brand & identity', description: 'Logos, systems and guidelines that stick.' },
+        { title: 'Web & product', description: 'Fast, beautiful sites and apps that convert.' },
+        { title: 'Growth & content', description: 'Campaigns and content that reach the right people.' },
+      ] },
+      { id: id(), type: 'stats', items: [
+        { value: '150+', label: 'Brands launched' },
+        { value: '40+', label: 'Awards' },
+        { value: '98%', label: 'Client retention' },
+      ] },
+      { id: id(), type: 'cta', title: 'Have a project in mind?', description: 'Tell us about your idea and we’ll get back within a day.', buttonText: 'Start a project', buttonUrl: '#contact' },
+      footer(name),
+    ],
+  },
+
+  // ── Event / conference — energetic, schedule-led ────────────────────────
+  event: {
+    theme: { primaryColor: '#db2777', accentColor: '#f472b6', backgroundColor: '#1a1025', surfaceColor: '#251635', textColor: '#fdf2f8', mutedColor: '#c4b5d4', fontFamily: 'rounded', borderRadius: 'lg' },
+    blocks: (name) => [
+      { id: id(), type: 'banner', imageUrl: '', headline: name, subheadline: 'The event you can’t miss · Save your spot', overlayOpacity: 0.55 },
+      { id: id(), type: 'features', title: 'Why attend', items: [
+        { title: 'World-class speakers', description: 'Learn from leaders shaping the industry.' },
+        { title: 'Hands-on sessions', description: 'Practical workshops you can apply right away.' },
+        { title: 'Network', description: 'Meet peers, partners and future collaborators.' },
+      ] },
+      { id: id(), type: 'stats', items: [
+        { value: 'Sep 20', label: 'Date' },
+        { value: '1,200+', label: 'Attendees' },
+        { value: '30', label: 'Speakers' },
+      ] },
+      { id: id(), type: 'faq', title: 'Good to know', items: [
+        { question: 'Where is it held?', answer: 'Downtown convention center — full address in your ticket email.' },
+        { question: 'Are tickets refundable?', answer: 'Full refunds up to 14 days before the event.' },
+      ] },
+      { id: id(), type: 'cta', title: 'Get your ticket', description: 'Early-bird pricing ends soon — secure your seat today.', buttonText: 'Register now', buttonUrl: '#register' },
+      footer(name),
+    ],
+  },
+
+  // ── Real estate — premium, calm, trustworthy ────────────────────────────
+  realestate: {
+    theme: { primaryColor: '#0f766e', accentColor: '#0d9488', backgroundColor: '#f8fafc', surfaceColor: '#ffffff', textColor: '#0f172a', mutedColor: '#64748b', fontFamily: 'serif', borderRadius: 'md', maxWidth: 'wide' },
+    blocks: (name) => [
+      { id: id(), type: 'banner', imageUrl: '', headline: name, subheadline: 'Find a place to call home', overlayOpacity: 0.4 },
+      { id: id(), type: 'features', title: 'Featured listings', items: [
+        { title: 'Modern apartments', description: 'Move-in ready homes in prime locations.' },
+        { title: 'Family houses', description: 'Space to grow, in quiet neighbourhoods.' },
+        { title: 'Investment units', description: 'Strong yields with full management.' },
+      ] },
+      { id: id(), type: 'stats', items: [
+        { value: '500+', label: 'Properties' },
+        { value: '15 yrs', label: 'In business' },
+        { value: '4.9★', label: 'Client rating' },
+      ] },
+      { id: id(), type: 'cta', title: 'Looking to buy or sell?', description: 'Talk to one of our agents — no obligation.', buttonText: 'Book a viewing', buttonUrl: '#contact' },
+      footer(name),
+    ],
+  },
+
+  // ── Medical / clinic — clean, reassuring, blue-green ────────────────────
+  medical: {
+    theme: { primaryColor: '#0284c7', accentColor: '#0ea5e9', backgroundColor: '#f0f9ff', surfaceColor: '#ffffff', textColor: '#0c4a6e', mutedColor: '#64748b', fontFamily: 'system', borderRadius: 'lg' },
+    blocks: (name) => [
+      { id: id(), type: 'hero', headline: name, subheadline: 'Compassionate care from a team you can trust. Booking online in minutes.', ctaText: 'Book an appointment', ctaUrl: '#book' },
+      { id: id(), type: 'features', title: 'Our services', items: [
+        { title: 'General check-ups', description: 'Routine care for the whole family.' },
+        { title: 'Specialist clinics', description: 'Expert care across multiple fields.' },
+        { title: 'Lab & diagnostics', description: 'On-site tests with fast results.' },
+      ] },
+      { id: id(), type: 'stats', items: [
+        { value: '20k+', label: 'Patients' },
+        { value: '24/7', label: 'Support' },
+        { value: '12', label: 'Specialists' },
+      ] },
+      { id: id(), type: 'faq', title: 'Patient information', items: [
+        { question: 'Do you accept insurance?', answer: 'We work with most major providers — bring your card to your visit.' },
+        { question: 'How do I book?', answer: 'Use the online booking button or call our front desk.' },
+      ] },
+      { id: id(), type: 'cta', title: 'Your health comes first', description: 'Book a visit today and take the first step.', buttonText: 'Book now', buttonUrl: '#book' },
+      footer(name),
+    ],
+  },
+
+  // ── Gym / fitness — bold, high-energy, dark ─────────────────────────────
+  gym: {
+    theme: { primaryColor: '#dc2626', accentColor: '#f97316', backgroundColor: '#0a0a0a', surfaceColor: '#171717', textColor: '#fafafa', mutedColor: '#a3a3a3', fontFamily: 'rounded', borderRadius: 'sm', maxWidth: 'wide' },
+    blocks: (name) => [
+      { id: id(), type: 'banner', imageUrl: '', headline: name, subheadline: 'Stronger every day · Train with us', overlayOpacity: 0.55 },
+      { id: id(), type: 'features', title: 'Training', items: [
+        { title: 'Strength', description: 'Free weights, machines and coaching.' },
+        { title: 'Conditioning', description: 'HIIT, cardio and group classes.' },
+        { title: 'Personal training', description: 'One-on-one plans built around your goals.' },
+      ] },
+      { id: id(), type: 'pricing', title: 'Membership', plans: [
+        { name: 'Day pass', price: '$12', period: '', features: ['Full gym access', 'No commitment'], ctaText: 'Buy pass', ctaUrl: '#join', highlighted: false },
+        { name: 'Monthly', price: '$39', period: '/mo', features: ['Unlimited access', 'All classes', 'Free assessment'], ctaText: 'Join now', ctaUrl: '#join', highlighted: true },
+        { name: 'Annual', price: '$390', period: '/yr', features: ['2 months free', 'Guest passes', 'Priority booking'], ctaText: 'Go annual', ctaUrl: '#join', highlighted: false },
+      ] },
+      { id: id(), type: 'cta', title: 'Start your first session free', description: 'No commitment — come train and see how it feels.', buttonText: 'Claim free trial', buttonUrl: '#join' },
+      footer(name),
+    ],
+  },
 };
 
 /** Map a Site Studio template id (e.g. "creative-portfolio") to a design key. */
 export function resolveTemplateDesignKey(templateId?: string): keyof typeof SITE_TEMPLATE_DESIGNS {
   const t = (templateId ?? '').toLowerCase();
   if (t.includes('saas') || t.includes('mvp')) return 'saas';
+  if (t.includes('agency') || t.includes('studio')) return 'agency';
+  if (t.includes('event') || t.includes('conference') || t.includes('meetup')) return 'event';
+  if (t.includes('real-estate') || t.includes('realestate') || t.includes('property')) return 'realestate';
+  if (t.includes('gym') || t.includes('fitness')) return 'gym';
+  if (t.includes('medical') || t.includes('clinic') || t.includes('health') || t.includes('dental')) return 'medical';
   if (t.includes('portfolio') || t.includes('creative')) return 'portfolio';
   if (t.includes('restaurant') || t.includes('menu') || t.includes('cafe')) return 'restaurant';
   if (t.includes('ecommerce') || t.includes('store') || t.includes('shop')) return 'ecommerce';
   if (t.includes('blog') || t.includes('content') || t.includes('newsletter') || t.includes('cms')) return 'blog';
-  if (t.includes('booking') || t.includes('appointment') || t.includes('clinic') || t.includes('salon')) return 'booking';
+  if (t.includes('booking') || t.includes('appointment') || t.includes('salon')) return 'booking';
   return 'corporate';
 }
 
 export function getTemplateDesign(templateId?: string): SiteTemplateDesign {
   return SITE_TEMPLATE_DESIGNS[resolveTemplateDesignKey(templateId)];
+}
+
+/** Display metadata for the design gallery (label + category per design key). */
+const DESIGN_LABELS: Record<string, { label: string; category: string }> = {
+  corporate: { label: 'Corporate', category: 'business' },
+  saas: { label: 'SaaS', category: 'business' },
+  portfolio: { label: 'Portfolio', category: 'creative' },
+  restaurant: { label: 'Restaurant', category: 'food' },
+  ecommerce: { label: 'Store', category: 'ecommerce' },
+  blog: { label: 'Blog', category: 'content' },
+  booking: { label: 'Booking', category: 'services' },
+  agency: { label: 'Agency', category: 'creative' },
+  event: { label: 'Event', category: 'events' },
+  realestate: { label: 'Real Estate', category: 'business' },
+  medical: { label: 'Medical', category: 'health' },
+  gym: { label: 'Fitness', category: 'health' },
+};
+
+export interface DesignSummary {
+  key: string;
+  label: string;
+  category: string;
+  theme: SiteTheme;
+}
+
+/** Exact design lookup by key (for "apply this template"). */
+export function getDesignByKey(key: string): SiteTemplateDesign | undefined {
+  return SITE_TEMPLATE_DESIGNS[key];
+}
+
+/** All available designs with display metadata + full theme — powers the in-editor gallery. */
+export function listDesigns(): DesignSummary[] {
+  return Object.keys(SITE_TEMPLATE_DESIGNS).map((key) => ({
+    key,
+    label: DESIGN_LABELS[key]?.label ?? key,
+    category: DESIGN_LABELS[key]?.category ?? 'other',
+    theme: { ...DEFAULT_SITE_THEME, ...SITE_TEMPLATE_DESIGNS[key].theme },
+  }));
 }

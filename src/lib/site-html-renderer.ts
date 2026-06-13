@@ -1,4 +1,4 @@
-import type { SiteBlock, SiteSeo } from '../sites/block-types';
+import type { SiteBlock, SiteSeo, SitePage } from '../sites/block-types';
 import { normalizeSiteTheme, themeToCss, type SiteTheme } from '../sites/theme';
 
 function escapeHtml(text: string): string {
@@ -167,13 +167,36 @@ h2{font-size:1.5rem;margin-bottom:1rem;color:var(--text)}
 footer{margin-top:3rem;padding-top:2rem;border-top:1px solid color-mix(in srgb,var(--muted) 25%,transparent);text-align:center;color:var(--muted);font-size:.875rem}
 footer nav{display:flex;gap:1rem;justify-content:center;margin-top:.75rem;flex-wrap:wrap}
 footer a{color:var(--primary);text-decoration:none}
+.site-nav{position:sticky;top:0;z-index:10;background:color-mix(in srgb,var(--surface) 92%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid color-mix(in srgb,var(--muted) 18%,transparent)}
+.site-nav-inner{max-width:var(--max);margin:0 auto;padding:.85rem 1.25rem;display:flex;gap:1.25rem;align-items:center;flex-wrap:wrap}
+.site-nav a{color:var(--text);text-decoration:none;font-weight:600;font-size:.95rem;opacity:.65}
+.site-nav a:hover{opacity:1}
+.site-nav a.active{opacity:1;color:var(--primary)}
 `.trim();
+
+export interface SiteNavItem {
+  title: string;
+  href: string;
+  active?: boolean;
+}
+
+function renderNav(nav?: SiteNavItem[]): string {
+  if (!nav || nav.length < 2) return '';
+  const links = nav
+    .map(
+      (n) =>
+        `<a href="${escapeHtml(sanitizeUrl(n.href))}"${n.active ? ' class="active"' : ''}>${escapeHtml(n.title)}</a>`,
+    )
+    .join('');
+  return `<nav class="site-nav"><div class="site-nav-inner">${links}</div></nav>`;
+}
 
 export function renderSiteHtml(
   seo: SiteSeo,
   blocks: SiteBlock[],
   siteName: string,
   themeInput?: Partial<SiteTheme> | null,
+  nav?: SiteNavItem[],
 ): string {
   const theme = normalizeSiteTheme(themeInput);
   const title = seo.title || siteName;
@@ -202,9 +225,42 @@ export function renderSiteHtml(
   </style>
 </head>
 <body>
+  ${renderNav(nav)}
   <main class="wrap">
     ${blocks.map(renderBlock).join('\n')}
   </main>
 </body>
 </html>`;
+}
+
+/** Normalize a page slug to a safe URL path segment ('' = home). */
+function pageSlug(slug: string): string {
+  return (slug || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+/**
+ * Render a multi-page site to a list of files (relative path + HTML), with a shared nav.
+ * Home page → index.html; other pages → <slug>/index.html.
+ */
+export function renderSiteFiles(
+  pages: SitePage[],
+  siteName: string,
+  themeInput?: Partial<SiteTheme> | null,
+): { path: string; html: string }[] {
+  const list = pages.length > 0 ? pages : [];
+  const nav: SiteNavItem[] = list.map((p, i) => ({
+    title: p.title || (i === 0 ? 'Home' : 'Page'),
+    href: i === 0 || !pageSlug(p.slug) ? '/' : `/${pageSlug(p.slug)}/`,
+  }));
+
+  return list.map((p, i) => {
+    const slug = i === 0 ? '' : pageSlug(p.slug);
+    const path = slug ? `${slug}/index.html` : 'index.html';
+    const pageNav = nav.map((n) => ({ ...n, active: n.href === (slug ? `/${slug}/` : '/') }));
+    return { path, html: renderSiteHtml(p.seo, p.blocks, siteName, themeInput, pageNav) };
+  });
 }
