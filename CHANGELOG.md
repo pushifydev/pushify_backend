@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.18] - 2026-06-24
+
+### Fixed
+- Included compute credit is now sized **dynamically** to the cheapest plan-eligible server's *current* monthly price (live Hetzner + dynamic FX, plus headroom), capped at a per-plan ceiling — instead of a fixed amount that could fall just short of the wallet threshold required to start a server as FX / IPv4 prices moved. Fixes paying customers being unable to start their entry server despite the credit having been granted. `includedInfraCreditCents` is now the **ceiling**, not the exact grant; new `getCheapestEligibleMonthlyCents()` and `computeIncludedCreditTargetCents()`. The backfill script reuses the same dynamic target (`--dry-run` reports it).
+
 ## [0.2.0-beta.17] - 2026-06-24
 
 ### Added
