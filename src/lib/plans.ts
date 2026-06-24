@@ -24,10 +24,12 @@ export interface PlanInfo {
   name: string;
   price: number; // Monthly price in USD, 0 for free
   /**
-   * Managed-infra compute credit included with the plan, in USD cents. Granted on each
-   * paid invoice by topping the infra wallet UP to this amount (never above), so a paying
-   * customer can run their entry server without a separate top-up. Kept below the plan's
-   * net margin so we never lose money — see grantIncludedInfraCredit().
+   * Upper bound (USD cents) for the managed-infra compute credit included with the plan.
+   * The ACTUAL granted amount is dynamic: it tracks the cheapest plan-eligible server's
+   * current price (FX-adjusted) plus a small headroom, capped at this ceiling — so a paying
+   * customer can always start their entry server without a separate top-up even as Hetzner/FX
+   * prices move. Kept below the plan's net margin so we never lose money. See
+   * grantIncludedInfraCredit() / computeIncludedCreditTargetCents().
    */
   includedInfraCreditCents: number;
   limits: PlanLimits;
@@ -62,7 +64,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
   hobby: {
     name: 'Hobby',
     price: 10,
-    includedInfraCreditCents: 650, // ~$6.50 — covers the cheapest managed server; < $10 plan margin
+    includedInfraCreditCents: 900, // ceiling ~$9 — dynamic grant covers the cheapest server (~$6.5-7.5); < $10 margin
     limits: {
       apiRequestsPerMinute: 120,
       servers: 1,
@@ -83,7 +85,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
   pro: {
     name: 'Pro',
     price: 25,
-    includedInfraCreditCents: 1800, // ~$18 — covers a mid server / a couple small ones; < $25 plan margin
+    includedInfraCreditCents: 2000, // ceiling ~$20 — dynamic grant covers the cheapest eligible server; < $25 margin
     limits: {
       apiRequestsPerMinute: 300,
       servers: 3,
@@ -104,7 +106,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
   business: {
     name: 'Business',
     price: 99,
-    includedInfraCreditCents: 4500, // ~$45 — covers several servers; well under $99 plan margin
+    includedInfraCreditCents: 5000, // ceiling ~$50 — dynamic grant covers the cheapest eligible server; well under $99
     limits: {
       apiRequestsPerMinute: 600,
       servers: 8,

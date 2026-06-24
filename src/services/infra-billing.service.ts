@@ -36,6 +36,13 @@ function getProviderToken(provider: ProviderType): string {
   }
 }
 
+/**
+ * Headroom multiplier applied to the cheapest server's current monthly price when sizing
+ * the included compute credit, so FX/price drift between the grant and the customer's
+ * "start server" click can't leave them just short of the start threshold.
+ */
+const INFRA_INCLUDED_CREDIT_HEADROOM = 1.08;
+
 function mapInfraError(code: string, locale: SupportedLocale): string {
   const keyMap: Record<string, string> = {
     PLAN_NO_MANAGED_SERVERS: 'managedNotAllowed',
@@ -494,11 +501,108 @@ export const infraBillingService = {
    *   "balance hits 0 → suspend server" backstop caps provider spend at what was funded.
    * Free/enterprise (allowance 0) are no-ops.
    */
+  /**
+   * Cheapest plan-eligible managed server's CURRENT monthly customer price (USD cents),
+   * priced live off Hetzner + the dynamic FX rate. Returns 0 if it can't be determined
+   * (no provider token / API error), so callers fall back to the plan ceiling.
+   */
+  async getCheapestEligibleMonthlyCents(plan: PlanType): Promise<number> {
+    const token = getProviderToken('hetzner');
+    if (!token) return 0;
+
+    const provider = createProvider('hetzner', token);
+    const sizes = await provider.listSizes();
+
+    let cheapest = 0;
+    for (const entry of sizes) {
+      const quote = buildPriceQuote(entry.specs.priceMonthly, entry.specs.priceMonthly / 730, {
+        vcpus: entry.specs.vcpus,
+        memoryMb: entry.specs.memoryMb,
+        diskGb: entry.specs.diskGb,
+      });
+      try {
+        // Same gate the UI/provisioning uses — vcpu, memory, and provider $ cap.
+        assertServerWithinPlanLimits(plan, quote.specs, quote.providerCostMonthlyCents);
+      } catch {
+        continue; // not startable on this plan
+      }
+      if (cheapest === 0 || quote.customerPriceMonthlyCents < cheapest) {
+        cheapest = quote.customerPriceMonthlyCents;
+      }
+    }
+    return cheapest;
+  },
+
+  /**
+   * Target balance the included credit should top the wallet up to: enough to start the
+   * cheapest eligible server at current prices (+ headroom), capped at the plan ceiling so
+   * margin stays bounded. Falls back to the ceiling if the live price can't be determined.
+   */
+  async computeIncludedCreditTargetCents(plan: PlanType): Promise<number> {
+    const ceilingCents = getIncludedInfraCreditCents(plan);
+    if (ceilingCents <= 0) return 0;
+
+    try {
+      const cheapest = await this.getCheapestEligibleMonthlyCents(plan);
+      if (cheapest > 0) {
+        const withHeadroom = Math.ceil(cheapest * INFRA_INCLUDED_CREDIT_HEADROOM);
+        if (withHeadroom > ceilingCents) {
+          logger.warn(
+            { plan, cheapestMonthlyCents: cheapest, ceilingCents },
+            'Included credit: cheapest server exceeds plan ceiling — entry server may not start, review plan economics',
+          );
+          return ceilingCents;
+        }
+        return withHeadroom;
+      }
+    } catch (err) {
+      logger.warn(
+        { plan, err: err instanceof Error ? err.message : String(err) },
+        'Included credit: cheapest-server lookup failed, falling back to plan ceiling',
+      );
+    }
+    return ceilingCents;
+  },
+
+  /**
+   * Grant the plan's included compute credit by topping the infra wallet UP to a target
+   * that covers the cheapest eligible server at CURRENT prices (see
+   * computeIncludedCreditTargetCents). Called on each paid invoice so a paying customer can
+   * start their entry server without a separate top-up.
+   *
+   * Safe by construction:
+   * - Never over-credits: if the wallet already holds >= the target, nothing is added.
+   * - Naturally idempotent: re-processing the same invoice grants 0.
+   * - Loss is bounded: the target is capped at the plan ceiling (< plan net margin), and the
+   *   existing "balance hits 0 → suspend server" backstop caps provider spend at what was funded.
+   * Pass { dryRun } to compute what WOULD be granted without writing.
+   */
   async grantIncludedInfraCredit(
     organizationId: string,
     plan: PlanType,
-  ): Promise<{ grantedCents: number; balanceAfterCents: number }> {
-    const allowanceCents = getIncludedInfraCreditCents(plan);
+    opts?: { dryRun?: boolean },
+  ): Promise<{ grantedCents: number; balanceAfterCents: number; targetCents: number }> {
+    const targetCents = await this.computeIncludedCreditTargetCents(plan);
+
+    if (targetCents <= 0) {
+      const [org] = await db
+        .select({ balance: organizations.infraWalletBalanceCents })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+      return { grantedCents: 0, balanceAfterCents: org?.balance ?? 0, targetCents: 0 };
+    }
+
+    if (opts?.dryRun) {
+      const [org] = await db
+        .select({ balance: organizations.infraWalletBalanceCents })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+      const current = org?.balance ?? 0;
+      const grantedCents = Math.max(0, targetCents - current);
+      return { grantedCents, balanceAfterCents: current + grantedCents, targetCents };
+    }
 
     const result = await db.transaction(async (tx) => {
       const [org] = await tx
@@ -508,7 +612,7 @@ export const infraBillingService = {
         .limit(1);
 
       const current = org?.balance ?? 0;
-      const grantedCents = Math.max(0, allowanceCents - current);
+      const grantedCents = Math.max(0, targetCents - current);
 
       if (grantedCents <= 0) {
         return { grantedCents: 0, balanceAfterCents: current };
@@ -527,7 +631,7 @@ export const infraBillingService = {
         amountCents: grantedCents,
         balanceAfterCents,
         description: `Included ${plan} plan compute credit`,
-        metadata: { bundled: true, plan, allowanceCents },
+        metadata: { bundled: true, plan, targetCents },
       });
 
       return { grantedCents, balanceAfterCents };
@@ -538,7 +642,7 @@ export const infraBillingService = {
       await this.clearInfraCreditsStoppedMessages(organizationId);
     }
 
-    return result;
+    return { ...result, targetCents };
   },
 
   async refundWallet(

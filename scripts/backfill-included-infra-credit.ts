@@ -16,7 +16,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { db, closeDatabasePool } from '../src/db';
 import { organizations } from '../src/db/schema';
 import { infraBillingService } from '../src/services/infra-billing.service';
-import { getIncludedInfraCreditCents, type PlanType } from '../src/lib/plans';
+import { type PlanType } from '../src/lib/plans';
 import { logger } from '../src/lib/logger';
 
 const dryRun = process.argv.includes('--dry-run');
@@ -40,34 +40,29 @@ async function main() {
 
   for (const org of orgs) {
     const plan = org.plan as PlanType;
-    const allowance = getIncludedInfraCreditCents(plan);
-    const current = org.balance ?? 0;
-    const wouldGrant = Math.max(0, allowance - current);
+    const res = await infraBillingService.grantIncludedInfraCredit(org.id, plan, { dryRun });
 
-    if (wouldGrant <= 0) {
+    if (res.grantedCents <= 0) {
       logger.info(
-        { orgId: org.id, name: org.name, plan, balanceCents: current, allowanceCents: allowance },
-        'skip — already at/above allowance',
+        { orgId: org.id, name: org.name, plan, balanceCents: org.balance ?? 0, targetCents: res.targetCents },
+        'skip — already at/above target',
       );
       continue;
     }
 
-    if (dryRun) {
-      logger.info({ orgId: org.id, name: org.name, plan, wouldGrantCents: wouldGrant }, 'DRY-RUN would grant');
-      credited++;
-      totalCents += wouldGrant;
-      continue;
-    }
-
-    const res = await infraBillingService.grantIncludedInfraCredit(org.id, plan);
-    if (res.grantedCents > 0) {
-      credited++;
-      totalCents += res.grantedCents;
-      logger.info(
-        { orgId: org.id, name: org.name, plan, grantedCents: res.grantedCents, balanceAfterCents: res.balanceAfterCents },
-        'granted included infra credit',
-      );
-    }
+    credited++;
+    totalCents += res.grantedCents;
+    logger.info(
+      {
+        orgId: org.id,
+        name: org.name,
+        plan,
+        grantedCents: res.grantedCents,
+        targetCents: res.targetCents,
+        balanceAfterCents: res.balanceAfterCents,
+      },
+      dryRun ? 'DRY-RUN would grant' : 'granted included infra credit',
+    );
   }
 
   logger.info(
