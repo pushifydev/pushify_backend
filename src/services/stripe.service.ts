@@ -20,6 +20,13 @@ import { organizationBillingService } from './organization-billing.service';
 import type Stripe from 'stripe';
 import { logger } from '../lib/logger';
 
+/** Stripe "No such ..." error (resource_missing / 404) — e.g. a customer or price from another mode. */
+function isStripeResourceMissing(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const e = err as { code?: string; statusCode?: number };
+  return e.code === 'resource_missing' || e.statusCode === 404;
+}
+
 export const stripeService = {
   async getOrCreateCustomer(organizationId: string, email: string): Promise<string> {
     const stripe = getStripe();
@@ -31,7 +38,21 @@ export const stripeService = {
       .limit(1);
 
     if (org?.stripeCustomerId) {
-      return org.stripeCustomerId;
+      // Verify the stored customer still exists in the *current* Stripe mode. A leftover
+      // test-mode customer (or a manually deleted one) would otherwise break checkout with
+      // "No such customer" once live keys are in use — so recreate it transparently.
+      try {
+        const existing = await stripe.customers.retrieve(org.stripeCustomerId);
+        if (!(existing as Stripe.DeletedCustomer).deleted) {
+          return existing.id;
+        }
+      } catch (err) {
+        if (!isStripeResourceMissing(err)) throw err;
+      }
+      logger.warn(
+        { organizationId, staleCustomerId: org.stripeCustomerId },
+        'Stored Stripe customer not found in current mode — recreating',
+      );
     }
 
     const customer = await stripe.customers.create({

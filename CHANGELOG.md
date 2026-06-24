@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.16] - 2026-06-24
+
+### Fixed
+- Billing checkout no longer returns a 500 (`No such customer`) when an organization carries a Stripe customer ID created in a different mode — e.g. a leftover **test-mode** customer after switching to live keys. `getOrCreateCustomer` now verifies the stored customer exists in the current Stripe mode and transparently recreates it if it is missing or deleted.
+
 ## [0.2.0-beta.15] - 2026-06-24
 
 ### Improved
