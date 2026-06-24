@@ -24,7 +24,7 @@ import {
   sendInfraCreditsLowEmail,
   sendInfraServerSuspendedEmail,
 } from '../lib/email';
-import { type PlanType } from '../lib/plans';
+import { getIncludedInfraCreditCents, type PlanType } from '../lib/plans';
 import { logger } from '../lib/logger';
 
 function getProviderToken(provider: ProviderType): string {
@@ -478,6 +478,67 @@ export const infraBillingService = {
 
       return newBalance;
     });
+  },
+
+  /**
+   * Grant the plan's included compute credit by topping the infra wallet UP to the plan
+   * allowance (never above). Called on each paid invoice so a paying customer can run their
+   * entry server without a separate top-up.
+   *
+   * Safe by construction:
+   * - Never over-credits: if the wallet already holds >= the allowance (e.g. the customer
+   *   topped up cash), nothing is added.
+   * - Naturally idempotent: re-processing the same invoice finds the balance already at the
+   *   allowance and grants 0.
+   * - Loss is bounded: the allowance is below each plan's net margin, and the existing
+   *   "balance hits 0 → suspend server" backstop caps provider spend at what was funded.
+   * Free/enterprise (allowance 0) are no-ops.
+   */
+  async grantIncludedInfraCredit(
+    organizationId: string,
+    plan: PlanType,
+  ): Promise<{ grantedCents: number; balanceAfterCents: number }> {
+    const allowanceCents = getIncludedInfraCreditCents(plan);
+
+    const result = await db.transaction(async (tx) => {
+      const [org] = await tx
+        .select({ balance: organizations.infraWalletBalanceCents })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+
+      const current = org?.balance ?? 0;
+      const grantedCents = Math.max(0, allowanceCents - current);
+
+      if (grantedCents <= 0) {
+        return { grantedCents: 0, balanceAfterCents: current };
+      }
+
+      const balanceAfterCents = current + grantedCents;
+
+      await tx
+        .update(organizations)
+        .set({ infraWalletBalanceCents: balanceAfterCents, updatedAt: new Date() })
+        .where(eq(organizations.id, organizationId));
+
+      await tx.insert(infraWalletTransactions).values({
+        organizationId,
+        type: 'credit_topup',
+        amountCents: grantedCents,
+        balanceAfterCents,
+        description: `Included ${plan} plan compute credit`,
+        metadata: { bundled: true, plan, allowanceCents },
+      });
+
+      return { grantedCents, balanceAfterCents };
+    });
+
+    if (result.grantedCents > 0) {
+      // A server stopped for low balance can be started again now that credit is available.
+      await this.clearInfraCreditsStoppedMessages(organizationId);
+    }
+
+    return result;
   },
 
   async refundWallet(

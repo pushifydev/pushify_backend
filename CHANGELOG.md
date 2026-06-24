@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.0-beta.17] - 2026-06-24
+
+### Added
+- **Included compute credit per plan**: paid plans now bundle a monthly managed-infra allowance (Hobby ~$6.50, Pro ~$18, Business ~$45) so a paying customer can start their entry server without a separate top-up. Credit is granted on every paid invoice (initial checkout + renewals) by topping the infra wallet **up to** the plan allowance — never above it. New `includedInfraCreditCents` field on each plan and `infraBillingService.grantIncludedInfraCredit()`.
+
+### Notes
+- Loss-prevention by design: each allowance is kept below the plan's net margin; the grant never over-credits (a customer who already holds ≥ the allowance gets nothing) and is idempotent across webhook retries; and the existing "wallet hits 0 → suspend server" backstop still caps provider spend at what the customer funded.
+- Bundled grants are recorded as `credit_topup` ledger entries tagged `metadata.bundled = true` (no schema migration required).
+- Backfill for customers who subscribed before this release: `npm run backfill:infra-credit` (add `-- --dry-run` to preview). Idempotent — only tops up organizations still below their plan allowance.
+
+## [0.2.0-beta.16] - 2026-06-24
+
+### Fixed
+- Billing checkout no longer returns a 500 (`No such customer`) when an organization carries a Stripe customer ID created in a different mode — e.g. a leftover **test-mode** customer after switching to live keys. `getOrCreateCustomer` now verifies the stored customer exists in the current Stripe mode and transparently recreates it if it is missing or deleted.
+
 ## [0.2.0-beta.15] - 2026-06-24
 
 ### Improved
