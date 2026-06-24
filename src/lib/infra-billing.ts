@@ -1,11 +1,15 @@
 import { env } from '../config/env';
+import { getEurToUsdRate } from './fx-rate';
 import { getPlanInfo, isUnlimited, type PlanType } from './plans';
 
 /** Pushify margin on top of provider list price (e.g. 20 = 20%) */
 export const INFRA_MARGIN_PERCENT = env.INFRA_MARGIN_PERCENT;
 
-/** EUR → USD for Hetzner list prices */
+/** EUR → USD floor/fallback rate. Live rate is fetched dynamically — see lib/fx-rate.ts */
 export const INFRA_EUR_TO_USD_RATE = env.INFRA_EUR_TO_USD_RATE;
+
+/** Flat per-server surcharge (EUR) added before margin to cover provider extras like IPv4 */
+const INFRA_PROVIDER_SURCHARGE_EUR = env.INFRA_PROVIDER_SURCHARGE_EUR;
 
 export interface PlanInfraLimits {
   managedServersEnabled: boolean;
@@ -53,7 +57,7 @@ export function getPlanInfraLimits(plan: PlanType): PlanInfraLimits {
 }
 
 export function eurToUsdCents(eurAmount: number): number {
-  return Math.round(eurAmount * INFRA_EUR_TO_USD_RATE * 100);
+  return Math.round(eurAmount * getEurToUsdRate() * 100);
 }
 
 /** Provider cost (USD cents) → customer price with margin (USD cents) */
@@ -86,10 +90,11 @@ export function buildPriceQuote(
   providerHourlyEur: number,
   specs: ServerSpecsQuote,
 ): InfraPriceQuote {
-  const providerCostMonthlyCents = eurToUsdCents(providerMonthlyEur);
+  // Add the flat extras surcharge (e.g. IPv4) to the provider cost before margin.
+  const providerCostMonthlyCents = eurToUsdCents(providerMonthlyEur + INFRA_PROVIDER_SURCHARGE_EUR);
   const providerCostHourlyCents =
     providerHourlyEur > 0
-      ? eurToUsdCents(providerHourlyEur)
+      ? eurToUsdCents(providerHourlyEur + INFRA_PROVIDER_SURCHARGE_EUR / 730)
       : providerMonthlyToHourlyCents(providerCostMonthlyCents);
 
   const customerPriceMonthlyCents = applyInfraMargin(providerCostMonthlyCents);

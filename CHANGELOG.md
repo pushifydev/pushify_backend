@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0-beta.15] - 2026-06-24
+
+### Improved
+- Managed-infra billing now uses a **live EUR→USD exchange rate** (ECB via Frankfurter, cached in-memory with a 12h refresh) instead of a hardcoded `1.08`, so a strengthening EUR no longer erodes the infra margin. Pricing reads the cached rate synchronously (never blocks on the network); on fetch failure it falls back to the configured floor.
+
+### Added
+- `INFRA_FX_BUFFER_PERCENT` (default `2`) — safety buffer % applied on top of the live FX rate to absorb intraday swings.
+- `INFRA_PROVIDER_SURCHARGE_EUR` (default `0`) — flat per-server surcharge in EUR added before margin to cover provider extras like IPv4 (~`0.50`).
+
+### Changed
+- `INFRA_EUR_TO_USD_RATE` is now the fallback/floor rate (used only when the live FX fetch fails or returns a lower value), not the primary conversion rate.
+
 ## [0.2.0-beta.14] - 2026-06-13
 
 ### Added
