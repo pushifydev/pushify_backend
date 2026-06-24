@@ -4,6 +4,7 @@ import { stripeService } from '../services/stripe.service';
 import { infraBillingService } from '../services/infra-billing.service';
 import { INFRA_TOPUP_AMOUNTS_CENTS } from '../lib/infra-billing';
 import { authMiddleware } from '../middleware/auth';
+import { requireOrgRole } from '../middleware/require-role';
 import { env } from '../config/env';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
@@ -46,7 +47,7 @@ billingRouter.patch('/email', async (c) => {
 });
 
 // Create Stripe Checkout session
-billingRouter.post('/checkout', async (c) => {
+billingRouter.post('/checkout', requireOrgRole('owner', 'admin'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -74,7 +75,7 @@ billingRouter.post('/checkout', async (c) => {
 });
 
 // Create Stripe Customer Portal session
-billingRouter.post('/portal', async (c) => {
+billingRouter.post('/portal', requireOrgRole('owner', 'admin'), async (c) => {
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
 
@@ -97,7 +98,7 @@ billingRouter.get('/subscription', async (c) => {
 });
 
 // Cancel subscription
-billingRouter.post('/cancel', async (c) => {
+billingRouter.post('/cancel', requireOrgRole('owner', 'admin'), async (c) => {
   const organizationId = c.get('organizationId')!;
 
   await stripeService.cancelSubscription(organizationId);
@@ -106,7 +107,7 @@ billingRouter.post('/cancel', async (c) => {
 });
 
 // Resume cancelled subscription
-billingRouter.post('/resume', async (c) => {
+billingRouter.post('/resume', requireOrgRole('owner', 'admin'), async (c) => {
   const organizationId = c.get('organizationId')!;
 
   await stripeService.resumeSubscription(organizationId);
@@ -143,7 +144,7 @@ billingRouter.get('/infra', async (c) => {
   });
 });
 
-billingRouter.post('/infra/topup', async (c) => {
+billingRouter.post('/infra/topup', requireOrgRole('owner', 'admin'), async (c) => {
   const organizationId = c.get('organizationId')!;
   const userId = c.get('userId')!;
   const locale = c.get('locale');
@@ -187,7 +188,7 @@ billingRouter.post('/infra/topup', async (c) => {
 });
 
 /** Confirm infra top-up after Stripe redirect (works without webhook, e.g. local dev). */
-billingRouter.post('/infra/confirm', async (c) => {
+billingRouter.post('/infra/confirm', requireOrgRole('owner', 'admin'), async (c) => {
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
 

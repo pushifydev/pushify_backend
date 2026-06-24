@@ -98,3 +98,13 @@ export function execStreamingCommand(
     });
   });
 }
+
+/**
+ * Wrap a value in bash single quotes, safely escaping any embedded single quotes.
+ * Use this for ANY user-controlled value (env vars, paths, names) that is spliced
+ * into a shell command string — single quotes disable all shell expansion
+ * ($(...), backticks, ${...}, globbing, word-splitting).
+ */
+export function shSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}

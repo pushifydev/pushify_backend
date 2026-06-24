@@ -1,4 +1,4 @@
-import type { SiteBlock, SiteSeo } from '../sites/block-types';
+import type { SiteBlock, SiteSeo, SitePage } from '../sites/block-types';
 import { normalizeSiteTheme, themeToCss, type SiteTheme } from '../sites/theme';
 
 function escapeHtml(text: string): string {
@@ -6,7 +6,44 @@ function escapeHtml(text: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+const SAFE_URL_SCHEMES = new Set(['http:', 'https:', 'mailto:', 'tel:']);
+
+/**
+ * Allow only relative/anchor URLs and http(s)/mailto/tel absolute URLs.
+ * Blocks javascript:, data:, vbscript: and similar XSS vectors (CR-5).
+ */
+function sanitizeUrl(url: string): string {
+  // Strip control chars / whitespace used to obfuscate schemes (e.g. "java\tscript:").
+  const cleaned = (url ?? '').trim().replace(/[\u0000-\u0020\u007f]/g, '');
+  if (!cleaned) return '';
+  const scheme = cleaned.match(/^([a-z][a-z0-9+.-]*):/i);
+  if (scheme && !SAFE_URL_SCHEMES.has(scheme[1].toLowerCase() + ':')) {
+    return '';
+  }
+  return cleaned;
+}
+
+/**
+ * Sanitize a URL for use inside a CSS url('...') context. HTML-escaping is not
+ * enough there (entities are decoded before the CSS parser runs), so percent-encode
+ * any character that could break out of url('...').
+ */
+function sanitizeCssUrl(url: string): string {
+  return sanitizeUrl(url).replace(
+    /['"()\\\s<>]/g,
+    (c) => '%' + c.charCodeAt(0).toString(16).padStart(2, '0'),
+  );
+}
+
+/** Clamp an arbitrary value to a CSS-safe opacity in [0, 1]. */
+function clampOpacity(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0.4;
+  return Math.min(1, Math.max(0, n));
 }
 
 function renderBlock(block: SiteBlock): string {
@@ -15,11 +52,11 @@ function renderBlock(block: SiteBlock): string {
       return `<section class="hero">
   <h1>${escapeHtml(block.headline)}</h1>
   <p class="sub">${escapeHtml(block.subheadline)}</p>
-  <a class="btn" href="${escapeHtml(block.ctaUrl)}">${escapeHtml(block.ctaText)}</a>
+  <a class="btn" href="${escapeHtml(sanitizeUrl(block.ctaUrl))}">${escapeHtml(block.ctaText)}</a>
 </section>`;
     case 'banner':
-      return `<section class="banner" style="--overlay:${block.overlayOpacity}">
-  <div class="banner-bg" style="background-image:url('${escapeHtml(block.imageUrl)}')"></div>
+      return `<section class="banner" style="--overlay:${clampOpacity(block.overlayOpacity)}">
+  <div class="banner-bg" style="background-image:url('${escapeHtml(sanitizeCssUrl(block.imageUrl))}')"></div>
   <div class="banner-content">
     <h2>${escapeHtml(block.headline)}</h2>
     <p>${escapeHtml(block.subheadline)}</p>
@@ -54,7 +91,7 @@ function renderBlock(block: SiteBlock): string {
     <h3>${escapeHtml(p.name)}</h3>
     <p class="plan-price"><span>${escapeHtml(p.price)}</span><small>${escapeHtml(p.period)}</small></p>
     <ul>${p.features.map((f) => `<li>${escapeHtml(f)}</li>`).join('')}</ul>
-    <a class="btn${p.highlighted ? '' : ' btn-outline'}" href="${escapeHtml(p.ctaUrl)}">${escapeHtml(p.ctaText)}</a>
+    <a class="btn${p.highlighted ? '' : ' btn-outline'}" href="${escapeHtml(sanitizeUrl(p.ctaUrl))}">${escapeHtml(p.ctaText)}</a>
   </article>`,
     )
     .join('')}</div>
@@ -72,13 +109,13 @@ function renderBlock(block: SiteBlock): string {
       return `<section class="cta">
   <h2>${escapeHtml(block.title)}</h2>
   <p>${escapeHtml(block.description)}</p>
-  <a class="btn" href="${escapeHtml(block.buttonUrl)}">${escapeHtml(block.buttonText)}</a>
+  <a class="btn" href="${escapeHtml(sanitizeUrl(block.buttonUrl))}">${escapeHtml(block.buttonText)}</a>
 </section>`;
     case 'footer':
       return `<footer>
   <p>${escapeHtml(block.copyright)}</p>
   <nav>${block.links
-    .map((l) => `<a href="${escapeHtml(l.url)}">${escapeHtml(l.label)}</a>`)
+    .map((l) => `<a href="${escapeHtml(sanitizeUrl(l.url))}">${escapeHtml(l.label)}</a>`)
     .join('')}</nav>
 </footer>`;
     default:
@@ -130,18 +167,41 @@ h2{font-size:1.5rem;margin-bottom:1rem;color:var(--text)}
 footer{margin-top:3rem;padding-top:2rem;border-top:1px solid color-mix(in srgb,var(--muted) 25%,transparent);text-align:center;color:var(--muted);font-size:.875rem}
 footer nav{display:flex;gap:1rem;justify-content:center;margin-top:.75rem;flex-wrap:wrap}
 footer a{color:var(--primary);text-decoration:none}
+.site-nav{position:sticky;top:0;z-index:10;background:color-mix(in srgb,var(--surface) 92%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid color-mix(in srgb,var(--muted) 18%,transparent)}
+.site-nav-inner{max-width:var(--max);margin:0 auto;padding:.85rem 1.25rem;display:flex;gap:1.25rem;align-items:center;flex-wrap:wrap}
+.site-nav a{color:var(--text);text-decoration:none;font-weight:600;font-size:.95rem;opacity:.65}
+.site-nav a:hover{opacity:1}
+.site-nav a.active{opacity:1;color:var(--primary)}
 `.trim();
+
+export interface SiteNavItem {
+  title: string;
+  href: string;
+  active?: boolean;
+}
+
+function renderNav(nav?: SiteNavItem[]): string {
+  if (!nav || nav.length < 2) return '';
+  const links = nav
+    .map(
+      (n) =>
+        `<a href="${escapeHtml(sanitizeUrl(n.href))}"${n.active ? ' class="active"' : ''}>${escapeHtml(n.title)}</a>`,
+    )
+    .join('');
+  return `<nav class="site-nav"><div class="site-nav-inner">${links}</div></nav>`;
+}
 
 export function renderSiteHtml(
   seo: SiteSeo,
   blocks: SiteBlock[],
   siteName: string,
   themeInput?: Partial<SiteTheme> | null,
+  nav?: SiteNavItem[],
 ): string {
   const theme = normalizeSiteTheme(themeInput);
   const title = seo.title || siteName;
   const description = seo.description || '';
-  const ogImage = seo.ogImage ? `<meta property="og:image" content="${escapeHtml(seo.ogImage)}"/>` : '';
+  const ogImage = seo.ogImage ? `<meta property="og:image" content="${escapeHtml(sanitizeUrl(seo.ogImage))}"/>` : '';
   const googleFont =
     theme.fontFamily === 'rounded'
       ? '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap"/>'
@@ -165,9 +225,42 @@ export function renderSiteHtml(
   </style>
 </head>
 <body>
+  ${renderNav(nav)}
   <main class="wrap">
     ${blocks.map(renderBlock).join('\n')}
   </main>
 </body>
 </html>`;
+}
+
+/** Normalize a page slug to a safe URL path segment ('' = home). */
+function pageSlug(slug: string): string {
+  return (slug || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+/**
+ * Render a multi-page site to a list of files (relative path + HTML), with a shared nav.
+ * Home page → index.html; other pages → <slug>/index.html.
+ */
+export function renderSiteFiles(
+  pages: SitePage[],
+  siteName: string,
+  themeInput?: Partial<SiteTheme> | null,
+): { path: string; html: string }[] {
+  const list = pages.length > 0 ? pages : [];
+  const nav: SiteNavItem[] = list.map((p, i) => ({
+    title: p.title || (i === 0 ? 'Home' : 'Page'),
+    href: i === 0 || !pageSlug(p.slug) ? '/' : `/${pageSlug(p.slug)}/`,
+  }));
+
+  return list.map((p, i) => {
+    const slug = i === 0 ? '' : pageSlug(p.slug);
+    const path = slug ? `${slug}/index.html` : 'index.html';
+    const pageNav = nav.map((n) => ({ ...n, active: n.href === (slug ? `/${slug}/` : '/') }));
+    return { path, html: renderSiteHtml(p.seo, p.blocks, siteName, themeInput, pageNav) };
+  });
 }

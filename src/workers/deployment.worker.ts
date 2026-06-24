@@ -19,6 +19,7 @@ import { usageMeteringService } from '../services/usage-metering.service';
 import { extractLogTail } from '../lib/log-tail';
 import { generateDockerfile, hasDockerfile, writeDockerfile } from './dockerfile';
 import { deployToRemoteServer, canDeployToServer, quickRollbackToDeployment } from './remote-deployment';
+import { publishStaticSite } from '../lib/static-site-publish';
 import { buildMarketplaceDeployConfig } from '../marketplace/deploy-config';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -397,6 +398,59 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       message: 'Deployment has started',
       url: `${env.FRONTEND_URL}/dashboard/projects/${job.projectId}?tab=deployments&deployment=${job.id}`,
     });
+
+    // ── Static Site Studio site: render the editor's HTML and serve it via Nginx ──
+    // No container build — "deploying" here means upload + Nginx config + open port.
+    const earlySettings = project.settings as Record<string, unknown>;
+    if (earlySettings?.static === true || earlySettings?.siteStudioStack === 'static') {
+      addLog('🎨 Static site — publishing rendered HTML...');
+      if (!project.serverId) {
+        throw new Error('Static site has no server assigned');
+      }
+      const server = await db.query.servers.findFirst({
+        where: (s, { eq }) => eq(s.id, project.serverId!),
+      });
+      if (!server) {
+        throw new Error('Server not found');
+      }
+      const primaryDomain = await db.query.domains.findFirst({
+        where: (d, { eq, and }) => and(eq(d.projectId, project.id), eq(d.isPrimary, true)),
+      });
+
+      await updateDeploymentStatus(job.id, 'deploying', logBuffer.join('\n'), job.projectId);
+
+      const result = await publishStaticSite({
+        projectId: project.id,
+        slug: project.slug,
+        domain: primaryDomain?.domain ?? null,
+        server,
+        onLog: addLog,
+      });
+
+      if (!result.ok) {
+        throw new Error(result.message || 'Static publish failed');
+      }
+
+      if (result.url) {
+        await db
+          .update(projects)
+          .set({
+            settings: { ...earlySettings, productionUrl: result.url, lastDeploymentId: job.id },
+            updatedAt: new Date(),
+          })
+          .where(eq(projects.id, project.id));
+      }
+
+      addLog(`✅ Static site live: ${result.url}`);
+      await updateDeploymentStatus(job.id, 'running', logBuffer.join('\n'), job.projectId);
+
+      await notificationService.sendNotifications(job.projectId, 'deployment.success', {
+        deploymentId: job.id,
+        message: 'Static site published',
+        url: result.url ?? `${env.FRONTEND_URL}/dashboard/projects/${job.projectId}`,
+      });
+      return;
+    }
 
     // Get GitHub access token if available
     let accessToken: string | undefined;

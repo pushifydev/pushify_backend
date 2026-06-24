@@ -245,6 +245,129 @@ export async function addSite(
   };
 }
 
+export interface StaticSiteConfig {
+  /** Project slug — site files live at /opt/pushify/site-studio/<slug>. */
+  slug: string;
+  /** Domain mode: serve by server_name on 80/443. */
+  domain?: string;
+  /** Port mode: serve on http://<server-ip>:<port> (no domain needed). */
+  port?: number;
+  ssl?: boolean;
+  additionalDomains?: string[];
+}
+
+/** Static-file Nginx vhost: serves /opt/pushify/site-studio/<slug> (no upstream container). */
+function generateStaticSiteConfig(config: StaticSiteConfig): string {
+  const { domain, port, slug, ssl = false, additionalDomains = [] } = config;
+  const root = `/opt/pushify/site-studio/${slug}`;
+
+  const serveBlock = `
+    root ${root};
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    gzip on;
+    gzip_types text/css application/javascript image/svg+xml application/json;`;
+
+  // Port mode — reachable at http://<server-ip>:<port> without any domain.
+  if (port) {
+    return `# Pushify static site (port ${port}): ${slug}
+server {
+    listen ${port};
+    listen [::]:${port};
+    server_name _;
+${serveBlock}
+}
+`;
+  }
+
+  const allDomains = [domain, ...additionalDomains].filter(Boolean).join(' ');
+
+  if (ssl) {
+    return `# Pushify static site: ${slug}
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${allDomains};
+    location /.well-known/acme-challenge/ { root /var/www/html; }
+    location / { return 301 https://$host$request_uri; }
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${allDomains};
+
+    ssl_certificate /etc/letsencrypt/live/${domain}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
+${serveBlock}
+}
+`;
+  }
+
+  return `# Pushify static site: ${slug}
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${allDomains};
+
+    location /.well-known/acme-challenge/ { root /var/www/html; }
+${serveBlock}
+}
+`;
+}
+
+/**
+ * Add (or replace) an Nginx vhost that serves a project's published static HTML directly,
+ * with no upstream container. Used by 'static' Site Studio sites.
+ */
+export async function addStaticSite(
+  ssh: SSHClient,
+  config: StaticSiteConfig,
+): Promise<{ success: boolean; message: string }> {
+  const confName = `pushify-${config.slug}.conf`;
+  const configContent = generateStaticSiteConfig(config);
+
+  // Write to conf.d (included by nginx on every distro) rather than the Debian-only
+  // sites-available/sites-enabled layout — BYOS servers may run RHEL-family nginx, where
+  // those directories don't exist (the SFTP write would otherwise fail "No such file").
+  await ssh.exec(`mkdir -p /etc/nginx/conf.d /opt/pushify/site-studio/${config.slug} ${PUSHIFY_SITES_DIR}`);
+
+  const confPath = `/etc/nginx/conf.d/${confName}`;
+  await ssh.uploadFile(configContent, confPath);
+  await ssh.uploadFile(configContent, `${PUSHIFY_SITES_DIR}/${confName}`); // tracking copy
+
+  // RHEL/SELinux: let nginx bind to the non-standard port and read the site dir.
+  // Best-effort — a no-op when SELinux is disabled or the tools aren't installed.
+  if (config.port) {
+    await ssh.exec(
+      `command -v semanage >/dev/null 2>&1 && ` +
+      `(semanage port -a -t http_port_t -p tcp ${config.port} 2>/dev/null || ` +
+      `semanage port -m -t http_port_t -p tcp ${config.port} 2>/dev/null) || true`,
+    );
+  }
+  // SELinux: label the site files so nginx is allowed to read them (best-effort).
+  await ssh.exec(
+    `command -v chcon >/dev/null 2>&1 && ` +
+    `chcon -R -t httpd_sys_content_t /opt/pushify/site-studio/${config.slug} 2>/dev/null || true`,
+  );
+
+  const testResult = await ssh.exec('nginx -t 2>&1');
+  if (testResult.code !== 0) {
+    await ssh.exec(`rm -f ${confPath}`);
+    return {
+      success: false,
+      message: `Nginx configuration test failed: ${testResult.stderr || testResult.stdout}`,
+    };
+  }
+
+  await ssh.exec('systemctl reload nginx 2>&1 || nginx -s reload 2>&1');
+  return { success: true, message: `Static site ${config.slug} added to Nginx` };
+}
+
 export interface AutoSubdomainSiteConfig {
   domain: string;
   containerPort: number;

@@ -9,6 +9,7 @@ export type SiteStudioCategory =
   | 'saas';
 
 export type SiteStudioStack =
+  | 'static'
   | 'wordpress'
   | 'ghost'
   | 'strapi'
@@ -47,7 +48,14 @@ export interface SiteStudioTemplate {
   stack: SiteStudioStack;
   icon: string;
   accent: string;
-  marketplaceTemplateId: string;
+  /**
+   * 'cms' (default) deploys the underlying app container (WordPress/Strapi/…).
+   * 'static' skips any app deploy — the block-based site is published as static HTML
+   * and served directly by Nginx (no CMS).
+   */
+  deployment?: 'cms' | 'static';
+  /** Underlying marketplace app to deploy — required for 'cms', unused for 'static'. */
+  marketplaceTemplateId?: string;
   /** Extra fields collected in launch wizard (e.g. admin email) */
   launchFields?: SiteStudioLaunchField[];
   featured: boolean;

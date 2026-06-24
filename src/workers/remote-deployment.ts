@@ -69,6 +69,56 @@ export interface RemoteDeploymentResult {
 }
 
 /**
+ * Open a TCP port in the server's local firewall so the deployed app is reachable.
+ *
+ * Deploys connect as root, so the firewall tools are invoked directly with a `sudo`
+ * fallback only for the rare non-root case. This is the difference that made BYOS servers
+ * fail while Hetzner worked: the Hetzner image we provision always has `sudo` + an enabled
+ * `ufw`, but a user's own server may have no `sudo` (minimal root images) or use
+ * firewalld/iptables — a hardcoded `sudo ufw ...` fails there and silently leaves the port
+ * closed. We detect the available manager and, if none is found locally, tell the user to
+ * open the port in their cloud provider's firewall / security group (which we can't reach
+ * over SSH).
+ */
+export async function openFirewallPort(
+  ssh: SSHClient,
+  port: number,
+  onProgress: (message: string) => void,
+): Promise<void> {
+  onProgress(`🔓 Opening firewall port ${port}...`);
+
+  const script =
+    `if command -v ufw >/dev/null 2>&1; then ` +
+    `(ufw allow ${port}/tcp 2>&1 || sudo ufw allow ${port}/tcp 2>&1); ` +
+    `(ufw reload 2>&1 || sudo ufw reload 2>&1) >/dev/null 2>&1; ` +
+    `echo PUSHIFY_FW=ufw; ` +
+    `elif command -v firewall-cmd >/dev/null 2>&1; then ` +
+    `(firewall-cmd --permanent --add-port=${port}/tcp 2>&1 || sudo firewall-cmd --permanent --add-port=${port}/tcp 2>&1); ` +
+    `(firewall-cmd --reload 2>&1 || sudo firewall-cmd --reload 2>&1) >/dev/null 2>&1; ` +
+    `echo PUSHIFY_FW=firewalld; ` +
+    `elif command -v iptables >/dev/null 2>&1; then ` +
+    `(iptables -C INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport ${port} -j ACCEPT 2>&1 || sudo iptables -I INPUT -p tcp --dport ${port} -j ACCEPT 2>&1); ` +
+    `echo PUSHIFY_FW=iptables; ` +
+    `else echo PUSHIFY_FW=none; fi`;
+
+  const result = await ssh.exec(script);
+  const out = `${result.stdout}\n${result.stderr}`;
+
+  if (out.includes('PUSHIFY_FW=ufw')) {
+    onProgress(`✅ Firewall port ${port} opened (ufw)`);
+  } else if (out.includes('PUSHIFY_FW=firewalld')) {
+    onProgress(`✅ Firewall port ${port} opened (firewalld)`);
+  } else if (out.includes('PUSHIFY_FW=iptables')) {
+    onProgress(`✅ Firewall port ${port} opened (iptables)`);
+  } else {
+    onProgress(
+      `ℹ️ No local firewall manager (ufw/firewalld/iptables) detected — the OS is not blocking port ${port}. ` +
+      `If the site is not reachable externally, open TCP port ${port} in your cloud provider's firewall / security group.`,
+    );
+  }
+}
+
+/**
  * Get server details and establish SSH connection
  */
 async function getServerAndConnect(serverId: string): Promise<{
@@ -417,13 +467,8 @@ export async function deployToRemoteServer(
         onProgress(`⚠️ Some images failed to pull, continuing...`);
       }
 
-      // Open firewall port (best-effort; supports ufw and firewalld)
-      onProgress(`🔓 Opening firewall port ${publicHostPort}...`);
-      await ssh.exec(
-        `(command -v ufw >/dev/null 2>&1 && (ufw allow ${publicHostPort}/tcp 2>&1 || sudo ufw allow ${publicHostPort}/tcp 2>&1) && (ufw reload 2>&1 || sudo ufw reload 2>&1)) || ` +
-        `(command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --permanent --add-port=${publicHostPort}/tcp 2>&1 && firewall-cmd --reload 2>&1) || ` +
-        `echo "No firewall manager detected — open port ${publicHostPort} in your cloud provider firewall"`
-      );
+      // Open firewall port (best-effort; ufw / firewalld / iptables, root-first for BYOS)
+      await openFirewallPort(ssh, publicHostPort, onProgress);
 
       // Start the stack (--env-file required for ${VAR} substitution in compose YAML)
       onProgress(`🚀 Starting stack...`);
@@ -613,7 +658,12 @@ export async function deployToRemoteServer(
         envVars.DATABASE_PORT = String(dbPort);
         envVars.DATABASE_NAME = dbName;
         envVars.DATABASE_USER = dbUser;
+        envVars.DATABASE_USERNAME = dbUser; // Strapi / Medusa expect DATABASE_USERNAME
         envVars.DATABASE_PASSWORD = dbPassword;
+        // Let the template choose the client (e.g. Strapi DATABASE_CLIENT=postgres); only
+        // fill it in when it wasn't provided so SQLite can't sneak back as the default.
+        envVars.DATABASE_CLIENT = envVars.DATABASE_CLIENT || (requiresDb.type === 'mysql' ? 'mysql' : 'postgres');
+        envVars.DATABASE_SSL = envVars.DATABASE_SSL || 'false';
 
         envVars.POSTGRES_HOST = dbContainerName;
         envVars.POSTGRES_DB = envVars.POSTGRES_DB || dbName;
@@ -945,18 +995,8 @@ export async function deployToRemoteServer(
     }
     onProgress('✅ Zero-downtime deployment successful');
 
-    // Open firewall port for external access
-    onProgress(`🔓 Opening firewall port ${hostPort}...`);
-    const firewallResult = await ssh.exec(`sudo ufw allow ${hostPort}/tcp && sudo ufw reload`);
-    if (firewallResult.code === 0) {
-      onProgress(`✅ Firewall port ${hostPort} opened and reloaded`);
-    } else {
-      // Try alternative approach - might already be open or UFW not active
-      onProgress(`⚠️ UFW command result: ${firewallResult.stderr || firewallResult.stdout || 'unknown'}`);
-      // Try iptables as fallback
-      await ssh.exec(`sudo iptables -I INPUT -p tcp --dport ${hostPort} -j ACCEPT 2>/dev/null || true`);
-      onProgress(`🔄 Tried iptables fallback for port ${hostPort}`);
-    }
+    // Open firewall port for external access (root-first; works on BYOS without sudo/ufw)
+    await openFirewallPort(ssh, hostPort, onProgress);
 
     // Check if project has any domains; if not, create auto subdomain (only on managed servers)
     let primaryDomain = await getPrimaryDomain(projectId);

@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { authMiddleware } from '../middleware/auth';
 import { siteEditorService } from '../services/site-editor.service';
 import type { AppEnv } from '../types';
-import type { SiteBlock, SiteSeo, CmsMode } from '../sites/block-types';
+import type { SiteBlock, SiteSeo, CmsMode, SitePage } from '../sites/block-types';
 import type { SiteTheme } from '../sites/theme';
 import { uploadSiteEditorImage } from '../lib/site-editor-assets';
 
@@ -99,6 +99,59 @@ siteEditorRouter.put('/:projectId/site-editor/blocks', async (c) => {
     locale,
   );
 
+  return c.json({ data });
+});
+
+siteEditorRouter.put('/:projectId/site-editor/pages', async (c) => {
+  const projectId = c.req.param('projectId');
+  const organizationId = c.get('organizationId')!;
+  const userId = c.get('userId')!;
+  const locale = c.get('locale');
+  const body = await c.req.json<{ pages: SitePage[] }>();
+
+  if (!Array.isArray(body.pages) || body.pages.length === 0) {
+    return c.json({ error: { message: 'pages array required' } }, 400);
+  }
+
+  const data = await siteEditorService.updatePages(
+    projectId,
+    organizationId,
+    userId,
+    body.pages,
+    locale,
+  );
+
+  return c.json({ data });
+});
+
+siteEditorRouter.get('/:projectId/site-editor/designs', async (c) => {
+  const projectId = c.req.param('projectId');
+  const organizationId = c.get('organizationId')!;
+  const userId = c.get('userId')!;
+  const locale = c.get('locale');
+
+  const data = await siteEditorService.getDesigns(projectId, organizationId, userId, locale);
+  return c.json({ data });
+});
+
+siteEditorRouter.post('/:projectId/site-editor/apply-template', async (c) => {
+  const projectId = c.req.param('projectId');
+  const organizationId = c.get('organizationId')!;
+  const userId = c.get('userId')!;
+  const locale = c.get('locale');
+  const body = await c.req.json<{ designKey: string }>();
+
+  if (!body.designKey) {
+    return c.json({ error: { message: 'designKey required' } }, 400);
+  }
+
+  const data = await siteEditorService.applyTemplate(
+    projectId,
+    organizationId,
+    userId,
+    body.designKey,
+    locale,
+  );
   return c.json({ data });
 });
 

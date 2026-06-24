@@ -1,6 +1,7 @@
 import type { SSHClient } from '../utils/ssh';
 import { env } from '../config/env';
 import { dockerBuildKitPrefix, getBuildMemoryLimit, getRunMemoryLimit } from '../lib/platform-docker';
+import { shSingleQuote } from './shell';
 
 export interface BuildImageOptions {
   workDir: string;
@@ -35,11 +36,6 @@ export interface ContainerInfo {
   status: string;
   ports: string;
   createdAt: string;
-}
-
-/** Escape a string for use inside bash single quotes. */
-function shSingleQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /** Prefer real docker binary; bypass broken shell aliases (e.g. timeout DOCKER_BUILDKIT=1 docker). */
@@ -164,25 +160,24 @@ export async function runContainer(
   // Port mapping - bind to all interfaces for external access
   runCmd += ` -p 0.0.0.0:${hostPort}:${containerPort}`;
 
-  // Environment variables
+  // Environment variables — single-quote the whole NAME=value so an env value
+  // containing $(...), backticks or ${...} cannot be expanded by the remote shell.
   if (envVars) {
     for (const [key, value] of Object.entries(envVars)) {
-      // Escape special characters in value
-      const escapedValue = value.replace(/"/g, '\\"');
-      runCmd += ` -e "${key}=${escapedValue}"`;
+      runCmd += ` -e ${shSingleQuote(`${key}=${value}`)}`;
     }
   }
 
   // Volumes
   if (volumes) {
     for (const volume of volumes) {
-      runCmd += ` -v ${volume}`;
+      runCmd += ` -v ${shSingleQuote(volume)}`;
     }
   }
 
   // Network mode
   if (networkMode) {
-    runCmd += ` --network ${networkMode}`;
+    runCmd += ` --network ${shSingleQuote(networkMode)}`;
   }
 
   // Restart policy
@@ -640,24 +635,23 @@ export async function runContainerFromImage(
   // Port mapping
   runCmd += ` -p 0.0.0.0:${hostPort}:${containerPort}`;
 
-  // Environment variables
+  // Environment variables — single-quote NAME=value to block shell expansion/injection.
   if (envVars) {
     for (const [key, value] of Object.entries(envVars)) {
-      const escapedValue = value.replace(/"/g, '\\"');
-      runCmd += ` -e "${key}=${escapedValue}"`;
+      runCmd += ` -e ${shSingleQuote(`${key}=${value}`)}`;
     }
   }
 
   // Volumes
   if (volumes) {
     for (const volume of volumes) {
-      runCmd += ` -v ${volume}`;
+      runCmd += ` -v ${shSingleQuote(volume)}`;
     }
   }
 
   // Network mode
   if (networkMode) {
-    runCmd += ` --network ${networkMode}`;
+    runCmd += ` --network ${shSingleQuote(networkMode)}`;
   }
 
   // Restart policy
@@ -817,24 +811,23 @@ export async function blueGreenDeploy(
   // Port mapping - use temporary port initially
   runCmd += ` -p 0.0.0.0:${tempPort}:${containerPort}`;
 
-  // Environment variables
+  // Environment variables — single-quote NAME=value to block shell expansion/injection.
   if (envVars) {
     for (const [key, value] of Object.entries(envVars)) {
-      const escapedValue = value.replace(/"/g, '\\"');
-      runCmd += ` -e "${key}=${escapedValue}"`;
+      runCmd += ` -e ${shSingleQuote(`${key}=${value}`)}`;
     }
   }
 
   // Volumes
   if (volumes) {
     for (const volume of volumes) {
-      runCmd += ` -v ${volume}`;
+      runCmd += ` -v ${shSingleQuote(volume)}`;
     }
   }
 
   // Network mode
   if (networkMode) {
-    runCmd += ` --network ${networkMode}`;
+    runCmd += ` --network ${shSingleQuote(networkMode)}`;
   }
 
   // Restart policy
@@ -976,8 +969,7 @@ export async function completeBlueGreenSwitch(
     runCmd += ` -p 0.0.0.0:${targetPort}:${containerPort}`;
 
     for (const envLine of envLines) {
-      const escapedEnv = envLine.replace(/"/g, '\\"');
-      runCmd += ` -e "${escapedEnv}"`;
+      runCmd += ` -e ${shSingleQuote(envLine)}`;
     }
 
     runCmd += ` --restart unless-stopped`;

@@ -29,10 +29,23 @@ aiRouter.post('/chat', async (c) => {
     return c.json({ error: { message: 'Messages array is required' } }, 400);
   }
 
+  // Bound the conversation so a caller can't drive unbounded LLM token cost (M-9).
+  const MAX_MESSAGES = 50;
+  const MAX_CONTENT_CHARS = 8000;
+  if (body.messages.length > MAX_MESSAGES) {
+    return c.json({ error: { message: `Too many messages (max ${MAX_MESSAGES})` } }, 400);
+  }
+  if (typeof body.context === 'string' && body.context.length > MAX_CONTENT_CHARS) {
+    return c.json({ error: { message: 'Context too large' } }, 400);
+  }
+
   // Validate message format
   for (const msg of body.messages) {
     if (!msg.role || !msg.content || !['user', 'assistant'].includes(msg.role)) {
       return c.json({ error: { message: 'Invalid message format' } }, 400);
+    }
+    if (typeof msg.content !== 'string' || msg.content.length > MAX_CONTENT_CHARS) {
+      return c.json({ error: { message: `Message content too large (max ${MAX_CONTENT_CHARS} chars)` } }, 400);
     }
   }
 

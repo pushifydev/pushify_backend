@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { db } from '../db';
-import { projects, deployments, environmentVariables, marketplaceDeployments } from '../db/schema';
+import { projects, deployments, environmentVariables, marketplaceDeployments, servers } from '../db/schema';
 import { templates, getTemplateById } from '../marketplace/templates';
 import { generatePassword, generateSecret, applyCalcomEnvDefaults } from '../marketplace/helpers';
 import type { MarketplaceCategory } from '../marketplace/types';
@@ -46,6 +46,18 @@ export const marketplaceService = {
     const template = getTemplateById(params.templateId);
     if (!template) {
       throw new Error(`Template '${params.templateId}' not found`);
+    }
+
+    // Verify the target server belongs to this organization
+    // (prevents deploying onto another tenant's infrastructure via a forged serverId)
+    const server = await db.query.servers.findFirst({
+      where: and(
+        eq(servers.id, params.serverId),
+        eq(servers.organizationId, params.organizationId)
+      ),
+    });
+    if (!server) {
+      throw new Error(`Server '${params.serverId}' not found`);
     }
 
     // Generate unique slug from name + random suffix

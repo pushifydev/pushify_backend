@@ -72,6 +72,15 @@ const envSchema = z.object({
   // AI Assistant
   ANTHROPIC_API_KEY: z.string().optional(),
 
+  /**
+   * Number of trusted reverse-proxy hops in front of the app (e.g. 1 when behind a
+   * single nginx/load balancer). Controls how the client IP is derived for rate limiting:
+   * 0 (default) → use the real socket address and IGNORE X-Forwarded-For (not spoofable);
+   * N → read the Nth-from-right entry of X-Forwarded-For. Set this in production behind a
+   * proxy, otherwise an attacker can rotate X-Forwarded-For to bypass IP rate limits.
+   */
+  TRUSTED_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(0),
+
   // Rate Limiting (see middleware/rate-limit.ts)
   RATE_LIMIT_ENABLED: z.coerce.boolean().default(true),
   /** Login, register, refresh, OAuth callbacks — per IP, per minute */

@@ -1,4 +1,4 @@
-import { execStreamingCommand, execCommand, type StreamingCommandOptions } from './shell';
+import { execStreamingCommand, execCommand, shSingleQuote, type StreamingCommandOptions } from './shell';
 import { env } from '../config/env';
 import net from 'net';
 
@@ -77,12 +77,13 @@ export async function buildImage(options: BuildOptions): Promise<void> {
   ];
 
   if (dockerfilePath) {
-    args.push('-f', dockerfilePath);
+    args.push('-f', shSingleQuote(dockerfilePath));
   }
 
   if (buildArgs) {
     for (const [key, value] of Object.entries(buildArgs)) {
-      args.push('--build-arg', `${key}=${value}`);
+      // execStreamingCommand runs with shell:true, so quote user-controlled build args.
+      args.push('--build-arg', shSingleQuote(`${key}=${value}`));
     }
   }
 
@@ -141,11 +142,13 @@ export async function runContainer(options: RunOptions): Promise<string> {
   ];
 
   if (networkMode) {
-    args.push('--network', networkMode);
+    args.push('--network', shSingleQuote(networkMode));
   }
 
+  // Single-quote NAME=value so a user env value cannot inject shell commands
+  // (execCommand runs the joined args via /bin/sh -c).
   for (const [key, value] of Object.entries(envVars)) {
-    args.push('-e', `${key}=${value}`);
+    args.push('-e', shSingleQuote(`${key}=${value}`));
   }
 
   args.push(imageName);

@@ -1,5 +1,6 @@
 import { decrypt } from './encryption';
 import { logger } from './logger';
+import { assertPublicUrl } from './ssrf-guard';
 import type { CmsConfig, SiteBlock, SiteSeo } from '../sites/block-types';
 
 export interface CmsSyncResult {
@@ -68,6 +69,9 @@ export async function syncToHeadlessCms(
   };
 
   try {
+    // SSRF guard: the CMS base URL is user-supplied; reject private/internal targets.
+    await assertPublicUrl(base);
+
     if (cms.mode === 'strapi') {
       const res = await fetch(`${base}/api/${collection}`, {
         method: 'POST',
