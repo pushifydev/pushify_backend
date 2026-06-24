@@ -125,8 +125,12 @@ const envSchema = z.object({
 
   /** Margin % on managed infra provider list price (default 20) */
   INFRA_MARGIN_PERCENT: z.coerce.number().min(0).max(100).default(20),
-  /** EUR→USD rate for Hetzner list prices (default 1.08) */
+  /** EUR→USD floor/fallback rate — used when the live FX fetch fails or returns a lower value (default 1.08) */
   INFRA_EUR_TO_USD_RATE: z.coerce.number().positive().default(1.08),
+  /** Safety buffer % added on top of the live EUR→USD rate to absorb intraday swings (default 2) */
+  INFRA_FX_BUFFER_PERCENT: z.coerce.number().min(0).max(50).default(2),
+  /** Flat per-server provider surcharge in EUR added before margin — covers extras like IPv4 (~0.50). Default 0 = off */
+  INFRA_PROVIDER_SURCHARGE_EUR: z.coerce.number().min(0).default(0),
   /** Warn by email when infra wallet balance falls below this (USD cents, default $10) */
   INFRA_LOW_BALANCE_WARN_CENTS: z.coerce.number().int().min(0).default(1000),
 
