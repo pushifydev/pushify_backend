@@ -341,6 +341,39 @@ export const authService = {
   },
 
   /**
+   * Switch the user's active organization. Verifies membership, then issues a fresh
+   * token pair scoped to the target org so every subsequent request resolves to it.
+   */
+  async switchOrganization(
+    userId: string,
+    organizationId: string,
+    locale: SupportedLocale = 'en',
+    ipAddress?: string,
+    userAgent?: string
+  ) {
+    const membership = await organizationRepository.findMember(organizationId, userId);
+    if (!membership) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
+    }
+
+    const org = await organizationRepository.findById(organizationId);
+    if (!org) {
+      throw new HTTPException(404, { message: t(locale, 'organizations', 'notFound') });
+    }
+
+    const { accessToken, refreshToken } = await generateTokenPair(userId, organizationId);
+    await this.createSession(userId, refreshToken, ipAddress, userAgent);
+
+    logger.info({ userId, organizationId }, 'Switched active organization');
+
+    return {
+      organization: { id: org.id, name: org.name, slug: org.slug },
+      accessToken,
+      refreshToken,
+    };
+  },
+
+  /**
    * Get current user by ID
    */
   async getCurrentUser(userId: string, locale: SupportedLocale = 'en') {

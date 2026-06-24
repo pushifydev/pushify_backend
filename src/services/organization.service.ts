@@ -35,6 +35,20 @@ export const organizationService = {
   },
 
   /**
+   * List every organization the user belongs to, with their role in each.
+   * Powers the workspace switcher.
+   */
+  async listUserOrganizations(userId: string) {
+    const memberships = await organizationRepository.findUserOrganizations(userId);
+    return memberships.map((m) => ({
+      id: m.organization.id,
+      name: m.organization.name,
+      slug: m.organization.slug,
+      role: m.role,
+    }));
+  },
+
+  /**
    * Update organization (owner/admin only)
    */
   async updateOrganization(
