@@ -11,6 +11,7 @@ import { closeDatabasePool } from './db';
 import { startBackgroundWorkers, stopBackgroundWorkers } from './runtime/background-workers';
 import { runStartupChecks } from './runtime/startup-checks';
 import { runsApiServer, runsBackgroundWorkers } from './runtime/process-role';
+import { primeEurToUsdRate } from './lib/fx-rate';
 
 await runStartupChecks(env.PROCESS_ROLE);
 
@@ -40,6 +41,9 @@ injectWebSocket(server);
 wsManager.initialize();
 
 logger.info(`Pushify API is running on http://localhost:${port}`);
+
+// Prime the live EUR→USD rate so infra quotes use a fresh rate from the first request (non-blocking).
+void primeEurToUsdRate();
 
 if (runsBackgroundWorkers()) {
   await startBackgroundWorkers();
