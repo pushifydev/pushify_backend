@@ -23,6 +23,13 @@ export interface PlanLimits {
 export interface PlanInfo {
   name: string;
   price: number; // Monthly price in USD, 0 for free
+  /**
+   * Managed-infra compute credit included with the plan, in USD cents. Granted on each
+   * paid invoice by topping the infra wallet UP to this amount (never above), so a paying
+   * customer can run their entry server without a separate top-up. Kept below the plan's
+   * net margin so we never lose money — see grantIncludedInfraCredit().
+   */
+  includedInfraCreditCents: number;
   limits: PlanLimits;
 }
 
@@ -34,6 +41,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
   free: {
     name: 'Free',
     price: 0,
+    includedInfraCreditCents: 0,
     limits: {
       apiRequestsPerMinute: 60,
       servers: 0,
@@ -54,6 +62,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
   hobby: {
     name: 'Hobby',
     price: 10,
+    includedInfraCreditCents: 650, // ~$6.50 — covers the cheapest managed server; < $10 plan margin
     limits: {
       apiRequestsPerMinute: 120,
       servers: 1,
@@ -74,6 +83,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
   pro: {
     name: 'Pro',
     price: 25,
+    includedInfraCreditCents: 1800, // ~$18 — covers a mid server / a couple small ones; < $25 plan margin
     limits: {
       apiRequestsPerMinute: 300,
       servers: 3,
@@ -94,6 +104,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
   business: {
     name: 'Business',
     price: 99,
+    includedInfraCreditCents: 4500, // ~$45 — covers several servers; well under $99 plan margin
     limits: {
       apiRequestsPerMinute: 600,
       servers: 8,
@@ -114,6 +125,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
   enterprise: {
     name: 'Enterprise',
     price: -1, // Custom pricing
+    includedInfraCreditCents: 0, // billed separately; enterprise infra is not wallet-metered
     limits: {
       apiRequestsPerMinute: -1,
       servers: -1,
@@ -139,6 +151,10 @@ export function getPlanInfo(plan: PlanType): PlanInfo {
 
 export function getApiRequestsPerMinute(plan: PlanType): number {
   return getPlanInfo(plan).limits.apiRequestsPerMinute;
+}
+
+export function getIncludedInfraCreditCents(plan: PlanType): number {
+  return getPlanInfo(plan).includedInfraCreditCents;
 }
 
 export function isUnlimited(value: number): boolean {

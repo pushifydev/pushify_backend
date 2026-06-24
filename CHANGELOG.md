@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.0-beta.17] - 2026-06-24
+
+### Added
+- **Included compute credit per plan**: paid plans now bundle a monthly managed-infra allowance (Hobby ~$6.50, Pro ~$18, Business ~$45) so a paying customer can start their entry server without a separate top-up. Credit is granted on every paid invoice (initial checkout + renewals) by topping the infra wallet **up to** the plan allowance — never above it. New `includedInfraCreditCents` field on each plan and `infraBillingService.grantIncludedInfraCredit()`.
+
+### Notes
+- Loss-prevention by design: each allowance is kept below the plan's net margin; the grant never over-credits (a customer who already holds ≥ the allowance gets nothing) and is idempotent across webhook retries; and the existing "wallet hits 0 → suspend server" backstop still caps provider spend at what the customer funded.
+- Bundled grants are recorded as `credit_topup` ledger entries tagged `metadata.bundled = true` (no schema migration required).
+
 ## [0.2.0-beta.16] - 2026-06-24
 
 ### Fixed

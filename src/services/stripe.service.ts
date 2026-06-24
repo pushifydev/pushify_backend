@@ -418,6 +418,10 @@ export const stripeService = {
             })
             .where(eq(organizations.id, organizationId));
 
+          // Fund the included compute credit so the customer can start their entry server
+          // without a separate top-up (tops the wallet up to the plan allowance; never above).
+          await infraBillingService.grantIncludedInfraCredit(organizationId, effectivePlan);
+
           const org = await organizationRepository.findById(organizationId);
           const notifyEmail = await resolveBillingNotifyEmail(organizationId);
           if (notifyEmail && org) {
@@ -518,14 +522,16 @@ export const stripeService = {
         if (!customerId) break;
 
         const [org] = await db
-          .select({ id: organizations.id })
+          .select({ id: organizations.id, plan: organizations.plan })
           .from(organizations)
           .where(eq(organizations.stripeCustomerId, customerId))
           .limit(1);
 
         if (org) {
           await organizationBillingService.markActive(org.id);
-          logger.info({ organizationId: org.id }, 'invoice.paid: billing status cleared');
+          // Renew the included compute credit each paid cycle (tops up to the plan allowance).
+          await infraBillingService.grantIncludedInfraCredit(org.id, org.plan as PlanType);
+          logger.info({ organizationId: org.id }, 'invoice.paid: billing status cleared, infra credit renewed');
         }
         break;
       }
