@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.19] - 2026-06-24
+
+### Added
+- Workspace switching for multi-org users. New `GET /organizations/mine` (lists every org the user belongs to, with their role) and `POST /organizations/switch` (verifies membership, then re-issues a token pair scoped to the target org). This is what lets an invited team member actually reach the inviting org's projects/servers — previously their session stayed locked to their personal org.
+
 ## [0.2.0-beta.18] - 2026-06-24
 
 ### Fixed

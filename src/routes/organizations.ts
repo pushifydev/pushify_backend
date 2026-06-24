@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { organizationService } from '../services/organization.service';
+import { authService } from '../services/auth.service';
 import { authMiddleware } from '../middleware/auth';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
@@ -18,6 +19,30 @@ organizationRouter.get('/', async (c) => {
   const org = await organizationService.getOrganization(organizationId, userId, locale);
 
   return c.json({ data: org });
+});
+
+// List all organizations the current user belongs to (for the workspace switcher)
+organizationRouter.get('/mine', async (c) => {
+  const userId = c.get('userId')!;
+  const orgs = await organizationService.listUserOrganizations(userId);
+  return c.json({ data: orgs });
+});
+
+// Switch the active organization — re-issues tokens scoped to the target org
+organizationRouter.post('/switch', async (c) => {
+  const userId = c.get('userId')!;
+  const locale = c.get('locale');
+  const { organizationId } = await c.req.json<{ organizationId: string }>();
+  const ipAddress = c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip');
+  const userAgent = c.req.header('user-agent');
+
+  const result = await authService.switchOrganization(userId, organizationId, locale, ipAddress, userAgent);
+
+  return c.json({
+    data: { organization: result.organization },
+    accessToken: result.accessToken,
+    refreshToken: result.refreshToken,
+  });
 });
 
 // Update organization
