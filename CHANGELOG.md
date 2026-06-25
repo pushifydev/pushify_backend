@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.0-beta.20] - 2026-06-25
+
+### Changed
+- **Transactional emails are now light-themed** ("Clean Pro"), matching the dashboard light mode. Flipped the shared `email-templates.ts` palette (light canvas/card, dark text, indigo `#6366f1` button) and replaced the hardcoded near-white emphasis (`#fafafa`) with dark `#18181b` so bold text is readable on light cards. Deployment/health status accents (green/red/gray) are unchanged.
+
+### Added
+- **Six new account & security emails**, all bilingual (EN/TR), sent fire-and-forget so a mail failure never breaks the underlying flow:
+  - **Welcome** — on registration (alongside email verification), with a button to the dashboard.
+  - **Password changed** — confirmation after a successful password change, with a security note and reset link.
+  - **2FA enabled / 2FA disabled** — security confirmations wired into the two-factor enable/disable flow.
+  - **Server ready** — sent when a managed server finishes setup (both the managed-server setup worker and the BYOS path), deep-linking to the server.
+  - **New sign-in** — alert when an account is accessed from a new device. Only fires when the user has prior sessions and none used the same user-agent (no spam on first login or known devices); password-login sessions now also store IP/user-agent to power this detection.
+
 ## [0.2.0-beta.19] - 2026-06-24
 
 ### Added

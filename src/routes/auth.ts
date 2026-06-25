@@ -705,7 +705,9 @@ authRouter.openapi(registerRoute, async (c) => {
 authRouter.openapi(loginRoute, async (c) => {
   const input = c.req.valid('json');
   const locale = c.get('locale');
-  const result = await authService.login(input, locale);
+  const ipAddress = c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip');
+  const userAgent = c.req.header('user-agent');
+  const result = await authService.login(input, locale, ipAddress, userAgent);
 
   // Check if 2FA is required
   if ('requiresTwoFactor' in result) {
