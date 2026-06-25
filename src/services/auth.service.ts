@@ -558,7 +558,7 @@ export const authService = {
     locale: SupportedLocale = 'en',
     ipAddress?: string,
     userAgent?: string
-  ): Promise<AuthResult> {
+  ): Promise<LoginResult> {
     const { githubService } = await import('./github.service');
 
     // Exchange code for token
@@ -641,6 +641,16 @@ export const authService = {
       throw new HTTPException(500, { message: t(locale, 'auth', 'noOrganization') });
     }
 
+    // 2FA gate: an account with 2FA enabled must pass the second factor before a
+    // full session is issued — otherwise OAuth would bypass 2FA entirely. Returns
+    // the same short-lived token the password flow uses; the client completes via
+    // POST /auth/login/2fa.
+    if (user.twoFactorEnabled) {
+      const twoFactorToken = await generateTwoFactorToken(user.id, membership.organization.id);
+      logger.info({ userId: user.id, provider: 'github' }, '2FA required for OAuth login');
+      return { requiresTwoFactor: true, twoFactorToken };
+    }
+
     // Generate JWT pair & create session
     const tokens = await generateTokenPair(user.id, membership.organization.id);
     await this.createSession(user.id, tokens.refreshToken, ipAddress, userAgent);
@@ -673,7 +683,7 @@ export const authService = {
     locale: SupportedLocale = 'en',
     ipAddress?: string,
     userAgent?: string
-  ): Promise<AuthResult> {
+  ): Promise<LoginResult> {
     const { googleService } = await import('./google.service');
 
     // Exchange code for token
@@ -738,6 +748,16 @@ export const authService = {
     const membership = await organizationRepository.findUserFirstOrganization(user.id);
     if (!membership) {
       throw new HTTPException(500, { message: t(locale, 'auth', 'noOrganization') });
+    }
+
+    // 2FA gate: an account with 2FA enabled must pass the second factor before a
+    // full session is issued — otherwise OAuth would bypass 2FA entirely. Returns
+    // the same short-lived token the password flow uses; the client completes via
+    // POST /auth/login/2fa.
+    if (user.twoFactorEnabled) {
+      const twoFactorToken = await generateTwoFactorToken(user.id, membership.organization.id);
+      logger.info({ userId: user.id, provider: 'google' }, '2FA required for OAuth login');
+      return { requiresTwoFactor: true, twoFactorToken };
     }
 
     // Generate JWT pair & create session

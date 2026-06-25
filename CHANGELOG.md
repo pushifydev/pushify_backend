@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.21] - 2026-06-25
+
+### Security
+- **OAuth login no longer bypasses two-factor authentication.** Google and GitHub sign-in issued a full session immediately, ignoring the account's `twoFactorEnabled` flag — so a user who had enabled 2FA (or whose email/password account got linked to an OAuth identity) could log in without the second factor. `googleLogin`/`githubLogin` now apply the same 2FA gate as password login: when 2FA is enabled they return a short-lived `requiresTwoFactor` challenge instead of tokens, and the client completes via the existing `POST /auth/login/2fa`. No full session is created until the second factor is verified.
+
 ## [0.2.0-beta.20] - 2026-06-25
 
 ### Changed

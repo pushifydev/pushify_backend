@@ -790,6 +790,14 @@ authRouter.openapi(githubLoginCallbackRoute, async (c) => {
 
   const result = await authService.githubLogin(code, locale, ipAddress, userAgent);
 
+  // 2FA-enabled account: defer to the second-factor step (same as password login)
+  if ('requiresTwoFactor' in result) {
+    return c.json({
+      requiresTwoFactor: true,
+      twoFactorToken: result.twoFactorToken,
+    });
+  }
+
   return c.json({
     data: {
       user: result.user,
@@ -823,6 +831,14 @@ authRouter.openapi(googleLoginCallbackRoute, async (c) => {
   const userAgent = c.req.header('user-agent');
 
   const result = await authService.googleLogin(code, locale, ipAddress, userAgent);
+
+  // 2FA-enabled account: defer to the second-factor step (same as password login)
+  if ('requiresTwoFactor' in result) {
+    return c.json({
+      requiresTwoFactor: true,
+      twoFactorToken: result.twoFactorToken,
+    });
+  }
 
   return c.json({
     data: {
