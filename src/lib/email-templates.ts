@@ -3,17 +3,18 @@
  * Table-based layout for broad client support (Gmail, Apple Mail, Outlook).
  */
 
+// Light "Clean Pro" palette — mirrors the dashboard light theme (app/globals.css html.light).
 const E = {
-  bg: '#0a0a0a',
-  card: '#111111',
-  inset: '#1a1a1a',
-  border: 'rgba(255,255,255,0.1)',
-  borderSubtle: 'rgba(255,255,255,0.06)',
-  text: '#fafafa',
-  textSecondary: '#a3a3a3',
-  textMuted: '#737373',
-  btnBg: '#fafafa',
-  btnText: '#0a0a0a',
+  bg: '#f9fafb',
+  card: '#ffffff',
+  inset: '#f3f4f6',
+  border: '#e4e4e7',
+  borderSubtle: '#f0f0f1',
+  text: '#09090b',
+  textSecondary: '#3f3f46',
+  textMuted: '#71717a',
+  btnBg: '#6366f1',
+  btnText: '#ffffff',
   font: "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif",
   fontMono: "ui-monospace,'SF Mono',Menlo,Monaco,Consolas,monospace",
   radius: '12px',

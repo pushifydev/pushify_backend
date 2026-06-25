@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.2.0-beta.20] - 2026-06-25
+
+### Changed
+- **Transactional emails are now light-themed** ("Clean Pro"), matching the dashboard light mode. Flipped the shared `email-templates.ts` palette (light canvas/card, dark text, indigo `#6366f1` button) and replaced the hardcoded near-white emphasis (`#fafafa`) with dark `#18181b` so bold text is readable on light cards. Deployment/health status accents (green/red/gray) are unchanged.
+
+### Added
+- **Six new account & security emails**, all bilingual (EN/TR), sent fire-and-forget so a mail failure never breaks the underlying flow:
+  - **Welcome** — on registration (alongside email verification), with a button to the dashboard.
+  - **Password changed** — confirmation after a successful password change, with a security note and reset link.
+  - **2FA enabled / 2FA disabled** — security confirmations wired into the two-factor enable/disable flow.
+  - **Server ready** — sent when a managed server finishes setup (both the managed-server setup worker and the BYOS path), deep-linking to the server.
+  - **New sign-in** — alert when an account is accessed from a new device. Only fires when the user has prior sessions and none used the same user-agent (no spam on first login or known devices); password-login sessions now also store IP/user-agent to power this detection.
+
+## [0.2.0-beta.19] - 2026-06-24
+
+### Added
+- Workspace switching for multi-org users. New `GET /organizations/mine` (lists every org the user belongs to, with their role) and `POST /organizations/switch` (verifies membership, then re-issues a token pair scoped to the target org). This is what lets an invited team member actually reach the inviting org's projects/servers — previously their session stayed locked to their personal org.
+
+## [0.2.0-beta.18] - 2026-06-24
+
+### Fixed
+- Included compute credit is now sized **dynamically** to the cheapest plan-eligible server's *current* monthly price (live Hetzner + dynamic FX, plus headroom), capped at a per-plan ceiling — instead of a fixed amount that could fall just short of the wallet threshold required to start a server as FX / IPv4 prices moved. Fixes paying customers being unable to start their entry server despite the credit having been granted. `includedInfraCreditCents` is now the **ceiling**, not the exact grant; new `getCheapestEligibleMonthlyCents()` and `computeIncludedCreditTargetCents()`. The backfill script reuses the same dynamic target (`--dry-run` reports it).
+
+## [0.2.0-beta.17] - 2026-06-24
+
+### Added
+- **Included compute credit per plan**: paid plans now bundle a monthly managed-infra allowance (Hobby ~$6.50, Pro ~$18, Business ~$45) so a paying customer can start their entry server without a separate top-up. Credit is granted on every paid invoice (initial checkout + renewals) by topping the infra wallet **up to** the plan allowance — never above it. New `includedInfraCreditCents` field on each plan and `infraBillingService.grantIncludedInfraCredit()`.
+
+### Notes
+- Loss-prevention by design: each allowance is kept below the plan's net margin; the grant never over-credits (a customer who already holds ≥ the allowance gets nothing) and is idempotent across webhook retries; and the existing "wallet hits 0 → suspend server" backstop still caps provider spend at what the customer funded.
+- Bundled grants are recorded as `credit_topup` ledger entries tagged `metadata.bundled = true` (no schema migration required).
+- Backfill for customers who subscribed before this release: `npm run backfill:infra-credit` (add `-- --dry-run` to preview). Idempotent — only tops up organizations still below their plan allowance.
+
+## [0.2.0-beta.16] - 2026-06-24
+
+### Fixed
+- Billing checkout no longer returns a 500 (`No such customer`) when an organization carries a Stripe customer ID created in a different mode — e.g. a leftover **test-mode** customer after switching to live keys. `getOrCreateCustomer` now verifies the stored customer exists in the current Stripe mode and transparently recreates it if it is missing or deleted.
+
 ## [0.2.0-beta.15] - 2026-06-24
 
 ### Improved

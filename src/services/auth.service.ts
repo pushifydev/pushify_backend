@@ -7,7 +7,13 @@ import { generateTokenPair, verifyToken, generateTwoFactorToken, verifyTwoFactor
 import { generateSlug, hashToken, generateRandomToken } from '../lib/utils';
 import { logger } from '../lib/logger';
 import { t, type SupportedLocale } from '../i18n';
-import { sendPasswordResetEmail, sendEmailVerificationEmail } from '../lib/email';
+import {
+  sendPasswordResetEmail,
+  sendEmailVerificationEmail,
+  sendWelcomeEmail,
+  sendPasswordChangedEmail,
+  sendNewLoginEmail,
+} from '../lib/email';
 
 // Types
 interface RegisterInput {
@@ -100,6 +106,9 @@ export const authService = {
     // Send verification email (fire-and-forget)
     this.sendVerificationEmail(result.user.id, locale).catch(() => {});
 
+    // Send welcome email (fire-and-forget)
+    sendWelcomeEmail(result.user.email, result.user.name, locale as 'en' | 'tr').catch(() => {});
+
     logger.info({ userId: result.user.id }, 'User registered successfully');
 
     return {
@@ -114,7 +123,12 @@ export const authService = {
    * Login user with email and password
    * Returns TwoFactorRequiredResult if 2FA is enabled
    */
-  async login(input: LoginInput, locale: SupportedLocale = 'en'): Promise<LoginResult> {
+  async login(
+    input: LoginInput,
+    locale: SupportedLocale = 'en',
+    ipAddress?: string,
+    userAgent?: string
+  ): Promise<LoginResult> {
     const { email, password } = input;
 
     // Find user
@@ -153,6 +167,21 @@ export const authService = {
       };
     }
 
+    // New-device detection: compare this user-agent against existing sessions BEFORE
+    // creating the new one. Only alert when the user has prior sessions and none of
+    // them used this user-agent — avoids spamming on the very first login.
+    let isNewDevice = false;
+    if (userAgent) {
+      try {
+        const existingSessions = await userRepository.findAllSessionsByUserId(user.id);
+        isNewDevice =
+          existingSessions.length > 0 &&
+          !existingSessions.some((s) => s.userAgent === userAgent);
+      } catch {
+        isNewDevice = false;
+      }
+    }
+
     // Generate tokens
     const { accessToken, refreshToken } = await generateTokenPair(
       user.id,
@@ -160,7 +189,17 @@ export const authService = {
     );
 
     // Store session
-    await this.createSession(user.id, refreshToken);
+    await this.createSession(user.id, refreshToken, ipAddress, userAgent);
+
+    // Notify of sign-in from a new device (fire-and-forget)
+    if (isNewDevice) {
+      sendNewLoginEmail(
+        user.email,
+        user.name,
+        { ipAddress, userAgent, time: new Date().toUTCString() },
+        locale as 'en' | 'tr'
+      ).catch(() => {});
+    }
 
     logger.info({ userId: user.id }, 'User logged in successfully');
 
@@ -341,6 +380,39 @@ export const authService = {
   },
 
   /**
+   * Switch the user's active organization. Verifies membership, then issues a fresh
+   * token pair scoped to the target org so every subsequent request resolves to it.
+   */
+  async switchOrganization(
+    userId: string,
+    organizationId: string,
+    locale: SupportedLocale = 'en',
+    ipAddress?: string,
+    userAgent?: string
+  ) {
+    const membership = await organizationRepository.findMember(organizationId, userId);
+    if (!membership) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
+    }
+
+    const org = await organizationRepository.findById(organizationId);
+    if (!org) {
+      throw new HTTPException(404, { message: t(locale, 'organizations', 'notFound') });
+    }
+
+    const { accessToken, refreshToken } = await generateTokenPair(userId, organizationId);
+    await this.createSession(userId, refreshToken, ipAddress, userAgent);
+
+    logger.info({ userId, organizationId }, 'Switched active organization');
+
+    return {
+      organization: { id: org.id, name: org.name, slug: org.slug },
+      accessToken,
+      refreshToken,
+    };
+  },
+
+  /**
    * Get current user by ID
    */
   async getCurrentUser(userId: string, locale: SupportedLocale = 'en') {
@@ -412,6 +484,9 @@ export const authService = {
     await userRepository.update(userId, { passwordHash: newPasswordHash });
 
     logger.info({ userId }, 'User password changed');
+
+    // Notify the user their password changed (fire-and-forget)
+    sendPasswordChangedEmail(user.email, user.name, locale as 'en' | 'tr').catch(() => {});
 
     return { message: t(locale, 'auth', 'passwordChanged') };
   },

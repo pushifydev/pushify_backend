@@ -46,7 +46,7 @@ function passwordResetTemplate(resetUrl: string, locale: 'en' | 'tr'): string {
       greeting: 'Hi there,',
       body: 'We received a request to reset the password for your Pushify account. Click the button below to choose a new password.',
       button: 'Reset password',
-      expiry: 'This link expires in <strong style="color:#fafafa;">1 hour</strong>.',
+      expiry: 'This link expires in <strong style="color:#18181b;">1 hour</strong>.',
       ignore: "If you didn't request this, you can ignore this email — your password will not change.",
       urlLabel: 'Or copy this link into your browser:',
     },
@@ -55,7 +55,7 @@ function passwordResetTemplate(resetUrl: string, locale: 'en' | 'tr'): string {
       greeting: 'Merhaba,',
       body: 'Pushify hesabınız için şifre sıfırlama talebi aldık. Yeni şifre belirlemek için aşağıdaki butona tıklayın.',
       button: 'Şifreyi sıfırla',
-      expiry: 'Bu bağlantı <strong style="color:#fafafa;">1 saat</strong> içinde geçersiz olur.',
+      expiry: 'Bu bağlantı <strong style="color:#18181b;">1 saat</strong> içinde geçersiz olur.',
       ignore: 'Bu talebi siz yapmadıysanız e-postayı yok sayabilirsiniz — şifreniz değişmeyecektir.',
       urlLabel: 'Bağlantıyı tarayıcıya yapıştırabilirsiniz:',
     },
@@ -80,7 +80,7 @@ function emailVerificationTemplate(verifyUrl: string, locale: 'en' | 'tr'): stri
       greeting: 'Hi there,',
       body: 'Thanks for signing up for Pushify. Confirm your email address to finish setting up your account.',
       button: 'Verify email',
-      expiry: 'This link expires in <strong style="color:#fafafa;">24 hours</strong>.',
+      expiry: 'This link expires in <strong style="color:#18181b;">24 hours</strong>.',
       ignore: "If you didn't create an account, you can ignore this email.",
       urlLabel: 'Or copy this link into your browser:',
     },
@@ -89,7 +89,7 @@ function emailVerificationTemplate(verifyUrl: string, locale: 'en' | 'tr'): stri
       greeting: 'Merhaba,',
       body: "Pushify'a hoş geldiniz. Hesabınızı tamamlamak için e-posta adresinizi doğrulayın.",
       button: 'E-postayı doğrula',
-      expiry: 'Bu bağlantı <strong style="color:#fafafa;">24 saat</strong> içinde geçersiz olur.',
+      expiry: 'Bu bağlantı <strong style="color:#18181b;">24 saat</strong> içinde geçersiz olur.',
       ignore: 'Hesap oluşturmadıysanız bu e-postayı yok sayabilirsiniz.',
       urlLabel: 'Bağlantıyı tarayıcıya yapıştırabilirsiniz:',
     },
@@ -119,7 +119,7 @@ function orgInvitationTemplate(
       title: `Join ${orgName} on Pushify`,
       greeting: 'Hi there,',
       button: 'Accept invitation',
-      expiry: 'This invitation expires in <strong style="color:#fafafa;">7 days</strong>.',
+      expiry: 'This invitation expires in <strong style="color:#18181b;">7 days</strong>.',
       ignore: "If you weren't expecting this, you can ignore this email.",
       urlLabel: 'Or copy this link into your browser:',
     },
@@ -127,7 +127,7 @@ function orgInvitationTemplate(
       title: `${orgName} — Pushify daveti`,
       greeting: 'Merhaba,',
       button: 'Daveti kabul et',
-      expiry: 'Bu davet <strong style="color:#fafafa;">7 gün</strong> içinde geçersiz olur.',
+      expiry: 'Bu davet <strong style="color:#18181b;">7 gün</strong> içinde geçersiz olur.',
       ignore: 'Bu daveti beklemiyorsanız e-postayı yok sayabilirsiniz.',
       urlLabel: 'Bağlantıyı tarayıcıya yapıştırabilirsiniz:',
     },
@@ -139,8 +139,8 @@ function orgInvitationTemplate(
   const safeRole = esc(role);
   const bodyHtml =
     locale === 'tr'
-      ? `<strong style="color:#fafafa;">${safeInviter}</strong>, sizi <strong style="color:#fafafa;">${safeOrg}</strong> organizasyonuna <strong style="color:#fafafa;">${safeRole}</strong> olarak davet etti.`
-      : `<strong style="color:#fafafa;">${safeInviter}</strong> invited you to join <strong style="color:#fafafa;">${safeOrg}</strong> as <strong style="color:#fafafa;">${safeRole}</strong>.`;
+      ? `<strong style="color:#18181b;">${safeInviter}</strong>, sizi <strong style="color:#18181b;">${safeOrg}</strong> organizasyonuna <strong style="color:#18181b;">${safeRole}</strong> olarak davet etti.`
+      : `<strong style="color:#18181b;">${safeInviter}</strong> invited you to join <strong style="color:#18181b;">${safeOrg}</strong> as <strong style="color:#18181b;">${safeRole}</strong>.`;
 
   return renderTransactionalEmail({
     title: locale === 'tr' ? `${safeOrg} — Pushify daveti` : `Join ${safeOrg} on Pushify`,
@@ -179,8 +179,8 @@ function infraCreditTopUpTemplate(
   const safeOrg = esc(orgName);
   const bodyHtml =
     locale === 'tr'
-      ? `<strong style="color:#fafafa;">${safeOrg}</strong> için <strong style="color:#fafafa;">${formatUsd(amountCents)}</strong> altyapı kredisi yüklendi. Güncel bakiye: <strong style="color:#fafafa;">${formatUsd(balanceCents)}</strong>.`
-      : `<strong style="color:#fafafa;">${formatUsd(amountCents)}</strong> in infrastructure credits was added to <strong style="color:#fafafa;">${safeOrg}</strong>. New balance: <strong style="color:#fafafa;">${formatUsd(balanceCents)}</strong>.`;
+      ? `<strong style="color:#18181b;">${safeOrg}</strong> için <strong style="color:#18181b;">${formatUsd(amountCents)}</strong> altyapı kredisi yüklendi. Güncel bakiye: <strong style="color:#18181b;">${formatUsd(balanceCents)}</strong>.`
+      : `<strong style="color:#18181b;">${formatUsd(amountCents)}</strong> in infrastructure credits was added to <strong style="color:#18181b;">${safeOrg}</strong>. New balance: <strong style="color:#18181b;">${formatUsd(balanceCents)}</strong>.`;
 
   return renderTransactionalEmail({
     title: t.title,
@@ -214,8 +214,8 @@ function infraCreditsLowTemplate(
   const safeOrg = esc(orgName);
   const bodyHtml =
     locale === 'tr'
-      ? `<strong style="color:#fafafa;">${safeOrg}</strong> altyapı cüzdan bakiyesi <strong style="color:#fafafa;">${formatUsd(balanceCents)}</strong> seviyesine düştü. Kesinti yaşamamak için kredi ekleyin.`
-      : `Infrastructure credit balance for <strong style="color:#fafafa;">${safeOrg}</strong> is low (<strong style="color:#fafafa;">${formatUsd(balanceCents)}</strong>). Add credits to avoid interruptions.`;
+      ? `<strong style="color:#18181b;">${safeOrg}</strong> altyapı cüzdan bakiyesi <strong style="color:#18181b;">${formatUsd(balanceCents)}</strong> seviyesine düştü. Kesinti yaşamamak için kredi ekleyin.`
+      : `Infrastructure credit balance for <strong style="color:#18181b;">${safeOrg}</strong> is low (<strong style="color:#18181b;">${formatUsd(balanceCents)}</strong>). Add credits to avoid interruptions.`;
 
   return renderTransactionalEmail({
     title: t.title,
@@ -251,8 +251,8 @@ function infraServerSuspendedTemplate(
   const safeServer = esc(serverName);
   const bodyHtml =
     locale === 'tr'
-      ? `<strong style="color:#fafafa;">${safeServer}</strong> (<strong style="color:#fafafa;">${safeOrg}</strong>) yönetilen sunucusu, yetersiz altyapı kredisi nedeniyle durduruldu.`
-      : `Managed server <strong style="color:#fafafa;">${safeServer}</strong> in <strong style="color:#fafafa;">${safeOrg}</strong> was stopped because infrastructure credits ran out.`;
+      ? `<strong style="color:#18181b;">${safeServer}</strong> (<strong style="color:#18181b;">${safeOrg}</strong>) yönetilen sunucusu, yetersiz altyapı kredisi nedeniyle durduruldu.`
+      : `Managed server <strong style="color:#18181b;">${safeServer}</strong> in <strong style="color:#18181b;">${safeOrg}</strong> was stopped because infrastructure credits ran out.`;
 
   return renderTransactionalEmail({
     title: t.title,
@@ -286,8 +286,8 @@ function billingPlanActivatedTemplate(
   const safePlan = esc(planName);
   const bodyHtml =
     locale === 'tr'
-      ? `<strong style="color:#fafafa;">${safeOrg}</strong> için platform planınız <strong style="color:#fafafa;">${safePlan}</strong> olarak güncellendi.`
-      : `Your platform plan for <strong style="color:#fafafa;">${safeOrg}</strong> is now <strong style="color:#fafafa;">${safePlan}</strong>.`;
+      ? `<strong style="color:#18181b;">${safeOrg}</strong> için platform planınız <strong style="color:#18181b;">${safePlan}</strong> olarak güncellendi.`
+      : `Your platform plan for <strong style="color:#18181b;">${safeOrg}</strong> is now <strong style="color:#18181b;">${safePlan}</strong>.`;
 
   return renderTransactionalEmail({
     title: t.title,
@@ -326,8 +326,8 @@ function billingPaymentFailedTemplate(
   const safeOrg = esc(orgName);
   const bodyHtml =
     locale === 'tr'
-      ? `<strong style="color:#fafafa;">${safeOrg}</strong> için son ödeme işlenemedi. Kesinti yaşamamak için ödeme yönteminizi güncelleyin.`
-      : `We couldn't process the latest payment for <strong style="color:#fafafa;">${safeOrg}</strong>. Update your payment method to avoid service interruption.`;
+      ? `<strong style="color:#18181b;">${safeOrg}</strong> için son ödeme işlenemedi. Kesinti yaşamamak için ödeme yönteminizi güncelleyin.`
+      : `We couldn't process the latest payment for <strong style="color:#18181b;">${safeOrg}</strong>. Update your payment method to avoid service interruption.`;
 
   return renderTransactionalEmail({
     title: t.title,
@@ -362,8 +362,8 @@ function billingSuspendedTemplate(
   const safeOrg = esc(orgName);
   const bodyHtml =
     locale === 'tr'
-      ? `<strong style="color:#fafafa;">${safeOrg}</strong> için platform aboneliği sona erdi. Yönetilen sunucular durduruldu ve aktif projeler duraklatıldı.`
-      : `Your platform subscription for <strong style="color:#fafafa;">${safeOrg}</strong> has ended. Managed servers were stopped and active projects were paused.`;
+      ? `<strong style="color:#18181b;">${safeOrg}</strong> için platform aboneliği sona erdi. Yönetilen sunucular durduruldu ve aktif projeler duraklatıldı.`
+      : `Your platform subscription for <strong style="color:#18181b;">${safeOrg}</strong> has ended. Managed servers were stopped and active projects were paused.`;
 
   return renderTransactionalEmail({
     title: t.title,
@@ -371,6 +371,205 @@ function billingSuspendedTemplate(
     bodyHtml,
     button: { href: billingUrl, label: t.button },
     notes: [t.note],
+  });
+}
+
+function welcomeTemplate(name: string, dashboardUrl: string, locale: 'en' | 'tr'): string {
+  const texts = {
+    en: {
+      title: 'Welcome to Pushify',
+      greeting: 'Hi there,',
+      button: 'Open dashboard',
+      note: 'Need a hand getting started? Just reply to this email.',
+    },
+    tr: {
+      title: "Pushify'a hoş geldiniz",
+      greeting: 'Merhaba,',
+      button: 'Panele git',
+      note: 'Başlarken yardıma mı ihtiyacınız var? Bu e-postayı yanıtlamanız yeterli.',
+    },
+  };
+  const t = texts[locale] ?? texts.en;
+  const safeName = esc(name || (locale === 'tr' ? 'oradaki' : 'there'));
+  const bodyHtml =
+    locale === 'tr'
+      ? `Hoş geldin <strong style="color:#18181b;">${safeName}</strong>! Hesabın hazır. Pushify ile uygulamalarını ve sunucularını tek bir yerden dağıtabilir ve yönetebilirsin. İlk projeni oluşturmak için panele göz at.`
+      : `Welcome aboard, <strong style="color:#18181b;">${safeName}</strong>! Your account is ready. Pushify lets you deploy and manage your apps and servers from one place. Head to your dashboard to create your first project.`;
+
+  return renderTransactionalEmail({
+    title: t.title,
+    greeting: t.greeting,
+    bodyHtml,
+    button: { href: dashboardUrl, label: t.button },
+    notes: [t.note],
+  });
+}
+
+function passwordChangedTemplate(
+  name: string | undefined,
+  resetUrl: string,
+  locale: 'en' | 'tr'
+): string {
+  const texts = {
+    en: {
+      title: 'Your password was changed',
+      greeting: name ? `Hi ${name},` : 'Hi there,',
+      body: 'The password for your Pushify account was just changed.',
+      button: 'Reset password',
+      note: "If you made this change, you're all set — no further action is needed.",
+      warn: "If this wasn't you, reset your password immediately and contact support.",
+    },
+    tr: {
+      title: 'Şifreniz değiştirildi',
+      greeting: name ? `Merhaba ${name},` : 'Merhaba,',
+      body: 'Pushify hesabınızın şifresi az önce değiştirildi.',
+      button: 'Şifreyi sıfırla',
+      note: 'Bu değişikliği siz yaptıysanız yapmanız gereken bir şey yok.',
+      warn: 'Bu işlemi siz yapmadıysanız hemen şifrenizi sıfırlayın ve destek ile iletişime geçin.',
+    },
+  };
+  const t = texts[locale] ?? texts.en;
+
+  return renderTransactionalEmail({
+    title: t.title,
+    greeting: t.greeting,
+    body: t.body,
+    button: { href: resetUrl, label: t.button },
+    notes: [t.note, t.warn],
+  });
+}
+
+function twoFactorEnabledTemplate(name: string | undefined, locale: 'en' | 'tr'): string {
+  const texts = {
+    en: {
+      title: 'Two-factor authentication enabled',
+      greeting: name ? `Hi ${name},` : 'Hi there,',
+      body: 'Two-factor authentication (2FA) is now active on your Pushify account. From now on, signing in will require a code from your authenticator app.',
+      note: 'Keep your backup codes somewhere safe — they let you sign in if you lose your device.',
+      warn: "If you didn't enable this, reset your password and contact support right away.",
+    },
+    tr: {
+      title: 'İki adımlı doğrulama etkinleştirildi',
+      greeting: name ? `Merhaba ${name},` : 'Merhaba,',
+      body: 'Pushify hesabınızda iki adımlı doğrulama (2FA) artık etkin. Bundan sonra giriş yaparken doğrulama uygulamanızdan bir kod gerekecek.',
+      note: 'Yedek kodlarınızı güvenli bir yerde saklayın — cihazınızı kaybederseniz giriş yapmanızı sağlarlar.',
+      warn: 'Bu işlemi siz yapmadıysanız hemen şifrenizi sıfırlayın ve destek ile iletişime geçin.',
+    },
+  };
+  const t = texts[locale] ?? texts.en;
+
+  return renderTransactionalEmail({
+    title: t.title,
+    greeting: t.greeting,
+    body: t.body,
+    notes: [t.note, t.warn],
+  });
+}
+
+function twoFactorDisabledTemplate(name: string | undefined, locale: 'en' | 'tr'): string {
+  const texts = {
+    en: {
+      title: 'Two-factor authentication disabled',
+      greeting: name ? `Hi ${name},` : 'Hi there,',
+      body: 'Two-factor authentication (2FA) was turned off for your Pushify account. Your account is now protected by your password only.',
+      warn: "If you didn't make this change, reset your password and contact support immediately — your account may be at risk.",
+    },
+    tr: {
+      title: 'İki adımlı doğrulama kapatıldı',
+      greeting: name ? `Merhaba ${name},` : 'Merhaba,',
+      body: 'Pushify hesabınız için iki adımlı doğrulama (2FA) kapatıldı. Hesabınız artık yalnızca şifrenizle korunuyor.',
+      warn: 'Bu değişikliği siz yapmadıysanız hemen şifrenizi sıfırlayın ve destek ile iletişime geçin — hesabınız risk altında olabilir.',
+    },
+  };
+  const t = texts[locale] ?? texts.en;
+
+  return renderTransactionalEmail({
+    title: t.title,
+    greeting: t.greeting,
+    body: t.body,
+    notes: [t.warn],
+  });
+}
+
+function serverReadyTemplate(serverName: string, serverUrl: string, locale: 'en' | 'tr'): string {
+  const texts = {
+    en: {
+      title: 'Your server is ready',
+      greeting: 'Hi there,',
+      button: 'View server',
+      note: 'You can now deploy projects to this server from the dashboard.',
+    },
+    tr: {
+      title: 'Sunucunuz hazır',
+      greeting: 'Merhaba,',
+      button: 'Sunucuyu görüntüle',
+      note: 'Artık panelden bu sunucuya proje dağıtabilirsiniz.',
+    },
+  };
+  const t = texts[locale] ?? texts.en;
+  const safeServer = esc(serverName);
+  const bodyHtml =
+    locale === 'tr'
+      ? `<strong style="color:#18181b;">${safeServer}</strong> sunucusunun kurulumu tamamlandı ve kullanıma hazır.`
+      : `Setup for <strong style="color:#18181b;">${safeServer}</strong> finished successfully and the server is ready to use.`;
+
+  return renderTransactionalEmail({
+    title: t.title,
+    greeting: t.greeting,
+    bodyHtml,
+    button: { href: serverUrl, label: t.button },
+    notes: [t.note],
+  });
+}
+
+function newLoginTemplate(
+  name: string | undefined,
+  details: { ipAddress?: string; userAgent?: string; time: string },
+  resetUrl: string,
+  locale: 'en' | 'tr'
+): string {
+  const texts = {
+    en: {
+      title: 'New sign-in to your account',
+      greeting: name ? `Hi ${name},` : 'Hi there,',
+      body: 'We noticed a sign-in to your Pushify account from a new device or browser.',
+      button: 'Secure your account',
+      labelTime: 'Time',
+      labelIp: 'IP address',
+      labelDevice: 'Device',
+      note: 'If this was you, no action is needed.',
+      warn: "If you don't recognize this, reset your password and review your active sessions.",
+    },
+    tr: {
+      title: 'Hesabınızda yeni giriş',
+      greeting: name ? `Merhaba ${name},` : 'Merhaba,',
+      body: 'Pushify hesabınıza yeni bir cihaz veya tarayıcıdan giriş yapıldığını fark ettik.',
+      button: 'Hesabınızı koruyun',
+      labelTime: 'Zaman',
+      labelIp: 'IP adresi',
+      labelDevice: 'Cihaz',
+      note: 'Bu işlemi siz yaptıysanız yapmanız gereken bir şey yok.',
+      warn: 'Bunu siz yapmadıysanız şifrenizi sıfırlayın ve aktif oturumlarınızı gözden geçirin.',
+    },
+  };
+  const t = texts[locale] ?? texts.en;
+
+  const detailLines: string[] = [
+    `${t.labelTime}: <strong style="color:#18181b;">${esc(details.time)}</strong>`,
+  ];
+  if (details.ipAddress) {
+    detailLines.push(`${t.labelIp}: <strong style="color:#18181b;">${esc(details.ipAddress)}</strong>`);
+  }
+  if (details.userAgent) {
+    detailLines.push(`${t.labelDevice}: <strong style="color:#18181b;">${esc(details.userAgent)}</strong>`);
+  }
+
+  return renderTransactionalEmail({
+    title: t.title,
+    greeting: t.greeting,
+    body: t.body,
+    button: { href: resetUrl, label: t.button },
+    notes: [...detailLines, t.note, t.warn],
   });
 }
 
@@ -648,6 +847,180 @@ export async function sendBillingSuspendedEmail(
     logger.info({ to, orgName }, 'Billing suspended email sent');
   } catch (error) {
     logger.error({ error, to, orgName }, 'Failed to send billing suspended email');
+  }
+}
+
+export async function sendWelcomeEmail(
+  to: string,
+  name: string,
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping welcome email');
+    return;
+  }
+
+  const dashboardUrl = `${env.FRONTEND_URL}/dashboard`;
+  const subjects = {
+    en: 'Welcome to Pushify',
+    tr: "Pushify'a hoş geldiniz",
+  };
+
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: subjects[locale] ?? subjects.en,
+      html: welcomeTemplate(name, dashboardUrl, locale),
+    });
+    logger.info({ to }, 'Welcome email sent');
+  } catch (error) {
+    logger.error({ error, to }, 'Failed to send welcome email');
+  }
+}
+
+export async function sendPasswordChangedEmail(
+  to: string,
+  name: string | undefined,
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping password changed email');
+    return;
+  }
+
+  const resetUrl = `${env.FRONTEND_URL}/forgot-password`;
+  const subjects = {
+    en: 'Your Pushify password was changed',
+    tr: 'Pushify şifreniz değiştirildi',
+  };
+
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: subjects[locale] ?? subjects.en,
+      html: passwordChangedTemplate(name, resetUrl, locale),
+    });
+    logger.info({ to }, 'Password changed email sent');
+  } catch (error) {
+    logger.error({ error, to }, 'Failed to send password changed email');
+  }
+}
+
+export async function sendTwoFactorEnabledEmail(
+  to: string,
+  name: string | undefined,
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping 2FA enabled email');
+    return;
+  }
+
+  const subjects = {
+    en: 'Two-factor authentication enabled',
+    tr: 'İki adımlı doğrulama etkinleştirildi',
+  };
+
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: subjects[locale] ?? subjects.en,
+      html: twoFactorEnabledTemplate(name, locale),
+    });
+    logger.info({ to }, '2FA enabled email sent');
+  } catch (error) {
+    logger.error({ error, to }, 'Failed to send 2FA enabled email');
+  }
+}
+
+export async function sendTwoFactorDisabledEmail(
+  to: string,
+  name: string | undefined,
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping 2FA disabled email');
+    return;
+  }
+
+  const subjects = {
+    en: 'Two-factor authentication disabled',
+    tr: 'İki adımlı doğrulama kapatıldı',
+  };
+
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: subjects[locale] ?? subjects.en,
+      html: twoFactorDisabledTemplate(name, locale),
+    });
+    logger.info({ to }, '2FA disabled email sent');
+  } catch (error) {
+    logger.error({ error, to }, 'Failed to send 2FA disabled email');
+  }
+}
+
+export async function sendServerReadyEmail(
+  to: string,
+  serverName: string,
+  serverId: string,
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping server ready email');
+    return;
+  }
+
+  const serverUrl = `${env.FRONTEND_URL}/dashboard/servers/${serverId}`;
+  const subjects = {
+    en: `Your server "${serverName}" is ready`,
+    tr: `"${serverName}" sunucunuz hazır`,
+  };
+
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: subjects[locale] ?? subjects.en,
+      html: serverReadyTemplate(serverName, serverUrl, locale),
+    });
+    logger.info({ to, serverName }, 'Server ready email sent');
+  } catch (error) {
+    logger.error({ error, to, serverName }, 'Failed to send server ready email');
+  }
+}
+
+export async function sendNewLoginEmail(
+  to: string,
+  name: string | undefined,
+  details: { ipAddress?: string; userAgent?: string; time: string },
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping new login email');
+    return;
+  }
+
+  const resetUrl = `${env.FRONTEND_URL}/forgot-password`;
+  const subjects = {
+    en: 'New sign-in to your Pushify account',
+    tr: 'Pushify hesabınızda yeni giriş',
+  };
+
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: subjects[locale] ?? subjects.en,
+      html: newLoginTemplate(name, details, resetUrl, locale),
+    });
+    logger.info({ to }, 'New login email sent');
+  } catch (error) {
+    logger.error({ error, to }, 'Failed to send new login email');
   }
 }
 
