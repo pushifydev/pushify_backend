@@ -9,6 +9,7 @@ import { encrypt, decrypt } from '../lib/encryption';
 import { hashPassword, verifyPassword } from '../lib/password';
 import { logger } from '../lib/logger';
 import { t, type SupportedLocale } from '../i18n';
+import { sendTwoFactorEnabledEmail, sendTwoFactorDisabledEmail } from '../lib/email';
 
 // Constants
 const BACKUP_CODES_COUNT = 10;
@@ -117,6 +118,9 @@ export const twoFactorService = {
       .where(eq(users.id, userId));
 
     logger.info({ userId }, '2FA enabled successfully');
+
+    // Notify the user 2FA was enabled (fire-and-forget)
+    sendTwoFactorEnabledEmail(user.email, user.name, locale as 'en' | 'tr').catch(() => {});
   },
 
   /**
@@ -217,6 +221,9 @@ export const twoFactorService = {
       .where(eq(users.id, userId));
 
     logger.info({ userId }, '2FA disabled');
+
+    // Notify the user 2FA was disabled (fire-and-forget)
+    sendTwoFactorDisabledEmail(user.email, user.name, locale as 'en' | 'tr').catch(() => {});
   },
 
   /**

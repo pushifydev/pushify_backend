@@ -78,6 +78,20 @@ async function processServerSetupJob(job: Job<ServerSetupJobData>): Promise<stri
       data: { serverId, status: 'running', setupStatus: 'completed', statusMessage: 'Server setup completed successfully' },
     }).catch(() => {});
 
+    // Notify the org owner that the server is ready (fire-and-forget, no locale in worker → 'en')
+    void (async () => {
+      try {
+        const { resolveBillingNotifyEmail } = await import('../../lib/billing-notify');
+        const { sendServerReadyEmail } = await import('../../lib/email');
+        const to = await resolveBillingNotifyEmail(serverRecord.organizationId);
+        if (to) {
+          await sendServerReadyEmail(to, serverRecord.name, serverId, 'en');
+        }
+      } catch {
+        // best-effort
+      }
+    })();
+
     logger.info(`[ServerSetup] Server ${serverId} setup completed!`);
     return 'completed';
   }

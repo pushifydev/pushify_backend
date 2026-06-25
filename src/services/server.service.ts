@@ -1116,6 +1116,22 @@ export const serverService = {
       }).catch(() => {});
 
       logger.info({ serverId, ipv4 }, 'BYOS server setup completed');
+
+      // Notify the org owner that the server is ready (fire-and-forget, no locale here → 'en')
+      void (async () => {
+        try {
+          const serverRecord = await db.query.servers.findFirst({ where: eq(servers.id, serverId) });
+          if (!serverRecord) return;
+          const { resolveBillingNotifyEmail } = await import('../lib/billing-notify');
+          const { sendServerReadyEmail } = await import('../lib/email');
+          const to = await resolveBillingNotifyEmail(serverRecord.organizationId);
+          if (to) {
+            await sendServerReadyEmail(to, serverRecord.name, serverId, 'en');
+          }
+        } catch {
+          // best-effort
+        }
+      })();
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Setup failed';
       logger.error({ err: error, serverId }, 'BYOS server setup failed');
