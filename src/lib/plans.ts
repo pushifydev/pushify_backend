@@ -52,7 +52,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
       deploymentsPerMonth: 30,
       teamMembers: 1,
       customDomains: 1,
-      storageGb: 1,
+      storageGb: 5,
       bandwidthGb: 5,
       buildMinutesPerMonth: 30,
       snapshotsPerServer: 0,

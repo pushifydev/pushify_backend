@@ -11,7 +11,7 @@ import { projectRepository } from '../repositories/project.repository';
 import { getEffectivePlanLimits } from '../lib/effective-plan-limits';
 import { isUnlimited, type PlanType, type PlanLimits } from '../lib/plans';
 import { t, type SupportedLocale } from '../i18n';
-import { usageMeteringService } from './usage-metering.service';
+import { usageMeteringService, BYTES_PER_GB } from './usage-metering.service';
 
 export type CountablePlanLimit = keyof Pick<
   PlanLimits,
@@ -187,8 +187,10 @@ export const planLimitsService = {
     const limit = limits.storageGb;
     if (isUnlimited(limit)) return;
 
-    const { storageGb } = await usageMeteringService.getMonthlyUsageGb(organizationId);
-    if (storageGb >= limit) {
+    // Compare REAL bytes against the byte-equivalent of the GB limit. Using ceil'd GB here
+    // rounded any storage > 0 up to >= 1GB, which blocked the free tier after any usage.
+    const bytes = await usageMeteringService.getMonthlyStorageBytes(organizationId);
+    if (bytes >= limit * BYTES_PER_GB) {
       throw new HTTPException(403, {
         message: t(locale, 'planLimits', 'storageGb'),
       });

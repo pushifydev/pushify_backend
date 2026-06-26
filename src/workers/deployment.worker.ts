@@ -13,9 +13,7 @@ import {
   isDockerAvailable,
   isContainerRunning,
   findAvailablePort,
-  getDockerImageSizeBytes,
 } from './docker';
-import { usageMeteringService } from '../services/usage-metering.service';
 import { extractLogTail } from '../lib/log-tail';
 import { generateDockerfile, hasDockerfile, writeDockerfile } from './dockerfile';
 import { deployToRemoteServer, canDeployToServer, quickRollbackToDeployment } from './remote-deployment';
@@ -982,12 +980,10 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       onProgress: addLog,
     });
 
-    try {
-      const imageBytes = await getDockerImageSizeBytes(`${imageName}:${imageTag}`);
-      await usageMeteringService.addDeployStorageBytes(project.organizationId, imageBytes);
-    } catch {
-      // Non-fatal — metering must not block deploy
-    }
+    // Storage is metered solely by the real per-org image-footprint sync
+    // (usageMeteringService.syncDockerDiskUsageFromServers in usage-metering.service.ts),
+    // so we no longer add each deploy's image size cumulatively here — that inflated the
+    // meter on every redeploy even though cleanupOldImages bounds actual disk to last 5.
 
     // Update status to deploying
     await updateDeploymentStatus(job.id, 'deploying', logBuffer.join('\n'), job.projectId);
