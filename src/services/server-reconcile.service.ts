@@ -18,9 +18,10 @@
  *
  * It does NOT touch the existing worker logic — it is purely a best-effort backstop.
  */
-import { and, eq, ne, inArray } from 'drizzle-orm';
+import { and, eq, ne, inArray, or, isNotNull } from 'drizzle-orm';
 import { db } from '../db';
 import { servers } from '../db/schema/servers';
+import { projects } from '../db/schema/projects';
 import { createProvider, type ProviderType } from '../providers';
 import { getServerSetupQueue } from '../queue/queues';
 import { wsManager } from '../lib/ws';
@@ -346,6 +347,73 @@ export async function reconcileProvisioningServers(): Promise<ReconcileResult> {
         { err, serverId: server.id },
         'Reconcile: failed to reconcile setup, skipping',
       );
+    }
+  }
+
+  return result;
+}
+
+/**
+ * GC: remove orphaned project deployments left behind on the LOCAL (shared Pushify) host.
+ *
+ * When a free-tier project is moved to the user's own server (`project.serverId` is set) or
+ * deleted, its container + built images can linger on the shared host and waste disk. This
+ * sweep tears down any local `pushify-<slug>` deployment whose project no longer belongs
+ * here. Safe by construction: it only ever acts on projects that have a remote `serverId`
+ * (so they must NOT have a local deployment) or are deleted — never a live local project.
+ * Cheap: snapshots local containers + image repos once, then matches against the DB.
+ */
+export async function gcOrphanedLocalDeployments(): Promise<{ candidates: number; removed: number }> {
+  const result = { candidates: 0, removed: 0 };
+
+  const { exec } = await import('child_process');
+  const { promisify } = await import('util');
+  const { buildRemoteTeardownScript } = await import('../lib/project-remote-cleanup');
+  const execAsync = promisify(exec);
+
+  // Snapshot what Pushify actually has on the local host (once).
+  let localContainers = new Set<string>();
+  let localImageRepos = new Set<string>();
+  try {
+    const c = await execAsync(`docker ps -a --format '{{.Names}}' | grep -E '^pushify-' || true`);
+    localContainers = new Set(c.stdout.trim().split('\n').filter(Boolean));
+    const i = await execAsync(`docker images --format '{{.Repository}}' | grep -E '^pushify/' || true`);
+    localImageRepos = new Set(i.stdout.trim().split('\n').filter(Boolean));
+  } catch {
+    return result; // docker not available locally → nothing to GC
+  }
+  if (localContainers.size === 0 && localImageRepos.size === 0) return result;
+
+  // Projects that must NOT have a local deployment: moved to a server, or deleted.
+  const candidates = await db
+    .select({ slug: projects.slug, settings: projects.settings, status: projects.status })
+    .from(projects)
+    .where(or(isNotNull(projects.serverId), eq(projects.status, 'deleted')));
+
+  for (const p of candidates) {
+    // Only act when a matching local artifact actually exists (exact names — no prefix
+    // globbing — so we never touch a different project that merely shares a slug prefix).
+    const hasContainer =
+      localContainers.has(`pushify-${p.slug}`) ||
+      localContainers.has(`pushify-${p.slug}-blue`) ||
+      localContainers.has(`pushify-${p.slug}-green`) ||
+      localContainers.has(`pushify-${p.slug}-db`);
+    const hasImage = localImageRepos.has(`pushify/${p.slug}`);
+    if (!hasContainer && !hasImage) continue;
+
+    result.candidates++;
+    try {
+      const isCompose =
+        (p.settings as Record<string, unknown> | null)?.deploymentType === 'docker-compose';
+      // buildRemoteTeardownScript removes containers + images + nginx vhost + project dir.
+      await execAsync(buildRemoteTeardownScript(p.slug, !!isCompose)).catch(() => {});
+      result.removed++;
+      logger.info(
+        { slug: p.slug, reason: p.status === 'deleted' ? 'deleted' : 'moved-to-server' },
+        'GC: removed orphaned local deployment',
+      );
+    } catch (err) {
+      logger.warn({ slug: p.slug, err }, 'GC: orphaned local deployment cleanup failed');
     }
   }
 

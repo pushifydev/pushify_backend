@@ -17,7 +17,7 @@ import {
   stopSnapshotAutomationWorker,
 } from '../workers';
 import { startNotificationWorker, stopNotificationWorker } from '../workers/notification.worker';
-import { reconcileProvisioningServers } from '../services/server-reconcile.service';
+import { reconcileProvisioningServers, gcOrphanedLocalDeployments } from '../services/server-reconcile.service';
 import { closeQueues } from '../lib/queue';
 import {
   startServerStatusWorker,
@@ -32,6 +32,12 @@ import {
 const RECONCILE_INTERVAL_MS = 30000;
 let reconcileInterval: ReturnType<typeof setInterval> | null = null;
 let isReconciling = false; // guard so overlapping/slow sweeps never run concurrently
+
+// Periodic GC of orphaned local deployments (projects moved to a user's own server, or
+// deleted, whose container/images linger on the shared Pushify host and waste disk).
+const GC_INTERVAL_MS = 30 * 60 * 1000; // every 30 minutes
+let gcInterval: ReturnType<typeof setInterval> | null = null;
+let isGcRunning = false;
 
 export async function startBackgroundWorkers(): Promise<void> {
   logger.info({ role: env.PROCESS_ROLE }, 'Starting background workers');
@@ -106,12 +112,37 @@ export async function startBackgroundWorkers(): Promise<void> {
     }, RECONCILE_INTERVAL_MS);
     logger.info('Provisioning reconcile sweep started');
   }
+
+  // Start the orphaned-deployment GC sweep (best-effort, guarded against overlap).
+  if (!gcInterval) {
+    gcInterval = setInterval(() => {
+      if (isGcRunning) return;
+      isGcRunning = true;
+      gcOrphanedLocalDeployments()
+        .then((res) => {
+          if (res.removed > 0) {
+            logger.info(res, 'Orphaned-deployment GC removed stale local deployments');
+          }
+        })
+        .catch((error) => {
+          logger.error({ err: error }, 'Orphaned-deployment GC failed');
+        })
+        .finally(() => {
+          isGcRunning = false;
+        });
+    }, GC_INTERVAL_MS);
+    logger.info('Orphaned-deployment GC sweep started');
+  }
 }
 
 export async function stopBackgroundWorkers(): Promise<void> {
   if (reconcileInterval) {
     clearInterval(reconcileInterval);
     reconcileInterval = null;
+  }
+  if (gcInterval) {
+    clearInterval(gcInterval);
+    gcInterval = null;
   }
   stopDeploymentWorker();
   stopHealthCheckWorker();
