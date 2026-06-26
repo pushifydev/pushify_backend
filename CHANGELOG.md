@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.0-beta.22] - 2026-06-26
+
+### Fixed
+- **Storage quota no longer unfairly blocks deploys** ("Monthly storage limit reached"). Three compounding bugs are fixed:
+  - **Enforcement rounded any usage up to a full GB.** The check compared `ceil(bytes / GB) >= limit`, so a free org (1 GB) was blocked the moment *any* storage was recorded. It now compares real bytes against `limit × GB`.
+  - **Per-deploy cumulative inflation.** Each deploy added its image size to a running "peak" that never decreased (even though only the last 5 images are kept on disk), so redeploys eventually tripped the limit. Storage is no longer metered by cumulative deploy size.
+  - **Whole-host over-counting on shared hosts.** Storage was measured as the entire host's docker disk and attributed to *every* org on it. It's now measured per-org as the footprint of that org's own project images (`pushify/<slug>`), so co-tenants aren't charged for each other's images or for build cache.
+- Free-tier storage allowance raised from 1 GB to 5 GB.
+- Added `scripts/reset-storage-usage.ts` (`npm run reset:storage-usage [-- --org <id>]`) to clear the previously-inflated current-period peaks; the next disk sync re-records the correct per-org footprint.
+
 ## [0.2.0-beta.21] - 2026-06-25
 
 ### Security

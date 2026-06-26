@@ -5,12 +5,12 @@ import { projects } from '../db/schema/projects';
 import { servers } from '../db/schema/servers';
 import { metricsRepository } from '../repositories/metrics.repository';
 import type { NewContainerMetric } from '../db/schema';
-import { getDockerSystemDiskBytes } from '../lib/docker-disk-usage';
+import { getImagesFootprintBytes } from '../lib/docker-disk-usage';
 import { decrypt } from '../lib/encryption';
 import { SSHClient } from '../utils/ssh';
 import { logger } from '../lib/logger';
 
-const BYTES_PER_GB = 1024 ** 3;
+export const BYTES_PER_GB = 1024 ** 3;
 
 function startOfUtcMonth(date = new Date()): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
@@ -100,21 +100,25 @@ export const usageMeteringService = {
       .where(eq(organizationMonthlyUsage.id, row.id));
   },
 
-  /** Add deploy artifact size to running storage total (peak field holds cumulative deploy storage). */
-  async addDeployStorageBytes(organizationId: string, artifactBytes: number): Promise<void> {
-    if (artifactBytes <= 0) return;
-
+  /**
+   * Raw `storageBytesPeak` (bytes) for the current period, 0 if no row exists yet.
+   * Used by quota ENFORCEMENT so we compare real bytes against `limitGb * BYTES_PER_GB`
+   * instead of the display-oriented ceil'd GB (which rounded any storage > 0 up to >= 1GB).
+   */
+  async getMonthlyStorageBytes(organizationId: string): Promise<number> {
     const periodStart = startOfUtcMonth();
-    const row = await this.getOrCreateMonthlyRow(organizationId, periodStart);
-    const next = row.storageBytesPeak + artifactBytes;
+    const [row] = await db
+      .select({ storageBytesPeak: organizationMonthlyUsage.storageBytesPeak })
+      .from(organizationMonthlyUsage)
+      .where(
+        and(
+          eq(organizationMonthlyUsage.organizationId, organizationId),
+          eq(organizationMonthlyUsage.periodStart, periodStart),
+        ),
+      )
+      .limit(1);
 
-    await db
-      .update(organizationMonthlyUsage)
-      .set({
-        storageBytesPeak: next,
-        updatedAt: new Date(),
-      })
-      .where(eq(organizationMonthlyUsage.id, row.id));
+    return row?.storageBytesPeak ?? 0;
   },
 
   async getMonthlyUsageGb(organizationId: string): Promise<{
@@ -178,7 +182,10 @@ export const usageMeteringService = {
   },
 
   /**
-   * Poll Docker disk usage on running servers (and local host) and update monthly storage peak.
+   * Poll each organization's OWN Docker image footprint (on running servers and the local
+   * host) and update the monthly storage peak. Footprint is measured per-org from the org's
+   * project image repositories (`pushify/<slug>`), NOT the whole-host docker disk — so
+   * co-tenants on a shared host are not over-counted for each other's images.
    */
   async syncDockerDiskUsageFromServers(): Promise<void> {
     const runningServers = await db
@@ -194,6 +201,14 @@ export const usageMeteringService = {
     const orgTotals = new Map<string, number>();
 
     for (const server of runningServers) {
+      // Image repos for this server's projects → `pushify/<slug>` prefixes.
+      const serverProjects = await db
+        .select({ slug: projects.slug })
+        .from(projects)
+        .where(eq(projects.serverId, server.id));
+      const repos = serverProjects.map((p) => `pushify/${p.slug}`);
+      if (repos.length === 0) continue;
+
       let bytes = 0;
       if (server.ipv4 && server.sshPrivateKey) {
         let ssh: SSHClient | null = null;
@@ -205,7 +220,7 @@ export const usageMeteringService = {
             username: 'root',
             privateKey: decrypt(server.sshPrivateKey),
           });
-          bytes = await getDockerSystemDiskBytes(ssh);
+          bytes = await getImagesFootprintBytes(ssh, repos);
         } catch (error) {
           logger.warn({ err: error, serverId: server.id }, 'Docker disk sync skipped for server');
         } finally {
@@ -220,24 +235,28 @@ export const usageMeteringService = {
       }
     }
 
-    const localHostOrgs = await db
-      .selectDistinct({ organizationId: projects.organizationId })
+    // Local host: measure EACH org's own image footprint (its local-host project slugs),
+    // attributing only that org's bytes — never the whole local docker disk to everyone.
+    const localHostProjects = await db
+      .select({ organizationId: projects.organizationId, slug: projects.slug })
       .from(projects)
       .where(and(eq(projects.status, 'active'), isNull(projects.serverId)));
 
-    if (localHostOrgs.length > 0) {
+    const localReposByOrg = new Map<string, string[]>();
+    for (const p of localHostProjects) {
+      const list = localReposByOrg.get(p.organizationId) ?? [];
+      list.push(`pushify/${p.slug}`);
+      localReposByOrg.set(p.organizationId, list);
+    }
+
+    for (const [organizationId, repos] of localReposByOrg) {
       try {
-        const bytes = await getDockerSystemDiskBytes(null);
+        const bytes = await getImagesFootprintBytes(null, repos);
         if (bytes > 0) {
-          for (const row of localHostOrgs) {
-            orgTotals.set(
-              row.organizationId,
-              (orgTotals.get(row.organizationId) ?? 0) + bytes,
-            );
-          }
+          orgTotals.set(organizationId, (orgTotals.get(organizationId) ?? 0) + bytes);
         }
       } catch (error) {
-        logger.warn({ err: error }, 'Local docker disk sync failed');
+        logger.warn({ err: error, organizationId }, 'Local docker disk sync failed');
       }
     }
 
