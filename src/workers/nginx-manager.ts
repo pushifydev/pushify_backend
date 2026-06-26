@@ -388,6 +388,13 @@ function generateAutoSubdomainSiteConfig(config: AutoSubdomainSiteConfig): strin
 
   const previewBaseUrl = env.PREVIEW_BASE_URL || '';
 
+  // Wildcard cert directory for *.<previewBaseUrl>. Certbot may store it under a
+  // different lineage name than the base domain (e.g. the apex `pushify.dev` cert
+  // already owns /etc/letsencrypt/live/pushify.dev, so the wildcard lands in
+  // .../pushify.dev-0001), so honor WILDCARD_SSL_PATH when set and only fall back to
+  // the base-domain path. Mirrors the same resolution in the deploy workers.
+  const wildcardCertDir = env.WILDCARD_SSL_PATH || `/etc/letsencrypt/live/${previewBaseUrl}`;
+
   // Merge with defaults
   const settings = { ...DEFAULT_NGINX_SETTINGS, ...nginxSettings };
   const {
@@ -456,8 +463,8 @@ server {
     listen [::]:443 ssl http2;
     server_name ${domain};
 
-    ssl_certificate /etc/letsencrypt/live/${previewBaseUrl}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${previewBaseUrl}/privkey.pem;
+    ssl_certificate ${wildcardCertDir}/fullchain.pem;
+    ssl_certificate_key ${wildcardCertDir}/privkey.pem;
 
     # SSL configuration
     ssl_session_timeout 1d;

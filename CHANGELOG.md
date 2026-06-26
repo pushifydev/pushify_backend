@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.26] - 2026-06-26
+
+### Fixed
+- **Auto-subdomain Nginx config now points to the actual wildcard cert.** The `*.pushify.dev` vhost hardcoded its certificate path from `PREVIEW_BASE_URL` (`/etc/letsencrypt/live/<base>/`), ignoring `WILDCARD_SSL_PATH`. When the wildcard cert lives under a different lineage name (e.g. the apex `pushify.dev` cert already owns `/etc/letsencrypt/live/pushify.dev`, so the wildcard is at `.../pushify.dev-0001`), Nginx looked for a cert that wasn't there → `cannot load certificate ... No such file` → `nginx -t` failed → the config was never applied. `generateAutoSubdomainSiteConfig` now uses `WILDCARD_SSL_PATH` when set (falling back to the base-domain path), matching the deploy workers' existing resolution. Set `WILDCARD_SSL_PATH` to the wildcard's live dir.
+
 ## [0.2.0-beta.25] - 2026-06-26
 
 ### Fixed
