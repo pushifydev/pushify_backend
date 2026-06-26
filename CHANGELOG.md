@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.24] - 2026-06-26
+
+### Fixed
+- **Servers no longer get stuck at setup `installing` after they're running.** The reconciliation sweep now also covers the *setup* stage, not just provisioning: for managed servers that reached `running` but whose `setupStatus` is still `pending`/`installing` (e.g. the one-shot `server-setup` poll job died on a worker restart, even though the server's `/health` is up), the sweep re-checks `http://<ip>/health` every 30s and marks the server `completed` (sending the server-ready email) once it responds — or `failed` only after a generous 30-minute deadline. This closes the same silent-stuck gap on the setup stage that beta.23 closed on provisioning. `npm run requeue:stuck-servers` (which runs the sweep) recovers any already-stuck servers immediately.
+
 ## [0.2.0-beta.23] - 2026-06-26
 
 ### Fixed
