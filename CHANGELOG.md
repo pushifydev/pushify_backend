@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.28] - 2026-06-26
+
+### Fixed
+- **Projects on a user's own server no longer try to use a `*.pushify.dev` subdomain.** A `*.pushify.dev` auto-subdomain only works on Pushify's shared host (where the wildcard cert lives and the `*.pushify.dev` DNS points). When a project that was created on the shared host got moved to the user's own server, the deploy still tried to configure that same subdomain on the user's server — which failed (`nginx -t`: wildcard cert not present) and was conceptually wrong (the subdomain resolves to Pushify's host, not the user's server). Both remote-deploy paths (standard + blue-green) now check whether the **target** server actually has the wildcard cert; if a carried-over auto-subdomain isn't usable there, the auto-generated domain record is removed and the project is served over the server's IP (`http://<ip>:<port>`) instead. A user's own server only gets a public domain when they add their own (which then gets a real per-domain Let's Encrypt cert).
+
 ## [0.2.0-beta.27] - 2026-06-26
 
 ### Fixed
