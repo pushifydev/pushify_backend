@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0-beta.29] - 2026-06-26
+
+### Added
+- **Automatic GC of orphaned deployments on the shared host.** When a project is moved to a user's own server (or deleted), its container/images can linger on the shared Pushify host and waste disk. A new periodic sweep (`gcOrphanedLocalDeployments`, every 30 min from the background workers) tears down any local `pushify-<slug>` deployment whose project no longer belongs there — safe by construction: it only acts on projects that have a remote `serverId` (so they must not have a local deployment) or are deleted, matched by exact name. Also runnable on demand with `npm run gc:orphans`.
+
+### Changed
+- The teardown script (`buildRemoteTeardownScript`, used by project delete, server-move cleanup, and the new GC) now also **removes the project's built images** (`pushify/<slug>*`), not just the containers/vhost/dir — so cleanups actually reclaim the disk that images consume.
+
 ## [0.2.0-beta.28] - 2026-06-26
 
 ### Fixed

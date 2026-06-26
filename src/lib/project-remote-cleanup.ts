@@ -37,13 +37,19 @@ export function buildRemoteTeardownScript(slug: string, isCompose: boolean): str
       ].join('; ')
     : '';
 
+  // Reclaim disk by removing the project's built images (the big space consumer that
+  // container removal alone leaves behind). Matches the project repo + its preview repos
+  // (pushify/<slug>, pushify/<slug><suffix>). Runs after containers are gone.
+  const removeImages =
+    `docker images -q --filter=reference='pushify/${safeSlug}*' | sort -u | xargs -r docker rmi -f 2>/dev/null || true`;
+
   const filesystemAndNginx = [
     `rm -rf ${projectDir}`,
     `rm -f /etc/nginx/conf.d/${safeSlug}.pushify.dev.conf /etc/nginx/sites-enabled/${safeSlug}.pushify.dev.conf /etc/nginx/sites-available/${safeSlug}.pushify.dev.conf 2>/dev/null || true`,
     'nginx -t 2>/dev/null && nginx -s reload 2>/dev/null || true',
   ].join('; ');
 
-  return [composeDown, stopAllMatching, filesystemAndNginx].filter(Boolean).join('; ');
+  return [composeDown, stopAllMatching, removeImages, filesystemAndNginx].filter(Boolean).join('; ');
 }
 
 async function serverHasProjectContainers(
