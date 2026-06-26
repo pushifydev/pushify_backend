@@ -1,6 +1,10 @@
 # Changelog
 
-## [0.2.0-beta.22] - 2026-06-26
+## [0.2.0-beta.23] - 2026-06-26
+
+### Fixed
+- **Managed servers no longer get stuck at "Provisioning" forever.** The one-shot `server-status` poll job only retries for ~5 minutes; if the VM reaches `running` on the provider later than that (slow boot, or the worker process restarted mid-poll), the job exhausted and gave up silently — leaving the server stuck at `provisioning` even though the VM was actually running. Added an independent **provisioning reconciliation sweep** (`reconcileProvisioningServers`, runs every 30s from the background workers) that re-checks every server still stuck at `provisioning` and drives it forward: promotes it to `running` and hands off to setup as soon as the provider reports it ready (idempotent — the fixed setup `jobId` de-dupes), or marks it `error` with a clear retryable message if the provider errored or it's been provisioning past a 20-minute deadline (no more silent dead-ends). The existing poll/setup workers are unchanged — this is a safety net.
+- Added `scripts/requeue-stuck-servers.ts` (`npm run requeue:stuck-servers`) to immediately recover any servers already stuck at `provisioning` (or `running` with setup still pending).
 
 ### Fixed
 - **Storage quota no longer unfairly blocks deploys** ("Monthly storage limit reached"). Three compounding bugs are fixed:
