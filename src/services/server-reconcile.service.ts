@@ -18,7 +18,7 @@
  *
  * It does NOT touch the existing worker logic — it is purely a best-effort backstop.
  */
-import { and, eq, ne } from 'drizzle-orm';
+import { and, eq, ne, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { servers } from '../db/schema/servers';
 import { createProvider, type ProviderType } from '../providers';
@@ -32,6 +32,33 @@ import { logger } from '../lib/logger';
  * budget) so genuinely slow boots still get recovered rather than failed.
  */
 const PROVISIONING_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes
+
+/**
+ * Servers that are `running` but whose setup never finished (health check never
+ * confirmed) longer than this are marked `failed`. Generous so slow cloud-init
+ * (Docker + Nginx install) still completes rather than being failed prematurely.
+ */
+const SETUP_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+
+/**
+ * Poll the server's `/health` endpoint (served by cloud-init's Nginx once setup is
+ * done). Mirrors checkServerHealth() in queue/workers/server-setup.worker.ts.
+ */
+async function checkServerHealth(ipv4: string): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    const response = await fetch(`http://${ipv4}/health`, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (response.ok) {
+      const text = await response.text();
+      return text.includes('OK');
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
 
 // Resolve the provider API token from the environment. Mirrors the same switch in
 // queue/workers/server-status.worker.ts (kept local rather than shared on purpose,
@@ -56,6 +83,10 @@ export interface ReconcileResult {
   recovered: number;
   /** Servers marked `error` (provider error or timed out). */
   failed: number;
+  /** Running servers whose setup the sweep confirmed healthy → completed. */
+  setupCompleted: number;
+  /** Running servers whose setup timed out → marked failed. */
+  setupFailed: number;
 }
 
 /**
@@ -64,7 +95,13 @@ export interface ReconcileResult {
  * so a single bad row (or provider hiccup) never aborts the sweep.
  */
 export async function reconcileProvisioningServers(): Promise<ReconcileResult> {
-  const result: ReconcileResult = { inspected: 0, recovered: 0, failed: 0 };
+  const result: ReconcileResult = {
+    inspected: 0,
+    recovered: 0,
+    failed: 0,
+    setupCompleted: 0,
+    setupFailed: 0,
+  };
 
   // Managed servers still provisioning (and not being deleted).
   const stuck = await db
@@ -79,9 +116,6 @@ export async function reconcileProvisioningServers(): Promise<ReconcileResult> {
     );
 
   result.inspected = stuck.length;
-  if (stuck.length === 0) {
-    return result;
-  }
 
   for (const server of stuck) {
     try {
@@ -209,6 +243,108 @@ export async function reconcileProvisioningServers(): Promise<ReconcileResult> {
       logger.error(
         { err, serverId: server.id },
         'Reconcile: failed to reconcile server, skipping',
+      );
+    }
+  }
+
+  // ---- Setup stage: managed servers that reached `running` but whose setup never
+  // finished (setupStatus still pending/installing). The one-shot server-setup job
+  // can die on a worker restart, leaving the row stuck even after /health is up — so
+  // re-check health here and finish (or fail) the setup independently. ----
+  const installing = await db
+    .select()
+    .from(servers)
+    .where(
+      and(
+        eq(servers.status, 'running'),
+        eq(servers.isManaged, true),
+        inArray(servers.setupStatus, ['pending', 'installing']),
+      ),
+    );
+
+  for (const server of installing) {
+    try {
+      if (!server.ipv4) continue;
+
+      const healthy = await checkServerHealth(server.ipv4);
+
+      if (healthy) {
+        await db
+          .update(servers)
+          .set({
+            setupStatus: 'completed',
+            statusMessage: 'Server setup completed successfully',
+            updatedAt: new Date(),
+          })
+          .where(eq(servers.id, server.id));
+
+        wsManager
+          .publish(`server:${server.id}`, {
+            type: 'server:setup',
+            data: {
+              serverId: server.id,
+              status: 'running',
+              setupStatus: 'completed',
+              statusMessage: 'Server setup completed successfully',
+            },
+          })
+          .catch(() => {});
+
+        // Notify the org that the server is ready (best-effort, mirrors the setup worker).
+        void (async () => {
+          try {
+            const { resolveBillingNotifyEmail } = await import('../lib/billing-notify');
+            const { sendServerReadyEmail } = await import('../lib/email');
+            const to = await resolveBillingNotifyEmail(server.organizationId);
+            if (to) await sendServerReadyEmail(to, server.name, server.id, 'en');
+          } catch {
+            // best-effort
+          }
+        })();
+
+        result.setupCompleted++;
+        logger.info(
+          { serverId: server.id, ipv4: server.ipv4 },
+          'Reconcile: setup health OK, marked completed',
+        );
+        continue;
+      }
+
+      // Not healthy yet — only fail it once well past a generous deadline.
+      const createdAtMs = server.createdAt ? new Date(server.createdAt).getTime() : Date.now();
+      if (Date.now() - createdAtMs > SETUP_TIMEOUT_MS) {
+        await db
+          .update(servers)
+          .set({
+            setupStatus: 'failed',
+            statusMessage: 'Server setup timed out - health check not responding',
+            updatedAt: new Date(),
+          })
+          .where(eq(servers.id, server.id));
+
+        wsManager
+          .publish(`server:${server.id}`, {
+            type: 'server:setup',
+            data: {
+              serverId: server.id,
+              status: 'running',
+              setupStatus: 'failed',
+              statusMessage: 'Server setup timed out - health check not responding',
+            },
+          })
+          .catch(() => {});
+
+        result.setupFailed++;
+        logger.warn(
+          { serverId: server.id },
+          'Reconcile: setup timed out, marked failed',
+        );
+      }
+      // Otherwise still installing within the deadline — leave it for the next sweep.
+    } catch (err) {
+      logger.error(
+        { err, serverId: server.id },
+        'Reconcile: failed to reconcile setup, skipping',
       );
     }
   }
