@@ -1,5 +1,17 @@
 import { randomBytes } from 'crypto';
 
+/**
+ * Normalize a client IP for storage in our varchar(45) ip columns.
+ * `x-forwarded-for` may be a comma-separated proxy chain ("client, proxy1, ...");
+ * keep only the first (client) IP and hard-cap to 45 chars (max IPv6 length) so a
+ * long header never overflows the column and 500s the request.
+ */
+export function normalizeClientIp(ip?: string | null): string | undefined {
+  if (!ip) return undefined;
+  const first = ip.split(',')[0]?.trim();
+  return first ? first.slice(0, 45) : undefined;
+}
+
 // Generate URL-friendly slug from string
 export function generateSlug(text: string): string {
   return text

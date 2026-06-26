@@ -4,7 +4,7 @@ import { userRepository } from '../repositories/user.repository';
 import { organizationRepository } from '../repositories/organization.repository';
 import { hashPassword, verifyPassword } from '../lib/password';
 import { generateTokenPair, verifyToken, generateTwoFactorToken, verifyTwoFactorToken } from '../lib/jwt';
-import { generateSlug, hashToken, generateRandomToken } from '../lib/utils';
+import { generateSlug, hashToken, generateRandomToken, normalizeClientIp } from '../lib/utils';
 import { logger } from '../lib/logger';
 import { t, type SupportedLocale } from '../i18n';
 import {
@@ -373,7 +373,7 @@ export const authService = {
     await userRepository.createSession({
       userId,
       tokenHash,
-      ipAddress,
+      ipAddress: normalizeClientIp(ipAddress),
       userAgent,
       expiresAt,
     });
