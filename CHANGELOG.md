@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.27] - 2026-06-26
+
+### Fixed
+- **Moving a project to a different server now tears down the old host.** Changing a project's deployment server (local→server, server→server, or server→local) only updated `serverId` — the old container/images kept running on the previous host (e.g. the shared Pushify server), wasting resources and potentially still answering on the old subdomain. `updateProject` now detects a server change and runs the existing best-effort cleanup (`cleanupProjectContainers`) against the **previous** host (using the pre-update snapshot) so the old deployment is removed; the next deploy lands on the new server. (Reminder: assigning a server still requires it to be `running` + setup `completed`, otherwise the assignment is rejected and the project stays where it is.)
+
 ## [0.2.0-beta.26] - 2026-06-26
 
 ### Fixed

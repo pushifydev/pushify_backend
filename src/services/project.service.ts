@@ -218,10 +218,39 @@ export const projectService = {
       validatedServerId = input.serverId;
     }
 
+    // Detect whether the deployment target is actually changing (server↔server,
+    // local→server, or server→local). `serverId: undefined` means "not touched".
+    const serverChanging =
+      input.serverId !== undefined && validatedServerId !== existing.serverId;
+
     const project = await projectRepository.update(projectId, {
       ...input,
       serverId: validatedServerId,
     });
+
+    // Moving the project to a different host: tear down the OLD host's containers/
+    // images (using the pre-update snapshot, which still points at the old server) so
+    // the project stops running on — and consuming resources from — the previous host.
+    // Best-effort; the move itself already succeeded. The next deploy lands on the new
+    // server.
+    if (serverChanging) {
+      try {
+        await this.cleanupProjectContainers(existing);
+        logger.info(
+          {
+            projectId,
+            fromServerId: existing.serverId ?? 'local',
+            toServerId: validatedServerId ?? 'local',
+          },
+          'Cleaned up old deployment after server change',
+        );
+      } catch (err) {
+        logger.warn(
+          { projectId, oldServerId: existing.serverId, err },
+          'Old-server cleanup after move failed',
+        );
+      }
+    }
 
     logger.info({ projectId, userId }, 'Project updated');
 
