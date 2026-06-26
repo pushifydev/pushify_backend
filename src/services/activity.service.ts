@@ -4,6 +4,7 @@ import { users } from '../db/schema/users';
 import { projects } from '../db/schema/projects';
 import { eq, desc, and, or, inArray, sql } from 'drizzle-orm';
 import { logger } from '../lib/logger';
+import { normalizeClientIp } from '../lib/utils';
 
 export interface ActivityLogInput {
   organizationId: string;
@@ -56,7 +57,7 @@ class ActivityService {
         action: input.action,
         description: input.description,
         metadata: input.metadata || {},
-        ipAddress: input.ipAddress,
+        ipAddress: normalizeClientIp(input.ipAddress),
         userAgent: input.userAgent,
       });
 

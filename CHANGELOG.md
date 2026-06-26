@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.25] - 2026-06-26
+
+### Fixed
+- **Login no longer 500s behind a proxy chain** (`value too long for type character varying(45)`). The client IP was taken straight from the `x-forwarded-for` header and written to the `ip_address varchar(45)` column — but behind multiple proxies (nginx/Cloudflare) that header is a comma-separated list of IPs that overflows 45 chars, which threw on session creation and broke every login (password + Google/GitHub OAuth). Added a shared `normalizeClientIp()` that keeps only the first (client) IP and caps it to 45 chars, applied at session creation and activity logging. Not data/Postgres related — purely the header length.
+
 ## [0.2.0-beta.24] - 2026-06-26
 
 ### Fixed
