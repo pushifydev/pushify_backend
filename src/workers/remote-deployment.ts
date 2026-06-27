@@ -178,6 +178,34 @@ async function getPrimaryDomain(projectId: string): Promise<string | null> {
 }
 
 /**
+ * Put the deployed app and any Pushify-managed databases on a shared `pushify` Docker
+ * network so the app can reach its database by container name (e.g. `pushify-db-myapp`)
+ * — no host-IP guessing, no public exposure required. Only acts when the server actually
+ * has Pushify databases (a user's own server); on the shared host there are none, so apps
+ * are never needlessly co-networked. Best-effort: never fails a deploy over network wiring.
+ */
+async function connectAppToDatabaseNetwork(
+  ssh: SSHClient,
+  appContainerName: string,
+  onProgress: (msg: string) => void,
+): Promise<void> {
+  try {
+    const dbList = await ssh.exec(`docker ps -a --format '{{.Names}}' | grep '^pushify-db-' || true`);
+    const dbs = (dbList.stdout || '').trim().split('\n').map((s) => s.trim()).filter(Boolean);
+    if (dbs.length === 0) return; // no Pushify databases on this host → nothing to wire
+
+    await ssh.exec(`docker network create pushify 2>/dev/null || true`);
+    for (const db of dbs) {
+      await ssh.exec(`docker network connect pushify ${db} 2>/dev/null || true`);
+    }
+    await ssh.exec(`docker network connect pushify ${appContainerName} 2>/dev/null || true`);
+    onProgress(`🔗 Joined shared 'pushify' network — databases reachable by name (e.g. ${dbs[0]})`);
+  } catch {
+    // best-effort — never break a deploy over network wiring
+  }
+}
+
+/**
  * Setup Nginx and domain for a deployed project
  */
 async function setupNginxAndDomain(
@@ -770,6 +798,9 @@ export async function deployToRemoteServer(
       }
       onProgress('✅ Container started');
 
+      // Wire the app to the shared `pushify` network so it can reach databases by name.
+      await connectAppToDatabaseNetwork(ssh, containerName, onProgress);
+
       // ── Post-deploy shell command (e.g. create initial admin user) ──
       const postDeployShell = (config.marketplace as any).postDeployShell as string | undefined;
       if (postDeployShell) {
@@ -1014,6 +1045,9 @@ export async function deployToRemoteServer(
 
     // Open firewall port for external access (root-first; works on BYOS without sudo/ufw)
     await openFirewallPort(ssh, hostPort, onProgress);
+
+    // Wire the app to the shared `pushify` network so it can reach databases by name.
+    await connectAppToDatabaseNetwork(ssh, `pushify-${deploySlug}`, onProgress);
 
     // Check if project has any domains; if not, create auto subdomain (only on managed servers)
     let primaryDomain = await getPrimaryDomain(projectId);
@@ -1305,6 +1339,9 @@ export async function quickRollbackToDeployment(
       throw new Error(`Failed to start container:\n${runResult.logs}`);
     }
     onProgress('✅ Container started successfully');
+
+    // Wire the app to the shared `pushify` network so it can reach databases by name.
+    await connectAppToDatabaseNetwork(ssh, `pushify-${projectSlug}`, onProgress);
 
     // Update latest tag to point to rollback image
     await tagImage(ssh, fullImageName, `${imageName}:latest`);
