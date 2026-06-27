@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.30] - 2026-06-27
+
+### Fixed
+- **Apps can now reach a Pushify-managed database by its container name.** A standalone database (`pushify-db-<name>`) runs on the default bridge network, where Docker provides no name resolution — so a deployed app connecting to `pushify-db-<name>` failed with `ENOTFOUND`, and there was no reliable host to use instead. Every remote deploy (standard, blue-green, and quick-rollback) now joins the app and all `pushify-db-*` containers to a shared `pushify` Docker network, so the app reaches its database by container name with no host/IP guessing. Scoped to servers that actually have Pushify databases (i.e. the user's own server) — the shared host is unaffected. The database's public-port choice is untouched (still the user's decision); this only adds private app↔database connectivity.
+
 ## [0.2.0-beta.29] - 2026-06-26
 
 ### Added
