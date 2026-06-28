@@ -68,6 +68,9 @@ const envSchema = z.object({
   // Preview Deployments
   PREVIEW_BASE_URL: z.string().optional(),
   WILDCARD_SSL_PATH: z.string().optional(), // e.g. /etc/letsencrypt/live/pushify.dev-0001
+  // Dedicated runner server (a `servers` row id) that free/unassigned deploys land on,
+  // keeping untrusted workloads off the control-plane host. Unset → deploys fall back to local.
+  PUSHIFY_RUNNER_SERVER_ID: z.string().optional(),
 
   // AI Assistant
   ANTHROPIC_API_KEY: z.string().optional(),

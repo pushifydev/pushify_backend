@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.33] - 2026-06-27
+
+### Added
+- **Free/unassigned deploys can target a dedicated runner server** instead of running on the control-plane host. New `PUSHIFY_RUNNER_SERVER_ID` env (a `servers` row id): when a project has no user-assigned `serverId`, the deploy now lands on that runner over SSH (same remote path as a user's own server) — keeping untrusted free-tier workloads off the box that runs pushify.dev + the API + the platform database. If unset, behavior is unchanged (deploys fall back to the local host). The deploy-target resolution (`deployTargetServerId = project.serverId || PUSHIFY_RUNNER_SERVER_ID`) is applied across the standard, static-site, blue-green and quick-rollback paths; per-project server assignment, cleanup and GC still key off the user's real `serverId`.
+
 ## [0.2.0-beta.32] - 2026-06-27
 
 ### Changed

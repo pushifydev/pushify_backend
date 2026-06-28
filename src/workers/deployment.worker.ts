@@ -364,6 +364,11 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       throw new Error('Project not found');
     }
 
+    // Deploy target: the user's own assigned server if set, otherwise the dedicated shared
+    // runner (PUSHIFY_RUNNER_SERVER_ID) so free/unassigned deploys never run on the control
+    // plane. Falls back to the local host only when no runner is configured.
+    const deployTargetServerId = project.serverId || env.PUSHIFY_RUNNER_SERVER_ID || null;
+
     const previewCtx = await loadPreviewDeployContext(job, project.slug);
     if (previewCtx) {
       addLog(`🔍 Preview deployment for PR #${previewCtx.prNumber}`);
@@ -402,11 +407,11 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
     const earlySettings = project.settings as Record<string, unknown>;
     if (earlySettings?.static === true || earlySettings?.siteStudioStack === 'static') {
       addLog('🎨 Static site — publishing rendered HTML...');
-      if (!project.serverId) {
+      if (!deployTargetServerId) {
         throw new Error('Static site has no server assigned');
       }
       const server = await db.query.servers.findFirst({
-        where: (s, { eq }) => eq(s.id, project.serverId!),
+        where: (s, { eq }) => eq(s.id, deployTargetServerId),
       });
       if (!server) {
         throw new Error('Server not found');
@@ -473,12 +478,16 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       }
     }
 
-    // Check if project has a server assigned for remote deployment
-    if (project.serverId) {
-      addLog('🖥️ Project has a remote server assigned, using remote deployment...');
+    // Remote deployment when there's a target server (the user's own, or the shared runner).
+    if (deployTargetServerId) {
+      addLog(
+        project.serverId
+          ? '🖥️ Project has a remote server assigned, using remote deployment...'
+          : '🖥️ Deploying to the shared runner server...'
+      );
 
       // Verify server is ready for deployment
-      const serverCheck = await canDeployToServer(project.serverId);
+      const serverCheck = await canDeployToServer(deployTargetServerId);
       if (!serverCheck.canDeploy) {
         throw new Error(`Server not ready for deployment: ${serverCheck.reason}`);
       }
@@ -514,7 +523,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
           addLog('🚀 Status: Rolling back (no build required)');
 
           const rollbackResult = await quickRollbackToDeployment({
-            serverId: project.serverId,
+            serverId: deployTargetServerId,
             projectId: project.id,
             projectSlug: project.slug,
             targetDeploymentId: job.rollbackFromDeploymentId,
@@ -698,7 +707,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       }
 
       const remoteResult = await deployToRemoteServer({
-        serverId: project.serverId,
+        serverId: deployTargetServerId,
         projectId: project.id,
         projectSlug: project.slug,
         deploymentId: job.id,
