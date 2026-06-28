@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.31] - 2026-06-27
+
+### Fixed
+- **Custom domains no longer 502 when the app uses a custom `PORT`.** A deploy publishes the app on the project's `PORT` env value when set (e.g. `1367`), but the domain → Nginx setup derived the proxy target from the *assigned* port (`getOrAssignPort`) instead, so the vhost proxied to the wrong port and returned 502 even though the app was reachable on its real port. Domain verification and the apply-settings path now resolve the app's actual published port the same way the deploy does (PORT env first, assigned port as fallback) via a shared `resolveProjectPort` helper.
+
 ## [0.2.0-beta.30] - 2026-06-27
 
 ### Fixed

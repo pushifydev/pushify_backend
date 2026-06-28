@@ -5,8 +5,8 @@ import { projectRepository } from '../repositories/project.repository';
 import { organizationRepository } from '../repositories/organization.repository';
 import { db } from '../db';
 import { servers } from '../db/schema/servers';
-import { projects } from '../db/schema/projects';
-import { eq } from 'drizzle-orm';
+import { projects, environmentVariables } from '../db/schema/projects';
+import { eq, and } from 'drizzle-orm';
 import { SSHClient } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
 import { addSite, addAutoSubdomainSite, reloadNginx, requestSSLCertificate } from '../workers/nginx-manager';
@@ -15,6 +15,39 @@ import { t, type SupportedLocale } from '../i18n';
 import { logger } from '../lib/logger';
 import { env } from '../config/env';
 import { planLimitsService } from './plan-limits.service';
+
+/**
+ * Resolve the host port the app is actually published on, so a domain's Nginx vhost
+ * proxies to the right place. The deploy uses the project's `PORT` env var as the host
+ * port when set (otherwise a dynamically-assigned port) — mirror that here, else a custom
+ * domain ends up proxying to a different/assigned port and 502s while the app itself is up.
+ */
+async function resolveProjectPort(
+  ssh: SSHClient,
+  projectId: string,
+  projectSlug: string,
+): Promise<number> {
+  try {
+    const [portEnv] = await db
+      .select({ valueEncrypted: environmentVariables.valueEncrypted })
+      .from(environmentVariables)
+      .where(
+        and(
+          eq(environmentVariables.projectId, projectId),
+          eq(environmentVariables.key, 'PORT'),
+        ),
+      )
+      .limit(1);
+    if (portEnv?.valueEncrypted) {
+      const p = parseInt(decrypt(portEnv.valueEncrypted), 10);
+      if (Number.isFinite(p) && p > 0 && p < 65536) return p;
+    }
+  } catch {
+    // fall through to the assigned port
+  }
+  const { port } = await getOrAssignPort(ssh, projectSlug);
+  return port;
+}
 
 interface CreateDomainInput {
   domain: string;
@@ -351,8 +384,9 @@ export const domainService = {
       });
       const projectSlug = projectData?.slug || 'unknown';
 
-      // Get assigned port for this project
-      const { port: containerPort } = await getOrAssignPort(ssh, projectSlug);
+      // Use the app's real published port (honors the project's PORT env), not just the
+      // assigned port — otherwise the vhost proxies to the wrong port and 502s.
+      const containerPort = await resolveProjectPort(ssh, projectId, projectSlug);
 
       // For auto-generated subdomains, use wildcard cert directly
       if (isAutoSubdomain) {
@@ -589,7 +623,7 @@ export const domainService = {
           });
 
           if (projectData?.slug) {
-            const { port: containerPort } = await getOrAssignPort(ssh, projectData.slug);
+            const containerPort = await resolveProjectPort(ssh, projectId, projectData.slug);
 
             // Update Nginx configuration with new settings
             await addSite(ssh, {
