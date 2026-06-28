@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.32] - 2026-06-27
+
+### Changed
+- Hardened the domain → port resolution (from beta.31) so it can't drift on any deploy path. `resolveProjectPort` now uses the **actual host port recorded on the most recent deployment** as the source of truth (every deploy path — blue-green, marketplace, quick-rollback — records the real port it published on), falling back to the `PORT` env and then the assigned port only if no deployment port is available. This also covers the edge case of a marketplace app with a manually-set `PORT` plus a custom domain.
+
 ## [0.2.0-beta.31] - 2026-06-27
 
 ### Fixed
