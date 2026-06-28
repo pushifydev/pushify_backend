@@ -68,8 +68,11 @@ const envSchema = z.object({
   // Preview Deployments
   PREVIEW_BASE_URL: z.string().optional(),
   WILDCARD_SSL_PATH: z.string().optional(), // e.g. /etc/letsencrypt/live/pushify.dev-0001
-  // Dedicated runner server (a `servers` row id) that free/unassigned deploys land on,
-  // keeping untrusted workloads off the control-plane host. Unset → deploys fall back to local.
+  // Dedicated runner server pool (comma-separated `servers` row ids) that free/unassigned
+  // deploys land on, keeping untrusted workloads off the control-plane host. A project is
+  // stickily mapped to one runner (deterministic by project id) so its redeploys stay put.
+  // Unset → deploys fall back to local. `PUSHIFY_RUNNER_SERVER_ID` (single) is still honored.
+  PUSHIFY_RUNNER_SERVER_IDS: z.string().optional(),
   PUSHIFY_RUNNER_SERVER_ID: z.string().optional(),
 
   // AI Assistant

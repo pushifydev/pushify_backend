@@ -99,6 +99,24 @@ export interface DeploymentJob {
   status?: string;
 }
 
+/**
+ * Pick the runner server a free/unassigned project deploys to, from the configured pool
+ * (`PUSHIFY_RUNNER_SERVER_IDS`, comma-separated; legacy single `PUSHIFY_RUNNER_SERVER_ID`
+ * still honored). The mapping is sticky and deterministic by project id, so a project's
+ * redeploys always land on the same runner (its subdomain/state stay put) while projects
+ * spread across the pool. Returns null when no runner is configured → caller falls back to
+ * the local host.
+ */
+function pickRunnerServerId(projectId: string): string | null {
+  const raw = env.PUSHIFY_RUNNER_SERVER_IDS || env.PUSHIFY_RUNNER_SERVER_ID || '';
+  const pool = raw.split(',').map((s) => s.trim()).filter(Boolean);
+  if (pool.length === 0) return null;
+  if (pool.length === 1) return pool[0];
+  let h = 0;
+  for (let i = 0; i < projectId.length; i++) h = (h * 31 + projectId.charCodeAt(i)) >>> 0;
+  return pool[h % pool.length];
+}
+
 interface PreviewDeployContext {
   prNumber: number;
   containerName: string;
@@ -367,7 +385,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
     // Deploy target: the user's own assigned server if set, otherwise the dedicated shared
     // runner (PUSHIFY_RUNNER_SERVER_ID) so free/unassigned deploys never run on the control
     // plane. Falls back to the local host only when no runner is configured.
-    const deployTargetServerId = project.serverId || env.PUSHIFY_RUNNER_SERVER_ID || null;
+    const deployTargetServerId = project.serverId || pickRunnerServerId(project.id);
 
     const previewCtx = await loadPreviewDeployContext(job, project.slug);
     if (previewCtx) {
