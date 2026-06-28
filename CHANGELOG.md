@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.34] - 2026-06-27
+
+### Changed
+- **Runner is now a pool, not a single server.** `PUSHIFY_RUNNER_SERVER_IDS` (comma-separated `servers` row ids) defines a pool of dedicated runner hosts that free/unassigned deploys land on; a project is **stickily and deterministically** mapped to one runner by its id, so its redeploys always go to the same host (its subdomain/state stay put) while projects spread across the pool. Scales to N runners by just adding ids — no code change. The single `PUSHIFY_RUNNER_SERVER_ID` from beta.33 is still honored as a one-runner pool. (Note: actually serving 2+ runners also needs per-app DNS so `<app>.pushify.dev` resolves to that app's runner — a wildcard A record only points at one host; that piece comes when the 2nd runner is added.)
+
 ## [0.2.0-beta.33] - 2026-06-27
 
 ### Added
