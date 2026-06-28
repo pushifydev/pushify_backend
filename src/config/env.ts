@@ -93,6 +93,12 @@ const envSchema = z.object({
   RATE_LIMIT_AUTH_MAX: z.coerce.number().default(20),
   /** Unauthenticated `/api/*` routes — per IP, per minute (authenticated routes use plan limits) */
   RATE_LIMIT_API_MAX: z.coerce.number().default(200),
+  /**
+   * Interactive dashboard (JWT session) — per org, per minute. The browser dashboard polls
+   * logs/status/metrics, so it needs far more headroom than a programmatic API key. This bound
+   * only guards against a runaway client loop; API keys still use the per-plan apiRequestsPerMinute.
+   */
+  RATE_LIMIT_SESSION_MAX: z.coerce.number().default(600),
   /** GitHub/Stripe webhook routes — per project or IP, per minute */
   RATE_LIMIT_WEBHOOK_MAX: z.coerce.number().default(60),
   /** Manual deploy / redeploy / rollback — per project or IP, per hour */

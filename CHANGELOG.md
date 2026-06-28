@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0-beta.36] - 2026-06-28
+
+### Fixed
+- **Dashboard no longer rate-limits itself (429 storm).** The interactive dashboard polls logs, status and metrics, so an active session can easily exceed the free plan's 60 req/min — but that per-plan `apiRequestsPerMinute` was meant for *programmatic* API keys, not the browser. Authenticated session (JWT) traffic now uses a separate, generous per-org limit (`RATE_LIMIT_SESSION_MAX`, default **600/min**) that only guards against a runaway client loop; **API keys keep their per-plan limit** unchanged. This removes the constant 429s while managing a project (especially during a deploy) without weakening API-key tiering or anonymous/IP flood protection.
+
+### Note
+- Behind a reverse proxy (nginx), set **`TRUSTED_PROXY_HOPS=1`** in the control-plane `.env` so IP-based limiters (login/refresh) use the real client IP instead of bucketing every user under the proxy's address.
+
 ## [0.2.0-beta.35] - 2026-06-27
 
 ### Added

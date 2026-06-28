@@ -206,6 +206,14 @@ async function getOrganizationPlan(organizationId: string): Promise<PlanType> {
 }
 
 async function resolvePlanApiMaxRequests(c: Context): Promise<number> {
+  // Interactive dashboard (JWT session, no API key) polls logs/status/metrics and needs far
+  // more headroom than a programmatic key — throttle it only to stop a runaway client loop.
+  // The per-plan apiRequestsPerMinute is meant for API-key traffic, so keep it scoped to that.
+  const apiKey = c.get('apiKey') as { id: string } | undefined;
+  if (!apiKey) {
+    return env.RATE_LIMIT_SESSION_MAX;
+  }
+
   const organizationId = c.get('organizationId') as string | undefined;
   if (organizationId) {
     const plan = await getOrganizationPlan(organizationId);
