@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.37] - 2026-06-28
+
+### Fixed
+- **BullMQ now honors the Redis DB index in `REDIS_URL`** (e.g. `redis://host:6379/1` → db 1). The queue connection previously parsed only host/port/auth and silently dropped the db, so every environment sharing a Redis host landed on db 0 with the same static queue names (`deployments`, `notifications`, …). On a box running both staging and production, that meant a **staging worker could pick up and run a production deployment job** (and vice-versa) — which also silently broke runner routing: the staging process lacks `PUSHIFY_RUNNER_SERVER_IDS`, so it fell back to a local deploy and failed with *"Docker is not available on this machine."* Centralized the connection parsing (`lib/redis-connection.ts`) across the enqueue side and all queue workers (deployments, notifications). **To isolate environments sharing one Redis, point each at a different db** — e.g. production `…/0`, staging `…/1`.
+
 ## [0.2.0-beta.36] - 2026-06-28
 
 ### Fixed

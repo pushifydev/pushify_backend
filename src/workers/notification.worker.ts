@@ -6,6 +6,7 @@ import { env } from '../config/env';
 import { notificationRepository } from '../repositories/notification.repository';
 import { decrypt } from '../lib/encryption';
 import { QUEUE_NAMES, type NotificationJobData } from '../lib/queue';
+import { getBullRedisConnection } from '../lib/redis-connection';
 import {
   renderNotificationEmail,
   getNotificationEventEmoji,
@@ -35,17 +36,9 @@ function getGmailTransporter(): nodemailer.Transporter | null {
 }
 
 // Get Redis connection
-function getRedisConnection() {
-  if (!env.REDIS_URL) return null;
-
-  const url = new URL(env.REDIS_URL);
-  return {
-    host: url.hostname,
-    port: parseInt(url.port) || 6379,
-    password: url.password || undefined,
-    username: url.username || undefined,
-  };
-}
+// Honors the DB index in REDIS_URL so environments sharing a Redis host stay isolated
+// (see lib/redis-connection.ts).
+const getRedisConnection = getBullRedisConnection;
 
 // Worker instance
 let notificationWorker: Worker<NotificationJobData> | null = null;

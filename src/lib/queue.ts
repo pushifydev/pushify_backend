@@ -1,21 +1,10 @@
 import { Queue, Worker, Job, QueueEvents } from 'bullmq';
 import { logger } from './logger';
-import { env } from '../config/env';
+import { getBullRedisConnection } from './redis-connection';
 
-// Redis connection config
-const getRedisConnection = () => {
-  if (!env.REDIS_URL) {
-    return null;
-  }
-
-  const url = new URL(env.REDIS_URL);
-  return {
-    host: url.hostname,
-    port: parseInt(url.port) || 6379,
-    password: url.password || undefined,
-    username: url.username || undefined,
-  };
-};
+// Redis connection config — honors the DB index in REDIS_URL so environments sharing a Redis
+// host don't collide on the same queue names (see lib/redis-connection.ts).
+const getRedisConnection = getBullRedisConnection;
 
 // Queue names
 export const QUEUE_NAMES = {

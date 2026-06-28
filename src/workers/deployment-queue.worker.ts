@@ -2,6 +2,7 @@ import { Worker, type Job } from 'bullmq';
 import { env } from '../config/env';
 import { logger } from '../lib/logger';
 import { QUEUE_NAMES, type DeploymentJobData } from '../lib/queue';
+import { getBullRedisConnection } from '../lib/redis-connection';
 import { tryAcquireDeploySlots, releaseDeploySlots } from '../lib/deploy-concurrency';
 import {
   tryHoldDeployWorkerLeadership,
@@ -14,16 +15,9 @@ import { scheduleDeploymentProcessing } from '../lib/deployment-scheduler';
 const RECONCILE_INTERVAL_MS = 15_000;
 const SLOT_RETRY_DELAY_MS = 5000;
 
-function getRedisConnection() {
-  if (!env.REDIS_URL) return null;
-  const url = new URL(env.REDIS_URL);
-  return {
-    host: url.hostname,
-    port: parseInt(url.port, 10) || 6379,
-    password: url.password || undefined,
-    username: url.username || undefined,
-  };
-}
+// Honors the DB index in REDIS_URL so a staging worker can't consume production deployment
+// jobs off a shared Redis (see lib/redis-connection.ts).
+const getRedisConnection = getBullRedisConnection;
 
 let deploymentQueueWorker: Worker<DeploymentJobData> | null = null;
 let reconcileRunning = false;
