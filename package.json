@@ -1,6 +1,6 @@
 {
   "name": "pushify-backend",
-  "version": "0.2.0-beta.34",
+  "version": "0.2.0-beta.35",
   "private": true,
   "description": "Pushify cloud deployment platform — API server",
   "license": "MIT",
@@ -29,7 +29,8 @@
     "backfill:infra-credit": "tsx scripts/backfill-included-infra-credit.ts",
     "reset:storage-usage": "tsx scripts/reset-storage-usage.ts",
     "requeue:stuck-servers": "tsx scripts/requeue-stuck-servers.ts",
-    "gc:orphans": "tsx scripts/gc-orphaned-deployments.ts"
+    "gc:orphans": "tsx scripts/gc-orphaned-deployments.ts",
+    "grant-org": "tsx scripts/grant-org-limits.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.79.0",

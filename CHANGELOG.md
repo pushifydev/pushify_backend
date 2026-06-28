@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.35] - 2026-06-27
+
+### Added
+- **Internal/comp grant tool** (`npm run grant-org`): set an organization's `plan` and/or `planLimitsOverride` directly, without Stripe — for the operator's own org (e.g. `--servers 1` to add the platform runner) or to comp a partner. Uses the existing per-org `planLimitsOverride` (merged on top of plan limits by `getEffectivePlanLimits`), so the org keeps its real billing state but gains the granted capacity. Examples: `grant-org -- --org <id> --servers 1`, `--plan hobby`, `--override '{"servers":2,"projects":20}'`.
+
 ## [0.2.0-beta.34] - 2026-06-27
 
 ### Changed
