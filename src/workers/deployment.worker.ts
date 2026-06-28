@@ -6,6 +6,7 @@ import { gitIntegrations } from '../db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { decrypt } from '../lib/encryption';
 import { logger } from '../lib/logger';
+import { pickRunnerServerId } from '../lib/runner-routing';
 import { cloneRepository, cleanupRepository } from './git';
 import {
   buildImage,
@@ -97,24 +98,6 @@ export interface DeploymentJob {
   isPreview: boolean;
   previewPrNumber: number | null;
   status?: string;
-}
-
-/**
- * Pick the runner server a free/unassigned project deploys to, from the configured pool
- * (`PUSHIFY_RUNNER_SERVER_IDS`, comma-separated; legacy single `PUSHIFY_RUNNER_SERVER_ID`
- * still honored). The mapping is sticky and deterministic by project id, so a project's
- * redeploys always land on the same runner (its subdomain/state stay put) while projects
- * spread across the pool. Returns null when no runner is configured → caller falls back to
- * the local host.
- */
-function pickRunnerServerId(projectId: string): string | null {
-  const raw = env.PUSHIFY_RUNNER_SERVER_IDS || env.PUSHIFY_RUNNER_SERVER_ID || '';
-  const pool = raw.split(',').map((s) => s.trim()).filter(Boolean);
-  if (pool.length === 0) return null;
-  if (pool.length === 1) return pool[0];
-  let h = 0;
-  for (let i = 0; i < projectId.length; i++) h = (h * 31 + projectId.charCodeAt(i)) >>> 0;
-  return pool[h % pool.length];
 }
 
 interface PreviewDeployContext {

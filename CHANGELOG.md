@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.38] - 2026-06-28
+
+### Fixed
+- **Container logs now work for runner-deployed projects** ("Container is not running"). The log-stream endpoint decided remote-vs-local solely from `project.serverId`, so a free/unassigned project — which has no `serverId` but still deploys to a runner via sticky routing — was treated as local, looked at the control-plane's Docker, found nothing, and returned *"Container is not running."* Extracted the deploy-target resolution into `lib/runner-routing.ts` (`pickRunnerServerId` + `resolveProjectServerId = project.serverId || runner`) — the same logic the deploy worker uses — and the log stream now SSHes into the actual runner. (Other `serverId`-gated container ops, e.g. custom-domain nginx in `domain.service`, should adopt `resolveProjectServerId` too as runner usage grows.)
+
 ## [0.2.0-beta.37] - 2026-06-28
 
 ### Fixed
