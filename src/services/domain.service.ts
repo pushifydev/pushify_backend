@@ -6,7 +6,8 @@ import { organizationRepository } from '../repositories/organization.repository'
 import { db } from '../db';
 import { servers } from '../db/schema/servers';
 import { projects, environmentVariables } from '../db/schema/projects';
-import { eq, and } from 'drizzle-orm';
+import { deployments } from '../db/schema/deployments';
+import { eq, and, desc, isNotNull } from 'drizzle-orm';
 import { SSHClient } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
 import { addSite, addAutoSubdomainSite, reloadNginx, requestSSLCertificate } from '../workers/nginx-manager';
@@ -27,6 +28,21 @@ async function resolveProjectPort(
   projectId: string,
   projectSlug: string,
 ): Promise<number> {
+  // 1) Source of truth: the actual host port the most recent deploy published on. This
+  //    covers every deploy path (blue-green, marketplace, rollback) since each records the
+  //    real port it used — no re-derivation to drift out of sync.
+  try {
+    const [latest] = await db
+      .select({ containerPort: deployments.containerPort })
+      .from(deployments)
+      .where(and(eq(deployments.projectId, projectId), isNotNull(deployments.containerPort)))
+      .orderBy(desc(deployments.createdAt))
+      .limit(1);
+    if (latest?.containerPort && latest.containerPort > 0) return latest.containerPort;
+  } catch {
+    // fall through
+  }
+  // 2) The project's PORT env (the deploy uses it as the host port when set).
   try {
     const [portEnv] = await db
       .select({ valueEncrypted: environmentVariables.valueEncrypted })
@@ -45,6 +61,7 @@ async function resolveProjectPort(
   } catch {
     // fall through to the assigned port
   }
+  // 3) Last resort: the dynamically-assigned port.
   const { port } = await getOrAssignPort(ssh, projectSlug);
   return port;
 }
