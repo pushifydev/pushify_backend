@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.40] - 2026-07-02
+
+### Added
+- **Regression tests for this week's production incidents** (25 new tests; suite now 45). Each locks in a bug that actually bit: `redis-connection.test.ts` — BullMQ must honor the DB index in `REDIS_URL` (staging/prod queue collision); `runner-routing.test.ts` — sticky runner-pool assignment, legacy env fallback, and `resolveProjectServerId` preferring the assigned server (the "Container is not running" log-stream bug); `effective-plan-limits.test.ts` — `planLimitsOverride` must reach effective limits without mutating shared plan definitions (the grant-org / disabled Create Server bug); `utils.test.ts` — `normalizeClientIp` first-IP + varchar(45) cap (the login 500 from long x-forwarded-for chains).
+
 ## [0.2.0-beta.39] - 2026-07-02
 
 ### Added
