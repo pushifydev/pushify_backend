@@ -54,28 +54,19 @@ services:
   api:
     build: ./pushify_backend
     restart: unless-stopped
+    # Optional integrations (email, GitHub OAuth, Hetzner, AI, …) are added as real keys in
+    # .env — passed through as-is. Don't put empty-valued keys there: the backend's env schema
+    # rejects empty strings for email/url fields.
+    env_file: ./.env
     environment: &backend-env
       NODE_ENV: production
       PROCESS_ROLE: api
       PORT: '4000'
       DATABASE_URL: postgres://pushify:${POSTGRES_PASSWORD}@postgres:5432/pushify
       REDIS_URL: redis://redis:6379/0
-      JWT_SECRET: ${JWT_SECRET:?set in .env}
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set in .env}
       FRONTEND_URL: ${PUSHIFY_FRONTEND_URL}
       CORS_ORIGIN: ${PUSHIFY_FRONTEND_URL}
       API_BASE_URL: ${PUSHIFY_API_URL}
-      # Behind your own reverse proxy? Set to the number of proxy hops so client IPs
-      # (rate limiting, sessions) are derived from X-Forwarded-For correctly.
-      TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-0}
-      # Optional integrations — leave empty to disable (see pushify_backend/.env.example)
-      GMAIL_USER: ${GMAIL_USER:-}
-      GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
-      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
-      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
-      GITHUB_CALLBACK_URL: ${GITHUB_CALLBACK_URL:-}
-      HETZNER_API_TOKEN: ${HETZNER_API_TOKEN:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     ports:
       - '${PUSHIFY_API_PORT:-4000}:4000'
     depends_on:
@@ -94,6 +85,7 @@ services:
     build: ./pushify_backend
     command: ['node', 'dist/worker.js']
     restart: unless-stopped
+    env_file: ./.env
     environment:
       <<: *backend-env
       PROCESS_ROLE: worker

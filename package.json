@@ -41,6 +41,7 @@
     "@hono/zod-openapi": "^1.2.0",
     "argon2": "^0.41.1",
     "bullmq": "^5.67.2",
+    "dotenv": "^16.4.5",
     "drizzle-orm": "^0.35.0",
     "hono": "^4.6.0",
     "ioredis": "^5.9.2",
@@ -57,6 +58,8 @@
   "optionalDependencies": {
     "@rollup/rollup-linux-x64-gnu": "4.57.0",
     "@rollup/rollup-linux-x64-musl": "4.57.0",
+    "@rollup/rollup-linux-arm64-gnu": "4.57.0",
+    "@rollup/rollup-linux-arm64-musl": "4.57.0",
     "@rollup/rollup-darwin-arm64": "4.57.0",
     "@rollup/rollup-darwin-x64": "4.57.0"
   },
@@ -66,7 +69,6 @@
     "@types/pg": "^8.11.10",
     "@types/qrcode": "^1.5.6",
     "@types/ssh2": "^1.15.5",
-    "dotenv": "^16.4.5",
     "drizzle-kit": "^0.26.0",
     "eslint": "^9.10.0",
     "pino-pretty": "^11.2.2",
