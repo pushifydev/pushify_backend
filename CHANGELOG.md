@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.0-beta.39] - 2026-07-02
+
+### Added
+- **One-command self-hosting.** `curl -fsSL .../selfhost/install.sh | bash` now stands up the entire platform on any Docker host: it clones backend + frontend, generates secrets (`JWT_SECRET`, `ENCRYPTION_KEY`, DB password), and starts a full stack — dashboard, API, worker, one-shot migrator, Postgres 16, Redis 7 — via `selfhost/docker-compose.yml`. New multi-stage `Dockerfile` builds a single backend image used for the API (`dist/index.js`), the worker (`dist/worker.js`) and migrations. New `src/migrate.ts` (built to `dist/migrate.js`, `npm run db:migrate:prod`) applies Drizzle SQL migrations programmatically so production doesn't need `drizzle-kit`/dev deps. Full guide in `docs/SELF_HOSTING.md` — including the deploy model: the containerized control plane has no host Docker/nginx access by design; apps deploy to servers attached over SSH (which can be the same machine), exactly like Pushify Cloud.
+- README: Self-Hosting section; fixed the frontend repo link (`pushify-dev/pushify-frontend` → `pushifydev/pushify_frontend`).
+
 ## [0.2.0-beta.38] - 2026-06-28
 
 ### Fixed

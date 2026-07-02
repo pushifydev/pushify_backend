@@ -1,6 +1,6 @@
 {
   "name": "pushify-backend",
-  "version": "0.2.0-beta.38",
+  "version": "0.2.0-beta.39",
   "private": true,
   "description": "Pushify cloud deployment platform — API server",
   "license": "MIT",
@@ -14,7 +14,8 @@
     "dev": "PROCESS_ROLE=all tsx watch src/index.ts",
     "dev:api": "PROCESS_ROLE=api tsx watch src/index.ts",
     "dev:worker": "PROCESS_ROLE=worker tsx watch src/worker.ts",
-    "build": "tsc --noEmit && tsup src/index.ts src/worker.ts --format esm --dts --external dotenv",
+    "build": "tsc --noEmit && tsup src/index.ts src/worker.ts src/migrate.ts --format esm --dts --external dotenv",
+    "db:migrate:prod": "node dist/migrate.js",
     "start": "node dist/index.js",
     "start:api": "PROCESS_ROLE=api node dist/index.js",
     "start:worker": "PROCESS_ROLE=worker node dist/worker.js",

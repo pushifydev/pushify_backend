@@ -16,7 +16,17 @@ The API server for [Pushify](https://github.com/pushify-dev/pushify) — an open
 
 This is the backend API for Pushify. It handles authentication, server provisioning, deployments, database management, real-time monitoring, and more.
 
-For the frontend dashboard, see [pushify-frontend](https://github.com/pushify-dev/pushify-frontend).
+For the frontend dashboard, see [pushify_frontend](https://github.com/pushifydev/pushify_frontend).
+
+## Self-Hosting
+
+Run the entire platform (dashboard, API, worker, Postgres, Redis) on your own server with one command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/pushifydev/pushify_backend/main/selfhost/install.sh | bash
+```
+
+See [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) for requirements, configuration and operations.
 
 ## Tech Stack
 
