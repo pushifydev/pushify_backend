@@ -4,7 +4,7 @@ import { projects } from './projects';
 import { deployments } from './deployments';
 
 // Enums
-export const notificationChannelTypeEnum = pgEnum('notification_channel_type', ['slack', 'email', 'webhook']);
+export const notificationChannelTypeEnum = pgEnum('notification_channel_type', ['slack', 'email', 'webhook', 'discord']);
 export const notificationStatusEnum = pgEnum('notification_status', ['sent', 'failed']);
 
 // Notification events that can trigger a notification

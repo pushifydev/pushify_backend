@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.41] - 2026-07-02
+
+### Added
+- **Discord notification channel.** New `discord` channel type alongside slack/email/webhook: paste a Discord incoming-webhook URL and deployment/health events arrive as rich embeds (event color, project/branch/commit/status fields, log tail on failures, link back to the dashboard). Implemented on both delivery paths (direct send in `notification.service` with the SSRF guard, and the BullMQ `notification.worker`). Migration `0030` adds the enum value. Note: the auto-generated migration was hand-trimmed to just the enum change — the schema had drifted from the migrations dir (earlier releases used `db:push`), and the generated file would have re-added already-existing columns and broken fresh installs; the new `0029_snapshot.json` now captures the full current schema so future generates diff cleanly. Full migration chain verified against a fresh Postgres 16.
+
 ## [0.2.0-beta.40] - 2026-07-02
 
 ### Added

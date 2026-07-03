@@ -48,7 +48,11 @@ interface WebhookConfig {
   secret?: string;
 }
 
-type ChannelConfig = SlackConfig | EmailConfig | WebhookConfig;
+interface DiscordConfig {
+  webhookUrl: string;
+}
+
+type ChannelConfig = SlackConfig | EmailConfig | WebhookConfig | DiscordConfig;
 
 // Notification payload
 interface NotificationPayload {
@@ -110,7 +114,7 @@ export const notificationService = {
     organizationId: string,
     userId: string,
     input: {
-      type: 'slack' | 'email' | 'webhook';
+      type: 'slack' | 'email' | 'webhook' | 'discord';
       name: string;
       config: ChannelConfig;
       events: string[];
@@ -402,6 +406,8 @@ export const notificationService = {
           return this.sendEmailNotification(config as EmailConfig, payload);
         case 'webhook':
           return this.sendWebhookNotification(config as WebhookConfig, payload);
+        case 'discord':
+          return this.sendDiscordNotification(config as DiscordConfig, payload);
         default:
           logger.warn({ channelType: channel.type }, 'Unknown channel type');
           return false;
@@ -475,6 +481,65 @@ export const notificationService = {
       return response.ok;
     } catch (error) {
       logger.error({ error }, 'Error sending Slack notification');
+      return false;
+    }
+  },
+
+  /**
+   * Send Discord notification (incoming webhook, embed format)
+   */
+  async sendDiscordNotification(config: DiscordConfig, payload: NotificationPayload): Promise<boolean> {
+    try {
+      const emoji = this.getEventEmoji(payload.event);
+      // Discord wants a decimal color, our palette is hex strings.
+      const color = parseInt(this.getEventColor(payload.event).replace('#', ''), 16);
+
+      const fields = [
+        { name: 'Project', value: payload.projectName, inline: true },
+        ...(payload.branch ? [{ name: 'Branch', value: payload.branch, inline: true }] : []),
+        ...(payload.commitHash
+          ? [{ name: 'Commit', value: payload.commitHash.substring(0, 7), inline: true }]
+          : []),
+        ...(payload.status ? [{ name: 'Status', value: payload.status, inline: true }] : []),
+        ...(payload.message ? [{ name: 'Message', value: payload.message.slice(0, 1024), inline: false }] : []),
+        ...(payload.logTail
+          ? [
+              {
+                name: 'Recent logs',
+                // Discord caps field values at 1024 chars — keep the tail end of the logs.
+                value: `\`\`\`\n${payload.logTail.slice(-1000)}\n\`\`\``,
+                inline: false,
+              },
+            ]
+          : []),
+      ];
+
+      const discordPayload = {
+        embeds: [
+          {
+            title: `${emoji} ${this.getEventTitle(payload.event)}`,
+            ...(payload.url ? { url: payload.url } : {}),
+            color,
+            fields,
+            footer: { text: 'Pushify' },
+            timestamp: new Date().toISOString(),
+          },
+        ],
+      };
+
+      // SSRF guard: block webhook URLs that resolve to private/internal addresses.
+      await assertPublicUrl(config.webhookUrl);
+
+      const response = await fetch(config.webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        redirect: 'manual',
+        body: JSON.stringify(discordPayload),
+      });
+
+      return response.ok;
+    } catch (error) {
+      logger.error({ error }, 'Error sending Discord notification');
       return false;
     }
   },

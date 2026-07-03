@@ -69,6 +69,9 @@ async function processNotificationJob(job: Job<NotificationJobData>): Promise<bo
           payload
         );
         break;
+      case 'discord':
+        success = await sendDiscordNotification(config as { webhookUrl: string }, payload);
+        break;
       default:
         throw new Error(`Unknown notification type: ${type}`);
     }
@@ -142,6 +145,47 @@ async function sendSlackNotification(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(slackPayload),
+  });
+
+  return response.ok;
+}
+
+// Send Discord notification (incoming webhook, embed format)
+async function sendDiscordNotification(
+  config: { webhookUrl: string },
+  payload: NotificationJobData['payload']
+): Promise<boolean> {
+  const emoji = getNotificationEventEmoji(payload.event);
+  // Discord wants a decimal color, our palette is hex strings.
+  const color = parseInt(getNotificationEventColor(payload.event).replace('#', ''), 16);
+
+  const discordPayload = {
+    embeds: [
+      {
+        title: `${emoji} ${getNotificationEventTitle(payload.event)}`,
+        ...(payload.url ? { url: payload.url } : {}),
+        color,
+        fields: [
+          { name: 'Project', value: payload.projectName, inline: true },
+          ...(payload.branch ? [{ name: 'Branch', value: payload.branch, inline: true }] : []),
+          ...(payload.commitHash
+            ? [{ name: 'Commit', value: payload.commitHash.substring(0, 7), inline: true }]
+            : []),
+          ...(payload.status ? [{ name: 'Status', value: payload.status, inline: true }] : []),
+          ...(payload.message
+            ? [{ name: 'Message', value: payload.message.slice(0, 1024), inline: false }]
+            : []),
+        ],
+        footer: { text: 'Pushify' },
+        timestamp: new Date().toISOString(),
+      },
+    ],
+  };
+
+  const response = await fetch(config.webhookUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(discordPayload),
   });
 
   return response.ok;

@@ -204,6 +204,13 @@
       "when": 1780400000000,
       "tag": "0029_site_editor_pages",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1783115393054,
+      "tag": "0030_notification_discord_channel",
+      "breakpoints": true
     }
   ]
 }
