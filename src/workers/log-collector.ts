@@ -1,4 +1,4 @@
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, ilike } from 'drizzle-orm';
 import { db } from '../db';
 import { containerLogs } from '../db/schema/container-logs';
 import { deployments } from '../db/schema/deployments';
@@ -242,6 +242,72 @@ export async function getHistoricalLogs(
     })),
     totalChunks: countResult.length,
   };
+}
+
+
+/**
+ * Search a project's persisted container logs (the 7-day retained chunks). Filters chunks
+ * with ILIKE, then extracts matching lines — line-level timestamps aren't stored, so each
+ * line carries its chunk's start timestamp. Bounded on both chunks scanned and lines returned.
+ */
+export async function searchProjectLogs(
+  projectId: string,
+  options: {
+    query?: string;
+    logType?: 'stdout' | 'stderr';
+    maxLines?: number;
+  }
+): Promise<{
+  lines: Array<{
+    content: string;
+    timestamp: Date;
+    logType: string;
+    deploymentId: string;
+  }>;
+  scannedChunks: number;
+}> {
+  const { query, logType, maxLines = 500 } = options;
+  const MAX_CHUNKS = 100;
+
+  const conditions = [eq(containerLogs.projectId, projectId)];
+  if (logType) conditions.push(eq(containerLogs.logType, logType));
+  if (query?.trim()) {
+    // Escape LIKE wildcards so user input is a literal substring match
+    const escaped = query.trim().replace(/[\\%_]/g, (ch) => `\\${ch}`);
+    conditions.push(ilike(containerLogs.logContent, `%${escaped}%`));
+  }
+
+  const chunks = await db
+    .select({
+      logContent: containerLogs.logContent,
+      logType: containerLogs.logType,
+      startTimestamp: containerLogs.startTimestamp,
+      deploymentId: containerLogs.deploymentId,
+    })
+    .from(containerLogs)
+    .where(and(...conditions))
+    .orderBy(desc(containerLogs.startTimestamp))
+    .limit(MAX_CHUNKS);
+
+  const needle = query?.trim().toLowerCase();
+  const lines: Array<{ content: string; timestamp: Date; logType: string; deploymentId: string }> = [];
+
+  for (const chunk of chunks) {
+    if (lines.length >= maxLines) break;
+    for (const line of chunk.logContent.split('\n')) {
+      if (!line.trim()) continue;
+      if (needle && !line.toLowerCase().includes(needle)) continue;
+      lines.push({
+        content: line,
+        timestamp: chunk.startTimestamp || new Date(),
+        logType: chunk.logType,
+        deploymentId: chunk.deploymentId,
+      });
+      if (lines.length >= maxLines) break;
+    }
+  }
+
+  return { lines, scannedChunks: chunks.length };
 }
 
 /**
