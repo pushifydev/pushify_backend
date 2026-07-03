@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.0-beta.40] - 2026-07-02
+
+### Added
+- **Regression tests for this week's production incidents** (25 new tests; suite now 45). Each locks in a bug that actually bit: `redis-connection.test.ts` — BullMQ must honor the DB index in `REDIS_URL` (staging/prod queue collision); `runner-routing.test.ts` — sticky runner-pool assignment, legacy env fallback, and `resolveProjectServerId` preferring the assigned server (the "Container is not running" log-stream bug); `effective-plan-limits.test.ts` — `planLimitsOverride` must reach effective limits without mutating shared plan definitions (the grant-org / disabled Create Server bug); `utils.test.ts` — `normalizeClientIp` first-IP + varchar(45) cap (the login 500 from long x-forwarded-for chains).
+
+## [0.2.0-beta.39] - 2026-07-02
+
+### Added
+- **One-command self-hosting.** `curl -fsSL .../selfhost/install.sh | bash` now stands up the entire platform on any Docker host: it clones backend + frontend, generates secrets (`JWT_SECRET`, `ENCRYPTION_KEY`, DB password), and starts a full stack — dashboard, API, worker, one-shot migrator, Postgres 16, Redis 7 — via `selfhost/docker-compose.yml`. New multi-stage `Dockerfile` builds a single backend image used for the API (`dist/index.js`), the worker (`dist/worker.js`) and migrations. New `src/migrate.ts` (built to `dist/migrate.js`, `npm run db:migrate:prod`) applies Drizzle SQL migrations programmatically so production doesn't need `drizzle-kit`/dev deps. Full guide in `docs/SELF_HOSTING.md` — including the deploy model: the containerized control plane has no host Docker/nginx access by design; apps deploy to servers attached over SSH (which can be the same machine), exactly like Pushify Cloud.
+- README: Self-Hosting section; fixed the frontend repo link (`pushify-dev/pushify-frontend` → `pushifydev/pushify_frontend`).
+
+## [0.2.0-beta.38] - 2026-06-28
+
+### Fixed
+- **Container logs now work for runner-deployed projects** ("Container is not running"). The log-stream endpoint decided remote-vs-local solely from `project.serverId`, so a free/unassigned project — which has no `serverId` but still deploys to a runner via sticky routing — was treated as local, looked at the control-plane's Docker, found nothing, and returned *"Container is not running."* Extracted the deploy-target resolution into `lib/runner-routing.ts` (`pickRunnerServerId` + `resolveProjectServerId = project.serverId || runner`) — the same logic the deploy worker uses — and the log stream now SSHes into the actual runner. (Other `serverId`-gated container ops, e.g. custom-domain nginx in `domain.service`, should adopt `resolveProjectServerId` too as runner usage grows.)
+
 ## [0.2.0-beta.37] - 2026-06-28
 
 ### Fixed

@@ -1,6 +1,6 @@
 {
   "name": "pushify-backend",
-  "version": "0.2.0-beta.37",
+  "version": "0.2.0-beta.40",
   "private": true,
   "description": "Pushify cloud deployment platform — API server",
   "license": "MIT",
@@ -14,7 +14,8 @@
     "dev": "PROCESS_ROLE=all tsx watch src/index.ts",
     "dev:api": "PROCESS_ROLE=api tsx watch src/index.ts",
     "dev:worker": "PROCESS_ROLE=worker tsx watch src/worker.ts",
-    "build": "tsc --noEmit && tsup src/index.ts src/worker.ts --format esm --dts --external dotenv",
+    "build": "tsc --noEmit && tsup src/index.ts src/worker.ts src/migrate.ts --format esm --dts --external dotenv",
+    "db:migrate:prod": "node dist/migrate.js",
     "start": "node dist/index.js",
     "start:api": "PROCESS_ROLE=api node dist/index.js",
     "start:worker": "PROCESS_ROLE=worker node dist/worker.js",
@@ -40,6 +41,7 @@
     "@hono/zod-openapi": "^1.2.0",
     "argon2": "^0.41.1",
     "bullmq": "^5.67.2",
+    "dotenv": "^16.4.5",
     "drizzle-orm": "^0.35.0",
     "hono": "^4.6.0",
     "ioredis": "^5.9.2",
@@ -56,6 +58,8 @@
   "optionalDependencies": {
     "@rollup/rollup-linux-x64-gnu": "4.57.0",
     "@rollup/rollup-linux-x64-musl": "4.57.0",
+    "@rollup/rollup-linux-arm64-gnu": "4.57.0",
+    "@rollup/rollup-linux-arm64-musl": "4.57.0",
     "@rollup/rollup-darwin-arm64": "4.57.0",
     "@rollup/rollup-darwin-x64": "4.57.0"
   },
@@ -65,7 +69,6 @@
     "@types/pg": "^8.11.10",
     "@types/qrcode": "^1.5.6",
     "@types/ssh2": "^1.15.5",
-    "dotenv": "^16.4.5",
     "drizzle-kit": "^0.26.0",
     "eslint": "^9.10.0",
     "pino-pretty": "^11.2.2",

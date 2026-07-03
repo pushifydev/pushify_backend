@@ -17,6 +17,7 @@ import { projects } from '../db/schema/projects';
 import { eq } from 'drizzle-orm';
 import { decrypt } from '../lib/encryption';
 import { resolvePushifyContainerName } from '../lib/container-resolve';
+import { resolveProjectServerId } from '../lib/runner-routing';
 import { enrichDeploymentWithQueue } from '../lib/deploy-queue';
 
 // Rate limiter for deployment operations
@@ -542,11 +543,15 @@ deploymentRouter.get('/:deploymentId/container-logs/stream', async (c) => {
     return c.json({ error: 'Project not found' }, 404);
   }
 
-  // Check if this is a remote deployment (project has a server assigned)
-  if (project.serverId) {
+  // Resolve where the container actually runs: the project's assigned server, or the runner it
+  // was stickily routed to (free/unassigned projects have no serverId but still deploy remotely).
+  const targetServerId = resolveProjectServerId(project);
+
+  // Check if this is a remote deployment (assigned server or runner)
+  if (targetServerId) {
     // Get server details
     const server = await db.query.servers.findFirst({
-      where: eq(servers.id, project.serverId),
+      where: eq(servers.id, targetServerId),
     });
 
     if (!server || !server.ipv4 || !server.sshPrivateKey) {
