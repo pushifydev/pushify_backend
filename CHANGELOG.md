@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.42] - 2026-07-03
+
+### Added
+- **Cron jobs (scheduled tasks) for user apps.** Per-project scheduled tasks with two types: **command** — a shell command executed *inside the app container* (`docker exec` over SSH on the project's server or runner, `timeout`-guarded, local fallback), and **http** — a GET to a URL (SSRF-guarded, timeout-bounded). Standard 5-field cron expressions with an IANA timezone per task (croner). New tables `scheduled_tasks` + `scheduled_task_runs` (migration `0031`): precomputed `next_run_at` claimed atomically (CAS) by a 30s worker tick so each firing runs exactly once even with multiple workers; run history keeps exit code / HTTP status / captured output (8KB cap) for 7 days. REST: list/create/update/delete, **Run now** (`POST .../run`, synchronous, recorded as `trigger=manual`), and run history. Caps: 10 tasks per project, 10–600s timeout. Full migration chain re-verified on a fresh Postgres 16.
+
 ## [0.2.0-beta.41] - 2026-07-02
 
 ### Added

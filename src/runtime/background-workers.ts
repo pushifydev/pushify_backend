@@ -17,6 +17,7 @@ import {
   stopSnapshotAutomationWorker,
 } from '../workers';
 import { startNotificationWorker, stopNotificationWorker } from '../workers/notification.worker';
+import { startScheduledTaskWorker, stopScheduledTaskWorker } from '../workers/scheduled-task.worker';
 import { reconcileProvisioningServers, gcOrphanedLocalDeployments } from '../services/server-reconcile.service';
 import { closeQueues } from '../lib/queue';
 import {
@@ -69,6 +70,8 @@ export async function startBackgroundWorkers(): Promise<void> {
   await startBackupWorker().catch((error) => {
     logger.error({ err: error }, 'Failed to start backup worker');
   });
+
+  startScheduledTaskWorker();
 
   const notificationWorker = startNotificationWorker();
   if (notificationWorker) {
@@ -144,6 +147,7 @@ export async function stopBackgroundWorkers(): Promise<void> {
     clearInterval(gcInterval);
     gcInterval = null;
   }
+  stopScheduledTaskWorker();
   stopDeploymentWorker();
   stopHealthCheckWorker();
   stopMetricsWorker();

@@ -18,6 +18,7 @@ export * from './notifications';
 
 // Health Checks
 export * from './healthchecks';
+export * from './scheduled-tasks';
 
 // Preview Deployments
 export * from './previews';
