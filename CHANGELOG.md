@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.44] - 2026-07-03
+
+### Added
+- **Project-level log search** (`GET /projects/:id/logs/search?q=&logType=&limit=`) for the dashboard's new Logs explorer: searches the persisted 7-day `container_logs` chunks (ILIKE with escaped wildcards, literal substring semantics), extracts matching lines with their chunk timestamp / stdout-stderr type / deployment id. Bounded: max 100 chunks scanned, max 1000 lines returned.
+
 ## [0.2.0-beta.43] - 2026-07-03
 
 ### Added
