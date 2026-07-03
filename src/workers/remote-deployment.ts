@@ -23,6 +23,8 @@ export interface RemoteDeploymentConfig {
   serverId: string;
   projectId: string;
   projectSlug: string;
+  /** Persistent named-volume mounts (name:containerPath) applied to the app container */
+  volumes?: string[];
   deploymentId: string; // For image tagging
   repoUrl: string;
   branch: string;
@@ -1017,6 +1019,7 @@ export async function deployToRemoteServer(
       hostPort,
       containerPort,
       envVars,
+      volumes: config.volumes,
       restart: 'unless-stopped',
       healthCheckTimeout: 60, // 60 seconds to become healthy
       framework: resolvedFramework,
@@ -1255,6 +1258,8 @@ export interface QuickRollbackConfig {
   serverId: string;
   projectId: string;
   projectSlug: string;
+  /** Persistent named-volume mounts (name:containerPath) */
+  volumes?: string[];
   targetDeploymentId: string; // The deployment to rollback to
   port: number;
   envVars: Record<string, string>;
@@ -1331,6 +1336,7 @@ export async function quickRollbackToDeployment(
       hostPort,
       containerPort,
       envVars,
+      volumes: config.volumes,
       restart: 'unless-stopped',
       onProgress,
     });

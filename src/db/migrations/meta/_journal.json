@@ -211,6 +211,20 @@
       "when": 1783115393054,
       "tag": "0030_notification_discord_channel",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1783116921609,
+      "tag": "0031_scheduled_tasks",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1783118061251,
+      "tag": "0032_project_volumes",
+      "breakpoints": true
     }
   ]
 }

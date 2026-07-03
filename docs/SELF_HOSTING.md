@@ -4,7 +4,7 @@ Run the whole Pushify platform — dashboard, API, deploy worker, Postgres and R
 machine with Docker. One command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pushifydev/pushify_backend/main/selfhost/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/pushifydev/pushify_backend/master/selfhost/install.sh | bash
 ```
 
 When it finishes, open `http://<your-server>:3000`, create your account, and you have your own

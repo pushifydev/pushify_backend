@@ -956,6 +956,13 @@ export async function completeBlueGreenSwitch(
     const envResult = await ssh.exec(`docker inspect -f '{{range .Config.Env}}{{.}}{{println}}{{end}}' ${newContainerName}`);
     const envLines = envResult.stdout.trim().split('\n').filter(line => line);
 
+    // Carry over the container's mounts (persistent volumes / binds) — recreating without
+    // them would silently detach user data volumes at the traffic switch.
+    const mountsResult = await ssh.exec(
+      `docker inspect -f '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}:{{.Destination}}{{println}}{{end}}{{if eq .Type "bind"}}{{.Source}}:{{.Destination}}{{println}}{{end}}{{end}}' ${newContainerName}`
+    );
+    const mountLines = mountsResult.stdout.trim().split('\n').filter((line) => line.includes(':'));
+
     // Stop and remove new container
     await ssh.exec(`docker stop ${newContainerName} 2>/dev/null || true`);
     await ssh.exec(`docker rm ${newContainerName} 2>/dev/null || true`);
@@ -970,6 +977,10 @@ export async function completeBlueGreenSwitch(
 
     for (const envLine of envLines) {
       runCmd += ` -e ${shSingleQuote(envLine)}`;
+    }
+
+    for (const mountLine of mountLines) {
+      runCmd += ` -v ${shSingleQuote(mountLine)}`;
     }
 
     runCmd += ` --restart unless-stopped`;

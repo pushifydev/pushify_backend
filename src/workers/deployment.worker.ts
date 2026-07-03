@@ -7,6 +7,7 @@ import { eq, and, inArray } from 'drizzle-orm';
 import { decrypt } from '../lib/encryption';
 import { logger } from '../lib/logger';
 import { pickRunnerServerId } from '../lib/runner-routing';
+import { getProjectVolumeMounts } from '../lib/project-volumes';
 import { cloneRepository, cleanupRepository } from './git';
 import {
   buildImage,
@@ -369,6 +370,8 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
     // runner (PUSHIFY_RUNNER_SERVER_ID) so free/unassigned deploys never run on the control
     // plane. Falls back to the local host only when no runner is configured.
     const deployTargetServerId = project.serverId || pickRunnerServerId(project.id);
+    // Persistent volume mounts — applied on every container start path below.
+    const volumeMounts = await getProjectVolumeMounts(project.id, project.slug);
 
     const previewCtx = await loadPreviewDeployContext(job, project.slug);
     if (previewCtx) {
@@ -527,6 +530,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
             serverId: deployTargetServerId,
             projectId: project.id,
             projectSlug: project.slug,
+            volumes: volumeMounts,
             targetDeploymentId: job.rollbackFromDeploymentId,
             port: project.port || 3000,
             envVars: envVarsDecrypted,
@@ -711,6 +715,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         serverId: deployTargetServerId,
         projectId: project.id,
         projectSlug: project.slug,
+        volumes: volumeMounts,
         deploymentId: job.id,
         repoUrl: project.gitRepoUrl || '',
         branch: localClone?.branch || job.branch || 'main',
@@ -1018,6 +1023,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       hostPort,
       containerPort,
       envVars: envVarsDecrypted,
+      volumes: volumeMounts,
       onProgress: addLog,
     });
 

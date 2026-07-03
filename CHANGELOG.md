@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.0-beta.43] - 2026-07-03
+
+### Added
+- **Persistent volumes for user apps.** Projects can now attach Docker **named volumes** (`pushify-vol-<slug>-<name>`) at a chosen container path — SQLite files, uploads, caches survive every redeploy. Mounts are applied on **all** container start paths: standard remote deploy (blue-green), quick rollback, and local. New `project_volumes` table (migration `0032`), REST CRUD (`/projects/:id/volumes`), validation (shell-safe names, absolute paths, `/proc`,`/sys`,`/dev`,`/etc`… mount targets denied), max 5 volumes/project. Changes take effect on the next deploy; project teardown removes the project's `pushify-vol-*` volumes.
+
+### Fixed
+- **Blue-green traffic switch no longer drops container mounts.** `completeBlueGreenSwitch` recreates the new container from `docker inspect` (image + env) but never carried over mounts — any volume (marketplace or user) would silently detach at the switch. The recreate now reads the container's volume/bind mounts and re-applies them.
+
+## [0.2.0-beta.42] - 2026-07-03
+
+### Added
+- **Cron jobs (scheduled tasks) for user apps.** Per-project scheduled tasks with two types: **command** — a shell command executed *inside the app container* (`docker exec` over SSH on the project's server or runner, `timeout`-guarded, local fallback), and **http** — a GET to a URL (SSRF-guarded, timeout-bounded). Standard 5-field cron expressions with an IANA timezone per task (croner). New tables `scheduled_tasks` + `scheduled_task_runs` (migration `0031`): precomputed `next_run_at` claimed atomically (CAS) by a 30s worker tick so each firing runs exactly once even with multiple workers; run history keeps exit code / HTTP status / captured output (8KB cap) for 7 days. REST: list/create/update/delete, **Run now** (`POST .../run`, synchronous, recorded as `trigger=manual`), and run history. Caps: 10 tasks per project, 10–600s timeout. Full migration chain re-verified on a fresh Postgres 16.
+
 ## [0.2.0-beta.41] - 2026-07-02
 
 ### Added
