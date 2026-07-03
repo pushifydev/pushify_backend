@@ -15,7 +15,7 @@ export const QUEUE_NAMES = {
 
 // Job types
 export interface NotificationJobData {
-  type: 'slack' | 'email' | 'webhook';
+  type: 'slack' | 'email' | 'webhook' | 'discord';
   channelId: string;
   payload: {
     event: string;
