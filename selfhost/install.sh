@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Pushify self-host installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/pushifydev/pushify_backend/main/selfhost/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/pushifydev/pushify_backend/master/selfhost/install.sh | bash
 #
 # Installs into ./pushify (override with PUSHIFY_DIR): clones the backend + dashboard, generates
 # secrets, builds the Docker stack and starts it. Re-running is safe — it pulls the latest code

@@ -23,7 +23,7 @@ For the frontend dashboard, see [pushify_frontend](https://github.com/pushifydev
 Run the entire platform (dashboard, API, worker, Postgres, Redis) on your own server with one command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pushifydev/pushify_backend/main/selfhost/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/pushifydev/pushify_backend/master/selfhost/install.sh | bash
 ```
 
 See [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) for requirements, configuration and operations.
