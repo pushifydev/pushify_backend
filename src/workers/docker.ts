@@ -51,6 +51,8 @@ export interface RunOptions {
   containerPort: number;
   envVars?: Record<string, string>;
   networkMode?: string;
+  /** Persistent named-volume mounts (name:containerPath) */
+  volumes?: string[];
   restart?: 'no' | 'always' | 'unless-stopped' | 'on-failure';
   onProgress?: (message: string) => void;
 }
@@ -119,6 +121,7 @@ export async function runContainer(options: RunOptions): Promise<string> {
     containerPort,
     envVars = {},
     networkMode,
+    volumes,
     restart = 'unless-stopped',
     onProgress,
   } = options;
@@ -143,6 +146,12 @@ export async function runContainer(options: RunOptions): Promise<string> {
 
   if (networkMode) {
     args.push('--network', shSingleQuote(networkMode));
+  }
+
+  if (volumes) {
+    for (const volume of volumes) {
+      args.push('-v', shSingleQuote(volume));
+    }
   }
 
   // Single-quote NAME=value so a user env value cannot inject shell commands

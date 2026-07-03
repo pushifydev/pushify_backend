@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0-beta.43] - 2026-07-03
+
+### Added
+- **Persistent volumes for user apps.** Projects can now attach Docker **named volumes** (`pushify-vol-<slug>-<name>`) at a chosen container path — SQLite files, uploads, caches survive every redeploy. Mounts are applied on **all** container start paths: standard remote deploy (blue-green), quick rollback, and local. New `project_volumes` table (migration `0032`), REST CRUD (`/projects/:id/volumes`), validation (shell-safe names, absolute paths, `/proc`,`/sys`,`/dev`,`/etc`… mount targets denied), max 5 volumes/project. Changes take effect on the next deploy; project teardown removes the project's `pushify-vol-*` volumes.
+
+### Fixed
+- **Blue-green traffic switch no longer drops container mounts.** `completeBlueGreenSwitch` recreates the new container from `docker inspect` (image + env) but never carried over mounts — any volume (marketplace or user) would silently detach at the switch. The recreate now reads the container's volume/bind mounts and re-applies them.
+
 ## [0.2.0-beta.42] - 2026-07-03
 
 ### Added

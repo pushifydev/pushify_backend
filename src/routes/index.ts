@@ -10,6 +10,7 @@ import { gitlabRoutes } from './gitlab';
 import { webhookRoutes } from './webhooks';
 import { notificationRoutes } from './notifications';
 import { scheduledTaskRoutes } from './scheduled-tasks';
+import { projectVolumeRoutes } from './project-volumes';
 import { healthCheckRoutes } from './healthchecks';
 import { previewRoutes } from './previews';
 import { metricsRoutes } from './metrics';
@@ -40,6 +41,7 @@ export function registerRoutes(app: OpenAPIHono<any>) {
   app.route('/api/v1/projects', siteEditorRoutes);
   app.route('/api/v1/projects', notificationRoutes);
   app.route('/api/v1/projects', scheduledTaskRoutes);
+  app.route('/api/v1/projects', projectVolumeRoutes);
   app.route('/api/v1/projects', healthCheckRoutes);
   app.route('/api/v1/projects', previewRoutes);
   app.route('/api/v1/projects', projectRoutes);

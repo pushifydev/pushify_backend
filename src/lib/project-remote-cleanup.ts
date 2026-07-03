@@ -43,13 +43,18 @@ export function buildRemoteTeardownScript(slug: string, isCompose: boolean): str
   const removeImages =
     `docker images -q --filter=reference='pushify/${safeSlug}*' | sort -u | xargs -r docker rmi -f 2>/dev/null || true`;
 
+  // Remove the project's persistent named volumes (pushify-vol-<slug>-*) — data is gone
+  // with the project, matching user expectation on delete.
+  const removeVolumes =
+    `docker volume ls -q --filter name='^pushify-vol-${safeSlug}-' | xargs -r docker volume rm 2>/dev/null || true`;
+
   const filesystemAndNginx = [
     `rm -rf ${projectDir}`,
     `rm -f /etc/nginx/conf.d/${safeSlug}.pushify.dev.conf /etc/nginx/sites-enabled/${safeSlug}.pushify.dev.conf /etc/nginx/sites-available/${safeSlug}.pushify.dev.conf 2>/dev/null || true`,
     'nginx -t 2>/dev/null && nginx -s reload 2>/dev/null || true',
   ].join('; ');
 
-  return [composeDown, stopAllMatching, removeImages, filesystemAndNginx].filter(Boolean).join('; ');
+  return [composeDown, stopAllMatching, removeImages, removeVolumes, filesystemAndNginx].filter(Boolean).join('; ');
 }
 
 async function serverHasProjectContainers(
