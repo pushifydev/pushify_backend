@@ -373,6 +373,15 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
     // Persistent volume mounts — applied on every container start path below.
     const volumeMounts = await getProjectVolumeMounts(project.id, project.slug);
 
+    // A deploy starts a fresh container — clear any sleep state and give the idle
+    // sweeper a fresh grace window.
+    if (project.sleepEnabled) {
+      await db
+        .update(projects)
+        .set({ sleepState: 'awake', lastWakeAt: new Date() })
+        .where(eq(projects.id, project.id));
+    }
+
     const previewCtx = await loadPreviewDeployContext(job, project.slug);
     if (previewCtx) {
       addLog(`🔍 Preview deployment for PR #${previewCtx.prNumber}`);

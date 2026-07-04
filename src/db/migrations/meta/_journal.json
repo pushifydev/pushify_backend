@@ -225,6 +225,13 @@
       "when": 1783118061251,
       "tag": "0032_project_volumes",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1783209151870,
+      "tag": "0033_app_sleep",
+      "breakpoints": true
     }
   ]
 }

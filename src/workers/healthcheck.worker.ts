@@ -92,7 +92,9 @@ async function runHealthCheck(
       where: eq(projects.id, projectId),
     });
 
-    if (!project || project.status !== 'active') {
+    // Sleeping/waking apps are intentionally down — checking (and auto-restarting)
+    // them would fight the scale-to-zero sweeper.
+    if (!project || project.status !== 'active' || project.sleepState !== 'awake') {
       return;
     }
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.46] - 2026-07-05
+
+### Added
+- **Scale-to-zero (auto-sleep).** Opt-in per project: after `sleepAfterMinutes` (default 30, 5–1440) with no meaningful traffic — judged from the container's rx/tx counters in `container_metrics`, with a 500KB window threshold that swallows health-check chatter and a post-deploy/wake grace period — a 5-minute sweeper stops the container (SSH on server/runner, local fallback) and marks the project `sleeping`. **Wake on request:** generated nginx vhosts now include an `error_page 502 = @pushify_wake` fallback proxying to the new public `/api/v1/wake/:slug` endpoint, which CAS-claims the wake (exactly one starter under concurrent visitors), `docker start`s the container, and serves an auto-refreshing "Waking up…" page — genuine crashes get a branded unavailable page instead of a raw nginx 502 (fallback emitted only when `API_BASE_URL` is set). Also: authenticated `POST /projects/:id/wake` for the dashboard, health checks skip sleeping/waking apps (auto-restart would fight the sweeper), a deploy resets sleep state, and disabling auto-sleep while asleep starts the container back up. Migration `0033` adds the projects columns.
+
 ## [0.2.0-beta.45] - 2026-07-05
 
 ### Added

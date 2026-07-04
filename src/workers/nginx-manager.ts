@@ -56,6 +56,33 @@ function generateRateLimitLocation(projectSlug: string, rateLimit?: NginxSetting
 /**
  * Generate Nginx server block configuration for a site
  */
+
+/**
+ * 502 fallback: when the upstream is down (nginx-generated 502, e.g. a slept container),
+ * proxy the request to the control plane's wake endpoint, which starts the container and
+ * serves a "waking up" page. Requires API_BASE_URL; without it no fallback is emitted.
+ */
+function generateWakeFallback(projectSlug: string): string {
+  if (!env.API_BASE_URL) return '';
+  let origin: string;
+  let host: string;
+  try {
+    const url = new URL(env.API_BASE_URL);
+    origin = url.origin;
+    host = url.host;
+  } catch {
+    return '';
+  }
+  return `
+    error_page 502 = @pushify_wake;
+    location @pushify_wake {
+        rewrite ^ /api/v1/wake/${projectSlug} break;
+        proxy_pass ${origin};
+        proxy_set_header Host ${host};
+        proxy_ssl_server_name on;
+    }`;
+}
+
 function generateSiteConfig(config: SiteConfig): string {
   const {
     domain,
@@ -176,7 +203,7 @@ server {
 ${gzipConfig}
 
     location / {${proxyConfig}
-    }${customLocations}
+    }${customLocations}${generateWakeFallback(projectSlug)}
 }
 `;
   }
@@ -197,7 +224,7 @@ server {
 ${gzipConfig}
 
     location / {${proxyConfig}
-    }${customLocations}
+    }${customLocations}${generateWakeFallback(projectSlug)}
 }
 `;
 }
@@ -484,7 +511,7 @@ server {
 ${gzipConfig}
 
     location / {${proxyConfig}
-    }${customLocations}
+    }${customLocations}${generateWakeFallback(projectSlug)}
 }
 `;
 }

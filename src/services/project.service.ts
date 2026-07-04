@@ -42,6 +42,8 @@ interface UpdateProjectInput {
   port?: number;
   autoDeploy?: boolean;
   serverId?: string | null; // Server to deploy to (optional, null to remove)
+  sleepEnabled?: boolean;
+  sleepAfterMinutes?: number;
 }
 
 export const projectService = {
@@ -195,6 +197,15 @@ export const projectService = {
       throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
     }
 
+    if (
+      input.sleepAfterMinutes !== undefined &&
+      (!Number.isInteger(input.sleepAfterMinutes) ||
+        input.sleepAfterMinutes < 5 ||
+        input.sleepAfterMinutes > 1440)
+    ) {
+      throw new HTTPException(400, { message: 'Sleep timeout must be 5-1440 minutes' });
+    }
+
     // If serverId is being updated, validate it
     let validatedServerId: string | null | undefined = input.serverId;
 
@@ -250,6 +261,15 @@ export const projectService = {
           'Old-server cleanup after move failed',
         );
       }
+    }
+
+    // Turning auto-sleep off while the app is asleep must actually start it again —
+    // otherwise the container stays stopped with nothing left to wake it.
+    if (input.sleepEnabled === false && existing.sleepState === 'sleeping') {
+      const { requestWake } = await import('../workers/app-sleep.worker');
+      requestWake(projectId).catch((err) =>
+        logger.warn({ projectId, err }, 'Wake after disabling auto-sleep failed'),
+      );
     }
 
     logger.info({ projectId, userId }, 'Project updated');

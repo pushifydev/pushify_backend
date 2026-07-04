@@ -40,6 +40,13 @@ export const projects = pgTable('projects', {
   // Status
   status: projectStatusEnum('status').default('active').notNull(),
 
+  // Scale-to-zero (auto-sleep): stop the container after idle minutes, wake on request
+  sleepEnabled: boolean('sleep_enabled').default(false).notNull(),
+  sleepAfterMinutes: integer('sleep_after_minutes').default(30).notNull(),
+  /** awake | sleeping | waking */
+  sleepState: varchar('sleep_state', { length: 10 }).default('awake').notNull(),
+  lastWakeAt: timestamp('last_wake_at', { withTimezone: true }),
+
   // Metadata
   settings: jsonb('settings').default({}).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
