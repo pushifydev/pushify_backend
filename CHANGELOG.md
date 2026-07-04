@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.45] - 2026-07-05
+
+### Added
+- **Web shell into the app container.** New WebSocket endpoint `/ws/projects/:projectId/shell` (same message protocol as the server terminal): SSHes to the server the container actually runs on — the project's assigned server **or its sticky runner** — resolves the blue/green container on the host and attaches an interactive `docker exec` (bash when the image has it, sh otherwise) over a real PTY. `SSHShellSession` gained an exec-with-PTY mode alongside the login shell. Owner/admin only, slug validated before command interpolation, shares the 50-session cap.
+
 ## [0.2.0-beta.44] - 2026-07-03
 
 ### Added

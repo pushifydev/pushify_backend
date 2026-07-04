@@ -25,6 +25,9 @@ export class SSHShellSession {
     config: SSHConnectionConfig,
     pty: ShellPtyOptions,
     callbacks: ShellSessionCallbacks,
+    /** When set, run this command with a PTY instead of an interactive login shell
+     *  (e.g. `docker exec -it <container> sh` for the app-container web shell). */
+    execCommand?: string,
   ): Promise<void> {
     if (!config.privateKey && !config.password) {
       throw new Error('SSH shell requires privateKey or password');
@@ -41,13 +44,12 @@ export class SSHShellSession {
       this.client.once('error', onError);
 
       this.client.once('ready', () => {
-        this.client.shell(
-          {
-            term: pty.term ?? 'xterm-256color',
-            cols: pty.cols,
-            rows: pty.rows,
-          },
-          (err, stream) => {
+        const ptyOptions = {
+          term: pty.term ?? 'xterm-256color',
+          cols: pty.cols,
+          rows: pty.rows,
+        };
+        const onStream = (err: Error | undefined, stream: ClientChannel) => {
             if (err) {
               onError(err);
               return;
@@ -75,8 +77,13 @@ export class SSHShellSession {
             stream.on('end', finish);
 
             resolve();
-          },
-        );
+        };
+
+        if (execCommand) {
+          this.client.exec(execCommand, { pty: ptyOptions }, onStream);
+        } else {
+          this.client.shell(ptyOptions, onStream);
+        }
       });
 
       const connectConfig: Parameters<Client['connect']>[0] = {
