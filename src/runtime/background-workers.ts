@@ -18,6 +18,7 @@ import {
 } from '../workers';
 import { startNotificationWorker, stopNotificationWorker } from '../workers/notification.worker';
 import { startScheduledTaskWorker, stopScheduledTaskWorker } from '../workers/scheduled-task.worker';
+import { startAppSleepWorker, stopAppSleepWorker } from '../workers/app-sleep.worker';
 import { reconcileProvisioningServers, gcOrphanedLocalDeployments } from '../services/server-reconcile.service';
 import { closeQueues } from '../lib/queue';
 import {
@@ -72,6 +73,7 @@ export async function startBackgroundWorkers(): Promise<void> {
   });
 
   startScheduledTaskWorker();
+  startAppSleepWorker();
 
   const notificationWorker = startNotificationWorker();
   if (notificationWorker) {
@@ -148,6 +150,7 @@ export async function stopBackgroundWorkers(): Promise<void> {
     gcInterval = null;
   }
   stopScheduledTaskWorker();
+  stopAppSleepWorker();
   stopDeploymentWorker();
   stopHealthCheckWorker();
   stopMetricsWorker();
