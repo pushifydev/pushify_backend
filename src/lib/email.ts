@@ -676,7 +676,8 @@ export async function sendInfraCreditTopUpEmail(
   orgName: string,
   amountCents: number,
   balanceCents: number,
-  locale: 'en' | 'tr' = 'en'
+  locale: 'en' | 'tr' = 'en',
+  receiptUrl?: string | null
 ): Promise<void> {
   if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
     logger.warn('Email not configured — skipping infra top-up email');
@@ -694,7 +695,7 @@ export async function sendInfraCreditTopUpEmail(
       from: FROM_ADDRESS,
       to,
       subject: subjects[locale] ?? subjects.en,
-      html: infraCreditTopUpTemplate(orgName, amountCents, balanceCents, billingUrl, locale),
+      html: withInvoiceLink(infraCreditTopUpTemplate(orgName, amountCents, balanceCents, billingUrl, locale), receiptUrl, locale),
     });
     logger.info({ to, orgName, amountCents }, 'Infra credit top-up email sent');
   } catch (error) {
@@ -766,7 +767,8 @@ export async function sendBillingPlanActivatedEmail(
   to: string,
   orgName: string,
   planName: string,
-  locale: 'en' | 'tr' = 'en'
+  locale: 'en' | 'tr' = 'en',
+  invoiceUrl?: string | null
 ): Promise<void> {
   if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
     logger.warn('Email not configured — skipping plan activated email');
@@ -784,7 +786,7 @@ export async function sendBillingPlanActivatedEmail(
       from: FROM_ADDRESS,
       to,
       subject: subjects[locale] ?? subjects.en,
-      html: billingPlanActivatedTemplate(orgName, planName, billingUrl, locale),
+      html: withInvoiceLink(billingPlanActivatedTemplate(orgName, planName, billingUrl, locale), invoiceUrl, locale),
     });
     logger.info({ to, orgName, planName }, 'Billing plan activated email sent');
   } catch (error) {
@@ -1035,6 +1037,14 @@ export async function verifyEmailConnection(): Promise<boolean> {
 }
 
 /** Generic admin notification email — subject/html/text prebuilt by lib/admin-notify. */
+/** Append a quiet invoice/receipt link above the closing body tag when a URL is known. */
+function withInvoiceLink(html: string, url: string | null | undefined, locale: 'en' | 'tr'): string {
+  if (!url) return html;
+  const label = locale === 'tr' ? 'Faturayı / makbuzu görüntüle' : 'View invoice / receipt';
+  const block = `<p style="margin:16px 0 0;font-size:13px"><a href="${url}" style="color:#4f46e5;text-decoration:underline">${label}</a></p>`;
+  return html.includes('</body>') ? html.replace('</body>', block + '</body>') : html + block;
+}
+
 export async function sendAdminNotificationEmail(
   to: string[],
   subject: string,
