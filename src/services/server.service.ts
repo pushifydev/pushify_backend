@@ -17,7 +17,7 @@ import { type PlanType } from '../lib/plans';
 import { getEffectivePlanLimits } from '../lib/effective-plan-limits';
 import { usageMeteringService } from './usage-metering.service';
 import { planLimitsService } from './plan-limits.service';
-import { getPlanInfraLimits } from '../lib/infra-billing';
+import { getPlanInfraLimits, minimumBalanceToStartCents} from '../lib/infra-billing';
 import { infraBillingService } from './infra-billing.service';
 import { assertOrganizationCanMutateResources } from './organization-billing.service';
 import { SSHClient } from '../utils/ssh';
@@ -829,7 +829,9 @@ export const serverService = {
           if (refreshed) server = refreshed;
         }
 
-        const required = server.customerPriceMonthlyCents ?? 0;
+        // Restarting an existing server shouldn't demand a full month upfront —
+        // require 72 hours of coverage; the hourly accrual handles the rest.
+        const required = minimumBalanceToStartCents(server.customerPriceMonthlyCents ?? 0);
         if (required > 0) {
           const [orgWallet] = await db
             .select({ balance: organizations.infraWalletBalanceCents })
@@ -867,6 +869,10 @@ export const serverService = {
     const [updated] = await db
       .update(servers)
       .set({
+        // Starting resets the billing anchor so stopped time is never billed.
+        ...(action === 'start'
+          ? { infraLastChargedAt: new Date(), infraBillingCarryMillicents: 0 }
+          : {}),
         status: newStatus,
         updatedAt: new Date(),
         ...(action === 'start' ? { statusMessage: null } : {}),

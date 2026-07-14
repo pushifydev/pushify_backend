@@ -69,6 +69,36 @@ export function providerMonthlyToHourlyCents(providerMonthlyUsdCents: number): n
   return Math.max(1, Math.ceil(providerMonthlyUsdCents / 730));
 }
 
+export const HOURS_PER_MONTH = 730;
+const MS_PER_MONTH = HOURS_PER_MONTH * 3600 * 1000;
+
+/**
+ * Accrue an infra charge for elapsed wall-clock time at the customer's MONTHLY price,
+ * carrying sub-cent remainders in millicents so long-run billing equals monthly/730 per
+ * hour EXACTLY — no per-tick rounding inflation.
+ *
+ * Context: deriving an integer hourly price rounded tiny amounts up twice
+ * (0.65¢ → 1¢ → ×1.2 margin ceil → 2¢), silently overcharging small servers ~2.5×.
+ */
+export function accrueInfraCharge(
+  monthlyCents: number,
+  elapsedMs: number,
+  carryMillicents: number,
+): { chargeCents: number; carryMillicents: number } {
+  if (monthlyCents <= 0 || elapsedMs <= 0) {
+    return { chargeCents: 0, carryMillicents };
+  }
+  const accruedMillicents = Math.round((monthlyCents * 1000 * elapsedMs) / MS_PER_MONTH);
+  const dueMillicents = carryMillicents + accruedMillicents;
+  const chargeCents = Math.floor(dueMillicents / 1000);
+  return { chargeCents, carryMillicents: dueMillicents - chargeCents * 1000 };
+}
+
+/** Balance required to START an existing (suspended/stopped) managed server: 72h coverage. */
+export function minimumBalanceToStartCents(monthlyCents: number): number {
+  return Math.ceil((monthlyCents * 72) / HOURS_PER_MONTH);
+}
+
 export interface ServerSpecsQuote {
   vcpus: number;
   memoryMb: number;
@@ -98,7 +128,10 @@ export function buildPriceQuote(
       : providerMonthlyToHourlyCents(providerCostMonthlyCents);
 
   const customerPriceMonthlyCents = applyInfraMargin(providerCostMonthlyCents);
-  const customerPriceHourlyCents = applyInfraMargin(providerCostHourlyCents);
+  // Display-only: derive from the customer monthly with a single rounding — the old
+  // round-then-ceil chain inflated small servers' hourly price up to ~2.5×. Actual
+  // billing accrues from the monthly price via accrueInfraCharge().
+  const customerPriceHourlyCents = Math.max(1, Math.round(customerPriceMonthlyCents / HOURS_PER_MONTH));
 
   return {
     providerCostMonthlyCents,

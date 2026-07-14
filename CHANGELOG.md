@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.0-beta.48] - 2026-07-06
+
+### Fixed
+- **CRITICAL — hourly infra billing overcharged small servers up to ~2.5×.** The integer hourly price was derived with a double rounding (EUR→USD `round` on a sub-cent amount, then margin `ceil`): a server quoted **$5.75/mo** was actually billed **2¢/hour = $14.60/mo**, draining a month of credits in ~2 weeks and then auto-suspending the server. Billing now **accrues from the accurate MONTHLY price prorated over elapsed wall-clock time**, carrying sub-cent remainders in millicents (new `infra_billing_carry_millicents` column, migration `0034`) — the long-run total equals monthly/730 per hour exactly (unit-tested: 730 hourly ticks bill the monthly price ±1¢; restart-heavy schedules bill the same as regular ones). The displayed hourly price is now derived from the customer monthly with a single rounding, and the monthly-burn estimate uses the monthly price directly.
+- **Restarting a suspended server no longer demands a full month's balance.** `start` required `customerPriceMonthlyCents` in the wallet; it now requires **72 hours of coverage** — and starting resets the billing anchor so stopped time is never billed.
+
+### Added
+- **`npm run refund:infra-overcharge`** — computes, per organization, the difference between what `server_hourly_charge` transactions actually debited and the fair monthly-rate amount (each old charge was intended to be one hour), and credits it back as an adjustment. Dry-run by default; `--apply` to execute.
+
 ## [0.2.0-beta.47] - 2026-07-06
 
 ### Added
