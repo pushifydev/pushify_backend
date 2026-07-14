@@ -10,6 +10,7 @@ export interface MarketplaceDeployConfig {
   composePublicService?: string;
   composePublicPort?: number;
   extraFiles?: Record<string, string>;
+  envPassthrough?: Record<string, string[]>;
   postDeploySql?: string;
   postDeployShell?: string;
   volumes?: string[];
@@ -38,6 +39,7 @@ export function buildMarketplaceDeployConfig(
     composePublicService: fresh.composePublicService,
     composePublicPort: fresh.composePublicPort,
     extraFiles: fresh.extraFiles ?? (ps.extraFiles as Record<string, string> | undefined),
+    envPassthrough: fresh.envPassthrough,
     postDeploySql:
       (fresh as { postDeploySql?: string }).postDeploySql ??
       (ps.postDeploySql as string | undefined),

@@ -78,3 +78,32 @@ export function applyCalcomEnvDefaults(
 
   return out;
 }
+
+/**
+ * Compose only injects vars listed under a service's `environment:` — a bare .env
+ * entry never reaches a container. Builds a docker-compose.override.yml that forwards
+ * user env vars to services by key prefix (template.envPassthrough); values stay in
+ * .env and are referenced via ${VAR} so no YAML quoting/escaping is needed.
+ * Returns null when nothing matches (caller should remove any stale override file).
+ */
+export function buildComposeEnvOverride(
+  envVars: Record<string, string>,
+  passthrough: Record<string, string[]> | undefined
+): { yaml: string; forwarded: Record<string, string[]> } | null {
+  if (!passthrough) return null;
+  const forwarded: Record<string, string[]> = {};
+  const sections: string[] = [];
+  for (const [service, prefixes] of Object.entries(passthrough)) {
+    const keys = Object.keys(envVars)
+      .filter((k) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k))
+      .filter((k) => prefixes.some((p) => k.startsWith(p)))
+      .sort();
+    if (keys.length === 0) continue;
+    forwarded[service] = keys;
+    sections.push(
+      `  ${service}:\n    environment:\n${keys.map((k) => `      ${k}: \${${k}}`).join('\n')}`
+    );
+  }
+  if (sections.length === 0) return null;
+  return { yaml: `services:\n${sections.join('\n')}\n`, forwarded };
+}

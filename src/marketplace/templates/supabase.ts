@@ -380,6 +380,12 @@ This deployment includes all 9 Supabase services orchestrated via Docker Compose
   composeFile,
   composePublicService: 'kong',
   composePublicPort: 8000,
+  // GoTrue/PostgREST accept dozens of tuning vars (e.g. GOTRUE_EXTERNAL_GOOGLE_SKIP_NONCE_CHECK)
+  // that aren't in the compose template — forward any the user sets in Environment.
+  envPassthrough: {
+    auth: ['GOTRUE_'],
+    rest: ['PGRST_'],
+  },
   // Runs AFTER docker compose up (postgres init may not have set passwords correctly)
   postDeploySql: `-- Pushify post-deploy: force-set Supabase role passwords
 ALTER USER supabase_admin WITH PASSWORD '\${POSTGRES_PASSWORD}';

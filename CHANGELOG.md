@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.52] - 2026-07-14
+
+### Fixed
+- **Custom env vars now reach Supabase (and other compose) containers.** Adding e.g. `GOTRUE_EXTERNAL_GOOGLE_SKIP_NONCE_CHECK` in a Supabase project's Environment tab wrote it to the stack's `.env`, but Docker Compose only injects variables explicitly listed under a service's `environment:` — so the value never appeared inside the GoTrue container. Marketplace templates can now declare `envPassthrough` (service → env-key prefixes); at deploy time a `docker-compose.override.yml` is generated that forwards matching user vars to the right service (user values win over template defaults on collision; stale overrides are removed). The Supabase template forwards `GOTRUE_*` → `auth` and `PGRST_*` → `rest`, unlocking all GoTrue/PostgREST tuning knobs. Redeploy required after changing env vars, as before. 5 unit tests.
+
 ## [0.2.0-beta.51] - 2026-07-06
 
 ### Changed
