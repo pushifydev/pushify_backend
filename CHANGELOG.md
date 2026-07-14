@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.51] - 2026-07-06
+
+### Changed
+- **Payment confirmation emails now link to the invoice/receipt.** The "plan activated" email includes the Stripe **hosted invoice** link (resolved from the checkout session's invoice) and the "credits added" email includes the Stripe **receipt** link (resolved from the payment intent's charge) — both best-effort: if Stripe lookup fails, the email still goes out without the link. Complements Stripe's native customer receipt/invoice emails (enabled in the dashboard) without duplicating them.
+
 ## [0.2.0-beta.50] - 2026-07-06
 
 ### Security

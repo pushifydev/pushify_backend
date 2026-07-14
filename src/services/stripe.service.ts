@@ -28,6 +28,34 @@ function isStripeResourceMissing(err: unknown): boolean {
   return e.code === 'resource_missing' || e.statusCode === 404;
 }
 
+/** Hosted invoice URL for a subscription checkout session (best-effort). */
+async function getSessionInvoiceUrl(session: Stripe.Checkout.Session): Promise<string | null> {
+  try {
+    if (!session.invoice) return null;
+    const stripe = getStripe();
+    const invoiceId = typeof session.invoice === 'string' ? session.invoice : session.invoice.id;
+    const invoice = await stripe.invoices.retrieve(invoiceId);
+    return invoice.hosted_invoice_url ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Stripe receipt URL for a one-time payment checkout session (best-effort). */
+async function getSessionReceiptUrl(session: Stripe.Checkout.Session): Promise<string | null> {
+  try {
+    if (!session.payment_intent) return null;
+    const stripe = getStripe();
+    const piId =
+      typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent.id;
+    const pi = await stripe.paymentIntents.retrieve(piId, { expand: ['latest_charge'] });
+    const charge = pi.latest_charge;
+    return charge && typeof charge === 'object' ? (charge.receipt_url ?? null) : null;
+  } catch {
+    return null;
+  }
+}
+
 export const stripeService = {
   async getOrCreateCustomer(organizationId: string, email: string): Promise<string> {
     const stripe = getStripe();
@@ -324,6 +352,7 @@ export const stripeService = {
           result.amountCents,
           result.newBalance,
           'en',
+          await getSessionReceiptUrl(session),
         );
       }
 
@@ -381,6 +410,7 @@ export const stripeService = {
                 result.amountCents,
                 result.newBalance,
                 'en',
+                await getSessionReceiptUrl(session),
               );
             }
           }
@@ -431,7 +461,7 @@ export const stripeService = {
           const notifyEmail = await resolveBillingNotifyEmail(organizationId);
           if (notifyEmail && org) {
             const planName = getPlanInfo(effectivePlan).name;
-            await sendBillingPlanActivatedEmail(notifyEmail, org.name, planName, 'en');
+            await sendBillingPlanActivatedEmail(notifyEmail, org.name, planName, 'en', await getSessionInvoiceUrl(session));
           }
         }
         break;
