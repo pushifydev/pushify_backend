@@ -8,6 +8,7 @@ import { decrypt } from '../lib/encryption';
 import { logger } from '../lib/logger';
 import { pickRunnerServerId } from '../lib/runner-routing';
 import { getProjectVolumeMounts } from '../lib/project-volumes';
+import { createLogMasker } from '../lib/log-masking';
 import { cloneRepository, cleanupRepository } from './git';
 import {
   buildImage,
@@ -343,7 +344,11 @@ export async function loadDeploymentJobById(deploymentId: string): Promise<Deplo
  */
 export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
   const logBuffer: string[] = [];
-  const addLog = (message: string) => {
+  // Secrets are registered as they become known (env values, git tokens); every log
+  // line flows through this choke point before it is buffered, persisted or streamed.
+  const logMasker = createLogMasker();
+  const addLog = (rawMessage: string) => {
+    const message = logMasker.mask(rawMessage);
     const timestamp = new Date().toISOString();
     logBuffer.push(`[${timestamp}] ${message}`);
     logger.info(`[Deployment ${job.id}] ${message}`);
@@ -477,6 +482,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
     const projectGitAuth = await getProjectGitAccessToken(job.projectId);
     if (projectGitAuth) {
       accessToken = projectGitAuth.token;
+      logMasker.addSecrets([accessToken]);
       addLog(`🔑 Using ${projectGitAuth.provider} credentials from organization owner`);
     } else if (project.gitRepoUrl?.includes('github.com') && job.triggeredById) {
       const integration = await db.query.gitIntegrations.findFirst({
@@ -488,6 +494,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
 
       if (integration) {
         accessToken = decrypt(integration.accessToken);
+        logMasker.addSecrets([accessToken]);
         addLog('🔑 Using GitHub credentials from user');
       }
     }
@@ -516,6 +523,8 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       for (const envVar of envVars) {
         envVarsDecrypted[envVar.key] = decrypt(envVar.valueEncrypted);
       }
+      // Everything logged from here on has the project's secrets masked.
+      logMasker.addEnvVars(envVarsDecrypted);
 
       // Check for quick rollback (uses existing Docker image, no rebuild)
       if (job.rollbackFromDeploymentId) {

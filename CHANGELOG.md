@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0-beta.50] - 2026-07-06
+
+### Security
+- **Secrets are now masked in every log surface.** User builds routinely print env values (`console.log(process.env)`, framework error dumps, connection-string errors) — those secrets used to land verbatim in build logs, the persisted 7-day runtime logs, and live log streams. A per-project masker (built from the project's decrypted env values via a sensitive-key/long-value heuristic, plus ad-hoc secrets like git access tokens) now replaces occurrences with `••••••` at write/stream time: the deploy-log choke point (`addLog`), the log-collector's persisted chunks (10-min-cached masker), and both live SSE container streams. Multi-line values (PEM keys) are masked line-by-line; trivial values (`production`, ports…) are left alone so logs stay readable. 8 unit tests.
+
+### Added
+- **Invoice history endpoint** — `GET /api/v1/billing/invoices` lists the organization's Stripe invoices (number, date, amount, status, hosted/PDF links; last 24). Returns `[]` when Stripe isn't configured. Pairs with the dashboard's new Billing → Invoices section.
+
 ## [0.2.0-beta.49] - 2026-07-06
 
 ### Added
