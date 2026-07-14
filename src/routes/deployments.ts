@@ -18,6 +18,7 @@ import { eq } from 'drizzle-orm';
 import { decrypt } from '../lib/encryption';
 import { resolvePushifyContainerName } from '../lib/container-resolve';
 import { resolveProjectServerId } from '../lib/runner-routing';
+import { getProjectLogMasker } from '../workers/log-collector';
 import { enrichDeploymentWithQueue } from '../lib/deploy-queue';
 
 // Rate limiter for deployment operations
@@ -575,12 +576,13 @@ deploymentRouter.get('/:deploymentId/container-logs/stream', async (c) => {
       }
 
       const sshClient = ssh;
+      const masker = await getProjectLogMasker(projectId);
       return createContainerLogSseResponse({
         containerName,
         remote: true,
         clientSignal: c.req.raw.signal,
         stream: (onLog, signal) =>
-          streamRemoteContainerLogs(sshClient, containerName, onLog, {
+          streamRemoteContainerLogs(sshClient, containerName, (line) => onLog(masker.mask(line)), {
             tail,
             since,
             signal,
@@ -607,11 +609,12 @@ deploymentRouter.get('/:deploymentId/container-logs/stream', async (c) => {
     return c.json({ error: 'Container is not running' }, 400);
   }
 
+  const localMasker = await getProjectLogMasker(projectId);
   return createContainerLogSseResponse({
     containerName,
     clientSignal: c.req.raw.signal,
     stream: (onLog, signal) =>
-      streamContainerLogs(containerName, onLog, { tail, since, signal }),
+      streamContainerLogs(containerName, (line) => onLog(localMasker.mask(line)), { tail, since, signal }),
   });
 });
 

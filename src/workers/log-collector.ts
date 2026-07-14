@@ -6,6 +6,8 @@ import { projects } from '../db/schema/projects';
 import { servers } from '../db/schema/servers';
 import { SSHClient } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
+import { environmentVariables } from '../db/schema/projects';
+import { createLogMasker, type LogMasker } from '../lib/log-masking';
 import { logger } from '../lib/logger';
 import { getContainerLogs as getRemoteContainerLogs, isContainerRunning as isRemoteContainerRunning } from './remote-docker';
 import { getContainerLogs as getLocalContainerLogs, isContainerRunning as isLocalContainerRunning } from './docker';
@@ -153,6 +155,9 @@ async function collectDeploymentLogs(
 
   // Store logs if we got any
   if (logs && logs.trim().length > 0) {
+    // Apps routinely print env values — mask the project's secrets before persisting.
+    const masker = await getProjectLogMasker(project.id);
+    logs = masker.mask(logs);
     const lineCount = logs.split('\n').filter(line => line.trim()).length;
 
     await db.insert(containerLogs).values({
@@ -344,4 +349,34 @@ function sleep(ms: number): Promise<void> {
 
 export function isLogCollectorRunning(): boolean {
   return isRunning;
+}
+
+// ── Secret masking for persisted runtime logs ────────────────────────────────
+const MASKER_TTL_MS = 10 * 60 * 1000;
+const maskerCache = new Map<string, { masker: LogMasker; builtAt: number }>();
+
+/** Per-project masker built from decrypted env values; cached to avoid decrypting each tick. */
+export async function getProjectLogMasker(projectId: string): Promise<LogMasker> {
+  const cached = maskerCache.get(projectId);
+  if (cached && Date.now() - cached.builtAt < MASKER_TTL_MS) {
+    return cached.masker;
+  }
+
+  const envRows = await db
+    .select()
+    .from(environmentVariables)
+    .where(eq(environmentVariables.projectId, projectId));
+
+  const envVars: Record<string, string> = {};
+  for (const row of envRows) {
+    try {
+      envVars[row.key] = decrypt(row.valueEncrypted);
+    } catch {
+      // skip undecryptable values
+    }
+  }
+
+  const masker = createLogMasker(envVars);
+  maskerCache.set(projectId, { masker, builtAt: Date.now() });
+  return masker;
 }

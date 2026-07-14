@@ -1,4 +1,7 @@
 import { HTTPException } from 'hono/http-exception';
+import type Stripe from 'stripe';
+import { env } from '../config/env';
+import { getStripe } from '../lib/stripe';
 import { organizationRepository } from '../repositories/organization.repository';
 import { PLAN_LIMITS, getPlanInfo, isUnlimited, type PlanLimits, type PlanType } from '../lib/plans';
 import { getGrandfatherStatus } from '../lib/effective-plan-limits';
@@ -106,6 +109,40 @@ export const billingService = {
   /**
    * Get billing information for an organization
    */
+  /**
+   * Stripe invoice history for the organization (owner/admin sees it in Billing).
+   * Returns [] when Stripe isn't configured or the org has no customer yet.
+   */
+  async listInvoices(organizationId: string, userId: string, locale: SupportedLocale = 'en') {
+    const membership = await organizationRepository.findMember(organizationId, userId);
+    if (!membership) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
+    }
+
+    const org = await organizationRepository.findById(organizationId);
+    if (!org?.stripeCustomerId || !env.STRIPE_SECRET_KEY) {
+      return [];
+    }
+
+    const stripe = getStripe();
+    const invoices = await stripe.invoices.list({
+      customer: org.stripeCustomerId,
+      limit: 24,
+    });
+
+    return invoices.data.map((inv: Stripe.Invoice) => ({
+      id: inv.id,
+      number: inv.number,
+      createdAt: new Date(inv.created * 1000).toISOString(),
+      amountDueCents: inv.amount_due,
+      amountPaidCents: inv.amount_paid,
+      currency: inv.currency,
+      status: inv.status,
+      hostedInvoiceUrl: inv.hosted_invoice_url,
+      invoicePdf: inv.invoice_pdf,
+    }));
+  },
+
   async getBillingInfo(
     organizationId: string,
     userId: string,

@@ -89,6 +89,15 @@ billingRouter.post('/portal', requireOrgRole('owner', 'admin'), async (c) => {
 });
 
 // Get subscription status
+billingRouter.get('/invoices', async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+
+  const invoices = await billingService.listInvoices(organizationId, userId, locale);
+  return c.json({ data: invoices });
+});
+
 billingRouter.get('/subscription', async (c) => {
   const organizationId = c.get('organizationId')!;
 
