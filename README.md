@@ -12,6 +12,11 @@ The API server for [Pushify](https://github.com/pushify-dev/pushify) — an open
 
 </div>
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/pushifydev/pushify_frontend/master/.github/assets/landing-hero.png" alt="Pushify — deploy to your own servers in seconds" width="100%" />
+</p>
+
+
 ## About
 
 This is the backend API for Pushify. It handles authentication, server provisioning, deployments, database management, real-time monitoring, and more.

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0-beta.47] - 2026-07-06
+
+### Added
+- **SECURITY.md** — vulnerability disclosure policy (private reporting via email or GitHub's Report-a-vulnerability, 72h acknowledgement, scope notes for the deploy-isolation surface). Part of the pre-open-source hygiene pass; a repo-wide scan confirmed no secrets or personal data in tracked files.
+
+### Changed
+- README now opens with a real product screenshot (the redesigned landing hero).
+
 ## [0.2.0-beta.46] - 2026-07-05
 
 ### Added
