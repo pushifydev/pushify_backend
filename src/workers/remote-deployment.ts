@@ -397,13 +397,24 @@ export async function deployToRemoteServer(
       }
       onProgress(`✅ ${composeCheck.stdout.trim()}`);
 
-      // Find a free public port (5000-5999 range)
-      onProgress(`🔍 Finding available host port...`);
-      const findPortCmd = `for p in $(seq 5000 5999); do ss -tln 2>/dev/null | grep -q ":$p " || { echo $p; break; }; done`;
-      const portFindResult = await ssh.exec(findPortCmd);
-      const publicHostPort = parseInt(portFindResult.stdout.trim()) || 5000;
+      // Sticky public port: reuse the project's previous port so the URL and firewall
+      // rule survive redeploys. The old free-port scan ran while the previous stack was
+      // still up, saw its own port as busy, and shifted the stack to a new port every
+      // deploy. Previous port comes from the registry, or (pre-registry stacks) from
+      // the PUSHIFY_PUBLIC_PORT recorded in the stack's .env on the last deploy.
+      onProgress(`🔍 Resolving public host port...`);
+      const prevPortResult = await ssh.exec(
+        `grep -s '^PUSHIFY_PUBLIC_PORT=' ${projectDir}/.env | head -1 | cut -d= -f2`
+      );
+      const prevPort = parseInt(prevPortResult.stdout.trim(), 10);
+      const { port: publicHostPort, isNew: portIsNew } = await getOrAssignPort(ssh, deploySlug, {
+        range: { min: 5000, max: 5999 },
+        preferredPort: isNaN(prevPort) ? undefined : prevPort,
+      });
       const internalPort = config.marketplace.composePublicPort || 80;
-      onProgress(`📌 Assigned host port: ${publicHostPort} → container ${internalPort}`);
+      onProgress(
+        `📌 ${portIsNew ? 'Assigned new' : 'Reusing'} host port: ${publicHostPort} → container ${internalPort}`
+      );
 
       const publicUrl = `http://${server.ipv4}:${publicHostPort}`;
       const composePath = `${projectDir}/docker-compose.yml`;
