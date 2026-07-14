@@ -8,6 +8,7 @@ import { buildImage, runContainer, checkDocker, getImageId, tagImage, cleanupOld
 import { addSite, addAutoSubdomainSite, reloadNginx, requestSSLCertificate } from './nginx-manager';
 import {
   applyCalcomEnvDefaults,
+  buildComposeEnvOverride,
   getCalcomExtraHost,
   getCalcomAllowedHostPlaceholder,
 } from '../marketplace/helpers';
@@ -57,6 +58,7 @@ export interface RemoteDeploymentConfig {
     composePublicService?: string;
     composePublicPort?: number;
     extraFiles?: Record<string, string>;
+    envPassthrough?: Record<string, string[]>;
     postDeploySql?: string;
     postDeployShell?: string;
   };
@@ -501,6 +503,20 @@ export async function deployToRemoteServer(
           await ssh.uploadFile(expanded, filePath);
           onProgress(`📝 Wrote ${filename}`);
         }
+      }
+
+      // Forward user env vars the template doesn't list (e.g. GOTRUE_*) to their services.
+      // Compose auto-loads docker-compose.override.yml from the project dir; its
+      // environment map merges over the template's, so user values win on collision.
+      const overridePath = `${projectDir}/docker-compose.override.yml`;
+      const envOverride = buildComposeEnvOverride(envVars, config.marketplace.envPassthrough);
+      if (envOverride) {
+        await ssh.uploadFile(envOverride.yaml, overridePath);
+        for (const [service, keys] of Object.entries(envOverride.forwarded)) {
+          onProgress(`🔧 Forwarding ${keys.length} env var(s) to '${service}': ${keys.join(', ')}`);
+        }
+      } else {
+        await ssh.exec(`rm -f ${overridePath}`);
       }
 
       // Stop existing stack if any

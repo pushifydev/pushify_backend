@@ -41,6 +41,12 @@ export interface MarketplaceTemplate {
   composePublicPort?: number;
   /** Extra files to upload alongside docker-compose.yml (e.g. kong.yml). Path is relative to project dir */
   extraFiles?: Record<string, string>;
+  /**
+   * Forward user env vars to compose services by key prefix (service name → prefixes).
+   * Compose only injects vars listed under a service's `environment:` — a bare .env
+   * entry never reaches a container, so e.g. GOTRUE_* tweaks need this passthrough.
+   */
+  envPassthrough?: Record<string, string[]>;
   /** SQL to run on the db container AFTER docker compose up. Uses ${VAR} substitution. Useful for fixing role passwords on images that override them. */
   postDeploySql?: string;
   /** Shell command(s) to run AFTER container/stack is up. For single-container apps, runs inside the main container. For compose, runs on the docker host. Uses ${VAR} substitution. */
