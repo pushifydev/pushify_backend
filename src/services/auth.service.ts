@@ -7,6 +7,7 @@ import { generateTokenPair, verifyToken, generateTwoFactorToken, verifyTwoFactor
 import { generateSlug, hashToken, generateRandomToken, normalizeClientIp } from '../lib/utils';
 import { logger } from '../lib/logger';
 import { t, type SupportedLocale } from '../i18n';
+import { adminNotify } from './admin-notify.service';
 import {
   sendPasswordResetEmail,
   sendEmailVerificationEmail,
@@ -108,6 +109,11 @@ export const authService = {
 
     // Send welcome email (fire-and-forget)
     sendWelcomeEmail(result.user.email, result.user.name, locale as 'en' | 'tr').catch(() => {});
+    adminNotify('user.registered', {
+      user: result.user.email,
+      name: result.user.name,
+      organization: result.organization.name,
+    });
 
     logger.info({ userId: result.user.id }, 'User registered successfully');
 

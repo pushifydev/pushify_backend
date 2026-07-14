@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.49] - 2026-07-06
+
+### Added
+- **Admin event notification emails.** Set `ADMIN_NOTIFY_EMAILS` (comma-separated, multiple operators supported) and every significant platform event emails the list: **user registration**, subscription activated/canceled, payment failed, infra wallet credited, server created (managed & BYOS) / deleted / suspended for billing, project created/deleted, database created/deleted, and failed deployments — 14 instrumentation points. Delivery rides the existing **BullMQ** infrastructure (new `admin-notify` queue + worker, 3 retries with backoff) with a direct-send fallback when Redis is unset; every call site is fire-and-forget so a mail failure can never break or slow the underlying operation. Emails are a clean field-table template (HTML+text, HTML-escaped). Unset = feature off.
+
 ## [0.2.0-beta.48] - 2026-07-06
 
 ### Fixed

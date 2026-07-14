@@ -75,6 +75,10 @@ const envSchema = z.object({
   PUSHIFY_RUNNER_SERVER_IDS: z.string().optional(),
   PUSHIFY_RUNNER_SERVER_ID: z.string().optional(),
 
+  /** Comma-separated operator emails for admin event notifications (registration,
+   *  servers, billing, failed deploys, …). Unset = disabled. */
+  ADMIN_NOTIFY_EMAILS: z.string().optional(),
+
   // AI Assistant
   ANTHROPIC_API_KEY: z.string().optional(),
 

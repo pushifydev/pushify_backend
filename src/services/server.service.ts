@@ -23,6 +23,7 @@ import { assertOrganizationCanMutateResources } from './organization-billing.ser
 import { SSHClient } from '../utils/ssh';
 import { wsManager } from '../lib/ws';
 import { logger } from '../lib/logger';
+import { adminNotify } from './admin-notify.service';
 
 export interface CreateServerInput {
   name: string;
@@ -615,6 +616,14 @@ export const serverService = {
 
     const billingFields = infraBillingService.billingFieldsFromQuote(quote);
 
+    adminNotify('server.created', {
+      server: input.name,
+      type: 'managed',
+      size: input.size,
+      region: input.region,
+      organizationId,
+    });
+
     // Create server in database first (provisioning status)
     const [dbServer] = await db
       .insert(servers)
@@ -761,6 +770,7 @@ export const serverService = {
 
       // Delete from database
       await db.delete(servers).where(eq(servers.id, serverId));
+      adminNotify('server.deleted', { server: server.name, organizationId });
     } catch (error) {
       // Revert status on error
       await db
@@ -1122,6 +1132,7 @@ export const serverService = {
       }).catch(() => {});
 
       logger.info({ serverId, ipv4 }, 'BYOS server setup completed');
+      adminNotify('server.created', { serverId, type: 'byos', ipv4 });
 
       // Notify the org owner that the server is ready (fire-and-forget, no locale here → 'en')
       void (async () => {

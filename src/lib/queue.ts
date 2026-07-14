@@ -11,6 +11,7 @@ export const QUEUE_NAMES = {
   NOTIFICATIONS: 'notifications',
   DEPLOYMENTS: 'deployments',
   HEALTH_CHECKS: 'health-checks',
+  ADMIN_NOTIFY: 'admin-notify',
 } as const;
 
 // Job types
@@ -84,6 +85,41 @@ export function getNotificationQueue(): Queue<NotificationJobData> | null {
   }
 
   return notificationQueue;
+}
+
+export interface AdminNotifyJobData {
+  emails: string[];
+  subject: string;
+  html: string;
+  text: string;
+}
+
+let adminNotifyQueue: Queue<AdminNotifyJobData> | null = null;
+
+export function getAdminNotifyQueue(): Queue<AdminNotifyJobData> | null {
+  const connection = getRedisConnection();
+  if (!connection) return null;
+
+  if (!adminNotifyQueue) {
+    adminNotifyQueue = new Queue<AdminNotifyJobData>(QUEUE_NAMES.ADMIN_NOTIFY, {
+      connection,
+      defaultJobOptions: {
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 2000 },
+        removeOnComplete: { age: 24 * 3600, count: 1000 },
+        removeOnFail: { age: 7 * 24 * 3600 },
+      },
+    });
+  }
+
+  return adminNotifyQueue;
+}
+
+export async function addAdminNotifyJob(data: AdminNotifyJobData): Promise<boolean> {
+  const queue = getAdminNotifyQueue();
+  if (!queue) return false;
+  await queue.add('admin-email', data);
+  return true;
 }
 
 // Get or create deployment queue
@@ -205,7 +241,7 @@ function getPriority(event: string): number {
 
 // Close all queues (for graceful shutdown)
 export async function closeQueues(): Promise<void> {
-  const queues = [notificationQueue, deploymentQueue, healthCheckQueue];
+  const queues = [notificationQueue, deploymentQueue, healthCheckQueue, adminNotifyQueue];
 
   await Promise.all(
     queues.filter(Boolean).map(async (queue) => {
@@ -218,6 +254,7 @@ export async function closeQueues(): Promise<void> {
   notificationQueue = null;
   deploymentQueue = null;
   healthCheckQueue = null;
+  adminNotifyQueue = null;
 
   logger.info('All queues closed');
 }

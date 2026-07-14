@@ -25,6 +25,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { githubService } from '../services/github.service';
 import { notificationService } from '../services/notification.service';
+import { adminNotify } from '../services/admin-notify.service';
 import { activityService } from '../services/activity.service';
 import { previewService } from '../services/preview.service';
 import { previewRepository } from '../repositories/preview.repository';
@@ -1286,6 +1287,11 @@ server {
 
     const logTail = extractLogTail(logBuffer.join('\n'), 20);
 
+    adminNotify('deployment.failed', {
+      projectId: job.projectId,
+      deploymentId: job.id,
+      error: errorMessage?.slice(0, 300),
+    });
     await notificationService.sendNotifications(job.projectId, 'deployment.failed', {
       deploymentId: job.id,
       branch: job.branch || undefined,

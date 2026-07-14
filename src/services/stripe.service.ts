@@ -18,6 +18,7 @@ import { INFRA_TOPUP_AMOUNTS_CENTS } from '../lib/infra-billing';
 import { infraBillingService } from './infra-billing.service';
 import { organizationBillingService } from './organization-billing.service';
 import type Stripe from 'stripe';
+import { adminNotify } from './admin-notify.service';
 import { logger } from '../lib/logger';
 
 /** Stripe "No such ..." error (resource_missing / 404) — e.g. a customer or price from another mode. */
@@ -357,6 +358,10 @@ export const stripeService = {
 
     switch (event.type) {
       case 'checkout.session.completed': {
+        adminNotify('subscription.activated', {
+          stripeEvent: event.type,
+          organizationId: (event.data.object as { metadata?: { organizationId?: string } }).metadata?.organizationId,
+        });
         const session = event.data.object as Stripe.Checkout.Session;
         const organizationId = session.metadata?.organizationId;
         const checkoutType = session.metadata?.checkoutType;
@@ -486,6 +491,7 @@ export const stripeService = {
       }
 
       case 'customer.subscription.deleted': {
+        adminNotify('subscription.canceled', { stripeEvent: event.type });
         const sub = event.data.object as Stripe.Subscription;
         // Authoritative mapping is OUR stored subscription→org link, not the mutable Stripe
         // metadata (which an attacker could point at another tenant). Use the DB first and
@@ -537,6 +543,7 @@ export const stripeService = {
       }
 
       case 'invoice.payment_failed': {
+        adminNotify('payment.failed', { stripeEvent: event.type });
         const invoice = event.data.object as Stripe.Invoice;
         const customerId =
           typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
