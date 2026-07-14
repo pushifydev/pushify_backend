@@ -1,0 +1,1 @@
+ALTER TABLE "servers" ADD COLUMN "infra_billing_carry_millicents" integer DEFAULT 0 NOT NULL;

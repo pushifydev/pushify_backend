@@ -8,6 +8,7 @@ import type { ServerSize } from '../providers/cloud-provider.interface';
 import { organizationRepository } from '../repositories/organization.repository';
 import { t, type SupportedLocale } from '../i18n';
 import {
+  accrueInfraCharge,
   applyInfraMargin,
   assertServerWithinPlanLimits,
   buildPriceQuote,
@@ -153,6 +154,7 @@ export const infraBillingService = {
     const running = await db
       .select({
         customerHourly: servers.customerPriceHourlyCents,
+        customerMonthly: servers.customerPriceMonthlyCents,
       })
       .from(servers)
       .where(
@@ -164,8 +166,9 @@ export const infraBillingService = {
       );
 
     const estimatedMonthlyBurnCents = running.reduce((sum, s) => {
-      const hourly = s.customerHourly ?? 0;
-      return sum + hourly * 730;
+      // Prefer the accurate monthly price; the stored hourly was double-rounded.
+      const monthly = s.customerMonthly ?? (s.customerHourly ?? 0) * 730;
+      return sum + monthly;
     }, 0);
 
     const isLowBalance =
@@ -792,19 +795,32 @@ export const infraBillingService = {
     let charged = 0;
     let stopped = 0;
     let skipped = 0;
-    const minMsBetweenCharges = 50 * 60 * 1000;
+    const minAccrualMs = 5 * 60 * 1000;
 
     for (const server of rows) {
-      if (!server.customerPriceHourlyCents || server.customerPriceHourlyCents <= 0) {
+      // Bill from the MONTHLY price prorated over elapsed time (sub-cent carry) — the
+      // stored integer hourly price was double-rounded and overcharged small servers.
+      const monthly = server.customerPriceMonthlyCents;
+      if (!monthly || monthly <= 0) {
         await this.backfillServerBillingIfMissing(server.id);
         skipped++;
         continue;
       }
 
-      if (
-        server.infraLastChargedAt &&
-        Date.now() - server.infraLastChargedAt.getTime() < minMsBetweenCharges
-      ) {
+      const now = new Date();
+      const anchor = server.infraLastChargedAt;
+      if (!anchor) {
+        // Start accruing from now — never bill time before we started tracking.
+        await db
+          .update(servers)
+          .set({ infraLastChargedAt: now, infraBillingCarryMillicents: 0, updatedAt: now })
+          .where(eq(servers.id, server.id));
+        skipped++;
+        continue;
+      }
+
+      const elapsedMs = now.getTime() - anchor.getTime();
+      if (elapsedMs < minAccrualMs) {
         skipped++;
         continue;
       }
@@ -815,22 +831,36 @@ export const infraBillingService = {
       if (plan === 'enterprise') {
         await db
           .update(servers)
-          .set({ infraLastChargedAt: new Date(), updatedAt: new Date() })
+          .set({ infraLastChargedAt: now, infraBillingCarryMillicents: 0, updatedAt: now })
           .where(eq(servers.id, server.id));
         skipped++;
         continue;
       }
 
-      const hourly = server.customerPriceHourlyCents;
+      const { chargeCents, carryMillicents } = accrueInfraCharge(
+        monthly,
+        elapsedMs,
+        server.infraBillingCarryMillicents ?? 0,
+      );
+
+      if (chargeCents === 0) {
+        await db
+          .update(servers)
+          .set({ infraLastChargedAt: now, infraBillingCarryMillicents: carryMillicents, updatedAt: now })
+          .where(eq(servers.id, server.id));
+        skipped++;
+        continue;
+      }
+
       const balanceBefore = org?.infraWalletBalanceCents ?? 0;
 
       const newBalance = await this.debitWallet(
         server.organizationId,
-        hourly,
+        chargeCents,
         'server_hourly_charge',
         `Hourly infra: ${server.name}`,
         server.id,
-        { hourlyCents: hourly },
+        { monthlyCents: monthly, elapsedMinutes: Math.round(elapsedMs / 60000) },
       );
 
       if (newBalance === null) {
@@ -852,7 +882,11 @@ export const infraBillingService = {
 
       await db
         .update(servers)
-        .set({ infraLastChargedAt: new Date(), updatedAt: new Date() })
+        .set({
+          infraLastChargedAt: new Date(),
+          infraBillingCarryMillicents: carryMillicents,
+          updatedAt: new Date(),
+        })
         .where(eq(servers.id, server.id));
 
       charged++;

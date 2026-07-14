@@ -92,6 +92,8 @@ export const servers = pgTable('servers', {
   customerPriceMonthlyCents: integer('customer_price_monthly_cents'),
   customerPriceHourlyCents: integer('customer_price_hourly_cents'),
   infraLastChargedAt: timestamp('infra_last_charged_at', { withTimezone: true }),
+  /** Sub-cent billing remainder (millicents) carried between hourly accruals */
+  infraBillingCarryMillicents: integer('infra_billing_carry_millicents').default(0).notNull(),
 
   /** Weekly automatic Hetzner snapshots (Pro+ with snapshot quota) */
   autoSnapshotEnabled: boolean('auto_snapshot_enabled').default(false).notNull(),
