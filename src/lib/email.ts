@@ -1033,3 +1033,30 @@ export async function verifyEmailConnection(): Promise<boolean> {
     return false;
   }
 }
+
+/** Generic admin notification email — subject/html/text prebuilt by lib/admin-notify. */
+export async function sendAdminNotificationEmail(
+  to: string[],
+  subject: string,
+  html: string,
+  text: string
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping admin notification');
+    return;
+  }
+  if (to.length === 0) return;
+
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to: to.join(', '),
+      subject,
+      html,
+      text,
+    });
+    logger.info({ to, subject }, 'Admin notification email sent');
+  } catch (error) {
+    logger.error({ error, to, subject }, 'Failed to send admin notification email');
+  }
+}

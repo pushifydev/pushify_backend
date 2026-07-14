@@ -8,6 +8,7 @@ import { projectRepository } from '../repositories/project.repository';
 import { organizationRepository } from '../repositories/organization.repository';
 import { generateSlug } from '../lib/utils';
 import { logger } from '../lib/logger';
+import { adminNotify } from './admin-notify.service';
 import { t, type SupportedLocale } from '../i18n';
 import { assertOrganizationCanMutateResources } from './organization-billing.service';
 import { getApiBaseUrl } from '../lib/api-base-url';
@@ -117,6 +118,7 @@ export const projectService = {
     });
 
     logger.info({ projectId: project.id, userId }, 'Project created');
+    adminNotify('project.created', { project: project.name, organizationId });
 
     return project;
   },
@@ -324,6 +326,7 @@ export const projectService = {
     await projectRepository.softDelete(projectId);
 
     logger.info({ projectId, userId, containersCleanedUp }, 'Project deleted');
+    adminNotify('project.deleted', { projectId, organizationId });
 
     return { containersCleanedUp };
   },

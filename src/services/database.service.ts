@@ -12,6 +12,7 @@ import type { DatabaseType, DatabaseStatus } from '../db/schema/databases';
 import { planLimitsService } from './plan-limits.service';
 import { assertOrganizationCanMutateResources } from './organization-billing.service';
 import crypto from 'crypto';
+import { adminNotify } from './admin-notify.service';
 
 // ============ Types ============
 
@@ -248,6 +249,12 @@ export const databaseService = {
         });
       });
 
+    adminNotify('database.created', {
+      database: database.name,
+      type: database.type,
+      organizationId: database.organizationId,
+    });
+
     return {
       ...database,
       password: '••••••••',
@@ -428,6 +435,7 @@ export const databaseService = {
 
     // Delete database record
     await databaseRepository.delete(databaseId);
+    adminNotify('database.deleted', { databaseId });
   },
 
   // Delete container on server

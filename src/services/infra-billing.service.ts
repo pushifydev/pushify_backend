@@ -27,6 +27,7 @@ import {
 } from '../lib/email';
 import { getIncludedInfraCreditCents, type PlanType } from '../lib/plans';
 import { logger } from '../lib/logger';
+import { adminNotify } from './admin-notify.service';
 
 function getProviderToken(provider: ProviderType): string {
   switch (provider) {
@@ -377,6 +378,13 @@ export const infraBillingService = {
     });
 
     await this.clearInfraCreditsStoppedMessages(organizationId);
+
+    adminNotify('wallet.topup', {
+      organizationId,
+      amount: `$${(amountCents / 100).toFixed(2)}`,
+      balanceAfter: `$${(balanceAfterCents / 100).toFixed(2)}`,
+      description,
+    });
 
     return { balanceAfterCents, created: true };
   },
@@ -763,6 +771,7 @@ export const infraBillingService = {
         .where(eq(servers.id, serverId));
 
       logger.info({ serverId, organizationId }, 'Managed server stopped due to insufficient infra credits');
+      adminNotify('server.suspended', { serverId, organizationId, reason: 'insufficient infra credits' });
 
       const org = await organizationRepository.findById(organizationId);
       const notifyEmail = await resolveBillingNotifyEmail(organizationId);
