@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.0-beta.53] - 2026-07-14
+
+### Fixed
+- **Public port no longer changes on every compose-stack redeploy.** Marketplace stacks (Supabase, Cal.com, Appwrite…) re-scanned for a "free" port on each deploy while the previous stack was still running — so the stack saw its own port as busy and shifted to a new port (and a new URL) every redeploy. The port is now **sticky**: the server-side port registry (and, for stacks deployed before this fix, the `PUSHIFY_PUBLIC_PORT` recorded in the stack's `.env`) is reused as long as the project's own containers hold the port or it is otherwise free; a brand-new port is picked only on first deploy or if another process took the old one while the stack was down.
+- **New port assignments now avoid every genuinely busy port.** The used-port scan only matched `127.0.0.1:` Docker bindings, but app containers publish on `0.0.0.0` — so the scan saw almost nothing, and host daemons (user services, databases) weren't checked at all. Assignment now skips all Docker-published host ports **and** all host TCP listeners, and a registry entry squatted by a foreign process is released and reassigned instead of producing a doomed `docker run`. Ownership checks are exact (`pushify-<slug>`, its `-blue`/`-green` variants, or the compose project label) so project `app` can never claim `app-2`'s port. 6 unit tests.
+
 ## [0.2.0-beta.52] - 2026-07-14
 
 ### Fixed

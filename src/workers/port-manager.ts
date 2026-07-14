@@ -41,41 +41,112 @@ async function saveRegistry(ssh: SSHClient, registry: PortRegistry): Promise<voi
   await ssh.uploadFile(content, PORT_REGISTRY_FILE);
 }
 
-/**
- * Get ports currently in use on the server (from Docker containers)
- */
-async function getUsedPorts(ssh: SSHClient): Promise<number[]> {
-  // Get ports from running Docker containers
-  const result = await ssh.exec(
-    "docker ps --format '{{.Ports}}' 2>/dev/null | grep -oE '127\\.0\\.0\\.1:[0-9]+' | cut -d':' -f2 | sort -u || true"
-  );
-
-  if (!result.stdout.trim()) {
-    return [];
-  }
-
-  return result.stdout
-    .trim()
-    .split('\n')
-    .map((p) => parseInt(p, 10))
-    .filter((p) => !isNaN(p));
+export interface PortRange {
+  min: number;
+  max: number;
 }
 
 /**
- * Get or assign a port for a project
- * If the project already has a port assigned, return it.
- * Otherwise, find the next available port and assign it.
+ * Get ports currently in use on the server: every host port published by a Docker
+ * container (containers bind 0.0.0.0, which the old 127.0.0.1-only grep missed)
+ * plus every TCP listener on the host (databases, user daemons, compose stacks).
+ */
+async function getUsedPorts(ssh: SSHClient): Promise<number[]> {
+  const dockerResult = await ssh.exec(
+    "docker ps --format '{{.Ports}}' 2>/dev/null | grep -oE ':[0-9]+->' | grep -oE '[0-9]+' | sort -u || true"
+  );
+  const listenResult = await ssh.exec(
+    "ss -tln 2>/dev/null | awk 'NR>1 {print $4}' | grep -oE '[0-9]+$' | sort -u || true"
+  );
+
+  const ports = new Set<number>();
+  for (const raw of [dockerResult.stdout, listenResult.stdout]) {
+    for (const line of raw.trim().split('\n')) {
+      const p = parseInt(line, 10);
+      if (!isNaN(p)) ports.add(p);
+    }
+  }
+  return [...ports];
+}
+
+/** Is anything listening on this TCP port right now? */
+async function isPortListening(ssh: SSHClient, port: number): Promise<boolean> {
+  const result = await ssh.exec(`ss -tln 2>/dev/null | grep -E "[:.]${port}( |$)" || true`);
+  return !!result.stdout.trim();
+}
+
+/**
+ * Host ports published by the project's OWN containers — plain/legacy `pushify-<slug>`,
+ * blue-green `pushify-<slug>-blue|-green`, or compose stacks whose project label is
+ * exactly `pushify-<slug>` (never a name-prefix match: `app` must not claim `app-2`'s
+ * ports). A port held by these is safe to keep using.
+ */
+async function getPortsOwnedBySlug(ssh: SSHClient, projectSlug: string): Promise<Set<number>> {
+  const result = await ssh.exec(
+    `docker ps --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Ports}}' 2>/dev/null || true`
+  );
+  const owned = new Set<number>();
+  const namePattern = new RegExp(`^pushify-${projectSlug}(-blue|-green)?$`);
+  for (const line of result.stdout.trim().split('\n')) {
+    if (!line) continue;
+    const [name = '', composeProject = '', ports = ''] = line.split('|');
+    const isOurs = namePattern.test(name) || composeProject === `pushify-${projectSlug}`;
+    if (!isOurs) continue;
+    for (const match of ports.matchAll(/:(\d+)->/g)) {
+      owned.add(parseInt(match[1], 10));
+    }
+  }
+  return owned;
+}
+
+/**
+ * Can the project keep using this port? Yes if its own containers currently hold it
+ * (redeploy while running) or nothing is listening on it (stack is down, port still free).
+ */
+async function isPortReusable(ssh: SSHClient, port: number, projectSlug: string): Promise<boolean> {
+  const owned = await getPortsOwnedBySlug(ssh, projectSlug);
+  if (owned.has(port)) return true;
+  return !(await isPortListening(ssh, port));
+}
+
+/**
+ * Get or assign a stable port for a project.
+ * Priority: (1) the registry assignment, (2) options.preferredPort (e.g. the port a
+ * pre-registry deploy is already running on) — each kept only while the project's own
+ * containers hold it or it's otherwise free; a port squatted by someone else is
+ * dropped and a fresh one assigned from the range, skipping every port that is
+ * registered, published by Docker, or listening on the host.
  */
 export async function getOrAssignPort(
   ssh: SSHClient,
-  projectSlug: string
+  projectSlug: string,
+  options?: { range?: PortRange; preferredPort?: number }
 ): Promise<{ port: number; isNew: boolean }> {
+  const range = options?.range ?? { min: MIN_PORT, max: MAX_PORT };
   const registry = await loadRegistry(ssh);
 
-  // Check if project already has a port assigned
+  // Sticky path: keep the previously assigned/used port whenever it's still ours to use
   const existing = registry.assignments.find((a) => a.projectSlug === projectSlug);
+  const candidates = [existing?.port, options?.preferredPort].filter(
+    (p): p is number => typeof p === 'number' && !isNaN(p)
+  );
+  for (const candidate of candidates) {
+    if (await isPortReusable(ssh, candidate, projectSlug)) {
+      if (existing?.port !== candidate || !existing) {
+        registry.assignments = registry.assignments.filter((a) => a.projectSlug !== projectSlug);
+        registry.assignments.push({
+          port: candidate,
+          projectSlug,
+          assignedAt: new Date().toISOString(),
+        });
+        await saveRegistry(ssh, registry);
+      }
+      return { port: candidate, isNew: false };
+    }
+  }
   if (existing) {
-    return { port: existing.port, isNew: false };
+    // Assigned port was taken over by another process — release and reassign
+    registry.assignments = registry.assignments.filter((a) => a.projectSlug !== projectSlug);
   }
 
   // Get currently used ports
@@ -85,7 +156,7 @@ export async function getOrAssignPort(
 
   // Find next available port
   let port: number | null = null;
-  for (let p = MIN_PORT; p <= MAX_PORT; p++) {
+  for (let p = range.min; p <= range.max; p++) {
     if (!allUsedPorts.has(p)) {
       port = p;
       break;
@@ -93,7 +164,7 @@ export async function getOrAssignPort(
   }
 
   if (port === null) {
-    throw new Error(`No available ports in range ${MIN_PORT}-${MAX_PORT}`);
+    throw new Error(`No available ports in range ${range.min}-${range.max}`);
   }
 
   // Assign the port
