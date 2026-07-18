@@ -4,6 +4,7 @@
 
 ### Added
 - **Multi-year domain registration (1–5 years).** `POST /domains/purchase` and the new quote logic accept a `years` term; the total is priced as year-1 registration + (years−1) renewals on both the wholesale and retail side, so multi-year never undercuts cost. Term is stored per domain and reflected in emails/admin events.
+- **Post-redirect purchase confirm** — `POST /domains/purchase/confirm` fulfills a paid checkout session directly when the user returns from Stripe (org-verified, idempotent with the webhook per session id), so domains register instantly even before the webhook lands — and local/dev setups work without `stripe listen`.
 - **Pay by card when credits don't cover a domain.** New `POST /domains/purchase/checkout` creates a Stripe Checkout session for the exact quoted amount; on `checkout.session.completed` the webhook credits the wallet with the paid amount (idempotent per session id) and registers the domain through the normal purchase path. If registration fails after payment, the paid amount **stays as wallet credit** (never lost) and the operator is notified.
 
 ## [0.2.0-beta.54] - 2026-07-18

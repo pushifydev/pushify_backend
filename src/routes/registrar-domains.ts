@@ -86,6 +86,32 @@ registrarDomainRoutes.post('/purchase/checkout', async (c) => {
   return c.json({ data: { url, amountCents: quote.retailTotalCents } });
 });
 
+// Post-redirect confirm — registers the card-paid domain without waiting for the webhook
+const confirmSchema = z.object({ sessionId: z.string().min(8).max(255) });
+
+registrarDomainRoutes.post('/purchase/confirm', async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+
+  const body = confirmSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!body.success) {
+    throw new HTTPException(400, { message: t(locale, 'domains', 'invalidFormat') });
+  }
+
+  try {
+    const result = await stripeService.confirmDomainPurchase(organizationId, body.data.sessionId);
+    return c.json({ data: result });
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      (err.message === 'CHECKOUT_SESSION_INVALID' || err.message === 'CHECKOUT_ORG_MISMATCH')
+    ) {
+      throw new HTTPException(400, { message: t(locale, 'domains', 'invalidFormat') });
+    }
+    throw err;
+  }
+});
+
 const autoRenewSchema = z.object({ enabled: z.boolean() });
 
 registrarDomainRoutes.patch('/:domainName/auto-renew', async (c) => {
