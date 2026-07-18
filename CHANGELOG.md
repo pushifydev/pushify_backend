@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0-beta.54] - 2026-07-18
+
+### Added
+- **Domain sales (registrar reseller integration).** Users can now search, buy, and auto-connect custom domains without leaving Pushify:
+  - **Registrar adapter layer** (`REGISTRAR_PROVIDER=namecom` + `NAMECOM_USERNAME`/`NAMECOM_TOKEN`, optional `NAMECOM_API_URL` for name.com's test environment). The adapter interface is provider-agnostic so higher-volume wholesalers (OpenSRS/CentralNic) can be added later without touching the product layer. Unset = feature hidden everywhere.
+  - **Retail pricing with margin** — wholesale price + `DOMAIN_MARGIN_PERCENT` (default 20%), rounded up to a x.49/x.99 ending, never below cost; `DOMAIN_MAX_PRICE_CENTS` (default $300) and a premium-domain block guard against expensive surprises.
+  - **API**: `GET /api/v1/domains/config` (feature discovery), `GET /domains/search?q=` (availability + retail prices across 10 popular TLDs), `POST /domains/purchase`, `GET /domains`, `PATCH /domains/:domain/auto-renew`.
+  - **Payment from infra credits**: purchase debits the wallet (new `domain_purchase`/`domain_renewal` transaction types); the charge is taken first and **automatically refunded if registration fails**. WHOIS privacy is enabled on registration.
+  - **Auto-connect to a project**: optional `projectId` creates apex A + www CNAME records at the registrar pointing at the project's server and registers the domain on the project (existing verify → nginx → SSL flow takes over). Best-effort — a DNS/attach hiccup never voids the purchase.
+  - **Renewal worker** (12h sweep): domains expiring within 30 days auto-renew from the wallet at the registrar's live renewal price (falls back to the price captured at purchase), refund on failure; insufficient credits / auto-renew-off / failures send the owner a reminder email (throttled to one per 7 days); past-expiry domains are marked expired. New tables: `purchased_domains` (migration `0035`).
+  - **Emails + admin events**: purchase/renewal confirmations and renewal reminders (EN/TR); `domain.purchased`, `domain.renewed`, `domain.renewal_failed` operator notifications.
+
 ## [0.2.0-beta.53] - 2026-07-14
 
 ### Fixed

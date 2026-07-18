@@ -239,6 +239,13 @@
       "when": 1784017858166,
       "tag": "0034_infra_billing_carry",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1784391537815,
+      "tag": "0035_purchased_domains",
+      "breakpoints": true
     }
   ]
 }

@@ -1070,3 +1070,152 @@ export async function sendAdminNotificationEmail(
     logger.error({ error, to, subject }, 'Failed to send admin notification email');
   }
 }
+
+// ============ Domain sales emails ============
+
+function formatDomainDate(date: Date, locale: 'en' | 'tr'): string {
+  return date.toLocaleDateString(locale === 'tr' ? 'tr-TR' : 'en-US', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+}
+
+export async function sendDomainPurchasedEmail(
+  to: string,
+  orgName: string,
+  domainName: string,
+  priceCents: number,
+  expiresAt: Date,
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping domain purchase email');
+    return;
+  }
+  const domainsUrl = `${env.FRONTEND_URL}/dashboard/domains`;
+  const safeDomain = esc(domainName);
+  const expiry = formatDomainDate(expiresAt, locale);
+  const subjects = {
+    en: `Domain registered — ${domainName}`,
+    tr: `Alan adı kaydedildi — ${domainName}`,
+  };
+  const bodyHtml =
+    locale === 'tr'
+      ? `<strong style="color:#18181b;">${safeDomain}</strong> alan adı <strong style="color:#18181b;">${esc(orgName)}</strong> için kaydedildi (${formatUsd(priceCents)}). Yenileme tarihi: <strong style="color:#18181b;">${expiry}</strong>.`
+      : `<strong style="color:#18181b;">${safeDomain}</strong> was registered for <strong style="color:#18181b;">${esc(orgName)}</strong> (${formatUsd(priceCents)}). Renews on <strong style="color:#18181b;">${expiry}</strong>.`;
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: subjects[locale] ?? subjects.en,
+      html: renderTransactionalEmail({
+        title: locale === 'tr' ? 'Alan adı kaydedildi' : 'Domain registered',
+        greeting: locale === 'tr' ? 'Merhaba,' : 'Hi there,',
+        bodyHtml,
+        button: { href: domainsUrl, label: locale === 'tr' ? 'Alan adlarını görüntüle' : 'View domains' },
+      }),
+    });
+    logger.info({ to, domainName }, 'Domain purchase email sent');
+  } catch (error) {
+    logger.error({ error, to, domainName }, 'Failed to send domain purchase email');
+  }
+}
+
+export async function sendDomainRenewedEmail(
+  to: string,
+  orgName: string,
+  domainName: string,
+  priceCents: number,
+  expiresAt: Date,
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping domain renewal email');
+    return;
+  }
+  const domainsUrl = `${env.FRONTEND_URL}/dashboard/domains`;
+  const expiry = formatDomainDate(expiresAt, locale);
+  const subjects = {
+    en: `Domain renewed — ${domainName}`,
+    tr: `Alan adı yenilendi — ${domainName}`,
+  };
+  const bodyHtml =
+    locale === 'tr'
+      ? `<strong style="color:#18181b;">${esc(domainName)}</strong> otomatik olarak yenilendi (${formatUsd(priceCents)}). Yeni yenileme tarihi: <strong style="color:#18181b;">${expiry}</strong>.`
+      : `<strong style="color:#18181b;">${esc(domainName)}</strong> was renewed automatically (${formatUsd(priceCents)}). Next renewal: <strong style="color:#18181b;">${expiry}</strong>.`;
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: subjects[locale] ?? subjects.en,
+      html: renderTransactionalEmail({
+        title: locale === 'tr' ? 'Alan adı yenilendi' : 'Domain renewed',
+        greeting: locale === 'tr' ? 'Merhaba,' : 'Hi there,',
+        bodyHtml,
+        button: { href: domainsUrl, label: locale === 'tr' ? 'Alan adlarını görüntüle' : 'View domains' },
+      }),
+    });
+    logger.info({ to, domainName }, 'Domain renewed email sent');
+  } catch (error) {
+    logger.error({ error, to, domainName }, 'Failed to send domain renewed email');
+  }
+}
+
+export async function sendDomainRenewalReminderEmail(
+  to: string,
+  orgName: string,
+  domainName: string,
+  expiresAt: Date,
+  reason: 'insufficient_credits' | 'auto_renew_off' | 'renewal_failed',
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping domain renewal reminder');
+    return;
+  }
+  const billingUrl = `${env.FRONTEND_URL}/dashboard/billing`;
+  const expiry = formatDomainDate(expiresAt, locale);
+  const reasons = {
+    en: {
+      insufficient_credits:
+        'Auto-renew is on, but your infrastructure credit balance is too low to cover the renewal. Add credits to keep the domain.',
+      auto_renew_off:
+        'Auto-renew is turned off for this domain. Enable it (or renew manually) to keep the domain.',
+      renewal_failed:
+        'The automatic renewal attempt failed. We will retry, but please check your billing to be safe.',
+    },
+    tr: {
+      insufficient_credits:
+        'Otomatik yenileme açık, ancak altyapı kredisi bakiyeniz yenileme için yetersiz. Alan adını korumak için kredi yükleyin.',
+      auto_renew_off:
+        'Bu alan adı için otomatik yenileme kapalı. Alan adını korumak için açın ya da manuel yenileyin.',
+      renewal_failed:
+        'Otomatik yenileme denemesi başarısız oldu. Yeniden deneyeceğiz; yine de faturalandırmayı kontrol edin.',
+    },
+  };
+  const subjects = {
+    en: `Action needed — ${domainName} expires on ${expiry}`,
+    tr: `İşlem gerekli — ${domainName} ${expiry} tarihinde sona eriyor`,
+  };
+  const bodyHtml =
+    locale === 'tr'
+      ? `<strong style="color:#18181b;">${esc(domainName)}</strong> alan adının süresi <strong style="color:#18181b;">${expiry}</strong> tarihinde doluyor. ${(reasons.tr as Record<string, string>)[reason]}`
+      : `<strong style="color:#18181b;">${esc(domainName)}</strong> expires on <strong style="color:#18181b;">${expiry}</strong>. ${(reasons.en as Record<string, string>)[reason]}`;
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: subjects[locale] ?? subjects.en,
+      html: renderTransactionalEmail({
+        title: locale === 'tr' ? 'Alan adı yenileme hatırlatması' : 'Domain renewal reminder',
+        greeting: locale === 'tr' ? 'Merhaba,' : 'Hi there,',
+        bodyHtml,
+        button: { href: billingUrl, label: locale === 'tr' ? 'Faturalandırmaya git' : 'Go to billing' },
+      }),
+    });
+    logger.info({ to, domainName, reason }, 'Domain renewal reminder sent');
+  } catch (error) {
+    logger.error({ error, to, domainName }, 'Failed to send domain renewal reminder');
+  }
+}

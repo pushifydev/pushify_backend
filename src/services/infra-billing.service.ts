@@ -452,7 +452,7 @@ export const infraBillingService = {
   async debitWallet(
     organizationId: string,
     amountCents: number,
-    type: 'server_hourly_charge' | 'adjustment',
+    type: 'server_hourly_charge' | 'adjustment' | 'domain_purchase' | 'domain_renewal',
     description: string,
     serverId?: string,
     metadata?: Record<string, unknown>,

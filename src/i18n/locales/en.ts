@@ -112,6 +112,14 @@ export interface TranslationKeys {
     dnsPointsElsewhere: string;
     nginxUpdated: string;
     nginxUpdateFailed: string;
+    registrarNotConfigured: string;
+    searchQueryRequired: string;
+    notAvailable: string;
+    premiumNotSupported: string;
+    priceTooHigh: string;
+    insufficientCredits: string;
+    purchaseFailed: string;
+    purchasedNotFound: string;
   };
   deployments: {
     notFound: string;
@@ -403,6 +411,14 @@ export const en: TranslationKeys = {
     dnsPointsElsewhere: 'DNS points to a different IP address.',
     nginxUpdated: 'Nginx settings updated successfully',
     nginxUpdateFailed: 'Failed to apply Nginx settings to server',
+    registrarNotConfigured: 'Domain purchasing is not enabled on this platform',
+    searchQueryRequired: 'Enter a domain or keyword to search',
+    notAvailable: 'This domain is not available for registration',
+    premiumNotSupported: 'Premium domains are not supported yet',
+    priceTooHigh: 'This domain exceeds the maximum purchase price',
+    insufficientCredits: 'Insufficient credits. Add credits in Billing to buy this domain.',
+    purchaseFailed: 'Domain registration failed. Your credits were refunded.',
+    purchasedNotFound: 'Purchased domain not found',
   },
 
   // Deployments

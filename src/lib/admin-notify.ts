@@ -19,7 +19,10 @@ export type AdminEvent =
   | 'project.deleted'
   | 'database.created'
   | 'database.deleted'
-  | 'deployment.failed';
+  | 'deployment.failed'
+  | 'domain.purchased'
+  | 'domain.renewed'
+  | 'domain.renewal_failed';
 
 export const ADMIN_EVENT_TITLES: Record<AdminEvent, string> = {
   'user.registered': 'New user registered',
@@ -35,6 +38,9 @@ export const ADMIN_EVENT_TITLES: Record<AdminEvent, string> = {
   'database.created': 'Database created',
   'database.deleted': 'Database deleted',
   'deployment.failed': 'Deployment failed',
+  'domain.purchased': 'Domain purchased',
+  'domain.renewed': 'Domain renewed',
+  'domain.renewal_failed': 'Domain renewal failed',
 };
 
 /** Parse ADMIN_NOTIFY_EMAILS into a clean recipient list. */
