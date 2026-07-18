@@ -1219,3 +1219,111 @@ export async function sendDomainRenewalReminderEmail(
     logger.error({ error, to, domainName }, 'Failed to send domain renewal reminder');
   }
 }
+
+export async function sendDomainTransferStartedEmail(
+  to: string,
+  orgName: string,
+  domainName: string,
+  priceCents: number,
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) return;
+  const domainsUrl = `${env.FRONTEND_URL}/dashboard/domains`;
+  const subjects = {
+    en: `Domain transfer started — ${domainName}`,
+    tr: `Alan adı transferi başlatıldı — ${domainName}`,
+  };
+  const bodyHtml =
+    locale === 'tr'
+      ? `<strong style="color:#18181b;">${esc(domainName)}</strong> için transfer başlatıldı (${formatUsd(priceCents)} — 1 yıl yenileme dahil). Transferler genellikle 5-7 gün sürer; mevcut sağlayıcınızdan gelen onay e-postası süreci hızlandırır. Tamamlanınca haber vereceğiz.`
+      : `The transfer of <strong style="color:#18181b;">${esc(domainName)}</strong> has started (${formatUsd(priceCents)} — includes a 1-year renewal). Transfers usually take 5-7 days; approving the confirmation email from your current provider speeds it up. We'll let you know when it completes.`;
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: subjects[locale] ?? subjects.en,
+      html: renderTransactionalEmail({
+        title: locale === 'tr' ? 'Transfer başlatıldı' : 'Transfer started',
+        greeting: locale === 'tr' ? 'Merhaba,' : 'Hi there,',
+        bodyHtml,
+        button: { href: domainsUrl, label: locale === 'tr' ? 'Alan adlarını görüntüle' : 'View domains' },
+      }),
+    });
+  } catch (error) {
+    logger.error({ error, to, domainName }, 'Failed to send transfer started email');
+  }
+}
+
+export async function sendDomainTransferResultEmail(
+  to: string,
+  orgName: string,
+  domainName: string,
+  succeeded: boolean,
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) return;
+  const domainsUrl = `${env.FRONTEND_URL}/dashboard/domains`;
+  const subjects = {
+    en: succeeded
+      ? `Domain transfer completed — ${domainName}`
+      : `Domain transfer failed — ${domainName}`,
+    tr: succeeded
+      ? `Alan adı transferi tamamlandı — ${domainName}`
+      : `Alan adı transferi başarısız — ${domainName}`,
+  };
+  const bodyHtml = succeeded
+    ? locale === 'tr'
+      ? `<strong style="color:#18181b;">${esc(domainName)}</strong> artık Pushify'da! DNS kayıtlarını yönetebilir ve bir projeye bağlayabilirsiniz.`
+      : `<strong style="color:#18181b;">${esc(domainName)}</strong> is now managed in Pushify! You can manage its DNS records and connect it to a project.`
+    : locale === 'tr'
+      ? `<strong style="color:#18181b;">${esc(domainName)}</strong> transferi tamamlanamadı (iptal veya ret). Ödemeniz hesabınıza kredi olarak iade edildi. Yetki kodunu ve kilidi kontrol edip tekrar deneyebilirsiniz.`
+      : `The transfer of <strong style="color:#18181b;">${esc(domainName)}</strong> could not be completed (cancelled or rejected). Your payment was refunded to your credit balance. Check the auth code and lock status, then try again.`;
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: subjects[locale] ?? subjects.en,
+      html: renderTransactionalEmail({
+        title: subjects[locale] ?? subjects.en,
+        greeting: locale === 'tr' ? 'Merhaba,' : 'Hi there,',
+        bodyHtml,
+        button: { href: domainsUrl, label: locale === 'tr' ? 'Alan adlarını görüntüle' : 'View domains' },
+      }),
+    });
+  } catch (error) {
+    logger.error({ error, to, domainName }, 'Failed to send transfer result email');
+  }
+}
+
+export async function sendDomainAuthCodeViewedEmail(
+  to: string,
+  orgName: string,
+  domainName: string,
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) return;
+  const domainsUrl = `${env.FRONTEND_URL}/dashboard/domains`;
+  const subjects = {
+    en: `Transfer auth code viewed — ${domainName}`,
+    tr: `Transfer yetki kodu görüntülendi — ${domainName}`,
+  };
+  const bodyHtml =
+    locale === 'tr'
+      ? `<strong style="color:#18181b;">${esc(domainName)}</strong> için transfer yetki (EPP) kodu görüntülendi ve alan adının kilidi açıldı. Bu işlemi siz yapmadıysanız hemen şifrenizi değiştirin ve destek ile iletişime geçin.`
+      : `The transfer auth (EPP) code for <strong style="color:#18181b;">${esc(domainName)}</strong> was viewed and the domain was unlocked. If this wasn't you, change your password immediately and contact support.`;
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: subjects[locale] ?? subjects.en,
+      html: renderTransactionalEmail({
+        title: locale === 'tr' ? 'Güvenlik bildirimi' : 'Security notice',
+        greeting: locale === 'tr' ? 'Merhaba,' : 'Hi there,',
+        bodyHtml,
+        button: { href: domainsUrl, label: locale === 'tr' ? 'Alan adlarını görüntüle' : 'View domains' },
+      }),
+    });
+  } catch (error) {
+    logger.error({ error, to, domainName }, 'Failed to send auth code viewed email');
+  }
+}

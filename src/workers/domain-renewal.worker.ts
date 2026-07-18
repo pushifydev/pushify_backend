@@ -4,7 +4,11 @@ import { organizations, purchasedDomains } from '../db/schema';
 import { getRegistrar } from '../lib/registrar';
 import { retailFromWholesaleCents } from '../lib/domain-pricing';
 import { resolveBillingNotifyEmail } from '../lib/billing-notify';
-import { sendDomainRenewalReminderEmail, sendDomainRenewedEmail } from '../lib/email';
+import {
+  sendDomainRenewalReminderEmail,
+  sendDomainRenewedEmail,
+  sendDomainTransferResultEmail,
+} from '../lib/email';
 import { logger } from '../lib/logger';
 import { adminNotify } from '../services/admin-notify.service';
 import { infraBillingService } from '../services/infra-billing.service';
@@ -201,6 +205,74 @@ export async function sweepDomainRenewals(now: Date = new Date()): Promise<{
   return stats;
 }
 
+/** Poll in-flight transfers; activate completed ones, refund cancelled/rejected ones. */
+export async function sweepPendingTransfers(): Promise<{ completed: number; failed: number }> {
+  const registrar = getRegistrar();
+  const stats = { completed: 0, failed: 0 };
+  if (!registrar) return stats;
+
+  const pending = await db
+    .select()
+    .from(purchasedDomains)
+    .where(eq(purchasedDomains.status, 'transfer_pending'));
+
+  for (const domain of pending) {
+    try {
+      const status = await registrar.getTransferStatus(domain.domainName).catch(() => 'unknown' as const);
+      if (status === 'pending' || status === 'unknown') continue;
+
+      if (status === 'completed') {
+        const info = await registrar.getDomainInfo(domain.domainName).catch(() => null);
+        await db
+          .update(purchasedDomains)
+          .set({
+            status: 'active',
+            expiresAt: info?.expiresAt ?? domain.expiresAt,
+            renewalWholesaleCents: info?.renewalWholesaleCents ?? domain.renewalWholesaleCents,
+            lastRenewalError: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(purchasedDomains.id, domain.id));
+        stats.completed++;
+        await notifyOwner(domain.organizationId, (email, orgName) =>
+          sendDomainTransferResultEmail(email, orgName, domain.domainName, true)
+        );
+        adminNotify('domain.transfer_completed', {
+          organizationId: domain.organizationId,
+          domain: domain.domainName,
+        });
+        continue;
+      }
+
+      // cancelled / failed — money back, mark the row
+      await refundDomainCharge(
+        domain.organizationId,
+        domain.purchasePriceCents,
+        `Refund: domain transfer ${status} — ${domain.domainName}`
+      ).catch((err) =>
+        logger.error({ err, domain: domain.domainName }, 'Transfer refund failed')
+      );
+      await db
+        .update(purchasedDomains)
+        .set({ status: 'transfer_failed', lastRenewalError: `transfer_${status}`, updatedAt: new Date() })
+        .where(eq(purchasedDomains.id, domain.id));
+      stats.failed++;
+      await notifyOwner(domain.organizationId, (email, orgName) =>
+        sendDomainTransferResultEmail(email, orgName, domain.domainName, false)
+      );
+      adminNotify('domain.transfer_failed', {
+        organizationId: domain.organizationId,
+        domain: domain.domainName,
+        reason: status,
+      });
+    } catch (error) {
+      logger.error({ err: error, domain: domain.domainName }, 'Transfer sweep item failed');
+    }
+  }
+
+  return stats;
+}
+
 export function startDomainRenewalWorker(): void {
   if (isRunning) {
     logger.warn('Domain renewal worker is already running');
@@ -221,6 +293,12 @@ export function startDomainRenewalWorker(): void {
       .then((stats) => {
         if (stats.renewed || stats.reminded || stats.expired) {
           logger.info(stats, 'Domain renewal sweep completed');
+        }
+        return sweepPendingTransfers();
+      })
+      .then((stats) => {
+        if (stats.completed || stats.failed) {
+          logger.info(stats, 'Domain transfer sweep completed');
         }
       })
       .catch((err) => logger.error({ err }, 'Domain renewal sweep failed'))

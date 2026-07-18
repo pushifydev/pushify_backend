@@ -290,3 +290,11 @@ export const webhookRateLimiter = createRateLimiter({
 });
 
 export { getClientIp };
+
+/** Unauthenticated domain availability search on the marketing site — each hit costs a registrar API call. */
+export const domainPublicSearchRateLimiter = createRateLimiter({
+  namespace: 'domain-public-search',
+  windowMs: 60 * 1000,
+  maxRequests: 10,
+  message: 'Too many domain searches, please try again in a minute',
+});

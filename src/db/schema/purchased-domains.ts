@@ -15,6 +15,8 @@ import { projects } from './projects';
 export const purchasedDomainStatusEnum = pgEnum('purchased_domain_status', [
   'active',
   'expired',
+  'transfer_pending',
+  'transfer_failed',
 ]);
 
 /** Domains sold through Pushify via the registrar reseller integration. */

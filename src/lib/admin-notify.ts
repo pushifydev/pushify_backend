@@ -22,7 +22,11 @@ export type AdminEvent =
   | 'deployment.failed'
   | 'domain.purchased'
   | 'domain.renewed'
-  | 'domain.renewal_failed';
+  | 'domain.renewal_failed'
+  | 'domain.transfer_started'
+  | 'domain.transfer_completed'
+  | 'domain.transfer_failed'
+  | 'domain.authcode_viewed';
 
 export const ADMIN_EVENT_TITLES: Record<AdminEvent, string> = {
   'user.registered': 'New user registered',
@@ -41,6 +45,10 @@ export const ADMIN_EVENT_TITLES: Record<AdminEvent, string> = {
   'domain.purchased': 'Domain purchased',
   'domain.renewed': 'Domain renewed',
   'domain.renewal_failed': 'Domain renewal failed',
+  'domain.transfer_started': 'Domain transfer started',
+  'domain.transfer_completed': 'Domain transfer completed',
+  'domain.transfer_failed': 'Domain transfer failed',
+  'domain.authcode_viewed': 'Domain auth code viewed (transfer-out)',
 };
 
 /** Parse ADMIN_NOTIFY_EMAILS into a clean recipient list. */

@@ -134,6 +134,14 @@ export const tr: TranslationKeys = {
     insufficientCredits: 'Yetersiz kredi. Bu alan adını almak için Faturalandırma bölümünden kredi yükleyin.',
     purchaseFailed: 'Alan adı kaydı başarısız oldu. Krediniz iade edildi.',
     purchasedNotFound: 'Satın alınmış alan adı bulunamadı',
+    notActiveDomain: 'Bu alan adı henüz aktif değil (transfer sürüyor veya süresi dolmuş)',
+    dnsRecordInvalid: 'Geçersiz DNS kaydı. Host, tür, değer, TTL ve önceliği kontrol edin.',
+    nameserversInvalid: '2-6 adet geçerli nameserver adresi girin',
+    forwardingInvalid: 'Geçersiz e-posta yönlendirme. Basit bir takma ad ve geçerli bir hedef e-posta kullanın.',
+    authCodeRequired: 'Transfer yetki (EPP) kodu gerekli',
+    transferNotRegistered: 'Bu alan adı hiçbir yerde kayıtlı değil — doğrudan satın alabilirsiniz.',
+    transferPriceUnknown: 'Bu uzantı için transfer fiyatı belirlenemedi',
+    transferStartFailed: 'Transfer başlatılamadı. Yetki kodunu ve alan adının kilidinin açık olduğunu kontrol edin. Krediniz iade edildi.',
   },
 
   // Deployments

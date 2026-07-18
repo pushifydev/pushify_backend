@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0-beta.56] - 2026-07-19
+
+### Added
+- **Full domain management for sold domains.** Customers' domains live in Pushify's reseller account, so the platform is their only control panel — this release makes it a complete one:
+  - **DNS records** — list/create/update/delete A, AAAA, CNAME, MX, TXT, SRV, NS records (host/TTL/priority validation) via `/domains/:domain/dns`.
+  - **Domain transfer-in** — `GET /domains/transfer/quote` prices a transfer at the TLD's renewal rate (probed live from the registrar); `POST /domains/transfer` charges the wallet, starts the transfer with the auth/EPP code (refund if it fails to start), and records it as `transfer_pending` (migration `0036`). The renewal worker now also polls in-flight transfers every sweep: completed → domain becomes active with its real expiry; cancelled/rejected → **automatic refund** + status `transfer_failed`. Start/result emails (EN/TR) + operator events.
+  - **Transfer-out (ICANN compliance)** — `POST /domains/:domain/auth-code` unlocks the domain and returns its EPP code so users can leave freely; viewing it triggers a **security notice email** to the owner and an operator event.
+  - **Registrar lock toggle** and **custom nameservers** (2-6, validated) — point a domain at Cloudflare or any external DNS.
+  - **Email forwarding** — `info@yourdomain.com → anywhere` aliases (list/create/delete).
+  - **Public availability search** — `GET /domains/public-search` (no auth, 10 req/min/IP) to power a marketing domain-search page.
+
 ## [0.2.0-beta.55] - 2026-07-19
 
 ### Added
