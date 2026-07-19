@@ -2,7 +2,9 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import { authMiddleware } from '../middleware/auth';
-import { registrarDomainService } from '../services/registrar-domain.service';
+import { MAX_PURCHASE_YEARS, registrarDomainService } from '../services/registrar-domain.service';
+import { billingService } from '../services/billing.service';
+import { stripeService } from '../services/stripe.service';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 
@@ -32,6 +34,7 @@ registrarDomainRoutes.get('/', async (c) => {
 const purchaseSchema = z.object({
   domainName: z.string().min(4).max(253),
   projectId: z.string().uuid().optional(),
+  years: z.number().int().min(1).max(MAX_PURCHASE_YEARS).optional(),
 });
 
 registrarDomainRoutes.post('/purchase', async (c) => {
@@ -48,10 +51,65 @@ registrarDomainRoutes.post('/purchase', async (c) => {
     organizationId,
     userId,
     domainName: body.data.domainName,
+    years: body.data.years,
     projectId: body.data.projectId,
     locale,
   });
   return c.json({ data: result }, 201);
+});
+
+// Card payment path: quote → Stripe Checkout; the webhook registers the domain on payment
+registrarDomainRoutes.post('/purchase/checkout', async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const userId = c.get('userId')!;
+  const locale = c.get('locale');
+
+  const body = purchaseSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!body.success) {
+    throw new HTTPException(400, { message: t(locale, 'domains', 'invalidFormat') });
+  }
+
+  const years = body.data.years ?? 1;
+  const quote = await registrarDomainService.quote(body.data.domainName, years, locale);
+  const billingInfo = await billingService.getBillingInfo(organizationId, userId, locale);
+
+  const url = await stripeService.createDomainPurchaseSession({
+    organizationId,
+    userId,
+    email: billingInfo.billingEmail || '',
+    domainName: quote.domainName,
+    years,
+    amountCents: quote.retailTotalCents,
+    projectId: body.data.projectId,
+    locale,
+  });
+  return c.json({ data: { url, amountCents: quote.retailTotalCents } });
+});
+
+// Post-redirect confirm — registers the card-paid domain without waiting for the webhook
+const confirmSchema = z.object({ sessionId: z.string().min(8).max(255) });
+
+registrarDomainRoutes.post('/purchase/confirm', async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+
+  const body = confirmSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!body.success) {
+    throw new HTTPException(400, { message: t(locale, 'domains', 'invalidFormat') });
+  }
+
+  try {
+    const result = await stripeService.confirmDomainPurchase(organizationId, body.data.sessionId);
+    return c.json({ data: result });
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      (err.message === 'CHECKOUT_SESSION_INVALID' || err.message === 'CHECKOUT_ORG_MISMATCH')
+    ) {
+      throw new HTTPException(400, { message: t(locale, 'domains', 'invalidFormat') });
+    }
+    throw err;
+  }
 });
 
 const autoRenewSchema = z.object({ enabled: z.boolean() });

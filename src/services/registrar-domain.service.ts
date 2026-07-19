@@ -23,6 +23,20 @@ const DOMAIN_REGEX =
 /** TLDs offered in keyword search (one availability call covers all of them). */
 const SEARCH_TLDS = ['com', 'net', 'org', 'dev', 'app', 'io', 'co', 'me', 'xyz', 'ai'];
 
+export const MAX_PURCHASE_YEARS = 5;
+
+export interface DomainPurchaseQuote {
+  domainName: string;
+  years: number;
+  /** Year-1 registration wholesale (USD cents) */
+  wholesaleCents: number;
+  renewalWholesaleCents: number | null;
+  /** Registration + (years-1) renewals, wholesale (USD cents) */
+  wholesaleTotalCents: number;
+  /** What the customer pays for the whole term (USD cents) */
+  retailTotalCents: number;
+}
+
 export interface DomainSearchResult {
   domainName: string;
   available: boolean;
@@ -122,21 +136,21 @@ export const registrarDomainService = {
     });
   },
 
-  async purchase(params: {
-    organizationId: string;
-    userId: string;
-    domainName: string;
-    projectId?: string;
-    locale: SupportedLocale;
-  }) {
-    const { organizationId, userId, projectId, locale } = params;
+  /**
+   * Validate + price a purchase without buying. Multi-year terms are priced as
+   * year-1 registration + (years-1) renewals, on both the wholesale and retail side.
+   */
+  async quote(domainNameRaw: string, years: number, locale: SupportedLocale): Promise<DomainPurchaseQuote> {
     const registrar = getRegistrar();
     if (!registrar) {
       throw new HTTPException(503, { message: t(locale, 'domains', 'registrarNotConfigured') });
     }
 
-    const domainName = normalizeKeyword(params.domainName);
+    const domainName = normalizeKeyword(domainNameRaw);
     if (!DOMAIN_REGEX.test(domainName)) {
+      throw new HTTPException(400, { message: t(locale, 'domains', 'invalidFormat') });
+    }
+    if (!Number.isInteger(years) || years < 1 || years > MAX_PURCHASE_YEARS) {
       throw new HTTPException(400, { message: t(locale, 'domains', 'invalidFormat') });
     }
 
@@ -149,7 +163,7 @@ export const registrarDomainService = {
       throw new HTTPException(409, { message: t(locale, 'domains', 'alreadyExists') });
     }
 
-    // Re-check availability at purchase time — search results may be stale
+    // Live availability — search results may be stale
     const [availability] = await registrar.checkAvailability([domainName]);
     if (!availability?.available || !availability.wholesaleCents) {
       throw new HTTPException(409, { message: t(locale, 'domains', 'notAvailable') });
@@ -158,21 +172,47 @@ export const registrarDomainService = {
       throw new HTTPException(400, { message: t(locale, 'domains', 'premiumNotSupported') });
     }
 
-    const years = 1;
     const wholesaleCents = availability.wholesaleCents;
-    const retailCents = retailFromWholesaleCents(wholesaleCents);
-    if (retailCents > domainMaxPriceCents()) {
+    const renewalWholesaleCents = availability.renewalWholesaleCents;
+    const retailYear1 = retailFromWholesaleCents(wholesaleCents);
+    if (retailYear1 > domainMaxPriceCents()) {
       throw new HTTPException(400, { message: t(locale, 'domains', 'priceTooHigh') });
     }
+    const renewalWholesaleEach = renewalWholesaleCents ?? wholesaleCents;
+    const retailRenewalEach = retailFromWholesaleCents(renewalWholesaleEach);
+
+    return {
+      domainName,
+      years,
+      wholesaleCents,
+      renewalWholesaleCents,
+      wholesaleTotalCents: wholesaleCents + (years - 1) * renewalWholesaleEach,
+      retailTotalCents: retailYear1 + (years - 1) * retailRenewalEach,
+    };
+  },
+
+  async purchase(params: {
+    organizationId: string;
+    userId: string;
+    domainName: string;
+    years?: number;
+    projectId?: string;
+    locale: SupportedLocale;
+  }) {
+    const { organizationId, userId, projectId, locale } = params;
+    const years = params.years ?? 1;
+    const quote = await this.quote(params.domainName, years, locale);
+    const { domainName, wholesaleTotalCents, retailTotalCents } = quote;
+    const registrar = getRegistrar()!;
 
     // Charge first — registration only proceeds on a successful debit
     const balanceAfter = await infraBillingService.debitWallet(
       organizationId,
-      retailCents,
+      retailTotalCents,
       'domain_purchase',
-      `Domain purchase: ${domainName} (${years} year)`,
+      `Domain purchase: ${domainName} (${years} ${years === 1 ? 'year' : 'years'})`,
       undefined,
-      { domainName, wholesaleCents }
+      { domainName, years, wholesaleTotalCents }
     );
     if (balanceAfter === null) {
       throw new HTTPException(402, { message: t(locale, 'domains', 'insufficientCredits') });
@@ -180,12 +220,15 @@ export const registrarDomainService = {
 
     let registered;
     try {
-      registered = await registrar.register(domainName, { years, wholesaleCents });
+      registered = await registrar.register(domainName, {
+        years,
+        wholesaleCents: wholesaleTotalCents,
+      });
     } catch (error) {
       logger.error({ err: error, domainName, organizationId }, 'Domain registration failed');
       await refundWallet(
         organizationId,
-        retailCents,
+        retailTotalCents,
         `Refund: domain registration failed — ${domainName}`
       ).catch((refundErr) =>
         logger.error({ err: refundErr, domainName, organizationId }, 'Domain refund failed')
@@ -204,9 +247,9 @@ export const registrarDomainService = {
         domainName,
         registrar: registrar.id,
         years,
-        purchasePriceCents: retailCents,
-        wholesalePriceCents: wholesaleCents,
-        renewalWholesaleCents: availability.renewalWholesaleCents,
+        purchasePriceCents: retailTotalCents,
+        wholesalePriceCents: wholesaleTotalCents,
+        renewalWholesaleCents: quote.renewalWholesaleCents,
         expiresAt,
       })
       .returning();
@@ -229,8 +272,9 @@ export const registrarDomainService = {
     adminNotify('domain.purchased', {
       organizationId,
       domain: domainName,
-      retail: `$${(retailCents / 100).toFixed(2)}`,
-      wholesale: `$${(wholesaleCents / 100).toFixed(2)}`,
+      years: String(years),
+      retail: `$${(retailTotalCents / 100).toFixed(2)}`,
+      wholesale: `$${(wholesaleTotalCents / 100).toFixed(2)}`,
       expires: expiresAt.toISOString().slice(0, 10),
     });
 
@@ -245,7 +289,7 @@ export const registrarDomainService = {
         notifyEmail,
         org.name,
         domainName,
-        retailCents,
+        retailTotalCents,
         expiresAt,
         locale === 'tr' ? 'tr' : 'en'
       );
@@ -290,6 +334,59 @@ export const registrarDomainService = {
 
     await domainService.create(projectId, organizationId, userId, { domain: domainName }, locale);
     return true;
+  },
+
+  /**
+   * Complete a card-paid domain purchase (from the Stripe Checkout webhook).
+   * Credits the wallet with the paid amount (idempotent per checkout session id),
+   * then runs the normal wallet purchase. If registration fails, the purchase path
+   * refunds the debit — the paid amount stays in the customer's wallet instead of
+   * being lost, and the operator is notified.
+   */
+  async fulfillCheckout(params: {
+    sessionId: string;
+    organizationId: string;
+    userId: string;
+    domainName: string;
+    years: number;
+    projectId?: string;
+    locale: SupportedLocale;
+    amountCents: number;
+  }): Promise<{ fulfilled: boolean; alreadyProcessed: boolean }> {
+    const { created } = await infraBillingService.creditWallet(
+      params.organizationId,
+      params.amountCents,
+      `Domain purchase payment: ${params.domainName}`,
+      params.sessionId
+    );
+    if (!created) {
+      return { fulfilled: false, alreadyProcessed: true };
+    }
+
+    try {
+      await this.purchase({
+        organizationId: params.organizationId,
+        userId: params.userId,
+        domainName: params.domainName,
+        years: params.years,
+        projectId: params.projectId,
+        locale: params.locale,
+      });
+      return { fulfilled: true, alreadyProcessed: false };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'unknown';
+      logger.error(
+        { err: error, domainName: params.domainName, organizationId: params.organizationId },
+        'Domain checkout fulfillment failed — paid amount left as wallet credit'
+      );
+      adminNotify('payment.failed', {
+        organizationId: params.organizationId,
+        stage: 'domain_checkout_fulfillment',
+        domain: params.domainName,
+        reason: reason.slice(0, 200),
+      });
+      return { fulfilled: false, alreadyProcessed: false };
+    }
   },
 
   async listByOrganization(organizationId: string) {

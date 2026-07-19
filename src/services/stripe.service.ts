@@ -190,6 +190,60 @@ export const stripeService = {
     return session.url;
   },
 
+  /**
+   * One-time checkout to buy a domain by card when wallet credits don't cover it.
+   * The webhook credits the wallet with the paid amount, then registers the domain.
+   */
+  async createDomainPurchaseSession(params: {
+    organizationId: string;
+    userId: string;
+    email: string;
+    domainName: string;
+    years: number;
+    amountCents: number;
+    projectId?: string;
+    locale: string;
+  }): Promise<string> {
+    const stripe = getStripe();
+    const customerId = await this.getOrCreateCustomer(params.organizationId, params.email);
+
+    const session = await stripe.checkout.sessions.create({
+      customer: customerId,
+      mode: 'payment',
+      line_items: [
+        {
+          price_data: {
+            currency: 'usd',
+            unit_amount: params.amountCents,
+            product_data: {
+              name: `Domain: ${params.domainName}`,
+              description: `${params.years}-year registration via Pushify`,
+            },
+          },
+          quantity: 1,
+        },
+      ],
+      success_url: `${env.FRONTEND_URL}/dashboard/domains?domain_purchase=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${env.FRONTEND_URL}/dashboard/domains?domain_purchase=cancelled`,
+      metadata: {
+        organizationId: params.organizationId,
+        userId: params.userId,
+        checkoutType: 'domain_purchase',
+        domainName: params.domainName,
+        years: String(params.years),
+        amountCents: String(params.amountCents),
+        projectId: params.projectId ?? '',
+        locale: params.locale,
+      },
+    });
+
+    if (!session.url) {
+      throw new Error('Failed to create checkout session');
+    }
+
+    return session.url;
+  },
+
   async createPortalSession(organizationId: string): Promise<string> {
     const stripe = getStripe();
 
@@ -371,6 +425,50 @@ export const stripeService = {
     };
   },
 
+  /**
+   * Post-redirect fulfillment for a card-paid domain purchase. Mirrors
+   * confirmInfraTopUp: the success page confirms the session directly, so local
+   * setups without webhook forwarding (and slow webhooks in prod) still register
+   * the domain immediately. Idempotent with the webhook per checkout session id.
+   */
+  async confirmDomainPurchase(
+    organizationId: string,
+    sessionId: string,
+  ): Promise<{ fulfilled: boolean; alreadyProcessed: boolean; paymentStatus: string | null }> {
+    const stripe = getStripe();
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    const meta = session.metadata ?? {};
+
+    if (meta.checkoutType !== 'domain_purchase' || !meta.domainName || !meta.userId) {
+      throw new Error('CHECKOUT_SESSION_INVALID');
+    }
+    if (meta.organizationId !== organizationId) {
+      throw new Error('CHECKOUT_ORG_MISMATCH');
+    }
+    if (session.payment_status !== 'paid') {
+      return { fulfilled: false, alreadyProcessed: false, paymentStatus: session.payment_status };
+    }
+
+    const amountCents = parseInt(meta.amountCents || '0', 10);
+    const years = parseInt(meta.years || '1', 10);
+    if (amountCents <= 0) {
+      throw new Error('CHECKOUT_SESSION_INVALID');
+    }
+
+    const { registrarDomainService } = await import('./registrar-domain.service');
+    const result = await registrarDomainService.fulfillCheckout({
+      sessionId: session.id,
+      organizationId,
+      userId: meta.userId,
+      domainName: meta.domainName,
+      years: Number.isInteger(years) && years > 0 ? years : 1,
+      projectId: meta.projectId || undefined,
+      locale: meta.locale === 'tr' ? 'tr' : 'en',
+      amountCents,
+    });
+    return { ...result, paymentStatus: session.payment_status };
+  },
+
   async handleWebhookEvent(payload: string, signature: string): Promise<void> {
     const stripe = getStripe();
 
@@ -396,6 +494,30 @@ export const stripeService = {
         const checkoutType = session.metadata?.checkoutType;
 
         if (!organizationId) break;
+
+        if (checkoutType === 'domain_purchase') {
+          if (session.payment_status !== 'paid') break;
+          const meta = session.metadata ?? {};
+          const amountCents = parseInt(meta.amountCents || '0', 10);
+          const years = parseInt(meta.years || '1', 10);
+          if (!meta.domainName || !meta.userId || amountCents <= 0) break;
+          const { registrarDomainService } = await import('./registrar-domain.service');
+          const result = await registrarDomainService.fulfillCheckout({
+            sessionId: session.id,
+            organizationId,
+            userId: meta.userId,
+            domainName: meta.domainName,
+            years: Number.isInteger(years) && years > 0 ? years : 1,
+            projectId: meta.projectId || undefined,
+            locale: meta.locale === 'tr' ? 'tr' : 'en',
+            amountCents,
+          });
+          logger.info(
+            { organizationId, domainName: meta.domainName, ...result },
+            'Domain checkout webhook processed'
+          );
+          break;
+        }
 
         if (checkoutType === 'infra_credit') {
           const result = await this.applyInfraCreditFromCheckoutSession(session);
