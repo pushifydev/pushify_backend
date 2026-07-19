@@ -22,6 +22,7 @@ import { startAppSleepWorker, stopAppSleepWorker } from '../workers/app-sleep.wo
 import { startAdminNotifyWorker, stopAdminNotifyWorker } from '../workers/admin-notify.worker';
 import { startDomainRenewalWorker, stopDomainRenewalWorker } from '../workers/domain-renewal.worker';
 import { startOnboardingWorker, stopOnboardingWorker } from '../workers/onboarding.worker';
+import { startDigestWorker, stopDigestWorker } from '../workers/digest.worker';
 import { reconcileProvisioningServers, gcOrphanedLocalDeployments } from '../services/server-reconcile.service';
 import { closeQueues } from '../lib/queue';
 import {
@@ -79,6 +80,7 @@ export async function startBackgroundWorkers(): Promise<void> {
   startAppSleepWorker();
   startDomainRenewalWorker();
   startOnboardingWorker();
+  startDigestWorker();
 
   const adminNotifyWorker = startAdminNotifyWorker();
   if (adminNotifyWorker) {
@@ -164,6 +166,7 @@ export async function stopBackgroundWorkers(): Promise<void> {
   stopAppSleepWorker();
   stopDomainRenewalWorker();
   stopOnboardingWorker();
+  stopDigestWorker();
   stopDeploymentWorker();
   stopHealthCheckWorker();
   stopMetricsWorker();
