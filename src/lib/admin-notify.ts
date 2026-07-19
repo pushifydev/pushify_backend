@@ -26,7 +26,8 @@ export type AdminEvent =
   | 'domain.transfer_started'
   | 'domain.transfer_completed'
   | 'domain.transfer_failed'
-  | 'domain.authcode_viewed';
+  | 'domain.authcode_viewed'
+  | 'feedback.cancellation';
 
 export const ADMIN_EVENT_TITLES: Record<AdminEvent, string> = {
   'user.registered': 'New user registered',
@@ -49,6 +50,7 @@ export const ADMIN_EVENT_TITLES: Record<AdminEvent, string> = {
   'domain.transfer_completed': 'Domain transfer completed',
   'domain.transfer_failed': 'Domain transfer failed',
   'domain.authcode_viewed': 'Domain auth code viewed (transfer-out)',
+  'feedback.cancellation': 'Cancellation feedback received',
 };
 
 /** Parse ADMIN_NOTIFY_EMAILS into a clean recipient list. */

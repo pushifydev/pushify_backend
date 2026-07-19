@@ -253,6 +253,13 @@
       "when": 1784410148646,
       "tag": "0036_domain_transfer_status",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1784472085505,
+      "tag": "0037_onboarding_and_feedback",
+      "breakpoints": true
     }
   ]
 }

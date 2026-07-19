@@ -54,3 +54,4 @@ export * from './usage';
 // Site Editor (Site Studio)
 export * from './site-editor';
 export * from './purchased-domains';
+export * from './onboarding';

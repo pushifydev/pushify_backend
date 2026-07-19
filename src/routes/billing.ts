@@ -6,6 +6,10 @@ import { INFRA_TOPUP_AMOUNTS_CENTS } from '../lib/infra-billing';
 import { authMiddleware } from '../middleware/auth';
 import { requireOrgRole } from '../middleware/require-role';
 import { env } from '../config/env';
+import { db } from '../db';
+import { cancellationFeedback } from '../db/schema';
+import { adminNotify } from '../services/admin-notify.service';
+import { z } from 'zod';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 import type { PlanType } from '../lib/plans';
@@ -116,6 +120,34 @@ billingRouter.post('/cancel', requireOrgRole('owner', 'admin'), async (c) => {
 });
 
 // Resume cancelled subscription
+
+// One-question exit survey — recorded before/after cancellation, never blocks it
+const cancellationFeedbackSchema = z.object({
+  reason: z.enum(['too_expensive', 'missing_features', 'bugs', 'switched', 'project_ended', 'other']),
+  comment: z.string().max(1000).optional(),
+});
+
+billingRouter.post('/cancellation-feedback', async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const userId = c.get('userId')!;
+  const body = cancellationFeedbackSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!body.success) {
+    return c.json({ data: { recorded: false } });
+  }
+  await db.insert(cancellationFeedback).values({
+    organizationId,
+    userId,
+    reason: body.data.reason,
+    comment: body.data.comment?.trim() || null,
+  });
+  adminNotify('feedback.cancellation', {
+    organizationId,
+    reason: body.data.reason,
+    comment: (body.data.comment ?? '').slice(0, 300) || '—',
+  });
+  return c.json({ data: { recorded: true } });
+});
+
 billingRouter.post('/resume', requireOrgRole('owner', 'admin'), async (c) => {
   const organizationId = c.get('organizationId')!;
 

@@ -21,6 +21,7 @@ import { startScheduledTaskWorker, stopScheduledTaskWorker } from '../workers/sc
 import { startAppSleepWorker, stopAppSleepWorker } from '../workers/app-sleep.worker';
 import { startAdminNotifyWorker, stopAdminNotifyWorker } from '../workers/admin-notify.worker';
 import { startDomainRenewalWorker, stopDomainRenewalWorker } from '../workers/domain-renewal.worker';
+import { startOnboardingWorker, stopOnboardingWorker } from '../workers/onboarding.worker';
 import { reconcileProvisioningServers, gcOrphanedLocalDeployments } from '../services/server-reconcile.service';
 import { closeQueues } from '../lib/queue';
 import {
@@ -77,6 +78,7 @@ export async function startBackgroundWorkers(): Promise<void> {
   startScheduledTaskWorker();
   startAppSleepWorker();
   startDomainRenewalWorker();
+  startOnboardingWorker();
 
   const adminNotifyWorker = startAdminNotifyWorker();
   if (adminNotifyWorker) {
@@ -161,6 +163,7 @@ export async function stopBackgroundWorkers(): Promise<void> {
   void stopAdminNotifyWorker();
   stopAppSleepWorker();
   stopDomainRenewalWorker();
+  stopOnboardingWorker();
   stopDeploymentWorker();
   stopHealthCheckWorker();
   stopMetricsWorker();

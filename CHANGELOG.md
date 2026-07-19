@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0-beta.58] - 2026-07-19
+
+### Added
+- **Onboarding email sequence (state-driven, not a dumb timer).** A new hourly worker walks organizations created in the last 30 days and sends at most one lifecycle email per state: ~day 1 "deploy your first app" (only if they haven't), ~day 3 either "need a hand?" (still no deploy) or "connect a domain" (deployed, no custom domain), day 7 "add a database" (deployed, no DB). Each email links a **signed unsubscribe URL** (`GET /auth/unsubscribe-onboarding?token=`) that sets a per-user opt-out honored by the whole sequence; sends are claimed atomically in a new `onboarding_emails` table (unique per org+email) so concurrent sweeps can never double-send, and failed sends retry next sweep. The 30-day cap guarantees existing users are never spammed at rollout. Migration `0038`* — tables `onboarding_emails`, `cancellation_feedback`, column `users.onboarding_emails_opt_out`. 6 unit tests on the state machine.
+- **Cancellation exit survey** — `POST /billing/cancellation-feedback` records a one-question reason (`too_expensive | missing_features | bugs | switched | project_ended | other` + optional comment) and notifies the operator (`feedback.cancellation` admin event). Never blocks the cancel flow.
+
+*migration file is `0037_onboarding_and_feedback`.
+
 ## [0.2.0-beta.57] - 2026-07-19
 
 ### Fixed

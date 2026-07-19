@@ -1327,3 +1327,68 @@ export async function sendDomainAuthCodeViewedEmail(
     logger.error({ error, to, domainName }, 'Failed to send auth code viewed email');
   }
 }
+
+// ============ Onboarding lifecycle emails ============
+// Every send goes through sendOnboardingEmail so the unsubscribe footer is never missed.
+
+export type OnboardingEmailKey = 'first_deploy' | 'stuck' | 'connect_domain' | 'add_database';
+
+const ONBOARDING_CONTENT: Record<
+  OnboardingEmailKey,
+  { subject: string; title: string; body: string; button: string; href: string }
+> = {
+  first_deploy: {
+    subject: 'Deploy your first app in under a minute',
+    title: 'Your first deploy is one push away',
+    body: 'Connect a Git repository, pick a server (or use ours), and Pushify detects your framework, builds in Docker and puts it live with SSL. Most first deploys finish in under a minute.',
+    button: 'Deploy your first app',
+    href: '/dashboard/projects/new',
+  },
+  stuck: {
+    subject: 'Need a hand getting started?',
+    title: 'Stuck on something?',
+    body: "You created your Pushify account a few days ago but haven't deployed yet — if something got in the way, we'd genuinely like to fix it. The docs cover the common paths, the step-by-step Next.js guide walks a full VPS setup, and replying to this email reaches a human.",
+    button: 'Read the quickstart docs',
+    href: '/docs',
+  },
+  connect_domain: {
+    subject: 'Put a real domain on your app',
+    title: 'Your app deserves its own domain',
+    body: 'Your deployment is live on a pushify.dev subdomain. Connect a domain you already own — DNS checks and SSL are automatic — or search and register one right inside Pushify and it wires itself to your project.',
+    button: 'Connect a domain',
+    href: '/dashboard/domains',
+  },
+  add_database: {
+    subject: 'Add a database to your project',
+    title: 'One click to Postgres, MySQL, Redis or MongoDB',
+    body: 'Pushify provisions databases on your servers with credentials, backups and network wiring handled for you — your app reaches them by name on a private network.',
+    button: 'Add a database',
+    href: '/dashboard/databases',
+  },
+};
+
+export async function sendOnboardingEmail(
+  to: string,
+  key: OnboardingEmailKey,
+  unsubscribeUrl: string
+): Promise<boolean> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) return false;
+  const c = ONBOARDING_CONTENT[key];
+  const html = renderTransactionalEmail({
+    title: c.title,
+    greeting: 'Hi there,',
+    body: c.body,
+    button: { href: `${env.FRONTEND_URL}${c.href}`, label: c.button },
+  }).replace(
+    '</body>',
+    `<p style="text-align:center;font-size:11px;color:#9ca3af;margin:16px 0;">You get a few of these while settling in. <a href="${unsubscribeUrl}" style="color:#9ca3af;">Unsubscribe from onboarding emails</a>.</p></body>`
+  );
+  try {
+    await transporter.sendMail({ from: FROM_ADDRESS, to, subject: c.subject, html });
+    logger.info({ to, key }, 'Onboarding email sent');
+    return true;
+  } catch (error) {
+    logger.error({ error, to, key }, 'Failed to send onboarding email');
+    return false;
+  }
+}
