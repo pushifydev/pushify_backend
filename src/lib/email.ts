@@ -1392,3 +1392,53 @@ export async function sendOnboardingEmail(
     return false;
   }
 }
+
+export interface WeeklyDigestStats {
+  deployments: number;
+  failedDeployments: number;
+  activeProjects: number;
+  runningServers: number;
+  walletBalanceCents: number;
+}
+
+export async function sendWeeklyDigestEmail(
+  to: string,
+  orgName: string,
+  stats: WeeklyDigestStats
+): Promise<boolean> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) return false;
+  const dashboardUrl = `${env.FRONTEND_URL}/dashboard`;
+  const settingsUrl = `${env.FRONTEND_URL}/dashboard/settings?tab=notifications`;
+  const rows = [
+    ['Deployments this week', String(stats.deployments)],
+    ['Failed deployments', String(stats.failedDeployments)],
+    ['Active projects', String(stats.activeProjects)],
+    ['Running servers', String(stats.runningServers)],
+    ['Infrastructure credits', formatUsd(stats.walletBalanceCents)],
+  ]
+    .map(
+      ([k, v]) =>
+        `<tr><td style="padding:6px 12px;color:#6b7280;font-size:13px;">${k}</td><td style="padding:6px 12px;color:#18181b;font-size:13px;font-weight:600;text-align:right;">${v}</td></tr>`
+    )
+    .join('');
+  const bodyHtml =
+    `Your week on <strong style="color:#18181b;">${esc(orgName)}</strong>:` +
+    `<table style="width:100%;border-collapse:collapse;background:#f9fafb;border-radius:8px;margin-top:12px;">${rows}</table>`;
+  const html = renderTransactionalEmail({
+    title: 'Your Pushify week',
+    greeting: 'Hi there,',
+    bodyHtml,
+    button: { href: dashboardUrl, label: 'Open dashboard' },
+  }).replace(
+    '</body>',
+    `<p style="text-align:center;font-size:11px;color:#9ca3af;margin:16px 0;">Weekly digest is on for your account — <a href="${settingsUrl}" style="color:#9ca3af;">manage notification settings</a>.</p></body>`
+  );
+  try {
+    await transporter.sendMail({ from: FROM_ADDRESS, to, subject: `Your Pushify week — ${orgName}`, html });
+    logger.info({ to, orgName }, 'Weekly digest sent');
+    return true;
+  } catch (error) {
+    logger.error({ error, to }, 'Failed to send weekly digest');
+    return false;
+  }
+}

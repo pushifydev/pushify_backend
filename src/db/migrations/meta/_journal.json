@@ -260,6 +260,13 @@
       "when": 1784472085505,
       "tag": "0037_onboarding_and_feedback",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1784477338255,
+      "tag": "0038_notification_prefs",
+      "breakpoints": true
     }
   ]
 }

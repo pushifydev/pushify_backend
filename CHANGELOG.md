@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0-beta.59] - 2026-07-19
+
+### Added
+- **Notification preferences are now real.** They lived only in the browser's localStorage — the backend never saw them. New `users.notification_prefs` (migration `0038`) with `GET/PUT /auth/me/notification-prefs`, which also exposes the onboarding-email opt-out as a toggle. Two preferences gained actual consumers immediately: **securityAlerts** now gates the new-device sign-in email, and **weeklyDigest** powers a brand-new **weekly digest worker** — Mondays (UTC), opt-in only, real per-organization numbers (deployments and failures this week, active projects, running servers, credit balance), atomic per-week dedupe, and skipped entirely when there is nothing to report. `deploymentAlerts`/`productUpdates` are stored and ready for their future senders.
+
 ## [0.2.0-beta.58] - 2026-07-19
 
 ### Added

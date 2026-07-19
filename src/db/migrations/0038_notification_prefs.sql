@@ -1,0 +1,1 @@
+ALTER TABLE "users" ADD COLUMN "notification_prefs" jsonb DEFAULT '{"deploymentAlerts":true,"securityAlerts":true,"weeklyDigest":false,"productUpdates":false}'::jsonb NOT NULL;

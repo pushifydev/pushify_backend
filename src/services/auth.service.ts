@@ -197,8 +197,9 @@ export const authService = {
     // Store session
     await this.createSession(user.id, refreshToken, ipAddress, userAgent);
 
-    // Notify of sign-in from a new device (fire-and-forget)
-    if (isNewDevice) {
+    // Notify of sign-in from a new device (fire-and-forget) — honors the
+    // user's securityAlerts notification preference
+    if (isNewDevice && (user.notificationPrefs?.securityAlerts ?? true)) {
       sendNewLoginEmail(
         user.email,
         user.name,
