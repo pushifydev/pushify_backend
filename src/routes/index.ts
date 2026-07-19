@@ -30,6 +30,7 @@ import { siteStudioRoutes } from './site-studio';
 import { siteEditorRoutes } from './site-editor';
 import { dashboardRoutes } from './dashboard';
 import { alertsRoutes } from './alerts';
+import { registrarDomainRoutes } from './registrar-domains';
 
 export function registerRoutes(app: OpenAPIHono<any>) {
   // API v1 routes
@@ -56,6 +57,7 @@ export function registerRoutes(app: OpenAPIHono<any>) {
   app.route('/api/v1/activity', activityRoutes);
   app.route('/api/v1/organizations', organizationRoutes);
   app.route('/api/v1/billing', billingRoutes);
+  app.route('/api/v1/domains', registrarDomainRoutes);
   app.route('/api/v1/dashboard', dashboardRoutes);
   app.route('/api/v1/alerts', alertsRoutes);
   app.route('/api/v1/servers', serverRoutes);

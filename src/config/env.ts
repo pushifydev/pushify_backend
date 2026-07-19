@@ -79,6 +79,17 @@ const envSchema = z.object({
    *  servers, billing, failed deploys, …). Unset = disabled. */
   ADMIN_NOTIFY_EMAILS: z.string().optional(),
 
+  // Domain sales (registrar reseller). Unset = feature hidden.
+  REGISTRAR_PROVIDER: z.enum(['namecom']).optional(),
+  NAMECOM_USERNAME: z.string().optional(),
+  NAMECOM_TOKEN: z.string().optional(),
+  /** Override for name.com test env: https://api.dev.name.com */
+  NAMECOM_API_URL: z.string().url().optional(),
+  /** Retail margin applied over wholesale domain prices (default 20) */
+  DOMAIN_MARGIN_PERCENT: z.coerce.number().min(0).max(500).optional(),
+  /** Refuse purchases above this retail price (fat-finger/premium guard, default 30000 = $300) */
+  DOMAIN_MAX_PRICE_CENTS: z.coerce.number().int().positive().optional(),
+
   // AI Assistant
   ANTHROPIC_API_KEY: z.string().optional(),
 

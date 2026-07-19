@@ -20,6 +20,7 @@ import { startNotificationWorker, stopNotificationWorker } from '../workers/noti
 import { startScheduledTaskWorker, stopScheduledTaskWorker } from '../workers/scheduled-task.worker';
 import { startAppSleepWorker, stopAppSleepWorker } from '../workers/app-sleep.worker';
 import { startAdminNotifyWorker, stopAdminNotifyWorker } from '../workers/admin-notify.worker';
+import { startDomainRenewalWorker, stopDomainRenewalWorker } from '../workers/domain-renewal.worker';
 import { reconcileProvisioningServers, gcOrphanedLocalDeployments } from '../services/server-reconcile.service';
 import { closeQueues } from '../lib/queue';
 import {
@@ -75,6 +76,7 @@ export async function startBackgroundWorkers(): Promise<void> {
 
   startScheduledTaskWorker();
   startAppSleepWorker();
+  startDomainRenewalWorker();
 
   const adminNotifyWorker = startAdminNotifyWorker();
   if (adminNotifyWorker) {
@@ -158,6 +160,7 @@ export async function stopBackgroundWorkers(): Promise<void> {
   stopScheduledTaskWorker();
   void stopAdminNotifyWorker();
   stopAppSleepWorker();
+  stopDomainRenewalWorker();
   stopDeploymentWorker();
   stopHealthCheckWorker();
   stopMetricsWorker();

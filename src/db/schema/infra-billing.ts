@@ -17,6 +17,8 @@ export const infraWalletTransactionTypeEnum = pgEnum('infra_wallet_transaction_t
   'server_hourly_charge',
   'server_refund',
   'adjustment',
+  'domain_purchase',
+  'domain_renewal',
 ]);
 
 export const infraWalletTransactions = pgTable('infra_wallet_transactions', {

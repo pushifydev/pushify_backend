@@ -126,6 +126,14 @@ export const tr: TranslationKeys = {
     dnsPointsElsewhere: 'DNS farklı bir IP adresine işaret ediyor.',
     nginxUpdated: 'Nginx ayarları başarıyla güncellendi',
     nginxUpdateFailed: 'Nginx ayarları sunucuya uygulanamadı',
+    registrarNotConfigured: 'Alan adı satın alma bu platformda etkin değil',
+    searchQueryRequired: 'Aramak için bir alan adı veya anahtar kelime girin',
+    notAvailable: 'Bu alan adı kayıt için uygun değil',
+    premiumNotSupported: 'Premium alan adları henüz desteklenmiyor',
+    priceTooHigh: 'Bu alan adı maksimum satın alma fiyatını aşıyor',
+    insufficientCredits: 'Yetersiz kredi. Bu alan adını almak için Faturalandırma bölümünden kredi yükleyin.',
+    purchaseFailed: 'Alan adı kaydı başarısız oldu. Krediniz iade edildi.',
+    purchasedNotFound: 'Satın alınmış alan adı bulunamadı',
   },
 
   // Deployments
