@@ -172,6 +172,7 @@ export interface TranslationKeys {
     limitReached: string;
   };
   twoFactor: {
+    codeRequiredForOAuth: string;
     setupRequired: string;
     alreadyEnabled: string;
     invalidCode: string;
@@ -491,6 +492,8 @@ export const en: TranslationKeys = {
 
   // Two-Factor Authentication
   twoFactor: {
+    codeRequiredForOAuth:
+      'Your account signs in with Google/GitHub and has no password. Enter a current authenticator code (or a backup code) to confirm.',
     setupRequired: '2FA setup required. Please generate a new secret first.',
     alreadyEnabled: '2FA is already enabled for this account',
     invalidCode: 'Invalid verification code',

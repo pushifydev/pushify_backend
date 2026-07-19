@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.0-beta.57] - 2026-07-19
+
+### Fixed
+- **OAuth (Google/GitHub) accounts can now manage 2FA and set a password.** Accounts without a password hit dead ends on every password-confirmation flow. Now: `/auth/me` exposes `hasPassword`; disabling 2FA and regenerating backup codes accept **either** the account password **or** (for passwordless accounts) a current authenticator/backup code via the shared re-auth guard; and `/auth/me/change-password` lets a passwordless account set its **first** password without `currentPassword` (the authenticated session is the proof) — password accounts still verify the current password and the not-same-as-old rule.
+- **2FA disable/backup-code regeneration was broken for everyone**: the password check passed its arguments to `verifyPassword` in the wrong order, so the correct password always failed verification. Fixed alongside the guard rework.
+
 ## [0.2.0-beta.56] - 2026-07-19
 
 ### Added

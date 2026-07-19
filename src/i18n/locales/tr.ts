@@ -198,6 +198,8 @@ export const tr: TranslationKeys = {
 
   // Two-Factor Authentication
   twoFactor: {
+    codeRequiredForOAuth:
+      'Hesabınız Google/GitHub ile giriş yapıyor ve şifresi yok. Onaylamak için güncel bir doğrulayıcı kodu (veya yedek kod) girin.',
     setupRequired: '2FA kurulumu gerekli. Lütfen önce yeni bir anahtar oluşturun.',
     alreadyEnabled: '2FA zaten bu hesap için etkin',
     invalidCode: 'Geçersiz doğrulama kodu',

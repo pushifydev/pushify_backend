@@ -59,6 +59,7 @@ const CurrentUserSchema = z
       avatarUrl: z.string().nullable(),
       emailVerified: z.boolean(),
       twoFactorEnabled: z.boolean(),
+      hasPassword: z.boolean().optional(),
       createdAt: z.coerce.date(),
     }),
   })
@@ -118,7 +119,7 @@ const UpdateProfileRequestSchema = z
 
 const ChangePasswordRequestSchema = z
   .object({
-    currentPassword: z.string().min(1).openapi({ example: 'OldPass123' }),
+    currentPassword: z.string().min(1).optional().openapi({ example: 'OldPass123' }),
     newPassword: z
       .string()
       .min(8, 'Password must be at least 8 characters')
@@ -902,6 +903,7 @@ authRouter.openapi(meRoute, async (c) => {
       avatarUrl: user.avatarUrl,
       emailVerified: user.emailVerified,
       twoFactorEnabled: user.twoFactorEnabled,
+      hasPassword: user.hasPassword,
       createdAt: user.createdAt,
     },
   });

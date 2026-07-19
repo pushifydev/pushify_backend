@@ -426,7 +426,10 @@ export const authService = {
     if (!user) {
       throw new HTTPException(404, { message: t(locale, 'auth', 'userNotFound') });
     }
-    return user;
+    // OAuth-only accounts have no password — the dashboard adapts its security
+    // flows (2FA disable via code, "set password" instead of "change password").
+    const full = await userRepository.findById(userId);
+    return { ...user, hasPassword: !!full?.passwordHash };
   },
 
   /**
@@ -462,7 +465,7 @@ export const authService = {
    */
   async changePassword(
     userId: string,
-    input: { currentPassword: string; newPassword: string },
+    input: { currentPassword?: string; newPassword: string },
     locale: SupportedLocale = 'en'
   ) {
     const user = await userRepository.findById(userId);
@@ -470,20 +473,23 @@ export const authService = {
       throw new HTTPException(404, { message: t(locale, 'auth', 'userNotFound') });
     }
 
-    // Verify current password
-    if (!user.passwordHash) {
-      throw new HTTPException(400, { message: t(locale, 'auth', 'currentPasswordIncorrect') });
-    }
-    const isValidPassword = await verifyPassword(user.passwordHash, input.currentPassword);
-    if (!isValidPassword) {
-      throw new HTTPException(400, { message: t(locale, 'auth', 'currentPasswordIncorrect') });
-    }
+    if (user.passwordHash) {
+      // Existing password — verify it before allowing a change
+      const isValidPassword =
+        !!input.currentPassword &&
+        (await verifyPassword(user.passwordHash, input.currentPassword));
+      if (!isValidPassword) {
+        throw new HTTPException(400, { message: t(locale, 'auth', 'currentPasswordIncorrect') });
+      }
 
-    // Check new password is different
-    const isSamePassword = await verifyPassword(user.passwordHash, input.newPassword);
-    if (isSamePassword) {
-      throw new HTTPException(400, { message: t(locale, 'auth', 'newPasswordSameAsCurrent') });
+      // Check new password is different
+      const isSamePassword = await verifyPassword(user.passwordHash, input.newPassword);
+      if (isSamePassword) {
+        throw new HTTPException(400, { message: t(locale, 'auth', 'newPasswordSameAsCurrent') });
+      }
     }
+    // else: OAuth-only account (Google/GitHub) setting its FIRST password —
+    // there is nothing to verify against; the authenticated session is the proof.
 
     // Hash and update password
     const newPasswordHash = await hashPassword(input.newPassword);
