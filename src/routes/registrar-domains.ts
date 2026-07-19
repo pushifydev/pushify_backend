@@ -128,7 +128,8 @@ registrarDomainRoutes.post('/purchase/confirm', async (c) => {
 registrarDomainRoutes.get('/transfer/quote', async (c) => {
   const locale = c.get('locale');
   const quote = await registrarDomainService.getTransferQuote(c.req.query('domain') ?? '', locale);
-  return c.json({ data: quote });
+  // Never expose our wholesale cost to customers
+  return c.json({ data: { domainName: quote.domainName, retailCents: quote.retailCents } });
 });
 
 const transferSchema = z.object({
