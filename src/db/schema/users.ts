@@ -14,6 +14,8 @@ export const users = pgTable('users', {
   emailVerified: boolean('email_verified').default(false).notNull(),
   emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
   twoFactorEnabled: boolean('two_factor_enabled').default(false).notNull(),
+  /** Opt-out for lifecycle/onboarding emails (unsubscribe link in those emails) */
+  onboardingEmailsOptOut: boolean('onboarding_emails_opt_out').default(false).notNull(),
   twoFactorSecret: varchar('two_factor_secret', { length: 255 }),
   twoFactorBackupCodes: text('two_factor_backup_codes'), // JSON array of hashed backup codes
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
