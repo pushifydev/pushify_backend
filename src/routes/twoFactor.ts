@@ -54,13 +54,15 @@ const VerifyRequestSchema = z
 
 const DisableRequestSchema = z
   .object({
-    password: z.string().min(1).openapi({ example: 'YourPassword123' }),
+    password: z.string().min(1).optional().openapi({ example: 'YourPassword123' }),
+    twoFactorCode: z.string().min(6).max(20).optional().openapi({ example: '123456' }),
   })
   .openapi('TwoFactorDisableRequest');
 
 const RegenerateBackupCodesRequestSchema = z
   .object({
-    password: z.string().min(1).openapi({ example: 'YourPassword123' }),
+    password: z.string().min(1).optional().openapi({ example: 'YourPassword123' }),
+    twoFactorCode: z.string().min(6).max(20).optional().openapi({ example: '123456' }),
   })
   .openapi('RegenerateBackupCodesRequest');
 
@@ -279,9 +281,9 @@ twoFactorRouter.openapi(verifyRoute, async (c) => {
 twoFactorRouter.openapi(disableRoute, async (c) => {
   const userId = c.get('userId')!;
   const locale = c.get('locale');
-  const { password } = c.req.valid('json');
+  const { password, twoFactorCode } = c.req.valid('json');
 
-  await twoFactorService.disable(userId, password, locale);
+  await twoFactorService.disable(userId, { password, twoFactorCode }, locale);
 
   return c.json({ message: t(locale, 'twoFactor', 'disabled') });
 });
@@ -290,9 +292,9 @@ twoFactorRouter.openapi(disableRoute, async (c) => {
 twoFactorRouter.openapi(regenerateBackupCodesRoute, async (c) => {
   const userId = c.get('userId')!;
   const locale = c.get('locale');
-  const { password } = c.req.valid('json');
+  const { password, twoFactorCode } = c.req.valid('json');
 
-  const backupCodes = await twoFactorService.regenerateBackupCodes(userId, password, locale);
+  const backupCodes = await twoFactorService.regenerateBackupCodes(userId, { password, twoFactorCode }, locale);
 
   return c.json({ backupCodes });
 });

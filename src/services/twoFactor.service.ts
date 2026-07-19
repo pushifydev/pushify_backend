@@ -186,11 +186,49 @@ export const twoFactorService = {
   },
 
   /**
+   * Re-auth guard for sensitive 2FA operations. Password accounts confirm their
+   * password; OAuth-only accounts (Google/GitHub sign-in, no password set) confirm
+   * a current TOTP or unused backup code instead — they have no password to type.
+   */
+  async verifyIdentityForSensitiveAction(
+    userId: string,
+    credentials: { password?: string; twoFactorCode?: string },
+    locale: SupportedLocale = 'en'
+  ): Promise<void> {
+    const user = await db.query.users.findFirst({
+      where: eq(users.id, userId),
+    });
+    if (!user) {
+      throw new HTTPException(404, { message: t(locale, 'auth', 'userNotFound') });
+    }
+
+    if (user.passwordHash) {
+      const password = credentials.password ?? '';
+      const isPasswordValid =
+        password.length > 0 && (await verifyPassword(user.passwordHash, password));
+      if (!isPasswordValid) {
+        throw new HTTPException(400, { message: t(locale, 'auth', 'invalidPassword') });
+      }
+      return;
+    }
+
+    const code = credentials.twoFactorCode?.trim() ?? '';
+    if (!code) {
+      throw new HTTPException(400, { message: t(locale, 'twoFactor', 'codeRequiredForOAuth') });
+    }
+    const validTotp = code.length === 6 && (await this.verifyCode(userId, code, locale));
+    const valid = validTotp || (await this.verifyBackupCode(userId, code, locale));
+    if (!valid) {
+      throw new HTTPException(400, { message: t(locale, 'twoFactor', 'invalidCode') });
+    }
+  },
+
+  /**
    * Disable 2FA
    */
   async disable(
     userId: string,
-    password: string,
+    credentials: { password?: string; twoFactorCode?: string },
     locale: SupportedLocale = 'en'
   ): Promise<void> {
     const user = await db.query.users.findFirst({
@@ -201,14 +239,7 @@ export const twoFactorService = {
       throw new HTTPException(404, { message: t(locale, 'auth', 'userNotFound') });
     }
 
-    // Verify password before disabling 2FA
-    if (!user.passwordHash) {
-      throw new HTTPException(400, { message: t(locale, 'auth', 'invalidPassword') });
-    }
-    const isPasswordValid = await verifyPassword(password, user.passwordHash);
-    if (!isPasswordValid) {
-      throw new HTTPException(400, { message: t(locale, 'auth', 'invalidPassword') });
-    }
+    await this.verifyIdentityForSensitiveAction(userId, credentials, locale);
 
     await db
       .update(users)
@@ -231,7 +262,7 @@ export const twoFactorService = {
    */
   async regenerateBackupCodes(
     userId: string,
-    password: string,
+    credentials: { password?: string; twoFactorCode?: string },
     locale: SupportedLocale = 'en'
   ): Promise<string[]> {
     const user = await db.query.users.findFirst({
@@ -246,14 +277,7 @@ export const twoFactorService = {
       throw new HTTPException(400, { message: t(locale, 'twoFactor', 'notEnabled') });
     }
 
-    // Verify password
-    if (!user.passwordHash) {
-      throw new HTTPException(400, { message: t(locale, 'auth', 'invalidPassword') });
-    }
-    const isPasswordValid = await verifyPassword(password, user.passwordHash);
-    if (!isPasswordValid) {
-      throw new HTTPException(400, { message: t(locale, 'auth', 'invalidPassword') });
-    }
+    await this.verifyIdentityForSensitiveAction(userId, credentials, locale);
 
     // Generate new backup codes
     const backupCodes = this.generateBackupCodes();
