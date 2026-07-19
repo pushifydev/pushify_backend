@@ -1,8 +1,12 @@
 import type {
+  DnsRecord,
   DnsRecordInput,
   DomainAvailability,
+  EmailForwarding,
   RegisteredDomain,
   RegistrarAdapter,
+  RegistrarDomainInfo,
+  TransferStatus,
 } from './types';
 
 /**
@@ -32,6 +36,44 @@ interface NamecomDomain {
   domainName: string;
   expireDate?: string;
   renewalPrice?: number;
+  locked?: boolean;
+  nameservers?: string[];
+}
+
+interface NamecomDnsRecord {
+  id?: number;
+  domainName?: string;
+  host?: string;
+  fqdn?: string;
+  type?: string;
+  answer?: string;
+  ttl?: number;
+  priority?: number;
+}
+
+function mapDnsRecord(domainName: string, r: NamecomDnsRecord): DnsRecord {
+  return {
+    id: String(r.id ?? ''),
+    host: r.host ?? '',
+    fqdn: r.fqdn ?? (r.host ? `${r.host}.${domainName}.` : `${domainName}.`),
+    type: (r.type ?? 'A') as DnsRecord['type'],
+    answer: r.answer ?? '',
+    ttl: r.ttl,
+    priority: r.priority,
+  };
+}
+
+function dnsRecordBody(record: DnsRecordInput): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    host: record.host === '@' ? '' : record.host,
+    type: record.type,
+    answer: record.answer,
+    ttl: record.ttl ?? 300,
+  };
+  if (record.type === 'MX' || record.type === 'SRV') {
+    body.priority = record.priority ?? 10;
+  }
+  return body;
 }
 
 function dollarsToCents(value: number | undefined): number | null {
@@ -49,7 +91,11 @@ export function createNamecomAdapter(config: NamecomConfig): RegistrarAdapter {
   const baseUrl = (config.apiUrl || DEFAULT_API_URL).replace(/\/$/, '');
   const authHeader = `Basic ${Buffer.from(`${config.username}:${config.token}`).toString('base64')}`;
 
-  async function request<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+  async function request<T>(
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+    path: string,
+    body?: unknown
+  ): Promise<T> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
@@ -136,13 +182,127 @@ export function createNamecomAdapter(config: NamecomConfig): RegistrarAdapter {
       return dollarsToCents(result.renewalPrice);
     },
 
-    async createDnsRecord(domainName, record: DnsRecordInput): Promise<void> {
-      await request('POST', `/v4/domains/${encodeURIComponent(domainName)}/records`, {
-        host: record.host === '@' ? '' : record.host,
-        type: record.type,
-        answer: record.answer,
-        ttl: record.ttl ?? 300,
+    // ── DNS ──
+
+    async listDnsRecords(domainName): Promise<DnsRecord[]> {
+      const result = await request<{ records?: NamecomDnsRecord[] }>(
+        'GET',
+        `/v4/domains/${encodeURIComponent(domainName)}/records?perPage=1000`
+      );
+      return (result.records ?? []).map((r) => mapDnsRecord(domainName, r));
+    },
+
+    async createDnsRecord(domainName, record: DnsRecordInput): Promise<DnsRecord> {
+      const result = await request<NamecomDnsRecord>(
+        'POST',
+        `/v4/domains/${encodeURIComponent(domainName)}/records`,
+        dnsRecordBody(record)
+      );
+      return mapDnsRecord(domainName, result);
+    },
+
+    async updateDnsRecord(domainName, recordId, record): Promise<DnsRecord> {
+      const result = await request<NamecomDnsRecord>(
+        'PUT',
+        `/v4/domains/${encodeURIComponent(domainName)}/records/${encodeURIComponent(recordId)}`,
+        dnsRecordBody(record)
+      );
+      return mapDnsRecord(domainName, result);
+    },
+
+    async deleteDnsRecord(domainName, recordId): Promise<void> {
+      await request(
+        'DELETE',
+        `/v4/domains/${encodeURIComponent(domainName)}/records/${encodeURIComponent(recordId)}`
+      );
+    },
+
+    async setNameservers(domainName, nameservers): Promise<void> {
+      await request('POST', `/v4/domains/${encodeURIComponent(domainName)}:setNameservers`, {
+        nameservers,
       });
+    },
+
+    // ── Ownership / transfer ──
+
+    async getDomainInfo(domainName): Promise<RegistrarDomainInfo> {
+      const result = await request<NamecomDomain>(
+        'GET',
+        `/v4/domains/${encodeURIComponent(domainName)}`
+      );
+      return {
+        domainName,
+        expiresAt: parseExpireDate(result.expireDate),
+        locked: !!result.locked,
+        nameservers: result.nameservers ?? [],
+        renewalWholesaleCents: dollarsToCents(result.renewalPrice),
+      };
+    },
+
+    async setLock(domainName, locked): Promise<void> {
+      await request(
+        'POST',
+        `/v4/domains/${encodeURIComponent(domainName)}:${locked ? 'lock' : 'unlock'}`,
+        {}
+      );
+    },
+
+    async getAuthCode(domainName): Promise<string> {
+      const result = await request<{ authCode?: string }>(
+        'GET',
+        `/v4/domains/${encodeURIComponent(domainName)}:getAuthCode`
+      );
+      if (!result.authCode) {
+        throw new Error(`name.com returned no auth code for ${domainName}`);
+      }
+      return result.authCode;
+    },
+
+    async createTransfer(domainName, opts): Promise<void> {
+      await request('POST', '/v4/transfers', {
+        domainName,
+        authCode: opts.authCode,
+        purchasePrice: opts.wholesaleCents / 100,
+      });
+    },
+
+    async getTransferStatus(domainName): Promise<TransferStatus> {
+      const result = await request<{ status?: string }>(
+        'GET',
+        `/v4/transfers/${encodeURIComponent(domainName)}`
+      );
+      const status = (result.status ?? '').toLowerCase();
+      if (status.includes('complete')) return 'completed';
+      if (status.includes('cancel')) return 'cancelled';
+      if (status.includes('fail') || status.includes('reject')) return 'failed';
+      if (status) return 'pending';
+      return 'unknown';
+    },
+
+    // ── Email forwarding ──
+
+    async listEmailForwardings(domainName): Promise<EmailForwarding[]> {
+      const result = await request<{
+        emailForwardings?: Array<{ emailBox?: string; emailTo?: string }>;
+      }>('GET', `/v4/domains/${encodeURIComponent(domainName)}/email/forwarding`);
+      return (result.emailForwardings ?? []).map((f) => ({
+        emailBox: f.emailBox ?? '',
+        emailTo: f.emailTo ?? '',
+      }));
+    },
+
+    async createEmailForwarding(domainName, forwarding): Promise<void> {
+      await request('POST', `/v4/domains/${encodeURIComponent(domainName)}/email/forwarding`, {
+        emailBox: forwarding.emailBox,
+        emailTo: forwarding.emailTo,
+      });
+    },
+
+    async deleteEmailForwarding(domainName, emailBox): Promise<void> {
+      await request(
+        'DELETE',
+        `/v4/domains/${encodeURIComponent(domainName)}/email/forwarding/${encodeURIComponent(emailBox)}`
+      );
     },
   };
 }

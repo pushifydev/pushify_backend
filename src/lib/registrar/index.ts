@@ -2,7 +2,17 @@ import { env } from '../../config/env';
 import { createNamecomAdapter } from './namecom';
 import type { RegistrarAdapter } from './types';
 
-export type { DnsRecordInput, DomainAvailability, RegisteredDomain, RegistrarAdapter } from './types';
+export type {
+  DnsRecord,
+  DnsRecordInput,
+  DnsRecordType,
+  DomainAvailability,
+  EmailForwarding,
+  RegisteredDomain,
+  RegistrarAdapter,
+  RegistrarDomainInfo,
+  TransferStatus,
+} from './types';
 
 let cached: RegistrarAdapter | null | undefined;
 

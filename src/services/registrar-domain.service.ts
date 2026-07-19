@@ -2,7 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { db } from '../db';
 import { infraWalletTransactions, organizations, projects, purchasedDomains, servers } from '../db/schema';
-import { getRegistrar } from '../lib/registrar';
+import { getRegistrar, type DnsRecordInput, type DnsRecordType } from '../lib/registrar';
 import {
   domainMarginPercent,
   domainMaxPriceCents,
@@ -10,7 +10,11 @@ import {
 } from '../lib/domain-pricing';
 import { resolveProjectServerId } from '../lib/runner-routing';
 import { resolveBillingNotifyEmail } from '../lib/billing-notify';
-import { sendDomainPurchasedEmail } from '../lib/email';
+import {
+  sendDomainAuthCodeViewedEmail,
+  sendDomainPurchasedEmail,
+  sendDomainTransferStartedEmail,
+} from '../lib/email';
 import { logger } from '../lib/logger';
 import { adminNotify } from './admin-notify.service';
 import { infraBillingService } from './infra-billing.service';
@@ -54,6 +58,35 @@ function normalizeKeyword(raw: string): string {
     .replace(/^https?:\/\//, '')
     .replace(/\/.*$/, '')
     .replace(/\s+/g, '');
+}
+
+const DNS_RECORD_TYPES: DnsRecordType[] = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV', 'NS'];
+const DNS_HOST_PATTERN = /^(@|\*|(\*\.)?[a-z0-9_]([a-z0-9_.-]{0,200}[a-z0-9_])?)$/i;
+const NAMESERVER_PATTERN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i;
+const EMAIL_BOX_PATTERN = /^[a-z0-9._+-]{1,64}$/i;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function validateDnsInput(record: {
+  host?: unknown;
+  type?: unknown;
+  answer?: unknown;
+  ttl?: unknown;
+  priority?: unknown;
+}): DnsRecordInput | null {
+  const host = typeof record.host === 'string' ? record.host.trim() : '';
+  const type = record.type as DnsRecordType;
+  const answer = typeof record.answer === 'string' ? record.answer.trim() : '';
+  if (host !== '' && !DNS_HOST_PATTERN.test(host)) return null;
+  if (!DNS_RECORD_TYPES.includes(type)) return null;
+  if (!answer || answer.length > 1024) return null;
+  const ttl = record.ttl === undefined ? 300 : Number(record.ttl);
+  if (!Number.isInteger(ttl) || ttl < 60 || ttl > 86400) return null;
+  let priority: number | undefined;
+  if (type === 'MX' || type === 'SRV') {
+    priority = record.priority === undefined ? 10 : Number(record.priority);
+    if (!Number.isInteger(priority) || priority < 0 || priority > 65535) return null;
+  }
+  return { host: host || '@', type, answer, ttl, priority };
 }
 
 /** Credit back a failed charge. Uses `adjustment` so it never masquerades as a top-up. */
@@ -417,6 +450,326 @@ export const registrarDomainService = {
       throw new HTTPException(404, { message: t(locale, 'domains', 'purchasedNotFound') });
     }
     return updated;
+  },
+
+  /** Ownership guard for management operations on a purchased domain. */
+  async requireOwnedDomain(
+    organizationId: string,
+    domainNameRaw: string,
+    locale: SupportedLocale,
+    opts?: { activeOnly?: boolean }
+  ) {
+    if (!getRegistrar()) {
+      throw new HTTPException(503, { message: t(locale, 'domains', 'registrarNotConfigured') });
+    }
+    const domainName = normalizeKeyword(domainNameRaw);
+    const [row] = await db
+      .select()
+      .from(purchasedDomains)
+      .where(
+        and(
+          eq(purchasedDomains.organizationId, organizationId),
+          eq(purchasedDomains.domainName, domainName)
+        )
+      )
+      .limit(1);
+    if (!row) {
+      throw new HTTPException(404, { message: t(locale, 'domains', 'purchasedNotFound') });
+    }
+    if ((opts?.activeOnly ?? true) && row.status !== 'active') {
+      throw new HTTPException(409, { message: t(locale, 'domains', 'notActiveDomain') });
+    }
+    return row;
+  },
+
+  // ── DNS management ──
+
+  async listDnsRecords(organizationId: string, domainName: string, locale: SupportedLocale) {
+    const row = await this.requireOwnedDomain(organizationId, domainName, locale);
+    return getRegistrar()!.listDnsRecords(row.domainName);
+  },
+
+  async createDnsRecord(
+    organizationId: string,
+    domainName: string,
+    input: Record<string, unknown>,
+    locale: SupportedLocale
+  ) {
+    const row = await this.requireOwnedDomain(organizationId, domainName, locale);
+    const record = validateDnsInput(input);
+    if (!record) {
+      throw new HTTPException(400, { message: t(locale, 'domains', 'dnsRecordInvalid') });
+    }
+    return getRegistrar()!.createDnsRecord(row.domainName, record);
+  },
+
+  async updateDnsRecord(
+    organizationId: string,
+    domainName: string,
+    recordId: string,
+    input: Record<string, unknown>,
+    locale: SupportedLocale
+  ) {
+    const row = await this.requireOwnedDomain(organizationId, domainName, locale);
+    const record = validateDnsInput(input);
+    if (!record) {
+      throw new HTTPException(400, { message: t(locale, 'domains', 'dnsRecordInvalid') });
+    }
+    return getRegistrar()!.updateDnsRecord(row.domainName, recordId, record);
+  },
+
+  async deleteDnsRecord(
+    organizationId: string,
+    domainName: string,
+    recordId: string,
+    locale: SupportedLocale
+  ) {
+    const row = await this.requireOwnedDomain(organizationId, domainName, locale);
+    await getRegistrar()!.deleteDnsRecord(row.domainName, recordId);
+  },
+
+  // ── Domain settings ──
+
+  async getDomainDetails(organizationId: string, domainName: string, locale: SupportedLocale) {
+    const row = await this.requireOwnedDomain(organizationId, domainName, locale, {
+      activeOnly: false,
+    });
+    const info =
+      row.status === 'active'
+        ? await getRegistrar()!
+            .getDomainInfo(row.domainName)
+            .catch(() => null)
+        : null;
+    return {
+      domain: row,
+      locked: info?.locked ?? null,
+      nameservers: info?.nameservers ?? [],
+    };
+  },
+
+  async setLock(
+    organizationId: string,
+    domainName: string,
+    locked: boolean,
+    locale: SupportedLocale
+  ) {
+    const row = await this.requireOwnedDomain(organizationId, domainName, locale);
+    await getRegistrar()!.setLock(row.domainName, locked);
+    return { locked };
+  },
+
+  async setNameservers(
+    organizationId: string,
+    domainName: string,
+    nameservers: unknown,
+    locale: SupportedLocale
+  ) {
+    const row = await this.requireOwnedDomain(organizationId, domainName, locale);
+    const list = Array.isArray(nameservers)
+      ? nameservers.map((n) => String(n).trim().toLowerCase()).filter(Boolean)
+      : [];
+    if (list.length < 2 || list.length > 6 || list.some((n) => !NAMESERVER_PATTERN.test(n))) {
+      throw new HTTPException(400, { message: t(locale, 'domains', 'nameserversInvalid') });
+    }
+    await getRegistrar()!.setNameservers(row.domainName, list);
+    return { nameservers: list };
+  },
+
+  // ── Transfer-out ──
+
+  /** Unlocks the domain and returns its EPP/auth code (ICANN transfer-out right). */
+  async getTransferOutAuthCode(
+    organizationId: string,
+    domainName: string,
+    locale: SupportedLocale
+  ) {
+    const row = await this.requireOwnedDomain(organizationId, domainName, locale);
+    const registrar = getRegistrar()!;
+    await registrar.setLock(row.domainName, false).catch(() => undefined);
+    const authCode = await registrar.getAuthCode(row.domainName);
+
+    adminNotify('domain.authcode_viewed', {
+      organizationId,
+      domain: row.domainName,
+    });
+    const [org] = await db
+      .select({ name: organizations.name })
+      .from(organizations)
+      .where(eq(organizations.id, organizationId))
+      .limit(1);
+    const notifyEmail = await resolveBillingNotifyEmail(organizationId).catch(() => null);
+    if (notifyEmail && org) {
+      void sendDomainAuthCodeViewedEmail(
+        notifyEmail,
+        org.name,
+        row.domainName,
+        locale === 'tr' ? 'tr' : 'en'
+      );
+    }
+    return { authCode };
+  },
+
+  // ── Transfer-in ──
+
+  /**
+   * Price a transfer-in. A transfer includes a 1-year renewal, so it's priced at the
+   * TLD's renewal rate — probed via a synthetic availability check on the same TLD
+   * (the registrar exposes per-domain pricing only through availability lookups).
+   */
+  async getTransferQuote(domainNameRaw: string, locale: SupportedLocale) {
+    const registrar = getRegistrar();
+    if (!registrar) {
+      throw new HTTPException(503, { message: t(locale, 'domains', 'registrarNotConfigured') });
+    }
+    const domainName = normalizeKeyword(domainNameRaw);
+    if (!DOMAIN_REGEX.test(domainName)) {
+      throw new HTTPException(400, { message: t(locale, 'domains', 'invalidFormat') });
+    }
+
+    const [existing] = await db
+      .select({ id: purchasedDomains.id })
+      .from(purchasedDomains)
+      .where(eq(purchasedDomains.domainName, domainName))
+      .limit(1);
+    if (existing) {
+      throw new HTTPException(409, { message: t(locale, 'domains', 'alreadyExists') });
+    }
+
+    const tld = domainName.split('.').slice(1).join('.');
+    const probeName = `pushify-price-probe-${Date.now()}.${tld}`;
+    const [own, probe] = await registrar.checkAvailability([domainName, probeName]);
+    if (own?.available) {
+      // Not registered anywhere — nothing to transfer; it can simply be bought
+      throw new HTTPException(400, { message: t(locale, 'domains', 'transferNotRegistered') });
+    }
+    const wholesaleCents = probe?.renewalWholesaleCents ?? probe?.wholesaleCents ?? null;
+    if (!probe?.available || !wholesaleCents) {
+      throw new HTTPException(502, { message: t(locale, 'domains', 'transferPriceUnknown') });
+    }
+    const retailCents = retailFromWholesaleCents(wholesaleCents);
+    if (retailCents > domainMaxPriceCents()) {
+      throw new HTTPException(400, { message: t(locale, 'domains', 'priceTooHigh') });
+    }
+    return { domainName, wholesaleCents, retailCents };
+  },
+
+  async startTransfer(params: {
+    organizationId: string;
+    userId: string;
+    domainName: string;
+    authCode: string;
+    locale: SupportedLocale;
+  }) {
+    const { organizationId, locale } = params;
+    const quote = await this.getTransferQuote(params.domainName, locale);
+    const registrar = getRegistrar()!;
+    const authCode = params.authCode.trim();
+    if (!authCode || authCode.length > 255) {
+      throw new HTTPException(400, { message: t(locale, 'domains', 'authCodeRequired') });
+    }
+
+    const balanceAfter = await infraBillingService.debitWallet(
+      organizationId,
+      quote.retailCents,
+      'domain_purchase',
+      `Domain transfer: ${quote.domainName}`,
+      undefined,
+      { domainName: quote.domainName, kind: 'transfer', wholesaleCents: quote.wholesaleCents }
+    );
+    if (balanceAfter === null) {
+      throw new HTTPException(402, { message: t(locale, 'domains', 'insufficientCredits') });
+    }
+
+    try {
+      await registrar.createTransfer(quote.domainName, {
+        authCode,
+        wholesaleCents: quote.wholesaleCents,
+      });
+    } catch (error) {
+      logger.error({ err: error, domainName: quote.domainName }, 'Domain transfer start failed');
+      await refundWallet(
+        organizationId,
+        quote.retailCents,
+        `Refund: domain transfer failed to start — ${quote.domainName}`
+      ).catch((refundErr) =>
+        logger.error({ err: refundErr, domainName: quote.domainName }, 'Transfer refund failed')
+      );
+      throw new HTTPException(502, { message: t(locale, 'domains', 'transferStartFailed') });
+    }
+
+    const [record] = await db
+      .insert(purchasedDomains)
+      .values({
+        organizationId,
+        domainName: quote.domainName,
+        registrar: registrar.id,
+        status: 'transfer_pending',
+        years: 1,
+        purchasePriceCents: quote.retailCents,
+        wholesalePriceCents: quote.wholesaleCents,
+        renewalWholesaleCents: quote.wholesaleCents,
+        // Real expiry lands when the transfer completes (existing expiry + 1 year)
+        expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+      })
+      .returning();
+
+    adminNotify('domain.transfer_started', {
+      organizationId,
+      domain: quote.domainName,
+      retail: `$${(quote.retailCents / 100).toFixed(2)}`,
+    });
+    const [org] = await db
+      .select({ name: organizations.name })
+      .from(organizations)
+      .where(eq(organizations.id, organizationId))
+      .limit(1);
+    const notifyEmail = await resolveBillingNotifyEmail(organizationId).catch(() => null);
+    if (notifyEmail && org) {
+      void sendDomainTransferStartedEmail(
+        notifyEmail,
+        org.name,
+        quote.domainName,
+        quote.retailCents,
+        locale === 'tr' ? 'tr' : 'en'
+      );
+    }
+    return { domain: record, balanceAfterCents: balanceAfter };
+  },
+
+  // ── Email forwarding ──
+
+  async listEmailForwardings(organizationId: string, domainName: string, locale: SupportedLocale) {
+    const row = await this.requireOwnedDomain(organizationId, domainName, locale);
+    return getRegistrar()!.listEmailForwardings(row.domainName);
+  },
+
+  async addEmailForwarding(
+    organizationId: string,
+    domainName: string,
+    input: { emailBox?: unknown; emailTo?: unknown },
+    locale: SupportedLocale
+  ) {
+    const row = await this.requireOwnedDomain(organizationId, domainName, locale);
+    const emailBox = typeof input.emailBox === 'string' ? input.emailBox.trim() : '';
+    const emailTo = typeof input.emailTo === 'string' ? input.emailTo.trim() : '';
+    if (!EMAIL_BOX_PATTERN.test(emailBox) || !EMAIL_PATTERN.test(emailTo)) {
+      throw new HTTPException(400, { message: t(locale, 'domains', 'forwardingInvalid') });
+    }
+    await getRegistrar()!.createEmailForwarding(row.domainName, { emailBox, emailTo });
+    return { emailBox, emailTo };
+  },
+
+  async deleteEmailForwarding(
+    organizationId: string,
+    domainName: string,
+    emailBox: string,
+    locale: SupportedLocale
+  ) {
+    const row = await this.requireOwnedDomain(organizationId, domainName, locale);
+    if (!EMAIL_BOX_PATTERN.test(emailBox)) {
+      throw new HTTPException(400, { message: t(locale, 'domains', 'forwardingInvalid') });
+    }
+    await getRegistrar()!.deleteEmailForwarding(row.domainName, emailBox);
   },
 };
 

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import { authMiddleware } from '../middleware/auth';
+import { domainPublicSearchRateLimiter } from '../middleware/rate-limit';
 import { MAX_PURCHASE_YEARS, registrarDomainService } from '../services/registrar-domain.service';
 import { billingService } from '../services/billing.service';
 import { stripeService } from '../services/stripe.service';
@@ -10,6 +11,16 @@ import type { AppEnv } from '../types';
 
 /** Domain sales (registrar reseller) — /api/v1/domains */
 const registrarDomainRoutes = new Hono<AppEnv>();
+
+// Public availability search for the marketing /domains page (strictly rate-limited)
+registrarDomainRoutes.get('/public-search', domainPublicSearchRateLimiter, async (c) => {
+  const locale = c.get('locale');
+  if (!registrarDomainService.isConfigured()) {
+    return c.json({ data: [] });
+  }
+  const results = await registrarDomainService.search(c.req.query('q') ?? '', locale);
+  return c.json({ data: results });
+});
 
 registrarDomainRoutes.use('*', authMiddleware);
 
@@ -110,6 +121,180 @@ registrarDomainRoutes.post('/purchase/confirm', async (c) => {
     }
     throw err;
   }
+});
+
+// ── Transfer-in ──
+
+registrarDomainRoutes.get('/transfer/quote', async (c) => {
+  const locale = c.get('locale');
+  const quote = await registrarDomainService.getTransferQuote(c.req.query('domain') ?? '', locale);
+  return c.json({ data: quote });
+});
+
+const transferSchema = z.object({
+  domainName: z.string().min(4).max(253),
+  authCode: z.string().min(1).max(255),
+});
+
+registrarDomainRoutes.post('/transfer', async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const userId = c.get('userId')!;
+  const locale = c.get('locale');
+  const body = transferSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!body.success) {
+    throw new HTTPException(400, { message: t(locale, 'domains', 'invalidFormat') });
+  }
+  const result = await registrarDomainService.startTransfer({
+    organizationId,
+    userId,
+    domainName: body.data.domainName,
+    authCode: body.data.authCode,
+    locale,
+  });
+  return c.json({ data: result }, 201);
+});
+
+// ── Per-domain management ──
+
+registrarDomainRoutes.get('/:domainName/details', async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const details = await registrarDomainService.getDomainDetails(
+    organizationId,
+    c.req.param('domainName'),
+    locale
+  );
+  return c.json({ data: details });
+});
+
+registrarDomainRoutes.get('/:domainName/dns', async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const records = await registrarDomainService.listDnsRecords(
+    organizationId,
+    c.req.param('domainName'),
+    locale
+  );
+  return c.json({ data: records });
+});
+
+registrarDomainRoutes.post('/:domainName/dns', async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const record = await registrarDomainService.createDnsRecord(
+    organizationId,
+    c.req.param('domainName'),
+    body,
+    locale
+  );
+  return c.json({ data: record }, 201);
+});
+
+registrarDomainRoutes.put('/:domainName/dns/:recordId', async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const record = await registrarDomainService.updateDnsRecord(
+    organizationId,
+    c.req.param('domainName'),
+    c.req.param('recordId'),
+    body,
+    locale
+  );
+  return c.json({ data: record });
+});
+
+registrarDomainRoutes.delete('/:domainName/dns/:recordId', async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  await registrarDomainService.deleteDnsRecord(
+    organizationId,
+    c.req.param('domainName'),
+    c.req.param('recordId'),
+    locale
+  );
+  return c.json({ data: { deleted: true } });
+});
+
+const lockSchema = z.object({ locked: z.boolean() });
+
+registrarDomainRoutes.post('/:domainName/lock', async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const body = lockSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!body.success) {
+    throw new HTTPException(400, { message: t(locale, 'domains', 'invalidFormat') });
+  }
+  const result = await registrarDomainService.setLock(
+    organizationId,
+    c.req.param('domainName'),
+    body.data.locked,
+    locale
+  );
+  return c.json({ data: result });
+});
+
+registrarDomainRoutes.post('/:domainName/nameservers', async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const body = (await c.req.json().catch(() => ({}))) as { nameservers?: unknown };
+  const result = await registrarDomainService.setNameservers(
+    organizationId,
+    c.req.param('domainName'),
+    body.nameservers,
+    locale
+  );
+  return c.json({ data: result });
+});
+
+registrarDomainRoutes.post('/:domainName/auth-code', async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const result = await registrarDomainService.getTransferOutAuthCode(
+    organizationId,
+    c.req.param('domainName'),
+    locale
+  );
+  return c.json({ data: result });
+});
+
+// ── Email forwarding ──
+
+registrarDomainRoutes.get('/:domainName/email-forwarding', async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const forwardings = await registrarDomainService.listEmailForwardings(
+    organizationId,
+    c.req.param('domainName'),
+    locale
+  );
+  return c.json({ data: forwardings });
+});
+
+registrarDomainRoutes.post('/:domainName/email-forwarding', async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const body = (await c.req.json().catch(() => ({}))) as { emailBox?: unknown; emailTo?: unknown };
+  const result = await registrarDomainService.addEmailForwarding(
+    organizationId,
+    c.req.param('domainName'),
+    body,
+    locale
+  );
+  return c.json({ data: result }, 201);
+});
+
+registrarDomainRoutes.delete('/:domainName/email-forwarding/:emailBox', async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  await registrarDomainService.deleteEmailForwarding(
+    organizationId,
+    c.req.param('domainName'),
+    c.req.param('emailBox'),
+    locale
+  );
+  return c.json({ data: { deleted: true } });
 });
 
 const autoRenewSchema = z.object({ enabled: z.boolean() });

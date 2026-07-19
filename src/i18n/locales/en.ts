@@ -120,6 +120,14 @@ export interface TranslationKeys {
     insufficientCredits: string;
     purchaseFailed: string;
     purchasedNotFound: string;
+    notActiveDomain: string;
+    dnsRecordInvalid: string;
+    nameserversInvalid: string;
+    forwardingInvalid: string;
+    authCodeRequired: string;
+    transferNotRegistered: string;
+    transferPriceUnknown: string;
+    transferStartFailed: string;
   };
   deployments: {
     notFound: string;
@@ -419,6 +427,14 @@ export const en: TranslationKeys = {
     insufficientCredits: 'Insufficient credits. Add credits in Billing to buy this domain.',
     purchaseFailed: 'Domain registration failed. Your credits were refunded.',
     purchasedNotFound: 'Purchased domain not found',
+    notActiveDomain: 'This domain is not active yet (transfer pending or expired)',
+    dnsRecordInvalid: 'Invalid DNS record. Check the host, type, value, TTL and priority.',
+    nameserversInvalid: 'Provide 2-6 valid nameserver hostnames',
+    forwardingInvalid: 'Invalid email forwarding. Use a simple alias and a valid destination email.',
+    authCodeRequired: 'The transfer auth (EPP) code is required',
+    transferNotRegistered: 'This domain is not registered anywhere — you can simply buy it.',
+    transferPriceUnknown: 'Could not determine the transfer price for this domain extension',
+    transferStartFailed: 'Transfer could not be started. Check the auth code and that the domain is unlocked. Your credits were refunded.',
   },
 
   // Deployments
