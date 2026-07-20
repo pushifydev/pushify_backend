@@ -16,7 +16,11 @@ export function nodeRunnerUserLines(): string {
 
 /** Install deps without lifecycle scripts, then postinstall + optional native rebuild. */
 export function nodeInstallLines(installCommand: string): string {
+  // Cache mounts for all three package managers — whichever the install command
+  // uses hits a warm cache; the other two mounts are inert.
   return `RUN --mount=type=cache,target=/root/.npm \\
+    --mount=type=cache,target=/usr/local/share/.cache/yarn \\
+    --mount=type=cache,target=/root/.local/share/pnpm/store \\
     ${installCommand} --ignore-scripts
 COPY . .
 RUN npm run postinstall --if-present

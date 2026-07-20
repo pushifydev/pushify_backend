@@ -22,6 +22,13 @@ import { generateDockerfile, hasDockerfile, writeDockerfile } from './dockerfile
 import { deployToRemoteServer, canDeployToServer, quickRollbackToDeployment } from './remote-deployment';
 import { publishStaticSite } from '../lib/static-site-publish';
 import { buildMarketplaceDeployConfig } from '../marketplace/deploy-config';
+import {
+  loadPushifyConfig,
+  describeOverrides,
+  nextCronRun,
+  type PushifyFileConfig,
+} from '../lib/pushify-config';
+import { scheduledTasks, projectVolumes } from '../db/schema';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { githubService } from '../services/github.service';
@@ -377,7 +384,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
     // plane. Falls back to the local host only when no runner is configured.
     const deployTargetServerId = project.serverId || pickRunnerServerId(project.id);
     // Persistent volume mounts — applied on every container start path below.
-    const volumeMounts = await getProjectVolumeMounts(project.id, project.slug);
+    let volumeMounts = await getProjectVolumeMounts(project.id, project.slug);
 
     // A deploy starts a fresh container — clear any sleep state and give the idle
     // sweeper a fresh grace window.
@@ -730,6 +737,40 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         }
       }
 
+      // ── Config-as-code: pushify.yaml in the repo wins over dashboard settings ──
+      let fileConfig: PushifyFileConfig | null = null;
+      if (localClone) {
+        const loaded = await loadPushifyConfig(
+          localClone.workDir,
+          normalizeRootDirectory(project.rootDirectory)
+        );
+        if (loaded.source && loaded.error) {
+          addLog(`⚠️ ${loaded.source} found but ignored: ${loaded.error}`);
+        } else if (loaded.config) {
+          fileConfig = loaded.config;
+          addLog(`📄 ${loaded.source} applied — ${describeOverrides(fileConfig) || 'no overrides'}`);
+          if (fileConfig.framework) deployFramework = fileConfig.framework;
+          // Declared cron jobs / volumes sync only on production deploys
+          if (!previewCtx) {
+            const volumesChanged = await syncDeclaredResources(project.id, fileConfig, addLog);
+            if (volumesChanged) {
+              volumeMounts = await getProjectVolumeMounts(project.id, project.slug);
+            }
+          }
+        }
+      }
+
+      const effBuildCommand = fileConfig?.build ?? (project.buildCommand || undefined);
+      const effStartCommand = fileConfig?.start ?? (project.startCommand || undefined);
+      const effInstallCommand =
+        fileConfig?.install ??
+        (project.installCommand ||
+          (projectSettings?.installCommand as string) ||
+          'npm install --legacy-peer-deps');
+      const effOutputDirectory =
+        fileConfig?.output ?? ((projectSettings?.outputDirectory as string) || undefined);
+      const effPort = fileConfig?.port ?? (project.port || 3000);
+
       const remoteResult = await deployToRemoteServer({
         serverId: deployTargetServerId,
         projectId: project.id,
@@ -739,14 +780,14 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         repoUrl: project.gitRepoUrl || '',
         branch: localClone?.branch || job.branch || 'main',
         commitHash: localClone?.commitHash || 'marketplace',
-        port: project.port || 3000,
+        port: effPort,
         envVars: envVarsDecrypted,
-        buildCommand: project.buildCommand || undefined,
-        startCommand: project.startCommand || undefined,
-        installCommand: project.installCommand || (projectSettings?.installCommand as string) || 'npm install --legacy-peer-deps',
+        buildCommand: effBuildCommand,
+        startCommand: effStartCommand,
+        installCommand: effInstallCommand,
         rootDirectory: normalizeRootDirectory(project.rootDirectory),
         dockerfilePath: project.dockerfilePath || undefined,
-        outputDirectory: (projectSettings?.outputDirectory as string) || undefined,
+        outputDirectory: effOutputDirectory,
         framework: deployFramework,
         buildpackId: deployBuildpackId,
         accessToken,
@@ -948,14 +989,35 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
           : false;
       if (nextStandalone) addLog('📦 Next.js standalone detected — smaller production image');
 
+      // Config-as-code for the local path (remote path loads its own copy)
+      let localFileConfig: PushifyFileConfig | null = null;
+      {
+        const loaded = await loadPushifyConfig(
+          workDir,
+          normalizeRootDirectory(project.rootDirectory)
+        );
+        if (loaded.source && loaded.error) {
+          addLog(`⚠️ ${loaded.source} found but ignored: ${loaded.error}`);
+        } else if (loaded.config) {
+          localFileConfig = loaded.config;
+          addLog(`📄 ${loaded.source} applied — ${describeOverrides(localFileConfig) || 'no overrides'}`);
+          if (!previewCtx) {
+            await syncDeclaredResources(project.id, localFileConfig, addLog);
+          }
+        }
+      }
+
       const dockerGenBase = {
-        buildCommand: project.buildCommand,
+        buildCommand: localFileConfig?.build ?? project.buildCommand,
         installCommand:
-          project.installCommand ||
-          (project.settings as Record<string, string>)?.installCommand ||
-          'npm install --legacy-peer-deps',
-        startCommand: project.startCommand,
-        outputDirectory: (project.settings as Record<string, string>)?.outputDirectory || null,
+          localFileConfig?.install ??
+          (project.installCommand ||
+            (project.settings as Record<string, string>)?.installCommand ||
+            'npm install --legacy-peer-deps'),
+        startCommand: localFileConfig?.start ?? project.startCommand,
+        outputDirectory:
+          localFileConfig?.output ??
+          ((project.settings as Record<string, string>)?.outputDirectory || null),
         rootDirectory: project.rootDirectory || '.',
         envVars: envVarsDecrypted,
         nextStandalone,
@@ -1442,4 +1504,85 @@ export function isWorkerRunning(): boolean {
  */
 export function getActiveDeploymentCount(): number {
   return getMemoryActiveDeploymentCount();
+}
+
+/**
+ * Upsert cron jobs and volumes declared in pushify.yaml (by name, per project).
+ * Upsert-only by design: resources removed from the file are NOT deleted — the
+ * dashboard stays authoritative for removal, so a truncated file can't destroy data.
+ */
+async function syncDeclaredResources(
+  projectId: string,
+  config: PushifyFileConfig,
+  addLog: (msg: string) => void
+): Promise<boolean> {
+  let volumesChanged = false;
+
+  for (const item of config.cron ?? []) {
+    const timezone = item.timezone ?? 'UTC';
+    const existing = await db
+      .select({ id: scheduledTasks.id, schedule: scheduledTasks.schedule, command: scheduledTasks.command, timezone: scheduledTasks.timezone })
+      .from(scheduledTasks)
+      .where(and(eq(scheduledTasks.projectId, projectId), eq(scheduledTasks.name, item.name)))
+      .limit(1)
+      .then((r) => r[0]);
+    if (existing) {
+      if (
+        existing.schedule !== item.schedule ||
+        existing.command !== item.command ||
+        existing.timezone !== timezone
+      ) {
+        await db
+          .update(scheduledTasks)
+          .set({
+            schedule: item.schedule,
+            command: item.command,
+            timezone,
+            ...(item.timeoutSeconds ? { timeoutSeconds: item.timeoutSeconds } : {}),
+            nextRunAt: nextCronRun(item.schedule, timezone),
+            updatedAt: new Date(),
+          })
+          .where(eq(scheduledTasks.id, existing.id));
+        addLog(`  ⏰ cron updated: ${item.name} (${item.schedule})`);
+      }
+    } else {
+      await db.insert(scheduledTasks).values({
+        projectId,
+        name: item.name,
+        type: 'command',
+        schedule: item.schedule,
+        timezone,
+        command: item.command,
+        ...(item.timeoutSeconds ? { timeoutSeconds: item.timeoutSeconds } : {}),
+        enabled: true,
+        nextRunAt: nextCronRun(item.schedule, timezone),
+      });
+      addLog(`  ⏰ cron created: ${item.name} (${item.schedule})`);
+    }
+  }
+
+  for (const vol of config.volumes ?? []) {
+    const existing = await db
+      .select({ id: projectVolumes.id, containerPath: projectVolumes.containerPath })
+      .from(projectVolumes)
+      .where(and(eq(projectVolumes.projectId, projectId), eq(projectVolumes.name, vol.name)))
+      .limit(1)
+      .then((r) => r[0]);
+    if (existing) {
+      if (existing.containerPath !== vol.path) {
+        await db
+          .update(projectVolumes)
+          .set({ containerPath: vol.path })
+          .where(eq(projectVolumes.id, existing.id));
+        addLog(`  💾 volume updated: ${vol.name} → ${vol.path}`);
+        volumesChanged = true;
+      }
+    } else {
+      await db.insert(projectVolumes).values({ projectId, name: vol.name, containerPath: vol.path });
+      addLog(`  💾 volume created: ${vol.name} → ${vol.path}`);
+      volumesChanged = true;
+    }
+  }
+
+  return volumesChanged;
 }
