@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0-beta.60] - 2026-07-20
+
+### Added
+- **Config-as-code: `pushify.yaml`.** A file at the repo root (or the project's root directory) now declares build & runtime settings and wins over dashboard values when present — the repo becomes the source of truth: `build`, `install`, `start`, `output`, `port`, `framework`, plus declared **cron jobs** (name/schedule/command/timezone, validated with the same cron/timezone rules as the UI) and **volumes** (name/path, same shell-safety validation). Cron and volume declarations sync on production deploys as **upsert-only** — removing an entry from the file never deletes data; the dashboard stays authoritative for removals. A malformed file is reported in the deploy log and ignored — it can never break a deploy. Applied on both the remote and local deploy paths; volume declarations take effect in the same deploy. 7 parser tests.
+
+### Changed
+- **Install cache now covers yarn and pnpm too** — the BuildKit cache mounts (npm + framework caches shipped earlier) gain yarn/pnpm store targets, so custom install commands hit a warm cache as well.
+
 ## [0.2.0-beta.59] - 2026-07-19
 
 ### Added
