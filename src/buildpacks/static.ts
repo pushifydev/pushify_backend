@@ -24,14 +24,17 @@ export const staticBuildpack: Buildpack = {
 
   generateDockerfile(config: BuildpackConfig): string {
     const rootDir = config.rootDirectory || '.';
+    // The deploy workers map the host port to the project's configured port
+    // (default 3000) — nginx must listen on that same port, not a hardcoded 80.
+    const port = config.port || 80;
 
     return `FROM nginx:alpine
 
 COPY ${rootDir === '.' ? '.' : rootDir} /usr/share/nginx/html
 
-RUN echo 'server { listen 80; location / { root /usr/share/nginx/html; try_files \\$uri \\$uri/ /index.html; } }' > /etc/nginx/conf.d/default.conf
+RUN echo 'server { listen ${port}; location / { root /usr/share/nginx/html; try_files \\$uri \\$uri/ /index.html; } }' > /etc/nginx/conf.d/default.conf
 
-EXPOSE 80
+EXPOSE ${port}
 
 CMD ["nginx", "-g", "daemon off;"]
 `;
