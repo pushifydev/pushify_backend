@@ -32,7 +32,7 @@ export const staticBuildpack: Buildpack = {
 
 COPY ${rootDir === '.' ? '.' : rootDir} /usr/share/nginx/html
 
-RUN echo 'server { listen ${port}; location / { root /usr/share/nginx/html; try_files \\$uri \\$uri/ /index.html; } }' > /etc/nginx/conf.d/default.conf
+RUN echo 'server { listen ${port}; location / { root /usr/share/nginx/html; try_files $uri $uri/ /index.html; } }' > /etc/nginx/conf.d/default.conf
 
 EXPOSE ${port}
 

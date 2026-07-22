@@ -49,7 +49,8 @@ export const nodejsBuildpack: Buildpack = {
         workdir,
         install,
         config.buildCommand || 'npm run build',
-        config.outputDirectory || 'dist'
+        config.outputDirectory || 'dist',
+        port
       );
     }
     return this._generic(
@@ -145,15 +146,18 @@ CMD ["node", ".output/server/index.mjs"]
 `;
   },
 
-  _static(workdir: string, install: string, buildCmd: string, outDir: string): string {
+  _static(workdir: string, install: string, buildCmd: string, outDir: string, port: number): string {
+    // The deploy workers map the host port to the project's configured port —
+    // nginx must listen on that same port, not a hardcoded 80. $uri must reach
+    // the config unescaped: shell single quotes already preserve it literally.
     return `${this._nodeBuilderHeader()}${nodeInstallLines(install)}
 ${nodeLightningcssGlibcFixLines()}
 RUN ${buildCmd}
 
 FROM nginx:alpine AS runner
 COPY --from=builder ${workdir}/${outDir} /usr/share/nginx/html
-RUN echo 'server { listen 80; location / { root /usr/share/nginx/html; try_files \\$uri \\$uri/ /index.html; } }' > /etc/nginx/conf.d/default.conf
-EXPOSE 80
+RUN echo 'server { listen ${port}; location / { root /usr/share/nginx/html; try_files $uri $uri/ /index.html; } }' > /etc/nginx/conf.d/default.conf
+EXPOSE ${port}
 CMD ["nginx", "-g", "daemon off;"]
 `;
   },
