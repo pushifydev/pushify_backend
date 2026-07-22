@@ -150,13 +150,17 @@ CMD ["node", ".output/server/index.mjs"]
     // The deploy workers map the host port to the project's configured port —
     // nginx must listen on that same port, not a hardcoded 80. $uri must reach
     // the config unescaped: shell single quotes already preserve it literally.
+    // A repo-root nginx.conf overrides the generated server config (it must
+    // listen on the same port); it's staged in the builder because the runner
+    // only receives the build output directory.
     return `${this._nodeBuilderHeader()}${nodeInstallLines(install)}
 ${nodeLightningcssGlibcFixLines()}
 RUN ${buildCmd}
+RUN mkdir -p /pushify-nginx && if [ -f nginx.conf ]; then cp nginx.conf /pushify-nginx/default.conf; else echo 'server { listen ${port}; location / { root /usr/share/nginx/html; try_files $uri $uri/ /index.html; } }' > /pushify-nginx/default.conf; fi
 
 FROM nginx:alpine AS runner
 COPY --from=builder ${workdir}/${outDir} /usr/share/nginx/html
-RUN echo 'server { listen ${port}; location / { root /usr/share/nginx/html; try_files $uri $uri/ /index.html; } }' > /etc/nginx/conf.d/default.conf
+COPY --from=builder /pushify-nginx/default.conf /etc/nginx/conf.d/default.conf
 EXPOSE ${port}
 CMD ["nginx", "-g", "daemon off;"]
 `;

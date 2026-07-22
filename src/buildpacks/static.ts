@@ -32,7 +32,9 @@ export const staticBuildpack: Buildpack = {
 
 COPY ${rootDir === '.' ? '.' : rootDir} /usr/share/nginx/html
 
-RUN echo 'server { listen ${port}; location / { root /usr/share/nginx/html; try_files $uri $uri/ /index.html; } }' > /etc/nginx/conf.d/default.conf
+# A repo-root nginx.conf takes over the server config (it must listen on port ${port});
+# it is moved out of the web root so it is never served. Otherwise use the SPA default.
+RUN if [ -f /usr/share/nginx/html/nginx.conf ]; then mv /usr/share/nginx/html/nginx.conf /etc/nginx/conf.d/default.conf; else echo 'server { listen ${port}; location / { root /usr/share/nginx/html; try_files $uri $uri/ /index.html; } }' > /etc/nginx/conf.d/default.conf; fi
 
 EXPOSE ${port}
 
