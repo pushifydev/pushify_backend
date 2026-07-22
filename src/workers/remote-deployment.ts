@@ -768,6 +768,21 @@ export async function deployToRemoteServer(
       const { port: hostPort } = await getOrAssignPort(ssh, projectSlug);
       onProgress(`🔌 Assigned port: ${hostPort} -> ${containerPort}`);
 
+      // WordPress sits behind Pushify's TLS-terminating reverse proxy. Left alone it
+      // saves the internal host:port it was first reached on (e.g. bizikimiz.com:3003)
+      // as siteurl/home and then redirect-loops there. Derive the canonical URL from
+      // the forwarded request at runtime instead; defining WP_HOME/WP_SITEURL as
+      // constants also overrides any bad value already in the database, so an
+      // already-broken site heals itself on the next deploy. Respect a user override.
+      if (/(^|\/)wordpress(:|$)/i.test(dockerImage) && !envVars.WORDPRESS_CONFIG_EXTRA) {
+        envVars.WORDPRESS_CONFIG_EXTRA = [
+          "if (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') { $_SERVER['HTTPS'] = 'on'; $_SERVER['SERVER_PORT'] = 443; }",
+          "$__pushify_host = isset($_SERVER['HTTP_HOST']) ? preg_replace('/:\\d+$/', '', $_SERVER['HTTP_HOST']) : '';",
+          "if ($__pushify_host) { $__pushify_scheme = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? 'https' : 'http'; define('WP_HOME', $__pushify_scheme . '://' . $__pushify_host); define('WP_SITEURL', $__pushify_scheme . '://' . $__pushify_host); }",
+        ].join(' ');
+        onProgress('🔧 WordPress reverse-proxy URL handling configured');
+      }
+
       // Build env var flags
       const envFlags = Object.entries(envVars)
         .map(([k, v]) => `-e ${k}='${v.replace(/'/g, "'\\''")}'`)
