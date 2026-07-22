@@ -34,7 +34,7 @@ COPY ${rootDir === '.' ? '.' : rootDir} /usr/share/nginx/html
 
 # A repo-root nginx.conf takes over the server config (it must listen on port ${port});
 # it is moved out of the web root so it is never served. Otherwise use the SPA default.
-RUN if [ -f /usr/share/nginx/html/nginx.conf ]; then mv /usr/share/nginx/html/nginx.conf /etc/nginx/conf.d/default.conf; grep -q 'listen ${port}' /etc/nginx/conf.d/default.conf || echo '!!! WARNING: your nginx.conf does not listen on port ${port} — traffic reaches this container on port ${port}, so the site will return 502. Change your listen directive to: listen ${port};'; else echo 'server { listen ${port}; location / { root /usr/share/nginx/html; try_files $uri $uri.html $uri/ /index.html; } }' > /etc/nginx/conf.d/default.conf; fi
+RUN if [ -f /usr/share/nginx/html/nginx.conf ]; then mv /usr/share/nginx/html/nginx.conf /etc/nginx/conf.d/default.conf; sed -E -i 's/(listen[[:space:]]+)([^ ;]*:)?[0-9]+/\\1\\2${port}/g; s/(listen[[:space:]][^;]*) ssl/\\1/g; s/(listen[[:space:]][^;]*) http2/\\1/g' /etc/nginx/conf.d/default.conf; echo 'Pushify: nginx.conf listen port rewritten to ${port} (traffic reaches this container on that port)'; else echo 'server { listen ${port}; location / { root /usr/share/nginx/html; try_files $uri $uri.html $uri/ /index.html; } }' > /etc/nginx/conf.d/default.conf; fi
 
 EXPOSE ${port}
 
