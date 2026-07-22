@@ -34,7 +34,7 @@ COPY ${rootDir === '.' ? '.' : rootDir} /usr/share/nginx/html
 
 # A repo-root nginx.conf takes over the server config (it must listen on port ${port});
 # it is moved out of the web root so it is never served. Otherwise use the SPA default.
-RUN if [ -f /usr/share/nginx/html/nginx.conf ]; then mv /usr/share/nginx/html/nginx.conf /etc/nginx/conf.d/default.conf; sed -E -i 's/(listen[[:space:]]+)([^ ;]*:)?[0-9]+/\\1\\2${port}/g; s/(listen[[:space:]][^;]*) ssl/\\1/g; s/(listen[[:space:]][^;]*) http2/\\1/g; s#root[[:space:]]+[^;]+#root /usr/share/nginx/html#g' /etc/nginx/conf.d/default.conf; echo 'Pushify: nginx.conf normalized to listen on ${port} and serve from /usr/share/nginx/html'; else echo 'server { listen ${port}; location / { root /usr/share/nginx/html; try_files $uri $uri.html $uri/ /index.html; } }' > /etc/nginx/conf.d/default.conf; fi
+RUN if [ -f /usr/share/nginx/html/nginx.conf ]; then mv /usr/share/nginx/html/nginx.conf /etc/nginx/conf.d/default.conf; sed -E -i 's/(listen[[:space:]]+)([^ ;]*:)?[0-9]+/\\1\\2${port}/g; s/(listen[[:space:]][^;]*) ssl/\\1/g; s/(listen[[:space:]][^;]*) http2/\\1/g; s#root[[:space:]]+[^;]+#root /usr/share/nginx/html#g' /etc/nginx/conf.d/default.conf; echo 'Pushify: nginx.conf normalized to listen on ${port} and serve from /usr/share/nginx/html'; else echo 'server { listen ${port}; root /usr/share/nginx/html; location ~* \\.(?:css|js|mjs|json|png|jpg|jpeg|gif|svg|webp|avif|ico|woff2?|ttf|eot|map)$ { expires 1y; add_header Cache-Control "public, immutable"; try_files $uri =404; } location / { try_files $uri $uri.html $uri/ /index.html; add_header Cache-Control "no-cache"; } }' > /etc/nginx/conf.d/default.conf; fi
 
 EXPOSE ${port}
 
