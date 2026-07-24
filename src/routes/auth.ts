@@ -171,6 +171,11 @@ const OAuthLoginUrlQuerySchema = z
     platform: z.enum(['web', 'mobile']).optional().openapi({
       description: 'Client starting the flow. "mobile" returns the session to the app deep link.',
     }),
+    redirect: z.string().optional().openapi({
+      description:
+        'Deep link to hand the session back to. Must be an allowed app link; defaults to the released app.',
+      example: 'pushify://auth-callback',
+    }),
   })
   .openapi('OAuthLoginUrlQuery');
 
@@ -799,8 +804,17 @@ authRouter.openapi(logoutRoute, async (c) => {
 authRouter.openapi(githubLoginUrlRoute, async (c) => {
   const { githubService } = await import('../services/github.service');
   const { createOAuthState } = await import('../lib/oauth-state-store');
-  const { platform } = c.req.valid('query');
-  const state = await createOAuthState({ kind: 'github_login', platform });
+  const { platform, redirect } = c.req.valid('query');
+  let appRedirect: string | undefined;
+  if (platform === 'mobile') {
+    const { resolveMobileRedirect } = await import('../lib/oauth-state-store');
+    const resolved = resolveMobileRedirect(redirect);
+    if (!resolved) {
+      throw new HTTPException(400, { message: 'Unsupported app redirect' });
+    }
+    appRedirect = resolved;
+  }
+  const state = await createOAuthState({ kind: 'github_login', platform, appRedirect });
   const url = githubService.getAuthorizationUrl(state);
   return c.json({ url, state });
 });
@@ -810,7 +824,7 @@ authRouter.use('/github/login-callback', authRateLimiter);
 authRouter.openapi(githubLoginCallbackRoute, async (c) => {
   const { code, state } = c.req.valid('json');
   const locale = c.get('locale');
-  const { consumeOAuthState, validateOAuthStateRecord, MOBILE_APP_REDIRECT } = await import('../lib/oauth-state-store');
+  const { consumeOAuthState, validateOAuthStateRecord } = await import('../lib/oauth-state-store');
   const stored = await consumeOAuthState(state);
   if (!validateOAuthStateRecord(stored, { kind: 'github_login' })) {
     throw new HTTPException(400, { message: t(locale, 'integrations', 'invalidState') });
@@ -819,7 +833,7 @@ authRouter.openapi(githubLoginCallbackRoute, async (c) => {
   const userAgent = c.req.header('user-agent');
 
   const result = await authService.githubLogin(code, locale, ipAddress, userAgent);
-  const appRedirect = stored?.platform === 'mobile' ? MOBILE_APP_REDIRECT : undefined;
+  const appRedirect = stored?.platform === 'mobile' ? stored.appRedirect : undefined;
 
   // 2FA-enabled account: defer to the second-factor step (same as password login)
   if ('requiresTwoFactor' in result) {
@@ -845,8 +859,17 @@ authRouter.openapi(githubLoginCallbackRoute, async (c) => {
 authRouter.openapi(googleLoginUrlRoute, async (c) => {
   const { googleService } = await import('../services/google.service');
   const { createOAuthState } = await import('../lib/oauth-state-store');
-  const { platform } = c.req.valid('query');
-  const state = await createOAuthState({ kind: 'google_login', platform });
+  const { platform, redirect } = c.req.valid('query');
+  let appRedirect: string | undefined;
+  if (platform === 'mobile') {
+    const { resolveMobileRedirect } = await import('../lib/oauth-state-store');
+    const resolved = resolveMobileRedirect(redirect);
+    if (!resolved) {
+      throw new HTTPException(400, { message: 'Unsupported app redirect' });
+    }
+    appRedirect = resolved;
+  }
+  const state = await createOAuthState({ kind: 'google_login', platform, appRedirect });
   const url = googleService.getAuthorizationUrl(state);
   return c.json({ url, state });
 });
@@ -856,7 +879,7 @@ authRouter.use('/google/login-callback', authRateLimiter);
 authRouter.openapi(googleLoginCallbackRoute, async (c) => {
   const { code, state } = c.req.valid('json');
   const locale = c.get('locale');
-  const { consumeOAuthState, validateOAuthStateRecord, MOBILE_APP_REDIRECT } = await import('../lib/oauth-state-store');
+  const { consumeOAuthState, validateOAuthStateRecord } = await import('../lib/oauth-state-store');
   const stored = await consumeOAuthState(state);
   if (!validateOAuthStateRecord(stored, { kind: 'google_login' })) {
     throw new HTTPException(400, { message: t(locale, 'integrations', 'invalidState') });
@@ -865,7 +888,7 @@ authRouter.openapi(googleLoginCallbackRoute, async (c) => {
   const userAgent = c.req.header('user-agent');
 
   const result = await authService.googleLogin(code, locale, ipAddress, userAgent);
-  const appRedirect = stored?.platform === 'mobile' ? MOBILE_APP_REDIRECT : undefined;
+  const appRedirect = stored?.platform === 'mobile' ? stored.appRedirect : undefined;
 
   // 2FA-enabled account: defer to the second-factor step (same as password login)
   if ('requiresTwoFactor' in result) {

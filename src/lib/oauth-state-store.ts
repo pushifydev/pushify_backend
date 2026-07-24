@@ -11,12 +11,33 @@ export type OAuthStateKind =
 /** Which client started the flow — decides where the callback hands the session back to. */
 export type OAuthPlatform = 'web' | 'mobile';
 
-/**
- * Deep link the mobile app listens on. Hardcoded on purpose: the callback target is
- * never taken from the request, so a crafted login-url call can't turn the OAuth
- * callback into an open redirect.
- */
+/** Deep link the released mobile app listens on. */
 export const MOBILE_APP_REDIRECT = 'pushify://auth-callback';
+
+/**
+ * Expo Go can't register the app's own scheme, so during development the app is
+ * reached at exp://<host>:<port>/--/auth-callback instead. Handing a session to an
+ * arbitrary exp:// host would be an account-takeover vector — anyone could start a
+ * flow pointed at a host they control — so these are only honored when explicitly
+ * enabled, and never by default.
+ */
+const EXPO_DEV_REDIRECT = /^exp(\+[a-z0-9-]+)?:\/\/[^\s/]+\/--\/auth-callback$/i;
+
+function devRedirectsAllowed(): boolean {
+  return process.env.ALLOW_EXPO_DEV_REDIRECTS === 'true' || process.env.NODE_ENV !== 'production';
+}
+
+/**
+ * Resolve where a mobile OAuth session may be handed back to. Returns null for
+ * anything not explicitly allowed, so callers can reject the request outright
+ * rather than redirecting somewhere unvetted.
+ */
+export function resolveMobileRedirect(requested?: string): string | null {
+  if (!requested) return MOBILE_APP_REDIRECT;
+  if (requested === MOBILE_APP_REDIRECT) return requested;
+  if (devRedirectsAllowed() && EXPO_DEV_REDIRECT.test(requested)) return requested;
+  return null;
+}
 
 export interface OAuthStateRecord {
   kind: OAuthStateKind;
@@ -24,6 +45,8 @@ export interface OAuthStateRecord {
   userId?: string;
   /** Defaults to web when absent (every pre-existing state record). */
   platform?: OAuthPlatform;
+  /** Already validated when the state was created; the callback only echoes it. */
+  appRedirect?: string;
 }
 
 const PREFIX = 'pushify:oauth:state:';
