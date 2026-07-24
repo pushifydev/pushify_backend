@@ -103,6 +103,20 @@ const LoginResponseSchema = z.union([
   TwoFactorRequiredSchema,
 ]).openapi('LoginResponse');
 
+/**
+ * Same as a password login, plus the deep link the web callback page should hand the
+ * session to when the flow was started by the mobile app (see OAuthLoginUrlQuery).
+ */
+const AppRedirectSchema = z.string().optional().openapi({
+  description: 'Present when the flow began on mobile: deep link to return the session to.',
+  example: 'pushify://auth-callback',
+});
+
+const OAuthLoginResponseSchema = z.union([
+  AuthResponseSchema.extend({ appRedirect: AppRedirectSchema }),
+  TwoFactorRequiredSchema.extend({ appRedirect: AppRedirectSchema }),
+]).openapi('OAuthLoginResponse');
+
 const VerifyTwoFactorRequestSchema = z
   .object({
     twoFactorToken: z.string().min(1).openapi({ description: 'The temporary token received from login' }),
@@ -147,6 +161,18 @@ const GoogleLoginUrlResponseSchema = z
     state: z.string().min(16),
   })
   .openapi('GoogleLoginUrlResponse');
+
+/**
+ * Native clients pass ?platform=mobile so the web callback page knows to hand the
+ * session back to the app over its deep link instead of entering the dashboard.
+ */
+const OAuthLoginUrlQuerySchema = z
+  .object({
+    platform: z.enum(['web', 'mobile']).optional().openapi({
+      description: 'Client starting the flow. "mobile" returns the session to the app deep link.',
+    }),
+  })
+  .openapi('OAuthLoginUrlQuery');
 
 const GoogleLoginCallbackRequestSchema = z
   .object({
@@ -500,6 +526,7 @@ const githubLoginUrlRoute = createRoute({
   tags: ['Authentication'],
   summary: 'Get GitHub OAuth login URL',
   description: 'Returns the GitHub OAuth URL to redirect the user to for login/signup',
+  request: { query: OAuthLoginUrlQuerySchema },
   responses: {
     200: {
       description: 'GitHub OAuth URL',
@@ -532,7 +559,7 @@ const githubLoginCallbackRoute = createRoute({
       description: 'Login successful',
       content: {
         'application/json': {
-          schema: LoginResponseSchema,
+          schema: OAuthLoginResponseSchema,
         },
       },
     },
@@ -545,6 +572,7 @@ const googleLoginUrlRoute = createRoute({
   tags: ['Authentication'],
   summary: 'Get Google OAuth login URL',
   description: 'Returns the Google OAuth URL to redirect the user to for login/signup',
+  request: { query: OAuthLoginUrlQuerySchema },
   responses: {
     200: {
       description: 'Google OAuth URL',
@@ -577,7 +605,7 @@ const googleLoginCallbackRoute = createRoute({
       description: 'Login successful',
       content: {
         'application/json': {
-          schema: LoginResponseSchema,
+          schema: OAuthLoginResponseSchema,
         },
       },
     },
@@ -771,7 +799,8 @@ authRouter.openapi(logoutRoute, async (c) => {
 authRouter.openapi(githubLoginUrlRoute, async (c) => {
   const { githubService } = await import('../services/github.service');
   const { createOAuthState } = await import('../lib/oauth-state-store');
-  const state = await createOAuthState({ kind: 'github_login' });
+  const { platform } = c.req.valid('query');
+  const state = await createOAuthState({ kind: 'github_login', platform });
   const url = githubService.getAuthorizationUrl(state);
   return c.json({ url, state });
 });
@@ -781,7 +810,7 @@ authRouter.use('/github/login-callback', authRateLimiter);
 authRouter.openapi(githubLoginCallbackRoute, async (c) => {
   const { code, state } = c.req.valid('json');
   const locale = c.get('locale');
-  const { consumeOAuthState, validateOAuthStateRecord } = await import('../lib/oauth-state-store');
+  const { consumeOAuthState, validateOAuthStateRecord, MOBILE_APP_REDIRECT } = await import('../lib/oauth-state-store');
   const stored = await consumeOAuthState(state);
   if (!validateOAuthStateRecord(stored, { kind: 'github_login' })) {
     throw new HTTPException(400, { message: t(locale, 'integrations', 'invalidState') });
@@ -790,12 +819,14 @@ authRouter.openapi(githubLoginCallbackRoute, async (c) => {
   const userAgent = c.req.header('user-agent');
 
   const result = await authService.githubLogin(code, locale, ipAddress, userAgent);
+  const appRedirect = stored?.platform === 'mobile' ? MOBILE_APP_REDIRECT : undefined;
 
   // 2FA-enabled account: defer to the second-factor step (same as password login)
   if ('requiresTwoFactor' in result) {
     return c.json({
       requiresTwoFactor: true,
       twoFactorToken: result.twoFactorToken,
+      appRedirect,
     });
   }
 
@@ -806,6 +837,7 @@ authRouter.openapi(githubLoginCallbackRoute, async (c) => {
     },
     accessToken: result.accessToken,
     refreshToken: result.refreshToken,
+    appRedirect,
   });
 });
 
@@ -813,7 +845,8 @@ authRouter.openapi(githubLoginCallbackRoute, async (c) => {
 authRouter.openapi(googleLoginUrlRoute, async (c) => {
   const { googleService } = await import('../services/google.service');
   const { createOAuthState } = await import('../lib/oauth-state-store');
-  const state = await createOAuthState({ kind: 'google_login' });
+  const { platform } = c.req.valid('query');
+  const state = await createOAuthState({ kind: 'google_login', platform });
   const url = googleService.getAuthorizationUrl(state);
   return c.json({ url, state });
 });
@@ -823,7 +856,7 @@ authRouter.use('/google/login-callback', authRateLimiter);
 authRouter.openapi(googleLoginCallbackRoute, async (c) => {
   const { code, state } = c.req.valid('json');
   const locale = c.get('locale');
-  const { consumeOAuthState, validateOAuthStateRecord } = await import('../lib/oauth-state-store');
+  const { consumeOAuthState, validateOAuthStateRecord, MOBILE_APP_REDIRECT } = await import('../lib/oauth-state-store');
   const stored = await consumeOAuthState(state);
   if (!validateOAuthStateRecord(stored, { kind: 'google_login' })) {
     throw new HTTPException(400, { message: t(locale, 'integrations', 'invalidState') });
@@ -832,12 +865,14 @@ authRouter.openapi(googleLoginCallbackRoute, async (c) => {
   const userAgent = c.req.header('user-agent');
 
   const result = await authService.googleLogin(code, locale, ipAddress, userAgent);
+  const appRedirect = stored?.platform === 'mobile' ? MOBILE_APP_REDIRECT : undefined;
 
   // 2FA-enabled account: defer to the second-factor step (same as password login)
   if ('requiresTwoFactor' in result) {
     return c.json({
       requiresTwoFactor: true,
       twoFactorToken: result.twoFactorToken,
+      appRedirect,
     });
   }
 
@@ -848,6 +883,7 @@ authRouter.openapi(googleLoginCallbackRoute, async (c) => {
     },
     accessToken: result.accessToken,
     refreshToken: result.refreshToken,
+    appRedirect,
   });
 });
 
