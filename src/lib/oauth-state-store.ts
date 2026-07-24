@@ -8,10 +8,22 @@ export type OAuthStateKind =
   | 'github_login'
   | 'google_login';
 
+/** Which client started the flow — decides where the callback hands the session back to. */
+export type OAuthPlatform = 'web' | 'mobile';
+
+/**
+ * Deep link the mobile app listens on. Hardcoded on purpose: the callback target is
+ * never taken from the request, so a crafted login-url call can't turn the OAuth
+ * callback into an open redirect.
+ */
+export const MOBILE_APP_REDIRECT = 'pushify://auth-callback';
+
 export interface OAuthStateRecord {
   kind: OAuthStateKind;
   /** Required for github_integration (authenticated connect flow) */
   userId?: string;
+  /** Defaults to web when absent (every pre-existing state record). */
+  platform?: OAuthPlatform;
 }
 
 const PREFIX = 'pushify:oauth:state:';
