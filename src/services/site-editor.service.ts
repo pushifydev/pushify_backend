@@ -16,6 +16,7 @@ import type { SiteBlock, SiteSeo, CmsConfig, CmsMode, SitePage } from '../sites/
 import { normalizeSiteTheme, type SiteTheme } from '../sites/theme';
 import type { SiteStudioStack } from '../sites/types';
 import { t, type SupportedLocale } from '../i18n';
+import { assertMemberProjectScope } from '../lib/member-project-scope';
 
 function isSiteStudioProject(settings: Record<string, unknown>): boolean {
   return typeof settings.siteStudioTemplateId === 'string';
@@ -54,6 +55,8 @@ export const siteEditorService = {
     if (!membership) {
       throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
     }
+
+    await assertMemberProjectScope(membership, organizationId, userId, projectId, locale);
 
     const settings = (project.settings || {}) as Record<string, unknown>;
     if (!isSiteStudioProject(settings)) {

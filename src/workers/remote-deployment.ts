@@ -3,6 +3,7 @@ import { db } from '../db';
 import { servers } from '../db/schema/servers';
 import { domains } from '../db/schema/projects';
 import { SSHClient } from '../utils/ssh';
+import { syncWorkerContainersOnDeploy } from './worker-process-sync';
 import { decrypt } from '../lib/encryption';
 import { buildImage, runContainer, checkDocker, getImageId, tagImage, cleanupOldImages, runContainerFromImage, imageExists, blueGreenDeploy, completeBlueGreenSwitch } from './remote-docker';
 import { addSite, addAutoSubdomainSite, reloadNginx, requestSSLCertificate } from './nginx-manager';
@@ -1094,6 +1095,20 @@ export async function deployToRemoteServer(
     // Wire the app to the shared `pushify` network so it can reach databases by name.
     await connectAppToDatabaseNetwork(ssh, `pushify-${deploySlug}`, onProgress);
 
+    // Worker processes run from the same image — production deploys only, never previews.
+    if (!deploySuffix) {
+      await syncWorkerContainersOnDeploy(ssh, {
+        projectId,
+        slug: deploySlug,
+        imageRef: `${imageName}:${imageTag}`,
+        envVars,
+        volumes: config.volumes,
+        framework: resolvedFramework,
+        buildpackId: resolvedBuildpackId,
+        onProgress,
+      });
+    }
+
     // Check if project has any domains; if not, create auto subdomain (only on managed servers)
     let primaryDomain = await getPrimaryDomain(projectId);
 
@@ -1390,6 +1405,16 @@ export async function quickRollbackToDeployment(
 
     // Wire the app to the shared `pushify` network so it can reach databases by name.
     await connectAppToDatabaseNetwork(ssh, `pushify-${projectSlug}`, onProgress);
+
+    // Restart worker processes from the rollback image so app + workers stay in sync
+    await syncWorkerContainersOnDeploy(ssh, {
+      projectId,
+      slug: projectSlug,
+      imageRef: fullImageName,
+      envVars,
+      volumes: config.volumes,
+      onProgress,
+    });
 
     // Update latest tag to point to rollback image
     await tagImage(ssh, fullImageName, `${imageName}:latest`);

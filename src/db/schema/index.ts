@@ -20,6 +20,7 @@ export * from './notifications';
 export * from './healthchecks';
 export * from './scheduled-tasks';
 export * from './project-volumes';
+export * from './project-workers';
 
 // Preview Deployments
 export * from './previews';

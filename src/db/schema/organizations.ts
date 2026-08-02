@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, timestamp, jsonb, pgEnum, text, integer } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, jsonb, pgEnum, text, integer, boolean, uniqueIndex } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 import { users } from './users';
 import { projects } from './projects';
@@ -43,10 +43,37 @@ export const organizationMembers = pgTable('organization_members', {
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
   role: memberRoleEnum('role').default('member').notNull(),
+  /** When true (member/viewer only), project access is limited to rows in member_project_access */
+  restrictedAccess: boolean('restricted_access').default(false).notNull(),
   invitedBy: uuid('invited_by').references(() => users.id),
   joinedAt: timestamp('joined_at', { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
+
+/** Per-member project allowlist; only consulted when the member row has restricted_access = true */
+export const memberProjectAccess = pgTable(
+  'member_project_access',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    memberProjectIdx: uniqueIndex('member_project_access_unique_idx').on(
+      table.organizationId,
+      table.userId,
+      table.projectId
+    ),
+  })
+);
 
 export const organizationInvitations = pgTable('organization_invitations', {
   id: uuid('id').primaryKey().defaultRandom(),

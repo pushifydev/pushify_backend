@@ -10,6 +10,7 @@ import { generateSlug } from '../lib/utils';
 import { logger } from '../lib/logger';
 import { adminNotify } from './admin-notify.service';
 import { t, type SupportedLocale } from '../i18n';
+import { assertMemberProjectScope, getMemberAllowedProjectIds } from '../lib/member-project-scope';
 import { assertOrganizationCanMutateResources } from './organization-billing.service';
 import { getApiBaseUrl } from '../lib/api-base-url';
 import { planLimitsService } from './plan-limits.service';
@@ -148,6 +149,8 @@ export const projectService = {
       throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });
     }
 
+    await assertMemberProjectScope(membership, organizationId, userId, projectId, locale);
+
     return project;
   },
 
@@ -165,7 +168,8 @@ export const projectService = {
       throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
     }
 
-    return projectRepository.findByOrganization(organizationId);
+    const allowedProjectIds = await getMemberAllowedProjectIds(membership, organizationId, userId);
+    return projectRepository.findByOrganization(organizationId, allowedProjectIds ?? undefined);
   },
 
   /**
@@ -198,6 +202,8 @@ export const projectService = {
     if (!['owner', 'admin', 'member'].includes(membership.role)) {
       throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
     }
+
+    await assertMemberProjectScope(membership, organizationId, userId, projectId, locale);
 
     if (
       input.sleepAfterMinutes !== undefined &&
@@ -389,6 +395,8 @@ export const projectService = {
       throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });
     }
 
+    await assertMemberProjectScope(membership, organizationId, userId, projectId, locale);
+
     const { pauseProjectContainers, resumeProjectContainers } = await import(
       '../lib/project-remote-cleanup'
     );
@@ -533,6 +541,8 @@ export const projectService = {
     if (!['owner', 'admin', 'member'].includes(membership.role)) {
       throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
     }
+
+    await assertMemberProjectScope(membership, organizationId, userId, projectId, locale);
 
     if (settings.previewDeploymentsEnabled === true) {
       await planLimitsService.assertPreviewDeploymentsAllowed(organizationId, locale);

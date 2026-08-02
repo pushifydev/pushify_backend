@@ -13,6 +13,7 @@ import { decrypt } from '../lib/encryption';
 import { addSite, addAutoSubdomainSite, reloadNginx, requestSSLCertificate } from '../workers/nginx-manager';
 import { getOrAssignPort } from '../workers/port-manager';
 import { t, type SupportedLocale } from '../i18n';
+import { assertMemberProjectScope } from '../lib/member-project-scope';
 import { logger } from '../lib/logger';
 import { env } from '../config/env';
 import { planLimitsService } from './plan-limits.service';
@@ -122,6 +123,8 @@ export const domainService = {
     if (!project || project.organizationId !== organizationId || project.status === 'deleted') {
       throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });
     }
+
+    await assertMemberProjectScope(membership, organizationId, userId, projectId, locale);
 
     return project;
   },

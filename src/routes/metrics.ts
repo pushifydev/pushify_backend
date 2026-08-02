@@ -3,6 +3,8 @@ import { metricsService } from '../services/metrics.service';
 import { projectRepository } from '../repositories/project.repository';
 import { authMiddleware } from '../middleware/auth';
 import { t, type SupportedLocale } from '../i18n';
+import { organizationRepository } from '../repositories/organization.repository';
+import { assertMemberProjectScope } from '../lib/member-project-scope';
 import { HTTPException } from 'hono/http-exception';
 import type { AppEnv } from '../types';
 
@@ -17,6 +19,7 @@ metricsRouter.use('*', authMiddleware);
 async function verifyProjectAccess(
   projectId: string,
   organizationId: string,
+  userId: string,
   locale: SupportedLocale
 ): Promise<void> {
   const project = await projectRepository.findById(projectId);
@@ -28,6 +31,13 @@ async function verifyProjectAccess(
   if (project.organizationId !== organizationId) {
     throw new HTTPException(403, { message: t(locale, 'errors', 'forbidden') });
   }
+
+  const membership = await organizationRepository.findMember(organizationId, userId);
+  if (!membership) {
+    throw new HTTPException(403, { message: t(locale, 'errors', 'forbidden') });
+  }
+
+  await assertMemberProjectScope(membership, organizationId, userId, projectId, locale);
 }
 
 // Get metrics overview for all projects in the organization
@@ -43,7 +53,7 @@ metricsRouter.get('/:projectId/metrics', async (c) => {
   const locale = c.get('locale');
   const projectId = c.req.param('projectId');
 
-  await verifyProjectAccess(projectId, organizationId, locale);
+  await verifyProjectAccess(projectId, organizationId, c.get('userId')!, locale);
 
   const summary = await metricsService.getMetricsSummary(projectId);
 
@@ -56,7 +66,7 @@ metricsRouter.get('/:projectId/metrics/timeseries', async (c) => {
   const locale = c.get('locale');
   const projectId = c.req.param('projectId');
 
-  await verifyProjectAccess(projectId, organizationId, locale);
+  await verifyProjectAccess(projectId, organizationId, c.get('userId')!, locale);
 
   // Get hours from query param (default 1 hour)
   const hoursParam = c.req.query('hours');

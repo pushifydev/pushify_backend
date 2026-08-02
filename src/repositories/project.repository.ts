@@ -1,4 +1,4 @@
-import { eq, and, desc, ne } from 'drizzle-orm';
+import { eq, and, desc, ne, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { projects, domains, environmentVariables } from '../db/schema/projects';
 import { servers } from '../db/schema/servers';
@@ -72,12 +72,16 @@ export const projectRepository = {
     });
   },
 
-  // Find all non-deleted projects for organization (active + paused)
-  async findByOrganization(organizationId: string) {
+  // Find all non-deleted projects for organization (active + paused).
+  // `allowedProjectIds` (restricted members) narrows the result; empty array = no access.
+  async findByOrganization(organizationId: string, allowedProjectIds?: string[]) {
+    if (allowedProjectIds && allowedProjectIds.length === 0) return [];
+
     return db.query.projects.findMany({
       where: and(
         eq(projects.organizationId, organizationId),
-        ne(projects.status, 'deleted')
+        ne(projects.status, 'deleted'),
+        allowedProjectIds ? inArray(projects.id, allowedProjectIds) : undefined
       ),
       with: {
         domains: {

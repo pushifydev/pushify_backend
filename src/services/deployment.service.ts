@@ -3,6 +3,7 @@ import { deploymentRepository } from '../repositories/deployment.repository';
 import { projectRepository } from '../repositories/project.repository';
 import { organizationRepository } from '../repositories/organization.repository';
 import { t, type SupportedLocale } from '../i18n';
+import { assertMemberProjectScope } from '../lib/member-project-scope';
 import { assertOrganizationCanMutateResources } from './organization-billing.service';
 import { planLimitsService } from './plan-limits.service';
 
@@ -37,6 +38,8 @@ export const deploymentService = {
     if (!project || project.organizationId !== organizationId || project.status === 'deleted') {
       throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });
     }
+
+    await assertMemberProjectScope(membership, organizationId, userId, projectId, locale);
 
     return project;
   },

@@ -79,3 +79,42 @@ volumes:
     expect(error).toContain('empty');
   });
 });
+
+describe('workers key', () => {
+  it('accepts valid workers', () => {
+    const { config, error } = parsePushifyConfig(`
+workers:
+  - name: queue
+    command: node dist/worker.js
+  - name: mailer
+    command: npm run mailer
+`);
+    expect(error).toBeNull();
+    expect(config?.workers).toHaveLength(2);
+    expect(describeOverrides(config!)).toContain('2 worker(s)');
+  });
+
+  it('rejects invalid worker names and duplicate names', () => {
+    expect(parsePushifyConfig(`
+workers:
+  - name: Bad Name
+    command: node w.js
+`).error).not.toBeNull();
+
+    expect(parsePushifyConfig(`
+workers:
+  - name: queue
+    command: node a.js
+  - name: queue
+    command: node b.js
+`).error).not.toBeNull();
+  });
+
+  it('rejects multi-line worker commands', () => {
+    expect(parsePushifyConfig(`
+workers:
+  - name: queue
+    command: "node a.js\\nrm -rf /"
+`).error).not.toBeNull();
+  });
+});

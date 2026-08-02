@@ -6,6 +6,7 @@ import { logger } from '../lib/logger';
 import { planLimitsService } from './plan-limits.service';
 import { t, type SupportedLocale } from '../i18n';
 import { sendOrgInvitationEmail } from '../lib/email';
+import { projectRepository } from '../repositories/project.repository';
 
 interface UpdateOrganizationInput {
   name?: string;
@@ -92,7 +93,86 @@ export const organizationService = {
       throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
     }
 
-    return organizationRepository.findMembers(organizationId);
+    const [members, accessRows] = await Promise.all([
+      organizationRepository.findMembers(organizationId),
+      organizationRepository.findMemberProjectAccessByOrg(organizationId),
+    ]);
+
+    const projectIdsByUser = new Map<string, string[]>();
+    for (const row of accessRows) {
+      const list = projectIdsByUser.get(row.userId) ?? [];
+      list.push(row.projectId);
+      projectIdsByUser.set(row.userId, list);
+    }
+
+    return members.map((member) => ({
+      ...member,
+      projectIds: projectIdsByUser.get(member.userId) ?? [],
+    }));
+  },
+
+  /**
+   * Restrict (or unrestrict) a member to specific projects (owner/admin only)
+   */
+  async updateMemberProjectAccess(
+    organizationId: string,
+    userId: string,
+    targetUserId: string,
+    input: { restricted: boolean; projectIds?: string[] },
+    locale: SupportedLocale = 'en'
+  ) {
+    const membership = await organizationRepository.findMember(organizationId, userId);
+    if (!membership) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
+    }
+
+    if (membership.role !== 'owner' && membership.role !== 'admin') {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'adminRequired') });
+    }
+
+    const targetMember = await organizationRepository.findMember(organizationId, targetUserId);
+    if (!targetMember) {
+      throw new HTTPException(404, { message: t(locale, 'organizations', 'memberNotFound') });
+    }
+
+    // Owner/admin bypass restrictions, so restricting them would be a silent no-op
+    if (input.restricted && (targetMember.role === 'owner' || targetMember.role === 'admin')) {
+      throw new HTTPException(400, {
+        message: 'Only member/viewer roles can be restricted to specific projects',
+      });
+    }
+
+    const projectIds = [...new Set(input.projectIds ?? [])];
+    if (projectIds.length > 100) {
+      throw new HTTPException(400, { message: 'Too many projects (max 100)' });
+    }
+
+    if (input.restricted && projectIds.length > 0) {
+      const orgProjects = await projectRepository.findByOrganization(organizationId, projectIds);
+      if (orgProjects.length !== projectIds.length) {
+        throw new HTTPException(400, { message: t(locale, 'projects', 'notFound') });
+      }
+    }
+
+    const updated = await organizationRepository.setMemberProjectAccess(
+      organizationId,
+      targetUserId,
+      input.restricted,
+      input.restricted ? projectIds : []
+    );
+
+    logger.info(
+      {
+        organizationId,
+        targetUserId,
+        restricted: input.restricted,
+        projectCount: projectIds.length,
+        updatedBy: userId,
+      },
+      'Member project access updated'
+    );
+
+    return { ...updated, projectIds: input.restricted ? projectIds : [] };
   },
 
   /**

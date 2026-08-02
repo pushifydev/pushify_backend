@@ -5,6 +5,7 @@ import { organizationRepository } from '../repositories/organization.repository'
 import { projectRepository } from '../repositories/project.repository';
 import { authMiddleware } from '../middleware/auth';
 import { t } from '../i18n';
+import { assertMemberProjectScope } from '../lib/member-project-scope';
 import type { AppEnv } from '../types';
 
 const projectLogsRouter = new Hono<AppEnv>();
@@ -26,6 +27,8 @@ projectLogsRouter.get('/:projectId/logs/search', async (c) => {
   if (!project || project.organizationId !== organizationId) {
     throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });
   }
+
+  await assertMemberProjectScope(membership, organizationId, userId, projectId, locale);
 
   const query = c.req.query('q') || undefined;
   const logTypeRaw = c.req.query('logType');

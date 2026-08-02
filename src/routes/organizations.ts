@@ -119,6 +119,33 @@ organizationRouter.patch('/members/:userId', async (c) => {
   });
 });
 
+// Restrict a member to specific projects (owner/admin only)
+organizationRouter.put('/members/:userId/project-access', async (c) => {
+  const currentUserId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const targetUserId = c.req.param('userId');
+  const body = await c.req.json();
+
+  const restricted = body?.restricted === true;
+  const projectIds: string[] = Array.isArray(body?.projectIds)
+    ? body.projectIds.filter((id: unknown): id is string => typeof id === 'string')
+    : [];
+
+  const member = await organizationService.updateMemberProjectAccess(
+    organizationId,
+    currentUserId,
+    targetUserId,
+    { restricted, projectIds },
+    locale
+  );
+
+  return c.json({
+    data: member,
+    message: t(locale, 'organizations', 'roleUpdated'),
+  });
+});
+
 // Remove member
 organizationRouter.delete('/members/:userId', async (c) => {
   const currentUserId = c.get('userId')!;
