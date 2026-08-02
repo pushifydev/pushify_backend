@@ -28,7 +28,7 @@ import {
   nextCronRun,
   type PushifyFileConfig,
 } from '../lib/pushify-config';
-import { scheduledTasks, projectVolumes } from '../db/schema';
+import { scheduledTasks, projectVolumes, projectWorkers } from '../db/schema';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { githubService } from '../services/github.service';
@@ -1581,6 +1581,32 @@ async function syncDeclaredResources(
       await db.insert(projectVolumes).values({ projectId, name: vol.name, containerPath: vol.path });
       addLog(`  💾 volume created: ${vol.name} → ${vol.path}`);
       volumesChanged = true;
+    }
+  }
+
+  for (const worker of config.workers ?? []) {
+    const existing = await db
+      .select({ id: projectWorkers.id, command: projectWorkers.command })
+      .from(projectWorkers)
+      .where(and(eq(projectWorkers.projectId, projectId), eq(projectWorkers.name, worker.name)))
+      .limit(1)
+      .then((r) => r[0]);
+    if (existing) {
+      if (existing.command !== worker.command) {
+        await db
+          .update(projectWorkers)
+          .set({ command: worker.command, updatedAt: new Date() })
+          .where(eq(projectWorkers.id, existing.id));
+        addLog(`  ⚙️ worker updated: ${worker.name}`);
+      }
+    } else {
+      await db.insert(projectWorkers).values({
+        projectId,
+        name: worker.name,
+        command: worker.command,
+        enabled: true,
+      });
+      addLog(`  ⚙️ worker created: ${worker.name}`);
     }
   }
 

@@ -595,6 +595,78 @@ export async function imageExists(
 /**
  * Run container from existing image (for quick rollback, no build needed)
  */
+export interface RunWorkerContainerOptions {
+  imageName: string;
+  containerName: string;
+  /** Runs as `sh -c '<command>'` inside the image — replaces the app start command */
+  command: string;
+  envVars?: Record<string, string>;
+  volumes?: string[];
+  networkMode?: string;
+  framework?: string;
+  buildpackId?: string;
+  onProgress?: (message: string) => void;
+}
+
+/**
+ * Start a worker-process container from an already-built image: same env/volumes
+ * as the app container but no port mapping and a custom start command.
+ */
+export async function runWorkerContainer(
+  ssh: SSHClient,
+  options: RunWorkerContainerOptions
+): Promise<{ success: boolean; logs: string }> {
+  const {
+    imageName,
+    containerName,
+    command,
+    envVars,
+    volumes,
+    networkMode,
+    framework,
+    buildpackId,
+    onProgress,
+  } = options;
+
+  const runMemory = getRunMemoryLimit(framework, buildpackId);
+
+  await ssh.exec(`docker rm -f ${containerName} 2>/dev/null || true`);
+
+  let runCmd = `docker run -d --name ${containerName}`;
+  runCmd += ` --memory ${runMemory}`;
+  runCmd += ` --memory-swap ${runMemory}`;
+  runCmd += ` --cpus ${env.DOCKER_CPU_LIMIT}`;
+  runCmd += ` --pids-limit 256`;
+
+  if (envVars) {
+    for (const [key, value] of Object.entries(envVars)) {
+      runCmd += ` -e ${shSingleQuote(`${key}=${value}`)}`;
+    }
+  }
+
+  if (volumes) {
+    for (const volume of volumes) {
+      runCmd += ` -v ${shSingleQuote(volume)}`;
+    }
+  }
+
+  if (networkMode) {
+    runCmd += ` --network ${shSingleQuote(networkMode)}`;
+  }
+
+  runCmd += ` --restart unless-stopped`;
+  runCmd += ` ${imageName} sh -c ${shSingleQuote(command)}`;
+
+  onProgress?.(`Starting worker container: ${containerName}`);
+
+  const result = await ssh.exec(runCmd);
+  if (result.code !== 0) {
+    return { success: false, logs: result.stderr || result.stdout };
+  }
+
+  return { success: true, logs: result.stdout };
+}
+
 export async function runContainerFromImage(
   ssh: SSHClient,
   options: RunContainerOptions & { skipStopExisting?: boolean }

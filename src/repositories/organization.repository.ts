@@ -1,6 +1,11 @@
 import { eq, and } from 'drizzle-orm';
 import { db } from '../db';
-import { organizations, organizationMembers, organizationInvitations } from '../db/schema/organizations';
+import {
+  organizations,
+  organizationMembers,
+  organizationInvitations,
+  memberProjectAccess,
+} from '../db/schema/organizations';
 
 // Types
 export type CreateOrganizationInput = {
@@ -88,6 +93,55 @@ export const organizationRepository = {
         eq(organizationMembers.organizationId, organizationId),
         eq(organizationMembers.userId, userId)
       ),
+    });
+  },
+
+  // Project allowlist rows for every member of the organization (for the members list UI)
+  async findMemberProjectAccessByOrg(organizationId: string) {
+    return db
+      .select({
+        userId: memberProjectAccess.userId,
+        projectId: memberProjectAccess.projectId,
+      })
+      .from(memberProjectAccess)
+      .where(eq(memberProjectAccess.organizationId, organizationId));
+  },
+
+  // Replace a member's project allowlist and restricted flag atomically
+  async setMemberProjectAccess(
+    organizationId: string,
+    userId: string,
+    restricted: boolean,
+    projectIds: string[]
+  ) {
+    return db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(organizationMembers)
+        .set({ restrictedAccess: restricted })
+        .where(
+          and(
+            eq(organizationMembers.organizationId, organizationId),
+            eq(organizationMembers.userId, userId)
+          )
+        )
+        .returning();
+
+      await tx
+        .delete(memberProjectAccess)
+        .where(
+          and(
+            eq(memberProjectAccess.organizationId, organizationId),
+            eq(memberProjectAccess.userId, userId)
+          )
+        );
+
+      if (restricted && projectIds.length > 0) {
+        await tx.insert(memberProjectAccess).values(
+          projectIds.map((projectId) => ({ organizationId, userId, projectId }))
+        );
+      }
+
+      return updated;
     });
   },
 

@@ -11,6 +11,7 @@ import { webhookRoutes } from './webhooks';
 import { notificationRoutes } from './notifications';
 import { scheduledTaskRoutes } from './scheduled-tasks';
 import { projectVolumeRoutes } from './project-volumes';
+import { projectWorkerRoutes } from './project-workers';
 import { projectLogsRoutes } from './project-logs';
 import { wakeRoutes, projectWakeRoutes } from './wake';
 import { healthCheckRoutes } from './healthchecks';
@@ -46,6 +47,7 @@ export function registerRoutes(app: OpenAPIHono<any>) {
   app.route('/api/v1/projects', notificationRoutes);
   app.route('/api/v1/projects', scheduledTaskRoutes);
   app.route('/api/v1/projects', projectVolumeRoutes);
+  app.route('/api/v1/projects', projectWorkerRoutes);
   app.route('/api/v1/projects', projectLogsRoutes);
   app.route('/api/v1/projects', projectWakeRoutes);
   app.route('/api/v1/wake', wakeRoutes);

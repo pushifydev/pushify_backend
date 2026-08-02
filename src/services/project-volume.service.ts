@@ -7,6 +7,7 @@ import { projectRepository } from '../repositories/project.repository';
 import { validateVolumeName, validateContainerPath } from '../lib/volume-validate';
 import { logger } from '../lib/logger';
 import { t, type SupportedLocale } from '../i18n';
+import { assertMemberProjectScope } from '../lib/member-project-scope';
 
 const MAX_VOLUMES_PER_PROJECT = 5;
 
@@ -24,6 +25,7 @@ async function assertProjectAccess(
   if (!project || project.organizationId !== organizationId) {
     throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });
   }
+  await assertMemberProjectScope(membership, organizationId, userId, projectId, locale);
   return project;
 }
 

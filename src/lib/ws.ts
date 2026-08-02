@@ -1,10 +1,11 @@
 import { Redis } from 'ioredis';
 import { randomUUID } from 'crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { logger } from './logger';
 import { env } from '../config/env';
 import { db } from '../db';
-import { projects, servers, databases } from '../db/schema';
+import { projects, servers, databases, organizationMembers } from '../db/schema';
+import { memberCanAccessProject } from './member-project-scope';
 import type { WSEvent, WSServerMessage, WSClientMessage } from '../types/ws';
 
 const WS_CHANNEL_PREFIX = 'ws:';
@@ -238,6 +239,17 @@ class WebSocketManager {
       let orgId: string | undefined;
       if (namespace === 'project') {
         orgId = (await db.query.projects.findFirst({ where: eq(projects.id, id) }))?.organizationId;
+        // Restricted members may only subscribe to projects on their allowlist
+        if (orgId === client.organizationId && client.userId) {
+          const membership = await db.query.organizationMembers.findFirst({
+            where: and(
+              eq(organizationMembers.organizationId, client.organizationId),
+              eq(organizationMembers.userId, client.userId)
+            ),
+          });
+          if (!membership) return false;
+          return memberCanAccessProject(membership, client.organizationId, client.userId, id);
+        }
       } else if (namespace === 'server') {
         orgId = (await db.query.servers.findFirst({ where: eq(servers.id, id) }))?.organizationId;
       } else if (namespace === 'database') {

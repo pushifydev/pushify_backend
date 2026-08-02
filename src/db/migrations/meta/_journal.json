@@ -267,6 +267,20 @@
       "when": 1784477338255,
       "tag": "0038_notification_prefs",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1785697930144,
+      "tag": "0039_member_project_access",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1785698434154,
+      "tag": "0040_project_workers",
+      "breakpoints": true
     }
   ]
 }

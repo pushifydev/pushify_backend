@@ -4,6 +4,7 @@ import { projectRepository } from '../repositories/project.repository';
 import { organizationRepository } from '../repositories/organization.repository';
 import { encrypt, decrypt } from '../lib/encryption';
 import { t, type SupportedLocale } from '../i18n';
+import { assertMemberProjectScope } from '../lib/member-project-scope';
 
 type Environment = 'production' | 'staging' | 'development' | 'preview';
 
@@ -61,6 +62,8 @@ export const envVarService = {
     if (!project || project.organizationId !== organizationId || project.status === 'deleted') {
       throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });
     }
+
+    await assertMemberProjectScope(membership, organizationId, userId, projectId, locale);
 
     return project;
   },

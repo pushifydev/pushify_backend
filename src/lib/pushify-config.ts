@@ -4,6 +4,7 @@ import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 import { validateCronExpression, isValidTimezone, nextCronRun } from './cron-schedule';
 import { validateVolumeName, validateContainerPath } from './volume-validate';
+import { validateWorkerName, validateWorkerCommand, MAX_WORKERS_PER_PROJECT } from './worker-validate';
 
 /**
  * Config-as-code: a `pushify.yaml` at the repo root (or project root directory)
@@ -26,6 +27,11 @@ const volumeItemSchema = z.object({
   path: z.string().min(2).max(255),
 });
 
+const workerItemSchema = z.object({
+  name: z.string().min(1).max(40),
+  command: z.string().min(1).max(1000),
+});
+
 const fileSchema = z
   .object({
     build: z.string().min(1).max(1000).optional(),
@@ -36,6 +42,7 @@ const fileSchema = z
     framework: z.string().min(1).max(50).optional(),
     cron: z.array(cronItemSchema).max(20).optional(),
     volumes: z.array(volumeItemSchema).max(10).optional(),
+    workers: z.array(workerItemSchema).max(MAX_WORKERS_PER_PROJECT).optional(),
   })
   .strict();
 
@@ -75,6 +82,15 @@ export function validatePushifyConfig(config: PushifyFileConfig): string | null 
   for (const vol of config.volumes ?? []) {
     if (seenVol.has(vol.name)) return `duplicate volume name "${vol.name}"`;
     seenVol.add(vol.name);
+  }
+  const seenWorker = new Set<string>();
+  for (const worker of config.workers ?? []) {
+    const nameError = validateWorkerName(worker.name);
+    if (nameError) return `worker "${worker.name}": ${nameError}`;
+    const commandError = validateWorkerCommand(worker.command);
+    if (commandError) return `worker "${worker.name}": ${commandError}`;
+    if (seenWorker.has(worker.name)) return `duplicate worker name "${worker.name}"`;
+    seenWorker.add(worker.name);
   }
   return null;
 }
@@ -137,6 +153,7 @@ export function describeOverrides(config: PushifyFileConfig): string {
   if (config.framework) parts.push(`framework ${config.framework}`);
   if (config.cron?.length) parts.push(`${config.cron.length} cron`);
   if (config.volumes?.length) parts.push(`${config.volumes.length} volume(s)`);
+  if (config.workers?.length) parts.push(`${config.workers.length} worker(s)`);
   return parts.join(', ');
 }
 
