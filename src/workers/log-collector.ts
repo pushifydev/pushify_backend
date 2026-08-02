@@ -108,6 +108,10 @@ async function collectDeploymentLogs(
 
   let logs: string | null = null;
 
+  // A stopped/errored server can't answer SSH — skip instead of burning a
+  // handshake timeout and logging an error on every collection tick.
+  if (server && server.status !== 'running') return;
+
   if (server && server.ipv4 && server.sshPrivateKey) {
     // Remote deployment
     let ssh: SSHClient | null = null;

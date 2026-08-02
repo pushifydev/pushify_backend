@@ -422,6 +422,9 @@ async function getRemoteDockerStats(
     });
 
     if (!server || !server.ipv4 || !server.sshPrivateKey) return result;
+    // Stopped/provisioning/errored servers can't answer SSH — polling them just
+    // burns a handshake timeout and spams the error log every tick.
+    if (server.status !== 'running') return result;
 
     ssh = new SSHClient();
     await ssh.connect({
@@ -471,6 +474,7 @@ async function connectServerSsh(serverId: string): Promise<SSHClient | null> {
       where: eq(servers.id, serverId),
     });
     if (!server?.ipv4 || !server.sshPrivateKey) return null;
+    if (server.status !== 'running') return null;
 
     const ssh = new SSHClient();
     await ssh.connect({
