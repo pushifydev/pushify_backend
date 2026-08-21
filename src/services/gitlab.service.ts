@@ -285,7 +285,7 @@ class GitLabService {
       typeof projectId === 'number' ? String(projectId) : encodeURIComponent(projectId);
     try {
       if (existingNoteId) {
-        const response = await fetch(
+        await fetch(
           `${gitlabApiUrl()}/projects/${projectRef}/merge_requests/${mergeRequestIid}/notes/${existingNoteId}`,
           {
             method: 'PUT',

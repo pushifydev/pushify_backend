@@ -34,6 +34,8 @@ export const organizations = pgTable('organizations', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
+export const studioAccessEnum = pgEnum('studio_access', ['none', 'read', 'write']);
+
 export const organizationMembers = pgTable('organization_members', {
   id: uuid('id').primaryKey().defaultRandom(),
   organizationId: uuid('organization_id')
@@ -45,6 +47,12 @@ export const organizationMembers = pgTable('organization_members', {
   role: memberRoleEnum('role').default('member').notNull(),
   /** When true (member/viewer only), project access is limited to rows in member_project_access */
   restrictedAccess: boolean('restricted_access').default(false).notNull(),
+  /**
+   * Data-browser permission for members and viewers. Owners and admins always have write; this
+   * column is what lets a team give a developer read access to real data without handing over
+   * the ability to change it.
+   */
+  studioAccess: studioAccessEnum('studio_access').default('none').notNull(),
   invitedBy: uuid('invited_by').references(() => users.id),
   joinedAt: timestamp('joined_at', { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

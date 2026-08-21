@@ -39,7 +39,6 @@ export const javaBuildpack: Buildpack = {
     const rootDir = config.rootDirectory || '.';
     const copyPrefix = rootDir === '.' ? '' : rootDir + '/';
 
-    const isMaven = framework === 'maven' || framework === 'spring';
     const isGradle = framework === 'gradle';
 
     if (isGradle) return this._gradle(copyPrefix, rootDir, port);

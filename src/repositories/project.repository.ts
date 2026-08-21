@@ -1,6 +1,6 @@
 import { eq, and, desc, ne, inArray } from 'drizzle-orm';
 import { db } from '../db';
-import { projects, domains, environmentVariables } from '../db/schema/projects';
+import { projects, domains } from '../db/schema/projects';
 import { servers } from '../db/schema/servers';
 
 // Types

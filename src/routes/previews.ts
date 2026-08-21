@@ -1,7 +1,6 @@
 import { Hono } from 'hono';
 import { previewService } from '../services/preview.service';
 import { authMiddleware } from '../middleware/auth';
-import { t } from '../i18n';
 import type { AppEnv } from '../types';
 
 const previewRouter = new Hono<AppEnv>();

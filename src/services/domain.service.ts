@@ -217,7 +217,7 @@ export const domainService = {
    * Create an auto-generated subdomain for a project (e.g. my-app.pushify.dev)
    * Uses wildcard SSL cert — no DNS verification needed.
    */
-  async createAutoSubdomain(projectId: string, projectSlug: string, serverId: string) {
+  async createAutoSubdomain(projectId: string, projectSlug: string, _serverId: string) {
     const previewBaseUrl = env.PREVIEW_BASE_URL;
     if (!previewBaseUrl) {
       logger.info('PREVIEW_BASE_URL not set, skipping auto subdomain creation');

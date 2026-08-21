@@ -291,6 +291,56 @@ export interface TranslationKeys {
     backupRestoreFailed: string;
     backupInProgress: string;
     databaseMustBeRunning: string;
+    // Data browser (studio)
+    studioUnsupportedEngine: string;
+    studioTableNotFound: string;
+    studioInvalidIdentifier: string;
+    studioInvalidValue: string;
+    studioInvalidFilter: string;
+    studioNoPrimaryKey: string;
+    studioPrimaryKeyRequired: string;
+    studioNoValues: string;
+    studioViewReadOnly: string;
+    studioTooManyRows: string;
+    studioEmptyQuery: string;
+    studioQueryTooLong: string;
+    studioQueryFailed: string;
+    studioReadOnlyBlocked: string;
+    studioRowInserted: string;
+    studioRowUpdated: string;
+    studioRowsDeleted: string;
+    studioInvalidColumnType: string;
+    studioAutoIncrementType: string;
+    studioAutoIncrementKey: string;
+    studioNoColumns: string;
+    studioTooManyColumns: string;
+    studioDuplicateColumn: string;
+    studioLastColumn: string;
+    studioTableCreated: string;
+    studioTableDropped: string;
+    studioTableTruncated: string;
+    studioTableRenamed: string;
+    studioColumnAdded: string;
+    studioColumnDropped: string;
+    studioIndexNotFound: string;
+    studioPrimaryIndex: string;
+    studioInvalidIndexMethod: string;
+    studioIndexCreated: string;
+    studioIndexDropped: string;
+    studioCollectionCreated: string;
+    studioCollectionDropped: string;
+    studioDocumentInserted: string;
+    studioDocumentUpdated: string;
+    studioDocumentsDeleted: string;
+    studioKeysDeleted: string;
+    studioTtlUpdated: string;
+    studioValueUpdated: string;
+    studioRowsImported: string;
+    studioQueryCancelled: string;
+    studioQueryGone: string;
+    studioNoAccess: string;
+    studioReadOnlyAccess: string;
+    studioSlowQueriesUnavailable: string;
   };
 }
 
@@ -634,5 +684,55 @@ export const en: TranslationKeys = {
     backupRestoreFailed: 'Failed to restore database from backup',
     backupInProgress: 'A backup is already in progress for this database',
     databaseMustBeRunning: 'Database must be running to perform this action',
+    // Data browser (studio)
+    studioUnsupportedEngine: 'Data browser is only available for PostgreSQL and MySQL databases',
+    studioTableNotFound: 'Table not found',
+    studioInvalidIdentifier: 'Unknown table or column',
+    studioInvalidValue: 'Unsupported value type',
+    studioInvalidFilter: 'Invalid filter',
+    studioNoPrimaryKey: 'This table has no primary key, so its rows cannot be edited',
+    studioPrimaryKeyRequired: 'The row\'s primary key is required',
+    studioNoValues: 'No values provided',
+    studioViewReadOnly: 'Views are read-only',
+    studioTooManyRows: 'Too many rows in a single request',
+    studioEmptyQuery: 'Query is empty',
+    studioQueryTooLong: 'Query is too long',
+    studioQueryFailed: 'Query could not be executed',
+    studioReadOnlyBlocked: 'Read-only mode allows a single SELECT statement. Enable write mode to run this.',
+    studioRowInserted: 'Row added',
+    studioRowUpdated: 'Row updated',
+    studioRowsDeleted: 'Rows deleted',
+    studioInvalidColumnType: 'Unsupported column type',
+    studioAutoIncrementType: 'This type cannot auto-increment',
+    studioAutoIncrementKey: 'An auto-increment column must be the primary key',
+    studioNoColumns: 'Add at least one column',
+    studioTooManyColumns: 'Too many columns',
+    studioDuplicateColumn: 'A column with that name already exists',
+    studioLastColumn: 'A table must keep at least one column',
+    studioTableCreated: 'Table created',
+    studioTableDropped: 'Table deleted',
+    studioTableTruncated: 'Table emptied',
+    studioTableRenamed: 'Table renamed',
+    studioColumnAdded: 'Column added',
+    studioColumnDropped: 'Column deleted',
+    studioIndexNotFound: 'Index not found',
+    studioPrimaryIndex: 'The primary key index cannot be dropped',
+    studioInvalidIndexMethod: 'Unsupported index method',
+    studioIndexCreated: 'Index created',
+    studioIndexDropped: 'Index deleted',
+    studioCollectionCreated: 'Collection created',
+    studioCollectionDropped: 'Collection deleted',
+    studioDocumentInserted: 'Document added',
+    studioDocumentUpdated: 'Document updated',
+    studioDocumentsDeleted: 'Documents deleted',
+    studioKeysDeleted: 'Keys deleted',
+    studioTtlUpdated: 'Expiry updated',
+    studioValueUpdated: 'Value updated',
+    studioRowsImported: 'Rows imported',
+    studioQueryCancelled: 'Query cancelled',
+    studioQueryGone: 'That query already finished',
+    studioNoAccess: 'You do not have data-browser access to this database',
+    studioReadOnlyAccess: 'Your data-browser access is read-only',
+    studioSlowQueriesUnavailable: 'Query statistics are not enabled on this database (pg_stat_statements / performance_schema)',
   },
 };

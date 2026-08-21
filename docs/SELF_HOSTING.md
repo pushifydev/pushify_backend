@@ -56,12 +56,47 @@ Everything lives in `pushify/.env`. Required values are generated for you; optio
 full catalog):
 
 - `GMAIL_USER` / `GMAIL_APP_PASSWORD` — email notifications & verification mails
-- `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` / `GITHUB_CALLBACK_URL` — GitHub repo import + OAuth login
+- `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` / `GITHUB_CALLBACK_URL` — GitHub sign-in (and repo
+  access when no GitHub App is configured)
+- `GITHUB_APP_ID` / `GITHUB_APP_SLUG` / `GITHUB_APP_PRIVATE_KEY` / `GITHUB_APP_WEBHOOK_SECRET` —
+  the GitHub App used for repository access (see below)
 - `HETZNER_API_TOKEN` — one-click managed server provisioning (BYOS works without it)
 - `ANTHROPIC_API_KEY` — the AI assistant
 
 Apply changes with `docker compose up -d`. **Exception:** `PUSHIFY_API_URL` is baked into the
 dashboard at build time — after changing it run `docker compose build frontend && docker compose up -d`.
+
+### GitHub App (recommended for repository access)
+
+Without an App, Pushify clones with the OAuth token of whoever owns the organisation — which
+means the `repo` scope over **every** repository that person can reach, and deploys that stop
+working the day they leave or revoke the grant. A GitHub App fixes both: access belongs to the
+GitHub account, is limited to the repositories you pick, and is never stored as a long-lived
+token.
+
+Create one at **Settings → Developer settings → GitHub Apps → New GitHub App**:
+
+| Field | Value |
+| --- | --- |
+| Homepage URL | your `PUSHIFY_FRONTEND_URL` |
+| Callback URL | `<PUSHIFY_FRONTEND_URL>/auth/github/app-setup` |
+| Setup URL | `<PUSHIFY_FRONTEND_URL>/auth/github/app-setup` (tick *Redirect on update*) |
+| Webhook URL | `<PUSHIFY_API_URL>/api/v1/webhooks/github/app` |
+| Webhook secret | any random string — put the same value in `GITHUB_APP_WEBHOOK_SECRET` |
+
+Repository permissions: **Contents** read-only, **Metadata** read-only, **Pull requests**
+read & write (PR comments), **Commit statuses** read & write.
+Subscribe to events: **Push**, **Pull request**.
+
+Then generate a private key, convert it (GitHub hands out PKCS#1, Node needs PKCS#8):
+
+```bash
+openssl pkcs8 -topk8 -inform PEM -outform PEM -nocrypt -in app.pem -out app.pkcs8.pem
+```
+
+Put the App id, the app slug from its URL, the contents of `app.pkcs8.pem` and the webhook secret
+into `.env`, then `docker compose up -d`. Existing OAuth-connected projects keep deploying exactly
+as before — the App is used only where an installation covers the repository.
 
 ### Custom domain + HTTPS for the dashboard
 

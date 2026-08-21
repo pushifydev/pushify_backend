@@ -114,6 +114,43 @@ export const organizationService = {
   /**
    * Restrict (or unrestrict) a member to specific projects (owner/admin only)
    */
+  /**
+   * Grant or revoke data-browser access for a member. Owners and admins always have write access
+   * by virtue of their role, so setting it for them would be a silent no-op.
+   */
+  async updateMemberStudioAccess(
+    organizationId: string,
+    userId: string,
+    targetUserId: string,
+    access: 'none' | 'read' | 'write',
+    locale: SupportedLocale = 'en'
+  ) {
+    if (!['none', 'read', 'write'].includes(access)) {
+      throw new HTTPException(400, { message: t(locale, 'errors', 'validationError') });
+    }
+
+    const membership = await organizationRepository.findMember(organizationId, userId);
+    if (!membership) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
+    }
+    if (membership.role !== 'owner' && membership.role !== 'admin') {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'adminRequired') });
+    }
+
+    const targetMember = await organizationRepository.findMember(organizationId, targetUserId);
+    if (!targetMember) {
+      throw new HTTPException(404, { message: t(locale, 'organizations', 'memberNotFound') });
+    }
+    if (targetMember.role === 'owner' || targetMember.role === 'admin') {
+      throw new HTTPException(400, {
+        message: 'Owners and admins already have full data-browser access',
+      });
+    }
+
+    await organizationRepository.setMemberStudioAccess(organizationId, targetUserId, access);
+    return { studioAccess: access };
+  },
+
   async updateMemberProjectAccess(
     organizationId: string,
     userId: string,

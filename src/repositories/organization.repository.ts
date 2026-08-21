@@ -96,6 +96,23 @@ export const organizationRepository = {
     });
   },
 
+  // Data-browser permission for one member
+  async setMemberStudioAccess(
+    organizationId: string,
+    userId: string,
+    access: 'none' | 'read' | 'write'
+  ) {
+    await db
+      .update(organizationMembers)
+      .set({ studioAccess: access })
+      .where(
+        and(
+          eq(organizationMembers.organizationId, organizationId),
+          eq(organizationMembers.userId, userId)
+        )
+      );
+  },
+
   // Project allowlist rows for every member of the organization (for the members list UI)
   async findMemberProjectAccessByOrg(organizationId: string) {
     return db

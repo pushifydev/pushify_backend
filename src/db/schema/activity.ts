@@ -43,6 +43,10 @@ export const activityActionEnum = pgEnum('activity_action', [
   'notification.channel_created',
   'notification.channel_updated',
   'notification.channel_deleted',
+  // Database data browser actions
+  'database.data_modified',
+  'database.query_executed',
+  'database.schema_changed',
   // Health check actions
   'healthcheck.enabled',
   'healthcheck.disabled',

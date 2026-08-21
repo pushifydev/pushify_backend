@@ -4,6 +4,7 @@ import { authMiddleware } from '../middleware/auth';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 import { HTTPException } from 'hono/http-exception';
+import { githubAppService } from '../services/github-app.service';
 import {
   createOAuthState,
   consumeOAuthState,
@@ -364,6 +365,211 @@ githubRouter.openapi(detectRoute, async (c) => {
   const detection = await githubService.detectFramework(accessToken, owner, repo, branch);
 
   return c.json({ data: detection });
+});
+
+
+// ============ GitHub App ============
+
+/**
+ * Where the browser goes to install the App. The state carries the organisation, because after
+ * GitHub redirects back that is the only way to know which one the person was acting for.
+ */
+const appInstallRoute = createRoute({
+  method: 'get',
+  path: '/app/install-url',
+  tags: ['GitHub'],
+  summary: 'Get the GitHub App installation URL',
+  responses: {
+    200: {
+      description: 'Installation URL',
+      content: {
+        'application/json': {
+          schema: z.object({
+            data: z.object({ url: z.string().nullable(), configured: z.boolean() }),
+          }),
+        },
+      },
+    },
+  },
+});
+
+/** Called by our own frontend after GitHub redirects back from the installation screen. */
+const appSetupRoute = createRoute({
+  method: 'post',
+  path: '/app/setup',
+  tags: ['GitHub'],
+  summary: 'Link a finished GitHub App installation to the organization',
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: z.object({ installationId: z.number().int().positive(), state: z.string() }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Installation linked',
+      content: {
+        'application/json': {
+          schema: z.object({ data: z.object({ installationId: z.number(), accountLogin: z.string() }) }),
+        },
+      },
+    },
+  },
+});
+
+const appInstallationsRoute = createRoute({
+  method: 'get',
+  path: '/app/installations',
+  tags: ['GitHub'],
+  summary: 'List the organization\'s GitHub App installations',
+  responses: {
+    200: {
+      description: 'Installations',
+      content: {
+        'application/json': {
+          schema: z.object({
+            data: z.object({
+              configured: z.boolean(),
+              installations: z.array(
+                z.object({
+                  installationId: z.number(),
+                  accountLogin: z.string(),
+                  accountType: z.string().nullable(),
+                  repositorySelection: z.string().nullable(),
+                  suspended: z.boolean(),
+                })
+              ),
+            }),
+          }),
+        },
+      },
+    },
+  },
+});
+
+const appRepositoriesRoute = createRoute({
+  method: 'get',
+  path: '/app/installations/{installationId}/repositories',
+  tags: ['GitHub'],
+  summary: 'List repositories an installation can reach',
+  request: { params: z.object({ installationId: z.string() }) },
+  responses: {
+    200: {
+      description: 'Repositories',
+      content: {
+        'application/json': {
+          schema: z.object({
+            data: z.array(
+              z.object({
+                id: z.number(),
+                fullName: z.string(),
+                private: z.boolean(),
+                defaultBranch: z.string(),
+                htmlUrl: z.string(),
+              })
+            ),
+          }),
+        },
+      },
+    },
+  },
+});
+
+githubRouter.openapi(appInstallRoute, async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+
+  if (!githubAppService.isConfigured()) {
+    return c.json({ data: { url: null, configured: false } });
+  }
+
+  const state = await createOAuthState({ kind: 'github_app_install', userId, organizationId });
+  return c.json({ data: { url: githubAppService.installUrl(state), configured: true } });
+});
+
+githubRouter.openapi(appSetupRoute, async (c) => {
+  const { installationId, state } = c.req.valid('json');
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+
+  const stored = await consumeOAuthState(state);
+  if (
+    !stored ||
+    stored.kind !== 'github_app_install' ||
+    stored.userId !== userId ||
+    stored.organizationId !== organizationId
+  ) {
+    throw new HTTPException(400, { message: t(locale, 'integrations', 'invalidState') });
+  }
+
+  // The webhook usually arrives first; fetching here would need an extra API call, so an
+  // installation we have not seen yet is recorded with what we know and filled in on sync.
+  const existing = await githubAppService.findByInstallationId(installationId);
+  if (!existing) {
+    await githubAppService.syncInstallation({
+      installationId,
+      accountLogin: 'pending',
+    });
+  }
+
+  const claimed = await githubAppService.claimInstallation(installationId, organizationId, userId);
+  const installation = claimed ?? (await githubAppService.findByInstallationId(installationId));
+
+  if (!installation) {
+    throw new HTTPException(404, { message: 'Installation not found' });
+  }
+
+  // Already claimed by another organisation: refuse rather than silently move it.
+  if (installation.organizationId !== organizationId) {
+    throw new HTTPException(409, {
+      message: 'This GitHub App installation is already linked to another organization',
+    });
+  }
+
+  return c.json({
+    data: { installationId, accountLogin: installation.accountLogin },
+  });
+});
+
+githubRouter.openapi(appInstallationsRoute, async (c) => {
+  const organizationId = c.get('organizationId')!;
+
+  if (!githubAppService.isConfigured()) {
+    return c.json({ data: { configured: false, installations: [] } });
+  }
+
+  const installations = await githubAppService.listForOrganization(organizationId);
+
+  return c.json({
+    data: {
+      configured: true,
+      installations: installations.map((installation) => ({
+        installationId: installation.installationId,
+        accountLogin: installation.accountLogin,
+        accountType: installation.accountType,
+        repositorySelection: installation.repositorySelection,
+        suspended: Boolean(installation.suspendedAt),
+      })),
+    },
+  });
+});
+
+githubRouter.openapi(appRepositoriesRoute, async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const installationId = Number(c.req.valid('param').installationId);
+
+  const installation = await githubAppService.findByInstallationId(installationId);
+  // Scoped to the caller's organisation: an installation id is guessable, its contents are not.
+  if (!installation || installation.organizationId !== organizationId) {
+    throw new HTTPException(404, { message: 'Installation not found' });
+  }
+
+  const repositories = await githubAppService.listRepositories(installationId);
+  return c.json({ data: repositories });
 });
 
 export { githubRouter as githubRoutes };

@@ -281,6 +281,34 @@
       "when": 1785698434154,
       "tag": "0040_project_workers",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1787270400000,
+      "tag": "0041_database_studio_activity",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1787270400001,
+      "tag": "0042_database_schema_activity",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1787270400002,
+      "tag": "0043_studio_access",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1787270400003,
+      "tag": "0044_github_app_installations",
+      "breakpoints": true
     }
   ]
 }

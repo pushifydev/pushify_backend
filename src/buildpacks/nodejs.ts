@@ -1,6 +1,6 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import { dockerAppWorkdir, normalizeRootDirectory } from '../lib/normalize-root-directory';
+import { dockerAppWorkdir } from '../lib/normalize-root-directory';
 import {
   DOCKERFILE_SYNTAX,
   NODE_BUILD_IMAGE,
@@ -35,7 +35,6 @@ export const nodejsBuildpack: Buildpack = {
     const nextStandalone = cfg.nextStandalone === true;
     const port = config.port || this.getDefaultPort(framework);
     const install = config.installCommand || this.getDefaultInstallCommand(framework);
-    const rootDir = normalizeRootDirectory(config.rootDirectory);
     const workdir = dockerAppWorkdir();
 
     const envEntries = config.envVars ? Object.entries(config.envVars) : [];

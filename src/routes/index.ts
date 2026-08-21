@@ -24,6 +24,7 @@ import { organizationRoutes } from './organizations';
 import { billingRoutes } from './billing';
 import { serverRoutes } from './servers';
 import { databaseRoutes } from './databases';
+import { githubAppWebhookRoutes } from './github-app-webhook';
 import { aiRoutes } from './ai';
 import { cliAuthRoutes } from './cli-auth';
 import { marketplaceRoutes } from './marketplace';
@@ -76,4 +77,6 @@ export function registerRoutes(app: OpenAPIHono<any>) {
 
   // Webhook routes (no auth required - verified by signature)
   app.route('/api/v1/webhooks', webhookRoutes);
+  // GitHub App deliveries arrive on one endpoint for every installation
+  app.route('/api/v1/webhooks', githubAppWebhookRoutes);
 }

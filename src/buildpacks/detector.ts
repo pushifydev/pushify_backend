@@ -1,7 +1,6 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { buildpackRegistry } from './index';
-import { detectNodeFrameworkFromPackageJson } from './nodejs-detect';
 
 export interface DetectionResult {
   buildpackId: string;

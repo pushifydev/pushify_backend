@@ -39,6 +39,9 @@ const ActivityActionEnum = z.enum([
   'healthcheck.enabled',
   'healthcheck.disabled',
   'healthcheck.updated',
+  'database.data_modified',
+  'database.query_executed',
+  'database.schema_changed',
 ]);
 
 const UserSchema = z.object({

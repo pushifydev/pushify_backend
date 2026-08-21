@@ -1,6 +1,6 @@
 {
   "name": "pushify-backend",
-  "version": "0.2.0-beta.61",
+  "version": "0.2.0-beta.62",
   "private": true,
   "description": "Pushify cloud deployment platform — API server",
   "license": "MIT",
@@ -32,7 +32,8 @@
     "requeue:stuck-servers": "tsx scripts/requeue-stuck-servers.ts",
     "gc:orphans": "tsx scripts/gc-orphaned-deployments.ts",
     "grant-org": "tsx scripts/grant-org-limits.ts",
-    "refund:infra-overcharge": "tsx scripts/refund-infra-overcharge.ts"
+    "refund:infra-overcharge": "tsx scripts/refund-infra-overcharge.ts",
+    "test:studio": "PUSHIFY_STUDIO_IT=1 vitest run --no-file-parallelism src/lib/studio-engine.integration.test.ts src/lib/studio-nosql.integration.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.79.0",
@@ -78,6 +79,7 @@
     "tsup": "^8.2.4",
     "tsx": "^4.19.0",
     "typescript": "^5.5.4",
+    "typescript-eslint": "^8.67.0",
     "vitest": "^2.0.5"
   }
 }

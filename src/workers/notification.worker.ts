@@ -4,7 +4,6 @@ import crypto from 'crypto';
 import { logger } from '../lib/logger';
 import { env } from '../config/env';
 import { notificationRepository } from '../repositories/notification.repository';
-import { decrypt } from '../lib/encryption';
 import { QUEUE_NAMES, type NotificationJobData } from '../lib/queue';
 import { getBullRedisConnection } from '../lib/redis-connection';
 import {

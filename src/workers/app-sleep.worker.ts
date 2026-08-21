@@ -3,7 +3,7 @@ import { db } from '../db';
 import { projects } from '../db/schema/projects';
 import { servers } from '../db/schema/servers';
 import { containerMetrics } from '../db/schema/metrics';
-import { SSHClient } from '../utils/ssh';
+import { getSSHConnection } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
 import { resolveProjectServerId } from '../lib/runner-routing';
 import { logger } from '../lib/logger';
@@ -32,14 +32,13 @@ async function execOnProjectHost(
     if (!server?.ipv4 || !server.sshPrivateKey) {
       return { ok: false, stdout: '' };
     }
-    const ssh = new SSHClient();
+    const ssh = await getSSHConnection({
+      host: server.ipv4,
+      port: 22,
+      username: 'root',
+      privateKey: decrypt(server.sshPrivateKey),
+    });
     try {
-      await ssh.connect({
-        host: server.ipv4,
-        port: 22,
-        username: 'root',
-        privateKey: decrypt(server.sshPrivateKey),
-      });
       const result = await ssh.exec(command);
       return { ok: result.code === 0, stdout: result.stdout };
     } finally {

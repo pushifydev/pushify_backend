@@ -8,7 +8,7 @@ import { SSHClient } from '../utils/ssh';
 import { db } from '../db';
 import { eq } from 'drizzle-orm';
 import { servers } from '../db/schema/servers';
-import type { DatabaseType, DatabaseStatus } from '../db/schema/databases';
+import type { DatabaseType } from '../db/schema/databases';
 import { planLimitsService } from './plan-limits.service';
 import { assertOrganizationCanMutateResources } from './organization-billing.service';
 import crypto from 'crypto';
@@ -861,10 +861,11 @@ export const databaseService = {
           await ssh.exec(`docker exec ${containerName} psql -U ${database.username} -c "ALTER USER ${database.username} PASSWORD '${newPassword}';"`);
           break;
 
-        case 'mysql':
+        case 'mysql': {
           const oldPassword = decrypt(database.password);
           await ssh.exec(`docker exec ${containerName} mysql -u root -p'${oldPassword}' -e "ALTER USER '${database.username}'@'%' IDENTIFIED BY '${newPassword}'; FLUSH PRIVILEGES;"`);
           break;
+        }
 
         case 'redis':
           await ssh.exec(`docker exec ${containerName} redis-cli CONFIG SET requirepass "${newPassword}"`);

@@ -1,5 +1,7 @@
 import { Hono } from 'hono';
 import { databaseService } from '../services/database.service';
+import { databaseStudioRoutes } from './database-studio';
+import { nosqlStudioRoutes } from './nosql-studio';
 import { databaseBackupService } from '../services/database-backup.service';
 import { combinedAuthMiddleware } from '../middleware/auth';
 import { requireScope } from '../middleware/apikey-auth';
@@ -305,5 +307,11 @@ databasesRouter.get('/:id/backups/:backupId/download', requireScope('databases:r
     },
   });
 });
+
+// Data browser (tables, rows, SQL console) for PostgreSQL/MySQL databases
+databasesRouter.route('/', databaseStudioRoutes);
+
+// Data browser for MongoDB and Redis
+databasesRouter.route('/', nosqlStudioRoutes);
 
 export { databasesRouter as databaseRoutes };

@@ -98,7 +98,6 @@ class DashboardService {
       throw new HTTPException(404, { message: t(locale, 'organizations', 'notFound') });
     }
 
-    const plan = (org.plan || 'free') as import('../lib/plans').PlanType;
     const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
     const orgProjectFilter = eq(projects.organizationId, organizationId);
