@@ -4,7 +4,7 @@ import { servers } from '../db/schema/servers';
 import type { projects } from '../db/schema/projects';
 import { decrypt } from './encryption';
 import { logger } from './logger';
-import { SSHClient } from '../utils/ssh';
+import { getSSHConnection, SSHClient } from '../utils/ssh';
 import { releasePort } from '../workers/port-manager';
 
 type ProjectRow = typeof projects.$inferSelect;
@@ -65,14 +65,13 @@ async function serverHasProjectContainers(
 
   const safeSlug = shellEscapeSlug(slug);
   const base = `pushify-${safeSlug}`;
-  const ssh = new SSHClient();
+  const ssh = await getSSHConnection({
+    host: server.ipv4,
+    port: 22,
+    username: 'root',
+    privateKey: decrypt(server.sshPrivateKey),
+  });
   try {
-    await ssh.connect({
-      host: server.ipv4,
-      port: 22,
-      username: 'root',
-      privateKey: decrypt(server.sshPrivateKey),
-    });
     const check = await ssh.exec(
       `docker ps -a --format '{{.Names}}' | grep -E '^${base}(-|$)|^pushify-preview-${safeSlug}' || true`
     );
@@ -180,14 +179,13 @@ export async function resumeProjectContainersOnServer(ssh: SSHClient, slug: stri
 export async function pauseProjectContainers(project: ProjectRow): Promise<boolean> {
   const remoteServer = await resolveDeployServerForCleanup(project);
   if (remoteServer?.ipv4 && remoteServer.sshPrivateKey) {
-    const ssh = new SSHClient();
+    const ssh = await getSSHConnection({
+      host: remoteServer.ipv4,
+      port: 22,
+      username: 'root',
+      privateKey: decrypt(remoteServer.sshPrivateKey),
+    });
     try {
-      await ssh.connect({
-        host: remoteServer.ipv4,
-        port: 22,
-        username: 'root',
-        privateKey: decrypt(remoteServer.sshPrivateKey),
-      });
       await pauseProjectContainersOnServer(ssh, project.slug);
       logger.info({ projectId: project.id, slug: project.slug }, 'Paused remote containers');
       return true;
@@ -210,14 +208,13 @@ export async function pauseProjectContainers(project: ProjectRow): Promise<boole
 export async function resumeProjectContainers(project: ProjectRow): Promise<boolean> {
   const remoteServer = await resolveDeployServerForCleanup(project);
   if (remoteServer?.ipv4 && remoteServer.sshPrivateKey) {
-    const ssh = new SSHClient();
+    const ssh = await getSSHConnection({
+      host: remoteServer.ipv4,
+      port: 22,
+      username: 'root',
+      privateKey: decrypt(remoteServer.sshPrivateKey),
+    });
     try {
-      await ssh.connect({
-        host: remoteServer.ipv4,
-        port: 22,
-        username: 'root',
-        privateKey: decrypt(remoteServer.sshPrivateKey),
-      });
       return await resumeProjectContainersOnServer(ssh, project.slug);
     } finally {
       ssh.disconnect();
@@ -249,14 +246,13 @@ export async function teardownProjectOnRemoteServer(
   const isCompose = settings.deploymentType === 'docker-compose';
   const script = buildRemoteTeardownScript(project.slug, isCompose);
 
-  const ssh = new SSHClient();
+  const ssh = await getSSHConnection({
+    host: server.ipv4,
+    port: 22,
+    username: 'root',
+    privateKey: decrypt(server.sshPrivateKey),
+  });
   try {
-    await ssh.connect({
-      host: server.ipv4,
-      port: 22,
-      username: 'root',
-      privateKey: decrypt(server.sshPrivateKey),
-    });
 
     const result = await ssh.exec(script);
     if (result.code !== 0) {

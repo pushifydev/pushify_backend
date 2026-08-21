@@ -1,8 +1,8 @@
 import { db } from '../db';
-import { activityLogs, type ActivityAction, type NewActivityLog } from '../db/schema/activity';
+import { activityLogs, type ActivityAction } from '../db/schema/activity';
 import { users } from '../db/schema/users';
 import { projects } from '../db/schema/projects';
-import { eq, desc, and, or, inArray, sql } from 'drizzle-orm';
+import { eq, desc, and, inArray, sql } from 'drizzle-orm';
 import { logger } from '../lib/logger';
 import { normalizeClientIp } from '../lib/utils';
 

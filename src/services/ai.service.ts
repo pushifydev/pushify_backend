@@ -1,6 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { env } from '../config/env';
-import { logger } from '../lib/logger';
 
 const SYSTEM_PROMPT = `You are Pushify AI Assistant — the built-in help for the Pushify cloud deployment platform.
 

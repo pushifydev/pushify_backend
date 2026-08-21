@@ -120,6 +120,25 @@ organizationRouter.patch('/members/:userId', async (c) => {
 });
 
 // Restrict a member to specific projects (owner/admin only)
+// Data-browser permission for a member
+organizationRouter.put('/members/:userId/studio-access', async (c) => {
+  const currentUserId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const targetUserId = c.req.param('userId');
+  const body = await c.req.json();
+
+  const result = await organizationService.updateMemberStudioAccess(
+    organizationId,
+    currentUserId,
+    targetUserId,
+    body?.access,
+    locale
+  );
+
+  return c.json({ data: result });
+});
+
 organizationRouter.put('/members/:userId/project-access', async (c) => {
   const currentUserId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;

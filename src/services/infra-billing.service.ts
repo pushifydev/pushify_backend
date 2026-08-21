@@ -9,10 +9,8 @@ import { organizationRepository } from '../repositories/organization.repository'
 import { t, type SupportedLocale } from '../i18n';
 import {
   accrueInfraCharge,
-  applyInfraMargin,
   assertServerWithinPlanLimits,
   buildPriceQuote,
-  eurToUsdCents,
   getPlanInfraLimits,
   minimumWalletBalanceForQuote,
   INFRA_MARGIN_PERCENT,

@@ -1,7 +1,8 @@
 import { db } from '../db';
-import { gitIntegrations, type GitIntegration, type NewGitIntegration } from '../db/schema';
+import { gitIntegrations, type GitIntegration } from '../db/schema';
 import { encrypt, decrypt } from '../lib/encryption';
 import { env } from '../config/env';
+import { isAppConfigured } from './github-app.service';
 import { eq, and } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { t, type SupportedLocale } from '../i18n';
@@ -48,17 +49,24 @@ export interface GitHubBranch {
 
 class GitHubService {
   /**
-   * Generate OAuth authorization URL
+   * Generate OAuth authorization URL.
+   *
+   * The `repo` scope grants read/write to every repository the person can reach, which is far
+   * more than Pushify needs. Once a GitHub App is configured it owns repository access, so the
+   * OAuth app is asked only for identity. Without an App we still need `repo` to clone, so the
+   * scope stays as it was and nothing breaks for a deployment that has not set one up.
    */
   getAuthorizationUrl(state: string): string {
     if (!env.GITHUB_CLIENT_ID) {
       throw new Error('GitHub OAuth is not configured');
     }
 
+    const scope = isAppConfigured() ? 'read:user user:email' : 'repo read:user user:email';
+
     const params = new URLSearchParams({
       client_id: env.GITHUB_CLIENT_ID,
       redirect_uri: env.GITHUB_CALLBACK_URL || '',
-      scope: 'repo read:user user:email',
+      scope,
       state,
       allow_signup: 'true',
     });

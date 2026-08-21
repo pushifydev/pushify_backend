@@ -3,7 +3,7 @@ import { db } from '../db';
 import { projects } from '../db/schema/projects';
 import { decrypt } from './encryption';
 import { checkServerDiskSpace, type ServerDiskCheckResult } from './server-disk-check';
-import { SSHClient } from '../utils/ssh';
+import { getSSHConnection } from '../utils/ssh';
 
 export interface OrphanContainer {
   name: string;
@@ -41,8 +41,7 @@ export async function scanServerHealth(
     throw new Error('Server is not reachable via SSH');
   }
 
-  const ssh = new SSHClient();
-  await ssh.connect({
+  const ssh = await getSSHConnection({
     host: server.ipv4,
     port: 22,
     username: 'root',

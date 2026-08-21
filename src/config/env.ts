@@ -46,6 +46,12 @@ const envSchema = z.object({
   GITHUB_CLIENT_SECRET: z.string().optional(),
   GITHUB_CALLBACK_URL: z.string().url().optional(),
 
+  // GitHub App — repository access. Optional: without it the OAuth path stays in charge.
+  GITHUB_APP_ID: z.string().optional(),
+  GITHUB_APP_SLUG: z.string().optional(),
+  GITHUB_APP_PRIVATE_KEY: z.string().optional(),
+  GITHUB_APP_WEBHOOK_SECRET: z.string().optional(),
+
   // GitLab OAuth (gitlab.com or self-hosted)
   GITLAB_CLIENT_ID: z.string().optional(),
   GITLAB_CLIENT_SECRET: z.string().optional(),

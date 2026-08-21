@@ -806,7 +806,6 @@ export async function blueGreenDeploy(
   const {
     imageName,
     containerName,
-    hostPort,
     containerPort,
     envVars,
     volumes,

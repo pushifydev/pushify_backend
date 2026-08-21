@@ -72,12 +72,6 @@ const DeploymentLogsSchema = z
   })
   .openapi('DeploymentLogs');
 
-const MessageSchema = z
-  .object({
-    message: z.string(),
-  })
-  .openapi('DeploymentMessage');
-
 // ============ Request Schemas ============
 
 const CreateDeploymentSchema = z
@@ -524,7 +518,7 @@ deploymentRouter.get('/:deploymentId/container-logs/stream', async (c) => {
   const deploymentId = c.req.param('deploymentId') as string;
 
   // Validate access and get container name
-  const deployment = await deploymentService.getDeploymentForStreaming(
+  await deploymentService.getDeploymentForStreaming(
     deploymentId,
     projectId,
     organizationId,

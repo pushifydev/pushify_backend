@@ -3,7 +3,7 @@ import { deployments } from '../db/schema/deployments';
 import { projects, environmentVariables } from '../db/schema/projects';
 import { organizations } from '../db/schema/organizations';
 import { gitIntegrations } from '../db/schema';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { decrypt } from '../lib/encryption';
 import { logger } from '../lib/logger';
 import { pickRunnerServerId } from '../lib/runner-routing';
@@ -65,33 +65,6 @@ import {
   getServerDeployActiveCount,
 } from '../lib/deploy-concurrency';
 import { isQueueAvailable } from '../lib/queue';
-
-/**
- * Auto-detect framework from package.json
- */
-async function detectFramework(workDir: string, rootDirectory: string = '.'): Promise<string | null> {
-  try {
-    const pkgPath = path.join(workDir, rootDirectory === '.' ? '' : rootDirectory, 'package.json');
-    const pkgContent = await fs.readFile(pkgPath, 'utf-8');
-    const pkg = JSON.parse(pkgContent);
-
-    const deps = { ...pkg.dependencies, ...pkg.devDependencies };
-
-    // Check for frameworks in order of specificity
-    if (deps['next']) return 'nextjs';
-    if (deps['nuxt']) return 'nuxt';
-    if (deps['@sveltejs/kit']) return 'svelte';
-    if (deps['astro']) return 'astro';
-    if (deps['vue']) return 'vue';
-    if (deps['react'] || deps['react-dom']) return 'react';
-    if (deps['express'] || deps['fastify'] || deps['hono'] || deps['koa']) return 'nodejs';
-
-    return 'nodejs'; // Default to nodejs if has package.json
-  } catch {
-    return null;
-  }
-}
-
 
 const POLL_INTERVAL = 5000; // 5 seconds
 
@@ -287,21 +260,6 @@ async function pollForDeployments(): Promise<void> {
 
     await sleep(POLL_INTERVAL);
   }
-}
-
-/**
- * Get next pending deployment from the queue
- */
-async function getNextPendingDeployment(): Promise<DeploymentJob | null> {
-  const result = await db
-    .select(deploymentJobSelect)
-    .from(deployments)
-    .innerJoin(projects, eq(deployments.projectId, projects.id))
-    .where(eq(deployments.status, 'pending'))
-    .orderBy(deployments.createdAt)
-    .limit(10); // Fetch a batch to find an eligible one
-
-  return result[0] || null;
 }
 
 /**

@@ -6,7 +6,7 @@ import { logger } from './logger';
 import { execCommand } from '../workers/shell';
 import { isContainerRunning } from '../workers/docker';
 import { isContainerRunning as isRemoteContainerRunning } from '../workers/remote-docker';
-import { SSHClient } from '../utils/ssh';
+import { getSSHConnection, SSHClient } from '../utils/ssh';
 
 /** Sidecar / data containers we should not use for app-level metrics */
 const SIDECAR_NAME_PATTERN = /-(db|redis|postgres|mysql|kong|mail)(-\d+)?$/i;
@@ -68,8 +68,7 @@ export async function restartPushifyContainer(
       if (!server?.ipv4 || !server.sshPrivateKey) {
         return false;
       }
-      ssh = new SSHClient();
-      await ssh.connect({
+      ssh = await getSSHConnection({
         host: server.ipv4,
         port: 22,
         username: 'root',

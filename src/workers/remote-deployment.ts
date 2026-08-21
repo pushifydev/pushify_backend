@@ -5,7 +5,7 @@ import { domains } from '../db/schema/projects';
 import { SSHClient } from '../utils/ssh';
 import { syncWorkerContainersOnDeploy } from './worker-process-sync';
 import { decrypt } from '../lib/encryption';
-import { buildImage, runContainer, checkDocker, getImageId, tagImage, cleanupOldImages, runContainerFromImage, imageExists, blueGreenDeploy, completeBlueGreenSwitch } from './remote-docker';
+import { buildImage, checkDocker, getImageId, tagImage, cleanupOldImages, runContainerFromImage, imageExists, blueGreenDeploy, completeBlueGreenSwitch } from './remote-docker';
 import { addSite, addAutoSubdomainSite, reloadNginx, requestSSLCertificate } from './nginx-manager';
 import {
   applyCalcomEnvDefaults,
@@ -586,7 +586,7 @@ export async function deployToRemoteServer(
         const tmpSqlPath = `${projectDir}/.post-deploy.sql`;
         await ssh.uploadFile(expandedSql, tmpSqlPath);
         // Run inside db container as postgres (which Postgres image creates as superuser)
-        const sqlResult = await ssh.exec(
+        await ssh.exec(
           `docker exec -i ${stackName}-db-1 psql -U postgres -d postgres -f - < ${tmpSqlPath} 2>&1 || true`
         );
         await ssh.exec(`rm -f ${tmpSqlPath}`);

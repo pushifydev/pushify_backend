@@ -7,7 +7,7 @@ import { metricsRepository } from '../repositories/metrics.repository';
 import type { NewContainerMetric } from '../db/schema';
 import { getImagesFootprintBytes } from '../lib/docker-disk-usage';
 import { decrypt } from '../lib/encryption';
-import { SSHClient } from '../utils/ssh';
+import { getSSHConnection, SSHClient } from '../utils/ssh';
 import { logger } from '../lib/logger';
 
 export const BYTES_PER_GB = 1024 ** 3;
@@ -213,8 +213,7 @@ export const usageMeteringService = {
       if (server.ipv4 && server.sshPrivateKey) {
         let ssh: SSHClient | null = null;
         try {
-          ssh = new SSHClient();
-          await ssh.connect({
+          ssh = await getSSHConnection({
             host: server.ipv4,
             port: 22,
             username: 'root',

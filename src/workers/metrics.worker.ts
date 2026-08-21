@@ -5,7 +5,7 @@ import { execCommand } from './shell';
 import { db } from '../db';
 import { servers } from '../db/schema/servers';
 import { eq } from 'drizzle-orm';
-import { SSHClient } from '../utils/ssh';
+import { getSSHConnection, SSHClient } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
 import { logger } from '../lib/logger';
 import { env } from '../config/env';
@@ -426,8 +426,7 @@ async function getRemoteDockerStats(
     // burns a handshake timeout and spams the error log every tick.
     if (server.status !== 'running') return result;
 
-    ssh = new SSHClient();
-    await ssh.connect({
+    ssh = await getSSHConnection({
       host: server.ipv4,
       port: 22,
       username: 'root',
@@ -476,8 +475,7 @@ async function connectServerSsh(serverId: string): Promise<SSHClient | null> {
     if (!server?.ipv4 || !server.sshPrivateKey) return null;
     if (server.status !== 'running') return null;
 
-    const ssh = new SSHClient();
-    await ssh.connect({
+    const ssh = await getSSHConnection({
       host: server.ipv4,
       port: 22,
       username: 'root',

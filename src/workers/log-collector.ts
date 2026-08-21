@@ -4,7 +4,7 @@ import { containerLogs } from '../db/schema/container-logs';
 import { deployments } from '../db/schema/deployments';
 import { projects } from '../db/schema/projects';
 import { servers } from '../db/schema/servers';
-import { SSHClient } from '../utils/ssh';
+import { getSSHConnection, SSHClient } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
 import { environmentVariables } from '../db/schema/projects';
 import { createLogMasker, type LogMasker } from '../lib/log-masking';
@@ -116,8 +116,7 @@ async function collectDeploymentLogs(
     // Remote deployment
     let ssh: SSHClient | null = null;
     try {
-      ssh = new SSHClient();
-      await ssh.connect({
+      ssh = await getSSHConnection({
         host: server.ipv4,
         port: 22,
         username: 'root',
@@ -190,7 +189,7 @@ async function cleanupOldLogs(): Promise<void> {
   cutoffDate.setDate(cutoffDate.getDate() - LOG_RETENTION_DAYS);
 
   // Note: Using raw SQL for the date comparison since drizzle doesn't have lt/gt exported here
-  const deleted = await db
+  await db
     .delete(containerLogs)
     .where(
       and(
@@ -332,7 +331,7 @@ export async function getCombinedLogs(
   const historical = await getHistoricalLogs(deploymentId, { limit: 5 });
 
   // Combine historical logs
-  let combinedLogs = historical.logs
+  const combinedLogs = historical.logs
     .reverse()
     .map(chunk => chunk.content)
     .join('\n');

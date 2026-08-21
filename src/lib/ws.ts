@@ -1,12 +1,11 @@
 import { Redis } from 'ioredis';
-import { randomUUID } from 'crypto';
 import { and, eq } from 'drizzle-orm';
 import { logger } from './logger';
 import { env } from '../config/env';
 import { db } from '../db';
 import { projects, servers, databases, organizationMembers } from '../db/schema';
 import { memberCanAccessProject } from './member-project-scope';
-import type { WSEvent, WSServerMessage, WSClientMessage } from '../types/ws';
+import type { WSEvent, WSServerMessage } from '../types/ws';
 
 const WS_CHANNEL_PREFIX = 'ws:';
 const HEARTBEAT_INTERVAL = 30000;

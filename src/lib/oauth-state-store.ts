@@ -3,6 +3,7 @@ import { getOptionalRedis } from './redis-client';
 import { logger } from './logger';
 
 export type OAuthStateKind =
+  | 'github_app_install'
   | 'github_integration'
   | 'gitlab_integration'
   | 'github_login'
@@ -47,6 +48,8 @@ export interface OAuthStateRecord {
   platform?: OAuthPlatform;
   /** Already validated when the state was created; the callback only echoes it. */
   appRedirect?: string;
+  /** Which organisation a github_app_install belongs to, captured before leaving for GitHub. */
+  organizationId?: string;
 }
 
 const PREFIX = 'pushify:oauth:state:';

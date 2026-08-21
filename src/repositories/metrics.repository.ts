@@ -5,7 +5,6 @@ import {
   type ContainerMetric,
   type NewContainerMetric,
 } from '../db/schema';
-import { projects } from '../db/schema/projects';
 
 export const metricsRepository = {
   // Create a new metrics record

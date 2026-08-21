@@ -21,6 +21,8 @@ export class SSHClient {
   private client: Client;
   private connected: boolean = false;
   private config: SSHConnectionConfig | null = null;
+  /** true once the pool owns this client; callers must not close it */
+  private pooled: boolean = false;
 
   constructor() {
     this.client = new Client();
@@ -252,7 +254,19 @@ export class SSHClient {
   /**
    * Disconnect from the server
    */
-  disconnect(): void {
+  /**
+   * Marks this client as owned by the connection pool. A pooled client ignores `disconnect()`
+   * from its callers — the pool's idle reaper closes it — so a shared connection can never be
+   * pulled out from under another caller mid-operation.
+   */
+  markPooled(): void {
+    this.pooled = true;
+  }
+
+  /** `force` is for the pool itself; everyone else's disconnect is a no-op once pooled. */
+  disconnect(force: boolean = false): void {
+    if (this.pooled && !force) return;
+
     if (this.connected) {
       this.client.end();
       this.connected = false;
@@ -276,7 +290,7 @@ setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of connectionPool.entries()) {
     if (now - entry.lastUsedAt > CONNECTION_TTL) {
-      entry.client.disconnect();
+      entry.client.disconnect(true);
       connectionPool.delete(key);
     }
   }
@@ -307,7 +321,7 @@ export async function getSSHConnection(config: SSHConnectionConfig): Promise<SSH
     }
     if (oldestKey) {
       const evicted = connectionPool.get(oldestKey);
-      evicted?.client.disconnect();
+      evicted?.client.disconnect(true);
       connectionPool.delete(oldestKey);
     }
   }
@@ -315,6 +329,7 @@ export async function getSSHConnection(config: SSHConnectionConfig): Promise<SSH
   // Create new client
   const client = new SSHClient();
   await client.connect(config);
+  client.markPooled();
 
   // Store in pool
   connectionPool.set(key, { client, lastUsedAt: Date.now() });
@@ -327,7 +342,7 @@ export async function getSSHConnection(config: SSHConnectionConfig): Promise<SSH
  */
 export function closeAllSSHConnections(): void {
   for (const entry of connectionPool.values()) {
-    entry.client.disconnect();
+    entry.client.disconnect(true);
   }
   connectionPool.clear();
 }
@@ -339,7 +354,7 @@ export function removeSSHConnection(host: string, port: number = 22, username: s
   const key = `${username}@${host}:${port}`;
   const entry = connectionPool.get(key);
   if (entry) {
-    entry.client.disconnect();
+    entry.client.disconnect(true);
     connectionPool.delete(key);
   }
 }

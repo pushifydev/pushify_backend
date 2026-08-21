@@ -3,7 +3,6 @@ import { db } from '../db';
 import { projects, deployments, environmentVariables, marketplaceDeployments, servers } from '../db/schema';
 import { templates, getTemplateById } from '../marketplace/templates';
 import { generatePassword, generateSecret, applyCalcomEnvDefaults } from '../marketplace/helpers';
-import type { MarketplaceCategory } from '../marketplace/types';
 import { encrypt } from '../lib/encryption';
 import { omitWebhookSecret } from '../lib/project-public';
 import { eq, and, desc } from 'drizzle-orm';

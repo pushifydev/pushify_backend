@@ -5,7 +5,6 @@ import { apiKeyService } from '../services/apikey.service';
 import { activityService } from '../services/activity.service';
 import { authMiddleware } from '../middleware/auth';
 import { t } from '../i18n';
-import { API_KEY_SCOPES } from '../db/schema';
 import type { AppEnv } from '../types';
 
 const apiKeyRouter = new Hono<AppEnv>();

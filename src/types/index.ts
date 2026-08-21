@@ -8,6 +8,9 @@ export type AppEnv = {
     locale: SupportedLocale;
     userId?: string;
     organizationId?: string;
+    /** set by the API key middleware when the caller authenticated with pk_live_... */
+    isApiKeyAuth?: boolean;
+    apiKey?: { id: string; scopes: string };
   };
 };
 
