@@ -54,6 +54,21 @@ export const STRIPE_PRICE_IDS: Record<PlanType, { monthly: string; yearly: strin
   enterprise: null,
 };
 
+function parseLegacyIds(raw?: string): string[] {
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** Retired price IDs (post-repricing) that must still resolve to a plan in webhooks */
+const LEGACY_PRICE_IDS: Partial<Record<PlanType, string[]>> = {
+  hobby: parseLegacyIds(env.STRIPE_PRICE_HOBBY_LEGACY),
+  pro: parseLegacyIds(env.STRIPE_PRICE_PRO_LEGACY),
+  business: parseLegacyIds(env.STRIPE_PRICE_BUSINESS_LEGACY),
+};
+
 export function getPriceId(plan: PlanType, cycle: 'monthly' | 'yearly'): string | null {
   const prices = STRIPE_PRICE_IDS[plan];
   if (!prices) return null;
@@ -67,9 +82,12 @@ export function getPlanFromPriceId(priceId: string): PlanType | null {
       return plan as PlanType;
     }
   }
-  // Fall back to the built-in (legacy) price IDs: when env vars point at NEW prices
-  // after a price change, webhooks for subscribers still on the old prices must keep
-  // resolving to their plan — otherwise a renewal would silently drop them to null.
+  // Fall back to retired price IDs: when env vars point at NEW prices after a
+  // repricing, webhooks for subscribers still on the old prices must keep resolving
+  // to their plan — otherwise a renewal would silently drop them to null.
+  for (const [plan, ids] of Object.entries(LEGACY_PRICE_IDS)) {
+    if (ids?.includes(priceId)) return plan as PlanType;
+  }
   for (const [plan, prices] of Object.entries(DEFAULT_STRIPE_PRICE_IDS)) {
     if (!prices) continue;
     if (prices.monthly === priceId || prices.yearly === priceId) {
