@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/pushify-dev/pushify",
+    "url": "https://github.com/pushifydev/pushify_backend",
     "directory": "pushify_backend"
   },
   "type": "module",
@@ -33,6 +33,7 @@
     "gc:orphans": "tsx scripts/gc-orphaned-deployments.ts",
     "grant-org": "tsx scripts/grant-org-limits.ts",
     "refund:infra-overcharge": "tsx scripts/refund-infra-overcharge.ts",
+    "stripe:create-prices": "tsx scripts/create-stripe-prices.ts",
     "test:studio": "PUSHIFY_STUDIO_IT=1 vitest run --no-file-parallelism src/lib/studio-engine.integration.test.ts src/lib/studio-nosql.integration.test.ts"
   },
   "dependencies": {

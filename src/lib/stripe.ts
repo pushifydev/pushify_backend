@@ -67,6 +67,15 @@ export function getPlanFromPriceId(priceId: string): PlanType | null {
       return plan as PlanType;
     }
   }
+  // Fall back to the built-in (legacy) price IDs: when env vars point at NEW prices
+  // after a price change, webhooks for subscribers still on the old prices must keep
+  // resolving to their plan — otherwise a renewal would silently drop them to null.
+  for (const [plan, prices] of Object.entries(DEFAULT_STRIPE_PRICE_IDS)) {
+    if (!prices) continue;
+    if (prices.monthly === priceId || prices.yearly === priceId) {
+      return plan as PlanType;
+    }
+  }
   return null;
 }
 

@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { accrueInfraCharge, minimumBalanceToStartCents, HOURS_PER_MONTH } from './infra-billing';
+import {
+  accrueInfraCharge,
+  assertServerWithinPlanLimits,
+  minimumBalanceToStartCents,
+  HOURS_PER_MONTH,
+} from './infra-billing';
 
 const HOUR_MS = 3600 * 1000;
 
@@ -75,5 +80,24 @@ describe('minimumBalanceToStartCents', () => {
     const required = minimumBalanceToStartCents(monthly);
     expect(required).toBe(Math.ceil((575 * 72) / 730)); // ≈ 57¢
     expect(required).toBeLessThan(monthly / 5);
+  });
+});
+
+describe('assertServerWithinPlanLimits', () => {
+  const smallSpecs = { vcpus: 2, memoryMb: 4096, diskGb: 40 };
+
+  it('free plan cannot provision managed servers even though it can attach a BYO server', () => {
+    // Free's servers limit is 1 (BYOS) — the managed gate must come from
+    // managedServersEnabled, not from the generic server count.
+    expect(() => assertServerWithinPlanLimits('free', smallSpecs, 500)).toThrow(
+      'PLAN_NO_MANAGED_SERVERS',
+    );
+  });
+
+  it('hobby can provision a small managed server within its tier caps', () => {
+    expect(() => assertServerWithinPlanLimits('hobby', smallSpecs, 500)).not.toThrow();
+    expect(() =>
+      assertServerWithinPlanLimits('hobby', { vcpus: 4, memoryMb: 8192, diskGb: 80 }, 500),
+    ).toThrow('PLAN_SERVER_VCPU_EXCEEDED');
   });
 });

@@ -2,7 +2,7 @@
 
 # Pushify Backend
 
-The API server for [Pushify](https://github.com/pushify-dev/pushify) — an open-source cloud deployment platform.
+The API server for [Pushify](https://pushify.dev) — an open-source cloud deployment platform.
 
 ![License](https://img.shields.io/badge/license-MIT-22d3ee?style=for-the-badge&labelColor=1a1a2e)
 ![Hono](https://img.shields.io/badge/Hono-E36002?style=for-the-badge&logo=hono&logoColor=white)
@@ -57,8 +57,8 @@ See [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) for requirements, configuration
 ### Setup
 
 ```bash
-git clone https://github.com/pushify-dev/pushify-backend.git
-cd pushify-backend
+git clone https://github.com/pushifydev/pushify_backend.git
+cd pushify_backend
 npm install
 cp .env.example .env    # Edit with your database URL and secrets
 npm run db:push
