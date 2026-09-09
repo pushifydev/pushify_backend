@@ -270,6 +270,19 @@ databasesRouter.post('/:id/backups/:backupId/restore', requireScope('databases:w
   return c.json(result);
 });
 
+// Restore-verify a backup into a throwaway container (owner/admin)
+databasesRouter.post('/:id/backups/:backupId/verify', requireScope('databases:write'), async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const databaseId = c.req.param('id');
+  const backupId = c.req.param('backupId');
+
+  const result = await databaseBackupService.verifyBackup(databaseId, backupId, organizationId, userId, locale);
+
+  return c.json(result);
+});
+
 // Delete backup
 databasesRouter.delete('/:id/backups/:backupId', requireScope('databases:write'), async (c) => {
   const userId = c.get('userId')!;

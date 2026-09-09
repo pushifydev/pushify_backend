@@ -733,6 +733,57 @@ export async function sendInfraCreditsLowEmail(
   }
 }
 
+export async function sendBackupVerificationFailedEmail(
+  to: string,
+  orgName: string,
+  databaseName: string,
+  error: string,
+  databaseId: string,
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping backup verification email');
+    return;
+  }
+
+  const dbUrl = `${env.FRONTEND_URL}/dashboard/databases/${databaseId}`;
+  const subjects = {
+    en: `Backup restore test failed — ${databaseName} (${orgName})`,
+    tr: `Yedek geri yükleme testi başarısız — ${databaseName} (${orgName})`,
+  };
+  const copy = {
+    en: {
+      lead: `We tried to restore the latest backup of <strong>${databaseName}</strong> into a throwaway container and it did not come back cleanly.`,
+      why: 'Your live database was not touched. But this backup may not be recoverable — please check it before you need it.',
+      cta: 'Open the database',
+    },
+    tr: {
+      lead: `<strong>${databaseName}</strong> veritabanının son yedeğini geçici bir container'a geri yüklemeyi denedik ve düzgün geri gelmedi.`,
+      why: 'Canlı veritabanınıza dokunulmadı. Ancak bu yedek kurtarılamaz olabilir — ihtiyaç duymadan önce kontrol edin.',
+      cta: 'Veritabanını aç',
+    },
+  }[locale] ?? { lead: '', why: '', cta: 'Open' };
+
+  const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#f9fafb;font-family:ui-sans-serif,system-ui,sans-serif">
+<div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:24px">
+  <p style="margin:0 0 12px;font-size:15px;color:#111827">${copy.lead}</p>
+  <p style="margin:0 0 16px;font-size:14px;color:#4b5563">${copy.why}</p>
+  <pre style="margin:0 0 20px;padding:12px;background:#f3f4f6;border-radius:8px;font-size:12px;color:#374151;white-space:pre-wrap">${error.replace(/</g, '&lt;')}</pre>
+  <a href="${dbUrl}" style="display:inline-block;padding:10px 16px;background:#111827;color:#ffffff;border-radius:8px;font-size:14px;text-decoration:none">${copy.cta}</a>
+</div></body></html>`;
+
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: subjects[locale] ?? subjects.en,
+      html,
+    });
+  } catch (err) {
+    logger.error({ err, to }, 'Failed to send backup verification email');
+  }
+}
+
 export async function sendInfraServerSuspendedEmail(
   to: string,
   orgName: string,

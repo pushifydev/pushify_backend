@@ -4,10 +4,12 @@ import { logger } from '../lib/logger';
 
 const POLL_INTERVAL = 60 * 60 * 1000; // 1 hour
 const CLEANUP_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
+const VERIFY_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours — each pass verifies a few due backups
 const BACKUP_THRESHOLD = 24 * 60 * 60 * 1000; // 24 hours
 
 let isRunning = false;
 let lastCleanup = 0;
+let lastVerify = 0;
 
 /**
  * Start the backup worker
@@ -59,8 +61,19 @@ async function pollForBackups(): Promise<void> {
         }
       }
 
-      // Cleanup expired backups periodically
+      // Restore-verify due backups (a few per pass, weekly per database)
       const now = Date.now();
+      if (now - lastVerify >= VERIFY_INTERVAL) {
+        try {
+          const started = await databaseBackupService.verifyDueBackups();
+          if (started > 0) logger.info({ started }, 'Backup restore-verification pass');
+          lastVerify = now;
+        } catch (error) {
+          logger.error({ err: error }, 'Error verifying backups');
+        }
+      }
+
+      // Cleanup expired backups periodically
       if (now - lastCleanup >= CLEANUP_INTERVAL) {
         try {
           await databaseBackupService.cleanupExpiredBackups();

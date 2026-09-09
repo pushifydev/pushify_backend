@@ -288,6 +288,7 @@ export interface TranslationKeys {
     backupNotFound: string;
     backupDeleted: string;
     backupRestored: string;
+    backupVerifyStarted: string;
     backupRestoreFailed: string;
     backupInProgress: string;
     databaseMustBeRunning: string;
@@ -681,6 +682,7 @@ export const en: TranslationKeys = {
     backupNotFound: 'Backup not found',
     backupDeleted: 'Backup deleted successfully',
     backupRestored: 'Database restored from backup successfully',
+    backupVerifyStarted: 'Restore test started — results appear on the backup in a few minutes',
     backupRestoreFailed: 'Failed to restore database from backup',
     backupInProgress: 'A backup is already in progress for this database',
     databaseMustBeRunning: 'Database must be running to perform this action',

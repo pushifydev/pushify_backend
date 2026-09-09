@@ -10,6 +10,18 @@ import { db } from '../db';
 import { eq } from 'drizzle-orm';
 import { servers } from '../db/schema/servers';
 import type { DatabaseType } from '../db/schema/databases';
+import {
+  buildVerifyScript,
+  wrapForSsh,
+  parseVerifyOutput,
+  verifyUnitFor,
+  MAX_VERIFY_SIZE_MB,
+  VERIFY_EVERY_MS,
+  type BackupVerification,
+} from '../lib/backup-verify';
+import { sendBackupVerificationFailedEmail } from '../lib/email';
+import { resolveBillingNotifyEmail } from '../lib/billing-notify';
+import { adminNotify } from './admin-notify.service';
 
 // ============ Helpers ============
 
@@ -553,6 +565,169 @@ export const databaseBackupService = {
   },
 
   // Cleanup expired backups (used by worker)
+  // ============ Restore verification ============
+
+  /** On-demand verification from the dashboard (owner/admin). */
+  async verifyBackup(
+    databaseId: string,
+    backupId: string,
+    organizationId: string,
+    userId: string,
+    locale: SupportedLocale
+  ) {
+    const membership = await organizationRepository.findMember(organizationId, userId);
+    if (!membership || !['owner', 'admin'].includes(membership.role)) {
+      throw new HTTPException(403, { message: t(locale, 'errors', 'forbidden') });
+    }
+
+    const database = await databaseRepository.findById(databaseId);
+    if (!database || database.organizationId !== organizationId) {
+      throw new HTTPException(404, { message: t(locale, 'databases', 'notFound') });
+    }
+
+    const backup = await databaseRepository.findBackupById(backupId);
+    if (!backup || backup.databaseId !== databaseId || backup.status !== 'completed') {
+      throw new HTTPException(404, { message: t(locale, 'databases', 'backupNotFound') });
+    }
+
+    const verification = (backup.metadata as { verification?: BackupVerification }).verification;
+    if (verification?.status === 'verifying') {
+      return { message: t(locale, 'databases', 'backupVerifyStarted') };
+    }
+
+    void this.executeVerify(backupId).catch((error) => {
+      logger.error({ error, databaseId, backupId }, 'Backup verification failed to start');
+    });
+
+    return { message: t(locale, 'databases', 'backupVerifyStarted') };
+  },
+
+  /**
+   * Worker entry: verify the latest completed backup of each running database
+   * whose last check is older than VERIFY_EVERY_MS. Capped per pass so a fleet
+   * of databases doesn't all restore at once.
+   */
+  async verifyDueBackups(limit = 3): Promise<number> {
+    const databases = await databaseRepository.findDatabasesWithBackupEnabled();
+    let started = 0;
+
+    for (const database of databases) {
+      if (started >= limit) break;
+      if (database.status !== 'running') continue;
+
+      const backups = await databaseRepository.findBackupsByDatabase(database.id, 5);
+      const latest = backups.find((b) => b.status === 'completed');
+      if (!latest) continue;
+
+      const verification = (latest.metadata as { verification?: BackupVerification }).verification;
+      if (verification) {
+        const age = Date.now() - new Date(verification.checkedAt).getTime();
+        // A run stuck in 'verifying' for over an hour is treated as abandoned.
+        if (verification.status === 'verifying' && age < 60 * 60 * 1000) continue;
+        if (verification.status !== 'verifying' && age < VERIFY_EVERY_MS) continue;
+      }
+
+      try {
+        await this.executeVerify(latest.id);
+        started++;
+      } catch (error) {
+        logger.error({ error, databaseId: database.id, backupId: latest.id }, 'Scheduled verification failed');
+      }
+    }
+
+    return started;
+  },
+
+  // Internal: boot a throwaway container from the same image, restore, count, remove.
+  async executeVerify(backupId: string): Promise<void> {
+    const backup = await databaseRepository.findBackupById(backupId);
+    if (!backup || backup.status !== 'completed' || !backup.filePath) return;
+
+    const database = await databaseRepository.findById(backup.databaseId);
+    if (!database?.serverId || !database.containerName) return;
+
+    const setVerification = async (verification: BackupVerification) => {
+      await databaseRepository.updateBackup(backupId, {
+        metadata: { ...(backup.metadata as Record<string, unknown>), verification },
+      });
+      wsManager.publish(`database:${database.id}`, {
+        type: 'backup:verification',
+        data: { databaseId: database.id, backupId, verification },
+      }).catch(() => {});
+    };
+
+    if (backup.sizeMb && backup.sizeMb > MAX_VERIFY_SIZE_MB) {
+      await setVerification({
+        status: 'skipped',
+        checkedAt: new Date().toISOString(),
+        error: `backup is ${backup.sizeMb} MB — above the ${MAX_VERIFY_SIZE_MB} MB verification limit`,
+      });
+      return;
+    }
+
+    const server = await db.query.servers.findFirst({ where: eq(servers.id, database.serverId) });
+    if (!server?.ipv4 || !server.sshPrivateKey) return;
+
+    await setVerification({ status: 'verifying', checkedAt: new Date().toISOString() });
+    const startedAt = Date.now();
+
+    const ssh = new SSHClient();
+    try {
+      await ssh.connect({ host: server.ipv4, username: 'root', privateKey: decrypt(server.sshPrivateKey) });
+
+      const script = buildVerifyScript({
+        type: database.type as DatabaseType,
+        containerName: database.containerName,
+        filePath: backup.filePath,
+        username: database.username,
+        password: decrypt(database.password),
+        databaseName: database.databaseName,
+        verifyContainerName: `pushify-verify-${backupId.slice(0, 8)}`,
+      });
+      const result = await ssh.exec(wrapForSsh(script));
+      const outcome = parseVerifyOutput(result.stdout, result.code ?? undefined);
+      const durationMs = Date.now() - startedAt;
+
+      if (outcome.ok) {
+        await setVerification({
+          status: 'verified',
+          checkedAt: new Date().toISOString(),
+          durationMs,
+          tables: outcome.tables,
+          rows: outcome.rows,
+          unit: verifyUnitFor(database.type as DatabaseType),
+        });
+        logger.info({ databaseId: database.id, backupId, durationMs, ...outcome }, 'Backup restore-verified');
+        return;
+      }
+
+      throw new Error(outcome.error || 'verification failed');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      await setVerification({
+        status: 'failed',
+        checkedAt: new Date().toISOString(),
+        durationMs: Date.now() - startedAt,
+        error: message,
+      });
+      logger.error({ error, databaseId: database.id, backupId }, 'Backup verification failed');
+
+      // A backup that doesn't restore is exactly what the owner needs to hear about.
+      try {
+        const notifyEmail = await resolveBillingNotifyEmail(database.organizationId);
+        const org = await organizationRepository.findById(database.organizationId);
+        if (notifyEmail && org) {
+          await sendBackupVerificationFailedEmail(notifyEmail, org.name, database.name, message, database.id);
+        }
+      } catch (notifyError) {
+        logger.warn({ notifyError, backupId }, 'Could not send verification failure email');
+      }
+      adminNotify('backup.verify_failed', { databaseId: database.id, backupId, error: message });
+    } finally {
+      ssh.disconnect();
+    }
+  },
+
   async cleanupExpiredBackups() {
     const expiredBackups = await databaseRepository.findExpiredBackups();
 
