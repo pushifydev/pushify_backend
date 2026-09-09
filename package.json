@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/pushify-dev/pushify",
+    "url": "https://github.com/pushifydev/pushify_backend",
     "directory": "pushify_backend"
   },
   "type": "module",
