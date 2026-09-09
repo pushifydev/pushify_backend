@@ -11,15 +11,15 @@ describe('getEffectivePlanLimits', () => {
   it('returns the base plan limits when there is no override', () => {
     const limits = getEffectivePlanLimits({ plan: 'free' });
     expect(limits).toEqual(getPlanInfo('free').limits);
-    expect(limits.servers).toBe(0);
+    expect(limits.servers).toBe(1); // free tier's single BYO server
   });
 
   it('applies a numeric override on top of the plan (grant-org scenario)', () => {
     const limits = getEffectivePlanLimits({
       plan: 'free',
-      planLimitsOverride: { servers: 1 },
+      planLimitsOverride: { servers: 3 },
     });
-    expect(limits.servers).toBe(1);
+    expect(limits.servers).toBe(3);
     // Only the overridden key changes.
     expect(limits.projects).toBe(getPlanInfo('free').limits.projects);
     expect(limits.databases).toBe(getPlanInfo('free').limits.databases);
@@ -41,13 +41,13 @@ describe('getEffectivePlanLimits', () => {
         number | boolean
       >,
     });
-    expect(limits.servers).toBe(0);
+    expect(limits.servers).toBe(getPlanInfo('free').limits.servers);
     expect(limits.previewDeployments).toBe(getPlanInfo('free').limits.previewDeployments);
   });
 
   it('does not mutate the shared plan definition', () => {
     getEffectivePlanLimits({ plan: 'free', planLimitsOverride: { servers: 99 } });
-    expect(getPlanInfo('free').limits.servers).toBe(0);
+    expect(getPlanInfo('free').limits.servers).toBe(1);
   });
 
   it('ignores an expired grandfather window', () => {

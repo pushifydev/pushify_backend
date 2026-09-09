@@ -12,10 +12,21 @@ describe('getApiRequestsPerMinute', () => {
 });
 
 describe('PLAN_LIMITS v2', () => {
-  it('free tier has no managed resources', () => {
-    expect(PLAN_LIMITS.free.limits.servers).toBe(0);
-    expect(PLAN_LIMITS.free.limits.databases).toBe(0);
+  it('free tier allows one BYO server + database so the product is try-able', () => {
+    expect(PLAN_LIMITS.free.limits.servers).toBe(1);
+    expect(PLAN_LIMITS.free.limits.databases).toBe(1);
     expect(PLAN_LIMITS.free.limits.previewDeployments).toBe(false);
+    // Managed compute stays paid-only — free grants no infra credit.
+    expect(PLAN_LIMITS.free.includedInfraCreditCents).toBe(0);
+  });
+
+  it('paid entry tiers price above their included infra credit ceiling', () => {
+    // Guard the unit economics: the credit ceiling must stay below the plan price
+    // so a fully-used credit still leaves platform margin.
+    expect(PLAN_LIMITS.hobby.price).toBe(15);
+    expect(PLAN_LIMITS.hobby.includedInfraCreditCents).toBeLessThan(PLAN_LIMITS.hobby.price * 100);
+    expect(PLAN_LIMITS.pro.price).toBe(29);
+    expect(PLAN_LIMITS.pro.includedInfraCreditCents).toBeLessThan(PLAN_LIMITS.pro.price * 100);
   });
 
   it('hobby is tighter than legacy generous defaults', () => {

@@ -22,4 +22,19 @@ describe('STRIPE_PRICE_IDS env overrides', () => {
     expect(STRIPE_PRICE_IDS.hobby?.monthly).toBe('price_live_hobby_m');
     expect(getPriceId('pro', 'yearly')).toBe('price_live_pro_y');
   });
+
+  it('still maps legacy (built-in) price IDs to plans when env overrides are set', async () => {
+    // Price-change migration safety: subscribers created on the old prices keep
+    // renewing on those price IDs — their webhooks must still resolve to a plan.
+    process.env.STRIPE_SECRET_KEY = 'sk_test_dummy';
+    process.env.STRIPE_PRICE_HOBBY_MONTHLY = 'price_new_hobby_15';
+    process.env.STRIPE_PRICE_PRO_MONTHLY = 'price_new_pro_29';
+
+    const { getPlanFromPriceId } = await import('./stripe');
+
+    expect(getPlanFromPriceId('price_new_hobby_15')).toBe('hobby');
+    expect(getPlanFromPriceId('price_1TDiioC34JPtjVa9kZjFTYVF')).toBe('hobby'); // legacy $10
+    expect(getPlanFromPriceId('price_1TDijQC34JPtjVa9IfxvjlPe')).toBe('pro'); // legacy $25
+    expect(getPlanFromPriceId('price_unknown')).toBeNull();
+  });
 });

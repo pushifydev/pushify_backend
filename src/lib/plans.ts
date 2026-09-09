@@ -46,8 +46,11 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
     includedInfraCreditCents: 0,
     limits: {
       apiRequestsPerMinute: 60,
-      servers: 0,
-      databases: 0,
+      // Free tier can connect ONE BYO server (their VPS, their cost) so the product is
+      // actually try-able before paying. Managed (Hetzner) servers stay paid-only —
+      // enforced separately via PLAN_INFRA_LIMITS.free.managedServersEnabled = false.
+      servers: 1,
+      databases: 1,
       projects: 2,
       deploymentsPerMonth: 30,
       teamMembers: 1,
@@ -63,8 +66,8 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
   },
   hobby: {
     name: 'Hobby',
-    price: 10,
-    includedInfraCreditCents: 900, // ceiling ~$9 — dynamic grant covers the cheapest server (~$6.5-7.5); < $10 margin
+    price: 15,
+    includedInfraCreditCents: 900, // ceiling ~$9 — dynamic grant covers the cheapest server (~$6.5-7.5); < $15 margin
     limits: {
       apiRequestsPerMinute: 120,
       servers: 1,
@@ -84,8 +87,8 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
   },
   pro: {
     name: 'Pro',
-    price: 25,
-    includedInfraCreditCents: 2000, // ceiling ~$20 — dynamic grant covers the cheapest eligible server; < $25 margin
+    price: 29,
+    includedInfraCreditCents: 2000, // ceiling ~$20 — dynamic grant covers the cheapest eligible server; < $29 margin
     limits: {
       apiRequestsPerMinute: 300,
       servers: 3,
