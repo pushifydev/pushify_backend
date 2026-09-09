@@ -152,6 +152,53 @@ export const metricsRepository = {
   },
 
   // Get latest metrics for all projects in an organization
+  /** Latest snapshot per project container on one server (last 5 minutes). */
+  async findLatestByServer(serverId: string): Promise<
+    Array<{
+      projectId: string;
+      projectName: string;
+      projectSlug: string;
+      containerName: string;
+      cpuPercent: number;
+      memoryUsageBytes: number;
+      memoryLimitBytes: number;
+      memoryPercent: number;
+      containerStatus: string;
+      recordedAt: Date;
+    }>
+  > {
+    const result = await db.execute(sql`
+      SELECT DISTINCT ON (cm.project_id)
+        cm.project_id AS "projectId",
+        p.name AS "projectName",
+        p.slug AS "projectSlug",
+        cm.container_name AS "containerName",
+        cm.cpu_percent AS "cpuPercent",
+        cm.memory_usage_bytes AS "memoryUsageBytes",
+        cm.memory_limit_bytes AS "memoryLimitBytes",
+        cm.memory_percent AS "memoryPercent",
+        cm.container_status AS "containerStatus",
+        cm.recorded_at AS "recordedAt"
+      FROM container_metrics cm
+      JOIN projects p ON p.id = cm.project_id
+      WHERE p.server_id = ${serverId}
+        AND cm.recorded_at > NOW() - INTERVAL '5 minutes'
+      ORDER BY cm.project_id, cm.recorded_at DESC
+    `);
+    return (result.rows || []) as Array<{
+      projectId: string;
+      projectName: string;
+      projectSlug: string;
+      containerName: string;
+      cpuPercent: number;
+      memoryUsageBytes: number;
+      memoryLimitBytes: number;
+      memoryPercent: number;
+      containerStatus: string;
+      recordedAt: Date;
+    }>;
+  },
+
   async findLatestByOrganization(organizationId: string): Promise<
     Array<{
       projectId: string;

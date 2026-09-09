@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { metricsRepository } from '../repositories/metrics.repository';
 import { serverService } from '../services/server.service';
 import { combinedAuthMiddleware } from '../middleware/auth';
 import { requireScope, rejectApiKeyAuth } from '../middleware/apikey-auth';
@@ -91,6 +92,41 @@ serverRouter.post('/', requireScope('servers:write'), async (c) => {
   const server = await serverService.createServer(organizationId, userId, body, locale);
 
   return c.json({ data: server }, 201);
+});
+
+// Who's using this server: latest per-project container snapshot (CPU / memory share)
+serverRouter.get('/:serverId/containers', requireScope('servers:read'), async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const serverId = c.req.param('serverId');
+
+  await serverService.getServer(serverId, organizationId, userId, locale);
+
+  const rows = await metricsRepository.findLatestByServer(serverId);
+  const totalCpu = rows.reduce((sum, r) => sum + Number(r.cpuPercent), 0);
+  const totalMem = rows.reduce((sum, r) => sum + Number(r.memoryUsageBytes), 0);
+
+  return c.json({
+    data: {
+      recordedAt: rows[0]?.recordedAt ?? null,
+      totals: { cpuPercent: Math.round(totalCpu * 10) / 10, memoryUsageMb: Math.round(totalMem / 1048576) },
+      containers: rows.map((r) => ({
+        projectId: r.projectId,
+        projectName: r.projectName,
+        projectSlug: r.projectSlug,
+        containerName: r.containerName,
+        status: r.containerStatus,
+        cpuPercent: Math.round(Number(r.cpuPercent) * 10) / 10,
+        memoryUsageMb: Math.round(Number(r.memoryUsageBytes) / 1048576),
+        memoryLimitMb: Math.round(Number(r.memoryLimitBytes) / 1048576),
+        memoryPercent: Math.round(Number(r.memoryPercent) * 10) / 10,
+        // Share of everything Pushify runs on this box — the "who eats what" number.
+        cpuShare: totalCpu > 0 ? Math.round((Number(r.cpuPercent) / totalCpu) * 100) : 0,
+        memoryShare: totalMem > 0 ? Math.round((Number(r.memoryUsageBytes) / totalMem) * 100) : 0,
+      })),
+    },
+  });
 });
 
 // Deployment host health: disk usage + orphan Pushify containers

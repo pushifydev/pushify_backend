@@ -34,6 +34,7 @@
     "grant-org": "tsx scripts/grant-org-limits.ts",
     "refund:infra-overcharge": "tsx scripts/refund-infra-overcharge.ts",
     "stripe:create-prices": "tsx scripts/create-stripe-prices.ts",
+    "marketplace:export": "tsx scripts/export-marketplace.ts",
     "test:studio": "PUSHIFY_STUDIO_IT=1 vitest run --no-file-parallelism src/lib/studio-engine.integration.test.ts src/lib/studio-nosql.integration.test.ts"
   },
   "dependencies": {
