@@ -12,7 +12,8 @@ export type WSEventType =
   | 'server:setup'
   | 'healthcheck:result'
   | 'notification:new'
-  | 'backup:status';
+  | 'backup:status'
+  | 'backup:verification';
 
 // ============ Event Payloads ============
 
@@ -70,6 +71,21 @@ export interface BackupStatusEvent {
   errorMessage?: string;
 }
 
+/** Restore-verification outcome for a backup (see lib/backup-verify). */
+export interface BackupVerificationEvent {
+  databaseId: string;
+  backupId: string;
+  verification: {
+    status: 'verifying' | 'verified' | 'failed' | 'skipped';
+    checkedAt: string;
+    durationMs?: number;
+    tables?: number;
+    rows?: number;
+    unit?: 'rows' | 'documents' | 'keys';
+    error?: string;
+  };
+}
+
 // ============ Discriminated Union ============
 
 export type WSEvent =
@@ -80,7 +96,8 @@ export type WSEvent =
   | { type: 'server:setup'; data: ServerStatusEvent }
   | { type: 'healthcheck:result'; data: HealthCheckResultEvent }
   | { type: 'notification:new'; data: NotificationNewEvent }
-  | { type: 'backup:status'; data: BackupStatusEvent };
+  | { type: 'backup:status'; data: BackupStatusEvent }
+  | { type: 'backup:verification'; data: BackupVerificationEvent };
 
 // ============ Client → Server Messages ============
 

@@ -339,6 +339,7 @@ export const tr: TranslationKeys = {
     backupNotFound: 'Yedek bulunamadı',
     backupDeleted: 'Yedek başarıyla silindi',
     backupRestored: 'Veritabanı yedekten başarıyla geri yüklendi',
+    backupVerifyStarted: 'Geri yükleme testi başladı — sonuç birkaç dakika içinde yedeğin üzerinde görünür',
     backupRestoreFailed: 'Veritabanı yedekten geri yükleme başarısız',
     backupInProgress: 'Bu veritabanı için zaten bir yedekleme işlemi devam ediyor',
     databaseMustBeRunning: 'Bu işlemi gerçekleştirmek için veritabanı çalışıyor olmalı',
