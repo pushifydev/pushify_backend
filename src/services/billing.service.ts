@@ -94,6 +94,8 @@ export interface BillingInfo {
   price: number;
   billingStatus: 'active' | 'past_due' | 'suspended';
   billingEmail: string | null;
+  /** ISO date the current paid period renews/ends (null on free or before first charge) */
+  currentPeriodEnd: string | null;
   /** API requests per minute per API key (org plan). -1 = unlimited */
   apiRequestsPerMinute: number;
   usage: UsageStats;
@@ -184,6 +186,7 @@ export const billingService = {
       price: planInfo.price,
       billingStatus: (org.billingStatus ?? 'active') as BillingInfo['billingStatus'],
       billingEmail: org.billingEmail,
+      currentPeriodEnd: org.stripeCurrentPeriodEnd?.toISOString() ?? null,
       apiRequestsPerMinute: effectiveLimits.apiRequestsPerMinute,
       usage,
       features: {
