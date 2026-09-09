@@ -155,6 +155,14 @@ const envSchema = z.object({
   STRIPE_PRICE_PRO_YEARLY: z.string().optional(),
   STRIPE_PRICE_BUSINESS_MONTHLY: z.string().optional(),
   STRIPE_PRICE_BUSINESS_YEARLY: z.string().optional(),
+  /**
+   * Comma-separated RETIRED price IDs per plan (set after a repricing). New checkouts
+   * never use these; webhooks still resolve them so existing subscribers renewing on an
+   * old price keep mapping to their plan.
+   */
+  STRIPE_PRICE_HOBBY_LEGACY: z.string().optional(),
+  STRIPE_PRICE_PRO_LEGACY: z.string().optional(),
+  STRIPE_PRICE_BUSINESS_LEGACY: z.string().optional(),
 
   /** Margin % on managed infra provider list price (default 20) */
   INFRA_MARGIN_PERCENT: z.coerce.number().min(0).max(100).default(20),

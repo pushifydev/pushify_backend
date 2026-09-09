@@ -37,4 +37,20 @@ describe('STRIPE_PRICE_IDS env overrides', () => {
     expect(getPlanFromPriceId('price_1TDijQC34JPtjVa9IfxvjlPe')).toBe('pro'); // legacy $25
     expect(getPlanFromPriceId('price_unknown')).toBeNull();
   });
+
+  it('resolves retired price IDs listed in STRIPE_PRICE_*_LEGACY env vars', async () => {
+    // Production's old prices are account-specific (not the built-in defaults) — after
+    // the env swap they must still map via the LEGACY vars, monthly and yearly alike.
+    process.env.STRIPE_SECRET_KEY = 'sk_test_dummy';
+    process.env.STRIPE_PRICE_HOBBY_MONTHLY = 'price_new_hobby_m';
+    process.env.STRIPE_PRICE_HOBBY_LEGACY = 'price_old_hobby_m, price_old_hobby_y';
+    process.env.STRIPE_PRICE_PRO_LEGACY = 'price_old_pro_m';
+
+    const { getPlanFromPriceId } = await import('./stripe');
+
+    expect(getPlanFromPriceId('price_old_hobby_m')).toBe('hobby');
+    expect(getPlanFromPriceId('price_old_hobby_y')).toBe('hobby'); // trims whitespace
+    expect(getPlanFromPriceId('price_old_pro_m')).toBe('pro');
+    expect(getPlanFromPriceId('price_new_hobby_m')).toBe('hobby'); // active still wins
+  });
 });
