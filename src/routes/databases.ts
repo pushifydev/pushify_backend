@@ -1,3 +1,4 @@
+import { safeAttachmentName } from '../lib/utils';
 import { Hono } from 'hono';
 import { databaseService } from '../services/database.service';
 import { databaseStudioRoutes } from './database-studio';
@@ -315,7 +316,7 @@ databasesRouter.get('/:id/backups/:backupId/download', requireScope('databases:r
   return new Response(new Uint8Array(buffer), {
     headers: {
       'Content-Type': 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${fileName}"`,
+      'Content-Disposition': `attachment; filename="${safeAttachmentName(fileName, 'backup')}"`,
       'Content-Length': buffer.length.toString(),
     },
   });

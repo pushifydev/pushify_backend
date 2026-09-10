@@ -91,7 +91,7 @@ projectWorkerRouter.get('/:projectId/workers/:workerId/logs', async (c) => {
   const locale = c.get('locale');
   const projectId = c.req.param('projectId');
   const workerId = c.req.param('workerId');
-  const tail = parseInt(c.req.query('tail') || '100', 10);
+  const tail = Math.min(Math.max(parseInt(c.req.query('tail') || '100', 10) || 100, 1), 1000);
 
   const result = await projectWorkerService.getWorkerLogs(
     projectId,

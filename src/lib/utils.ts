@@ -42,3 +42,17 @@ export async function hashToken(token: string): Promise<string> {
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
 }
+
+
+/**
+ * Filename safe to put inside `Content-Disposition: attachment; filename="…"`.
+ * Strips quotes, control chars and path separators so a crafted database name can't
+ * inject header fields or escape the quoted value.
+ */
+export function safeAttachmentName(name: string, fallback = 'download'): string {
+  const cleaned = name
+    .replace(/[\r\n"\\/]/g, '')
+    .replace(/[\x00-\x1f\x7f]/g, '')
+    .trim();
+  return cleaned || fallback;
+}
