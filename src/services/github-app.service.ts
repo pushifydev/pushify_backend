@@ -19,6 +19,8 @@ import { logger } from '../lib/logger';
 import {
   forgetInstallationToken,
   getInstallationToken,
+  verifyAppCredentials,
+  type AppCredentialCheck,
   type GitHubAppConfig,
 } from '../lib/github-app-auth';
 
@@ -146,6 +148,15 @@ export const githubAppService = {
       where: eq(githubAppInstallations.installationId, installationId),
     });
     return row ?? null;
+  },
+
+  /** Operator self-check: is the App configured, does the key parse, does GitHub accept it? */
+  async status(): Promise<
+    { configured: false } | ({ configured: true; slugConfigured: boolean } & AppCredentialCheck)
+  > {
+    if (!isAppConfigured()) return { configured: false };
+    const check = await verifyAppCredentials(appConfig());
+    return { configured: true, slugConfigured: Boolean(env.GITHUB_APP_SLUG), ...check };
   },
 
   /** A live token for this installation. Never persisted — the installation is the credential. */

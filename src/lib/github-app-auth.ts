@@ -74,6 +74,58 @@ export async function createAppJwt(
     .sign(privateKey);
 }
 
+export interface AppCredentialCheck {
+  ok: boolean;
+  /** Where it broke: the private key itself, GitHub rejecting the JWT, or nothing. */
+  stage: 'key' | 'github' | 'ok';
+  appSlug?: string;
+  appName?: string;
+  status?: number;
+  error?: string;
+}
+
+/**
+ * Self-check for operators: can we sign a JWT with the configured key, and does GitHub
+ * accept it as this App? Surfaces the two classic misconfigurations — a key that does not
+ * parse, and an App ID that does not belong to the key (e.g. the Client ID pasted instead
+ * of the numeric App ID) — as readable text instead of a 500 somewhere downstream.
+ */
+export async function verifyAppCredentials(
+  config: GitHubAppConfig,
+  options: { fetcher?: Fetcher } = {}
+): Promise<AppCredentialCheck> {
+  let jwt: string;
+  try {
+    jwt = await createAppJwt(config);
+  } catch (err) {
+    return {
+      ok: false,
+      stage: 'key',
+      error: `Private key could not be used: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  const doFetch = options.fetcher ?? fetch;
+  const response = await doFetch(`${GITHUB_API_URL}/app`, {
+    headers: {
+      Authorization: `Bearer ${jwt}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  });
+
+  if (!response.ok) {
+    const hint =
+      response.status === 401
+        ? 'GitHub rejected the App JWT — GITHUB_APP_ID does not match this private key (use the numeric App ID, not the Client ID), or the key was regenerated on GitHub.'
+        : `GitHub answered HTTP ${response.status} for GET /app.`;
+    return { ok: false, stage: 'github', status: response.status, error: hint };
+  }
+
+  const app = (await response.json()) as { slug?: string; name?: string };
+  return { ok: true, stage: 'ok', appSlug: app.slug, appName: app.name };
+}
+
 interface CacheEntry {
   token: string;
   expiresAt: Date;
