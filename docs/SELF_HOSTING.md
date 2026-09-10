@@ -114,6 +114,14 @@ docker compose down                # stop (data volumes survive)
 docker compose exec postgres pg_dump -U pushify pushify > backup.sql   # DB backup
 ```
 
+**Automate it.** `scripts/backup-control-plane.sh` dumps the control-plane database nightly,
+keeps 14 days locally and — with `BACKUP_RCLONE_REMOTE=b2:my-bucket` (any rclone remote) —
+copies every dump off the machine. A backup on the same disk is not a backup.
+
+```bash
+15 3 * * * BACKUP_RCLONE_REMOTE=b2:pushify-backups /opt/pushify/pushify_backend/scripts/backup-control-plane.sh >> /var/log/pushify-backup.log 2>&1
+```
+
 **Update:** re-run the installer, or `git -C pushify_backend pull && git -C pushify_frontend pull
 && docker compose up -d --build`. Migrations run automatically on start.
 
