@@ -642,6 +642,15 @@ export const authService = {
           userId: newUser.id,
           role: 'owner',
         });
+
+        // Same welcome + operator ping as the password flow — a signup is a signup.
+        sendWelcomeEmail(newUser.email, newUser.name, locale as 'en' | 'tr').catch(() => {});
+        adminNotify('user.registered', {
+          user: newUser.email,
+          name: newUser.name,
+          organization: org.name,
+          provider: 'github',
+        });
       }
     }
 
@@ -750,6 +759,15 @@ export const authService = {
           organizationId: org.id,
           userId: newUser.id,
           role: 'owner',
+        });
+
+        // Same welcome + operator ping as the password flow — a signup is a signup.
+        sendWelcomeEmail(newUser.email, newUser.name, locale as 'en' | 'tr').catch(() => {});
+        adminNotify('user.registered', {
+          user: newUser.email,
+          name: newUser.name,
+          organization: org.name,
+          provider: 'google',
         });
       }
     }
