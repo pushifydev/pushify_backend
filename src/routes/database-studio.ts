@@ -1,3 +1,4 @@
+import { safeAttachmentName } from '../lib/utils';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { databaseStudioService, type StudioFilter } from '../services/database-studio.service';
@@ -184,7 +185,7 @@ studioRouter.post('/:id/studio/query/export', requireScope('databases:read'), as
   return new Response(result.body, {
     headers: {
       'Content-Type': result.contentType,
-      'Content-Disposition': `attachment; filename="${result.fileName}"`,
+      'Content-Disposition': `attachment; filename="${safeAttachmentName(result.fileName, 'query')}"`,
       'X-Row-Count': String(result.rowCount),
       'X-Truncated': String(result.truncated),
     },

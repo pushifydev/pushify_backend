@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { normalizeClientIp } from './utils';
+import { safeAttachmentName } from './utils';
 
 /**
  * Regression: a multi-IP x-forwarded-for chain longer than 45 chars overflowed the
@@ -35,5 +36,16 @@ describe('normalizeClientIp', () => {
     const maxIpv6 = '0000:0000:0000:0000:0000:ffff:255.255.255.255';
     expect(maxIpv6.length).toBe(45);
     expect(normalizeClientIp(maxIpv6)).toBe(maxIpv6);
+  });
+});
+
+
+describe('safeAttachmentName', () => {
+  it('strips quotes, newlines and path separators', () => {
+    expect(safeAttachmentName('shop"; x=y\r\nEvil: 1.sql.gz')).toBe('shop; x=yEvil: 1.sql.gz');
+    expect(safeAttachmentName('../../etc/passwd')).toBe('....etc' + 'passwd');
+  });
+  it('falls back when nothing safe is left', () => {
+    expect(safeAttachmentName('"\n"', 'backup')).toBe('backup');
   });
 });

@@ -51,6 +51,26 @@ export function errorHandler(err: Error, c: Context) {
     );
   }
 
+  // Malformed JSON body (c.req.json() throws a SyntaxError) — the client's fault, not ours.
+  if (err instanceof SyntaxError || /malformed json|unexpected token .* in json|json parse/i.test(err.message)) {
+    logger.warn({ type: 'invalid_json', requestId, message: err.message });
+    return c.json(
+      { error: { code: 'INVALID_JSON', message: t(locale, 'validation', 'invalidRequest') } },
+      400
+    );
+  }
+
+  // Postgres 22P02 = invalid text representation, almost always a non-UUID id in the URL
+  // (`/projects/not-a-uuid`). Answer 404 like any other unknown resource instead of 500.
+  const pgCode = (err as { code?: unknown }).code;
+  if (pgCode === '22P02') {
+    logger.warn({ type: 'invalid_identifier', requestId, message: err.message });
+    return c.json(
+      { error: { code: 'NOT_FOUND', message: t(locale, 'errors', 'notFound') } },
+      404
+    );
+  }
+
   // Unexpected error
   logger.error({
     type: 'unexpected_error',
