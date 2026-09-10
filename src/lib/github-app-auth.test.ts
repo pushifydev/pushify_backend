@@ -9,6 +9,7 @@ import {
   isPkcs1,
   normalizePrivateKey,
   rememberInstallationToken,
+  verifyAppCredentials,
 } from './github-app-auth';
 
 const APP_ID = '123456';
@@ -170,5 +171,29 @@ describe('installationCloneUrl', () => {
     const url = installationCloneUrl('https://github.com/acme/site.git', 'gh s/abc');
     expect(url).toContain('x-access-token:');
     expect(url).not.toContain('gh s/abc');
+  });
+});
+
+
+describe('verifyAppCredentials', () => {
+  it('reports an unusable key without touching GitHub', async () => {
+    const fetcher = vi.fn();
+    const result = await verifyAppCredentials({ appId: APP_ID, privateKey: 'not a key' }, { fetcher });
+    expect(result.ok).toBe(false);
+    expect(result.stage).toBe('key');
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('explains a 401 as an App ID / key mismatch', async () => {
+    const fetcher = vi.fn(async () => new Response('Bad credentials', { status: 401 }));
+    const result = await verifyAppCredentials({ appId: APP_ID, privateKey }, { fetcher });
+    expect(result).toMatchObject({ ok: false, stage: 'github', status: 401 });
+    expect(result.error).toContain('GITHUB_APP_ID');
+  });
+
+  it('returns the App slug when GitHub accepts the JWT', async () => {
+    const fetcher = vi.fn(async () => Response.json({ slug: 'pushify-dev', name: 'Pushify' }));
+    const result = await verifyAppCredentials({ appId: APP_ID, privateKey }, { fetcher });
+    expect(result).toEqual({ ok: true, stage: 'ok', appSlug: 'pushify-dev', appName: 'Pushify' });
   });
 });

@@ -450,6 +450,34 @@ const appInstallationsRoute = createRoute({
   },
 });
 
+const appStatusRoute = createRoute({
+  method: 'get',
+  path: '/app/status',
+  tags: ['GitHub'],
+  summary: 'Check the GitHub App credentials (operator self-check)',
+  responses: {
+    200: {
+      description: 'Credential check',
+      content: {
+        'application/json': {
+          schema: z.object({
+            data: z.object({
+              configured: z.boolean(),
+              slugConfigured: z.boolean().optional(),
+              ok: z.boolean().optional(),
+              stage: z.enum(['key', 'github', 'ok']).optional(),
+              appSlug: z.string().optional(),
+              appName: z.string().optional(),
+              status: z.number().optional(),
+              error: z.string().optional(),
+            }),
+          }),
+        },
+      },
+    },
+  },
+});
+
 const appRepositoriesRoute = createRoute({
   method: 'get',
   path: '/app/installations/{installationId}/repositories',
@@ -568,8 +596,21 @@ githubRouter.openapi(appRepositoriesRoute, async (c) => {
     throw new HTTPException(404, { message: 'Installation not found' });
   }
 
-  const repositories = await githubAppService.listRepositories(installationId);
+  let repositories;
+  try {
+    repositories = await githubAppService.listRepositories(installationId);
+  } catch (err) {
+    // Credential problems are the operator's to fix — say what went wrong instead of a bare 500.
+    throw new HTTPException(502, {
+      message: `GitHub App: ${err instanceof Error ? err.message : 'request failed'}. Check GET /integrations/github/app/status.`,
+    });
+  }
   return c.json({ data: repositories });
+});
+
+githubRouter.openapi(appStatusRoute, async (c) => {
+  const status = await githubAppService.status();
+  return c.json({ data: status });
 });
 
 export { githubRouter as githubRoutes };
