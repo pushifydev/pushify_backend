@@ -161,8 +161,19 @@ export const githubAppService = {
 
   /** A live token for this installation. Never persisted — the installation is the credential. */
   async tokenFor(installationId: number): Promise<string> {
-    const { token } = await getInstallationToken(appConfig(), installationId);
-    return token;
+    try {
+      const { token } = await getInstallationToken(appConfig(), installationId);
+      return token;
+    } catch (err) {
+      // GitHub answering 404 means the installation was removed (or belongs to another App).
+      // Drop our stale copy so the picker stops offering it; the webhook that should have
+      // told us may never have arrived (wrong secret) — this is the self-healing path.
+      if (err instanceof Error && /no longer exists/.test(err.message)) {
+        await this.removeInstallation(installationId);
+        logger.warn({ installationId }, 'Removed stale GitHub App installation after GitHub 404');
+      }
+      throw err;
+    }
   },
 
   /** Every repository an installation can see, for the repo picker. */
