@@ -36,6 +36,8 @@ export function registerMiddleware(app: OpenAPIHono<any>) {
       credentials: true,
       allowHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'Accept-Language'],
       allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      // Lets the dashboard read the real file name on backup downloads (cross-origin).
+      exposeHeaders: ['Content-Disposition'],
       maxAge: 86400,
     })
   );
