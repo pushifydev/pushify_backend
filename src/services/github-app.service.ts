@@ -17,6 +17,7 @@ import {
 import { env } from '../config/env';
 import { logger } from '../lib/logger';
 import {
+  createAppJwt,
   forgetInstallationToken,
   getInstallationToken,
   verifyAppCredentials,
@@ -136,11 +137,69 @@ export const githubAppService = {
     return row ?? null;
   },
 
+  /**
+   * Fill in account details straight from GitHub. The post-install redirect records an
+   * installation as 'pending' when the webhook has not arrived yet (or never will — wrong
+   * secret); without the account type we cannot even build the right "manage" link.
+   */
+  async hydrateInstallation(installationId: number): Promise<GithubAppInstallation | null> {
+    const jwt = await createAppJwt(appConfig());
+    const response = await fetch(`${GITHUB_API_URL}/app/installations/${installationId}`, {
+      headers: {
+        Authorization: `Bearer ${jwt}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+    if (!response.ok) {
+      logger.warn({ installationId, status: response.status }, 'Could not hydrate GitHub App installation');
+      return null;
+    }
+    const data = (await response.json()) as {
+      account?: { login?: string; id?: number; type?: string };
+      repository_selection?: string;
+      suspended_at?: string | null;
+    };
+    return this.syncInstallation({
+      installationId,
+      accountLogin: data.account?.login ?? 'unknown',
+      accountId: data.account?.id ?? null,
+      accountType: data.account?.type ?? null,
+      repositorySelection: data.repository_selection ?? null,
+      suspended: Boolean(data.suspended_at),
+    });
+  },
+
+  /** Where on GitHub this installation is configured — differs for users and organisations. */
+  manageUrl(installation: Pick<GithubAppInstallation, 'installationId' | 'accountLogin' | 'accountType'>): string {
+    if (installation.accountType === 'Organization') {
+      return `https://github.com/organizations/${installation.accountLogin}/settings/installations/${installation.installationId}`;
+    }
+    return `https://github.com/settings/installations/${installation.installationId}`;
+  },
+
   async listForOrganization(organizationId: string): Promise<GithubAppInstallation[]> {
-    return db
+    const rows = await db
       .select()
       .from(githubAppInstallations)
       .where(eq(githubAppInstallations.organizationId, organizationId));
+
+    // Self-heal placeholders left by the setup callback (best effort, bounded — a handful of rows).
+    const result: GithubAppInstallation[] = [];
+    for (const row of rows) {
+      const placeholder = !row.accountType || row.accountLogin === 'pending' || row.accountLogin === 'unknown';
+      if (placeholder && isAppConfigured()) {
+        try {
+          const hydrated = await this.hydrateInstallation(row.installationId);
+          result.push(hydrated ?? row);
+          continue;
+        } catch (err) {
+          logger.warn({ err, installationId: row.installationId }, 'Installation hydration failed');
+        }
+      }
+      result.push(row);
+    }
+    return result;
   },
 
   async findByInstallationId(installationId: number): Promise<GithubAppInstallation | null> {
