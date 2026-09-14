@@ -447,6 +447,7 @@ const appInstallationsRoute = createRoute({
                   accountType: z.string().nullable(),
                   repositorySelection: z.string().nullable(),
                   suspended: z.boolean(),
+                  manageUrl: z.string(),
                 })
               ),
             }),
@@ -587,6 +588,7 @@ githubRouter.openapi(appInstallationsRoute, async (c) => {
         accountLogin: installation.accountLogin,
         accountType: installation.accountType,
         repositorySelection: installation.repositorySelection,
+        manageUrl: githubAppService.manageUrl(installation),
         suspended: Boolean(installation.suspendedAt),
       })),
     },
