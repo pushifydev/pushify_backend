@@ -16,6 +16,7 @@ import {
 const GitHubStatusSchema = z
   .object({
     connected: z.boolean(),
+    hasRepoScope: z.boolean().optional(),
     username: z.string().nullable(),
   })
   .openapi('GitHubStatus');
@@ -259,10 +260,16 @@ githubRouter.openapi(statusRoute, async (c) => {
   const userId = c.get('userId')!;
   const integration = await githubService.getIntegration(userId);
 
+  // OAuth tokens minted after a GitHub App was configured carry no `repo` scope, so the
+  // /user/repos listing is public-only — the picker uses this to explain what's missing.
+  const scopes = String(integration?.scopes ?? '').split(/[\s,"\[\]]+/).filter(Boolean);
+  const hasRepoScope = integration ? scopes.includes('repo') : undefined;
+
   return c.json({
     data: {
       connected: !!integration,
       username: integration?.providerUsername || null,
+      hasRepoScope,
     },
   });
 });
