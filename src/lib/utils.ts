@@ -56,3 +56,12 @@ export function safeAttachmentName(name: string, fallback = 'download'): string 
     .trim();
   return cleaned || fallback;
 }
+
+
+/**
+ * Strip `user:token@` from any URL inside a string — git's own error output quotes the full
+ * clone URL, which would otherwise put a live token in the dashboard and the logs.
+ */
+export function redactUrlCredentials(text: string): string {
+  return text.replace(/(https?:\/\/)[^\s@/]+@/g, '$1***@');
+}
