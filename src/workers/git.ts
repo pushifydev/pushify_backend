@@ -1,4 +1,5 @@
 import { execCommand, execStreamingCommand, type StreamingCommandOptions } from './shell';
+import { redactUrlCredentials } from '../lib/utils';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
@@ -33,7 +34,9 @@ export async function cloneRepository(options: CloneOptions): Promise<CloneResul
   // Prepare authenticated URL if access token provided
   let cloneUrl = repoUrl;
   if (accessToken && repoUrl.includes('github.com')) {
-    cloneUrl = repoUrl.replace('https://github.com/', `https://${accessToken}@github.com/`);
+    // `x-access-token` is what GitHub documents for App installation tokens (ghs_…); a bare
+    // `token@host` makes git prompt for a password and die in a non-interactive worker.
+    cloneUrl = repoUrl.replace('https://github.com/', `https://x-access-token:${accessToken}@github.com/`);
   } else if (accessToken && repoUrl.includes('gitlab')) {
     try {
       const parsed = new URL(repoUrl);
@@ -83,7 +86,7 @@ export async function cloneRepository(options: CloneOptions): Promise<CloneResul
 
     if (result.exitCode !== 0) {
       await fs.rm(newTmpDir, { recursive: true, force: true });
-      throw new Error(`Failed to clone repository: ${result.stderr}`);
+      throw new Error(`Failed to clone repository: ${redactUrlCredentials(result.stderr)}`);
     }
 
     onProgress?.('✅ Repository cloned successfully (using default branch)');
@@ -113,7 +116,7 @@ export async function cloneRepository(options: CloneOptions): Promise<CloneResul
   if (result.exitCode !== 0) {
     // Clean up on failure
     await fs.rm(tmpDir, { recursive: true, force: true });
-    throw new Error(`Failed to clone repository: ${result.stderr}`);
+    throw new Error(`Failed to clone repository: ${redactUrlCredentials(result.stderr)}`);
   }
 
   onProgress?.('✅ Repository cloned successfully');

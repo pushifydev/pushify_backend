@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { normalizeClientIp } from './utils';
-import { safeAttachmentName } from './utils';
+import { safeAttachmentName, redactUrlCredentials } from './utils';
 
 /**
  * Regression: a multi-IP x-forwarded-for chain longer than 45 chars overflowed the
@@ -47,5 +47,16 @@ describe('safeAttachmentName', () => {
   });
   it('falls back when nothing safe is left', () => {
     expect(safeAttachmentName('"\n"', 'backup')).toBe('backup');
+  });
+});
+
+
+describe('redactUrlCredentials', () => {
+  it('hides tokens embedded in clone URLs inside git output', () => {
+    const out = "fatal: could not read Password for 'https://x-access-token:ghs_abc123@github.com/acme/site.git'";
+    expect(redactUrlCredentials(out)).toBe("fatal: could not read Password for 'https://***@github.com/acme/site.git'");
+    expect(redactUrlCredentials('https://oauth2:tok@gitlab.com/a/b and https://github.com/x/y')).toBe(
+      'https://***@gitlab.com/a/b and https://github.com/x/y'
+    );
   });
 });

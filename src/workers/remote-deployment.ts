@@ -1,4 +1,5 @@
 import { eq, and } from 'drizzle-orm';
+import { redactUrlCredentials } from '../lib/utils';
 import { db } from '../db';
 import { servers } from '../db/schema/servers';
 import { domains } from '../db/schema/projects';
@@ -879,7 +880,7 @@ export async function deployToRemoteServer(
     // Build clone URL with token if available
     let cloneUrl = repoUrl;
     if (accessToken && repoUrl.includes('github.com')) {
-      cloneUrl = repoUrl.replace('https://', `https://${accessToken}@`);
+      cloneUrl = repoUrl.replace('https://', `https://x-access-token:${accessToken}@`);
     } else if (accessToken && repoUrl.includes('gitlab')) {
       try {
         const parsed = new URL(repoUrl);
@@ -895,7 +896,7 @@ export async function deployToRemoteServer(
 
     const cloneResult = await ssh.exec(cloneCmd);
     if (cloneResult.code !== 0) {
-      throw new Error(`Failed to clone repository: ${cloneResult.stderr}`);
+      throw new Error(`Failed to clone repository: ${redactUrlCredentials(cloneResult.stderr)}`);
     }
     onProgress('✅ Repository cloned');
 
