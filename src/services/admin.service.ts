@@ -5,6 +5,9 @@ import { authEvents, adminAuditLogs, type AuthEventType, type AuthMethod } from 
 import { userRepository } from '../repositories/user.repository';
 import { logger } from '../lib/logger';
 import { normalizeClientIp } from '../lib/utils';
+import { summarizeDeployFailures, type DeployFailureSummary } from '../lib/deploy-failure-summary';
+
+const FAILURE_WINDOW_DAYS = 30;
 
 /**
  * Read-only, platform-wide views for the operator panel. Everything here crosses organisation
@@ -43,14 +46,19 @@ export interface AdminOverview {
     paidOrganizations: number;
   };
   plans: { plan: string; count: number }[];
+  /** Failed deployments in the window, grouped by the classifier's category */
+  failures: { windowDays: number; total: number; categories: DeployFailureSummary[] };
 }
 
 export type SignupMethod = 'password' | 'github' | 'google';
 export type AdminUserSort = 'newest' | 'last_seen' | 'most_active';
+/** Where people get stuck: never verified, never made a project, or only ever failed to deploy */
+export type AdminUserFilter = 'all' | 'unverified' | 'no_project' | 'failing';
 
 export interface AdminUserListQuery {
   search: string;
   sort: AdminUserSort;
+  filter: AdminUserFilter;
   limit: number;
   offset: number;
 }
@@ -253,18 +261,25 @@ const signupMethodSql = (alias: string) =>
     `CASE WHEN ${alias}.github_id IS NOT NULL THEN 'github' WHEN ${alias}.google_id IS NOT NULL THEN 'google' ELSE 'password' END`,
   );
 
-// ORDER BY works on the aggregate CTE's raw columns, before aliasing/formatting.
+// ORDER BY / WHERE work on the aggregate CTE's raw columns, before aliasing/formatting.
 const USER_SORT: Record<AdminUserSort, string> = {
   newest: 'created_at DESC',
   last_seen: 'GREATEST(last_login_at, last_activity_at, last_session_at) DESC NULLS LAST, created_at DESC',
   most_active: 'deployments DESC, activity_count DESC, created_at DESC',
 };
 
+const USER_FILTER: Record<AdminUserFilter, string> = {
+  all: 'TRUE',
+  unverified: 'NOT email_verified',
+  no_project: 'projects = 0',
+  failing: 'deployments > 0 AND failed_deployments = deployments',
+};
+
 // ============ Service ============
 
 export const adminService = {
   async getOverview(): Promise<AdminOverview> {
-    const [usersRow, funnel, active, byDay, deployRow, byStatus, resources, plans] = await Promise.all([
+    const [usersRow, funnel, active, byDay, deployRow, byStatus, resources, plans, failedRows] = await Promise.all([
       one<AdminOverview['users']>(sql`
         SELECT count(*)::int AS "total",
                count(*) FILTER (WHERE email_verified)::int AS "verified",
@@ -341,6 +356,14 @@ export const adminService = {
       rows<{ plan: string; count: number }>(sql`
         SELECT plan::text AS "plan", count(*)::int AS "count"
         FROM organizations GROUP BY 1 ORDER BY 2 DESC`),
+      // Newest first so each bucket's sample is the latest message. Capped: a platform with
+      // more failures than this in a month has a bigger problem than an exact histogram.
+      rows<{ errorMessage: string | null; projectId: string | null }>(sql`
+        SELECT error_message AS "errorMessage", project_id AS "projectId"
+        FROM deployments
+        WHERE status = 'failed' AND created_at > now() - make_interval(days => ${FAILURE_WINDOW_DAYS})
+        ORDER BY created_at DESC
+        LIMIT 5000`),
     ]);
 
     return {
@@ -351,6 +374,11 @@ export const adminService = {
       deployments: { ...deployRow, byStatus },
       resources,
       plans,
+      failures: {
+        windowDays: FAILURE_WINDOW_DAYS,
+        total: failedRows.length,
+        categories: summarizeDeployFailures(failedRows),
+      },
     };
   },
 
@@ -406,6 +434,7 @@ export const adminService = {
              ${iso('GREATEST(last_login_at, last_activity_at, last_session_at)')} AS "lastSeenAt",
              count(*) OVER()::int AS "total"
       FROM agg
+      WHERE ${sql.raw(USER_FILTER[query.filter])}
       ORDER BY ${sql.raw(USER_SORT[query.sort])}
       LIMIT ${query.limit} OFFSET ${query.offset}`);
 

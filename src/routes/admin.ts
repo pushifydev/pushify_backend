@@ -27,6 +27,7 @@ const pageSchema = z.object({
 const userListSchema = pageSchema.extend({
   search: z.string().trim().max(200).default(''),
   sort: z.enum(['newest', 'last_seen', 'most_active']).default('newest'),
+  filter: z.enum(['all', 'unverified', 'no_project', 'failing']).default('all'),
 });
 
 const uuidSchema = z.string().uuid();
