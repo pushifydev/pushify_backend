@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Admin panel API for platform operators.** `GET /api/v1/admin/overview` (user counts, the sign-up → verified → project → deploy → live → server → paid funnel, 30-day sign-ups/sign-ins, deployments by status, resources, plans), `GET /admin/users` (per-user summary: plan, projects, deploys, failed deploys, servers, databases, last sign-in, last seen; search + sort + paging), `GET /admin/users/:id` (profile, organisations, projects, deployments, servers, databases, active sessions, sign-in history, activity, and a merged timeline), `GET /admin/activity` and `GET /admin/auth-events` (platform-wide, paged). Plain Hono, deliberately absent from the Swagger document.
+- **The gate.** `requirePlatformAdmin` sits on the whole `/admin` router: the caller must be a session (never an API key) whose email is in the new `ADMIN_EMAILS` env var *and* have 2FA enabled. Non-operators get **404**, the same as an unknown URL, so the panel's existence is not confirmed; an operator without 2FA gets a 403 that says what to fix. The allowlist lives in the environment, so nothing reachable through the app can promote anyone; the check re-reads the user row on every request, so removals apply immediately. Every request that passes is written to `admin_audit_logs`. `GET /auth/me` now reports `isPlatformAdmin` so the dashboard can show the link. **29 tests** walk the router's own route table and assert each endpoint answers 401 / 404 / 404 / 403 / 200 for no session / API key / non-operator / operator without 2FA / operator — a route added later is covered automatically.
+- **Sign-in history** (`auth_events`, migration `0045`). Sessions are deleted on logout and expiry, so until now there was no record that a login ever happened. Every attempt is recorded — `register`, `login`, `login_failed`, `two_factor_required`, `two_factor_failed` — with method (`password` / `two_factor` / `github` / `google`), IP and user agent, from the password, 2FA-completion and both OAuth flows. Writes are fire-and-forget and can never fail a login. Registration and 2FA completion now also store IP/user-agent on the session they create.
+
 ## [0.2.0-beta.62] - 2026-08-21
 
 ### Added

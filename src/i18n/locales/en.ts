@@ -48,6 +48,7 @@ export interface TranslationKeys {
     conflict: string;
     tooManyRequests: string;
     malformedJson: string;
+    adminTwoFactorRequired: string;
   };
   projects: {
     notFound: string;
@@ -399,6 +400,7 @@ export const en: TranslationKeys = {
     conflict: 'Conflict',
     tooManyRequests: 'Too many requests',
     malformedJson: 'Malformed JSON in request body',
+    adminTwoFactorRequired: 'Two-factor authentication is required for the admin panel — enable it under Settings → Security',
   },
 
   // Projects

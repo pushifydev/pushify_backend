@@ -54,6 +54,7 @@ export const tr: TranslationKeys = {
     conflict: 'Çakışma',
     tooManyRequests: 'Çok fazla istek',
     malformedJson: 'İstek gövdesinde hatalı JSON',
+    adminTwoFactorRequired: 'Yönetici paneli için iki adımlı doğrulama gerekli — Ayarlar → Güvenlik bölümünden etkinleştirin',
   },
 
   // Projects

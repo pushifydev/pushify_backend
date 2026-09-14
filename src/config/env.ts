@@ -84,6 +84,9 @@ const envSchema = z.object({
   /** Comma-separated operator emails for admin event notifications (registration,
    *  servers, billing, failed deploys, …). Unset = disabled. */
   ADMIN_NOTIFY_EMAILS: z.string().optional(),
+  /** Comma-separated emails of platform operators who may open the admin panel
+   *  (/api/v1/admin/*). Each must also have 2FA enabled. Unset = panel disabled. */
+  ADMIN_EMAILS: z.string().optional(),
 
   // Domain sales (registrar reseller). Unset = feature hidden.
   REGISTRAR_PROVIDER: z.enum(['namecom']).optional(),
