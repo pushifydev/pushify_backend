@@ -56,3 +56,6 @@ export * from './usage';
 export * from './site-editor';
 export * from './purchased-domains';
 export * from './onboarding';
+
+// Sign-in history + platform-admin audit
+export * from './auth-events';

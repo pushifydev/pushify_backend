@@ -8,6 +8,7 @@ import { generateSlug, hashToken, generateRandomToken, normalizeClientIp } from 
 import { logger } from '../lib/logger';
 import { t, type SupportedLocale } from '../i18n';
 import { adminNotify } from './admin-notify.service';
+import { recordAuthEvent } from './auth-event.service';
 import {
   sendPasswordResetEmail,
   sendEmailVerificationEmail,
@@ -57,7 +58,12 @@ export const authService = {
   /**
    * Register a new user with a default organization
    */
-  async register(input: RegisterInput, locale: SupportedLocale = 'en'): Promise<AuthResult> {
+  async register(
+    input: RegisterInput,
+    locale: SupportedLocale = 'en',
+    ipAddress?: string,
+    userAgent?: string
+  ): Promise<AuthResult> {
     const { email, password, name } = input;
 
     // Check if user already exists
@@ -102,7 +108,8 @@ export const authService = {
     );
 
     // Store session
-    await this.createSession(result.user.id, refreshToken);
+    await this.createSession(result.user.id, refreshToken, ipAddress, userAgent);
+    recordAuthEvent({ userId: result.user.id, event: 'register', method: 'password', ipAddress, userAgent });
 
     // Send verification email (fire-and-forget)
     this.sendVerificationEmail(result.user.id, locale).catch(() => {});
@@ -145,12 +152,14 @@ export const authService = {
 
     // OAuth-only users (no password) cannot log in with email/password
     if (!user.passwordHash) {
+      recordAuthEvent({ userId: user.id, event: 'login_failed', method: 'password', ipAddress, userAgent });
       throw new HTTPException(401, { message: t(locale, 'auth', 'invalidCredentials') });
     }
 
     // Verify password
     const isValidPassword = await verifyPassword(user.passwordHash, password);
     if (!isValidPassword) {
+      recordAuthEvent({ userId: user.id, event: 'login_failed', method: 'password', ipAddress, userAgent });
       throw new HTTPException(401, { message: t(locale, 'auth', 'invalidCredentials') });
     }
 
@@ -166,6 +175,7 @@ export const authService = {
       const twoFactorToken = await generateTwoFactorToken(user.id, membership.organization.id);
 
       logger.info({ userId: user.id }, '2FA required for login');
+      recordAuthEvent({ userId: user.id, event: 'two_factor_required', method: 'password', ipAddress, userAgent });
 
       return {
         requiresTwoFactor: true,
@@ -196,6 +206,7 @@ export const authService = {
 
     // Store session
     await this.createSession(user.id, refreshToken, ipAddress, userAgent);
+    recordAuthEvent({ userId: user.id, event: 'login', method: 'password', ipAddress, userAgent });
 
     // Notify of sign-in from a new device (fire-and-forget) — honors the
     // user's securityAlerts notification preference
@@ -235,7 +246,9 @@ export const authService = {
   async verifyLoginTwoFactor(
     twoFactorToken: string,
     code: string,
-    locale: SupportedLocale = 'en'
+    locale: SupportedLocale = 'en',
+    ipAddress?: string,
+    userAgent?: string
   ): Promise<AuthResult> {
     // Verify the 2FA token
     let payload;
@@ -283,6 +296,7 @@ export const authService = {
         const n = await twoFactorRedis.incr(attemptKey);
         if (n === 1) await twoFactorRedis.expire(attemptKey, 300);
       }
+      recordAuthEvent({ userId, event: 'two_factor_failed', method: 'two_factor', ipAddress, userAgent });
       throw new HTTPException(401, { message: t(locale, 'twoFactor', 'invalidCode') });
     }
 
@@ -299,7 +313,8 @@ export const authService = {
     const { accessToken, refreshToken } = await generateTokenPair(userId, organizationId);
 
     // Store session
-    await this.createSession(userId, refreshToken);
+    await this.createSession(userId, refreshToken, ipAddress, userAgent);
+    recordAuthEvent({ userId, event: 'login', method: 'two_factor', ipAddress, userAgent });
 
     logger.info({ userId }, 'User logged in with 2FA successfully');
 
@@ -605,6 +620,7 @@ export const authService = {
 
     // Find existing user by GitHub ID or email
     let user = await userRepository.findByGithubId(githubId);
+    let isNewUser = false;
 
     if (!user) {
       // Try by email (link account if email matches)
@@ -651,6 +667,7 @@ export const authService = {
           organization: org.name,
           provider: 'github',
         });
+        isNewUser = true;
       }
     }
 
@@ -670,12 +687,14 @@ export const authService = {
     if (user.twoFactorEnabled) {
       const twoFactorToken = await generateTwoFactorToken(user.id, membership.organization.id);
       logger.info({ userId: user.id, provider: 'github' }, '2FA required for OAuth login');
+      recordAuthEvent({ userId: user.id, event: 'two_factor_required', method: 'github', ipAddress, userAgent });
       return { requiresTwoFactor: true, twoFactorToken };
     }
 
     // Generate JWT pair & create session
     const tokens = await generateTokenPair(user.id, membership.organization.id);
     await this.createSession(user.id, tokens.refreshToken, ipAddress, userAgent);
+    recordAuthEvent({ userId: user.id, event: isNewUser ? 'register' : 'login', method: 'github', ipAddress, userAgent });
 
     logger.info({ userId: user.id, provider: 'github' }, 'OAuth login successful');
 
@@ -723,6 +742,7 @@ export const authService = {
 
     // Find existing user by Google ID or email
     let user = await userRepository.findByGoogleId(googleId);
+    let isNewUser = false;
 
     if (!user) {
       // Try by email (link account if email matches)
@@ -769,6 +789,7 @@ export const authService = {
           organization: org.name,
           provider: 'google',
         });
+        isNewUser = true;
       }
     }
 
@@ -788,12 +809,14 @@ export const authService = {
     if (user.twoFactorEnabled) {
       const twoFactorToken = await generateTwoFactorToken(user.id, membership.organization.id);
       logger.info({ userId: user.id, provider: 'google' }, '2FA required for OAuth login');
+      recordAuthEvent({ userId: user.id, event: 'two_factor_required', method: 'google', ipAddress, userAgent });
       return { requiresTwoFactor: true, twoFactorToken };
     }
 
     // Generate JWT pair & create session
     const tokens = await generateTokenPair(user.id, membership.organization.id);
     await this.createSession(user.id, tokens.refreshToken, ipAddress, userAgent);
+    recordAuthEvent({ userId: user.id, event: isNewUser ? 'register' : 'login', method: 'google', ipAddress, userAgent });
 
     logger.info({ userId: user.id, provider: 'google' }, 'OAuth login successful');
 

@@ -4,6 +4,7 @@ import { authService } from '../services/auth.service';
 import { organizationService } from '../services/organization.service';
 import { authMiddleware } from '../middleware/auth';
 import { authRateLimiter, passwordResetRateLimiter } from '../middleware/rate-limit';
+import { isPlatformAdminEmail } from '../lib/platform-admin';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 
@@ -60,6 +61,8 @@ const CurrentUserSchema = z
       emailVerified: z.boolean(),
       twoFactorEnabled: z.boolean(),
       hasPassword: z.boolean().optional(),
+      /** true when the email is in ADMIN_EMAILS — the dashboard shows the admin panel link */
+      isPlatformAdmin: z.boolean(),
       createdAt: z.coerce.date(),
     }),
   })
@@ -720,7 +723,9 @@ authRouter.use('/reset-password', passwordResetRateLimiter);
 authRouter.openapi(registerRoute, async (c) => {
   const input = c.req.valid('json');
   const locale = c.get('locale');
-  const result = await authService.register(input, locale);
+  const ipAddress = c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip');
+  const userAgent = c.req.header('user-agent');
+  const result = await authService.register(input, locale, ipAddress, userAgent);
 
   return c.json(
     {
@@ -766,8 +771,10 @@ authRouter.use('/login/2fa', authRateLimiter);
 authRouter.openapi(verifyTwoFactorRoute, async (c) => {
   const { twoFactorToken, code } = c.req.valid('json');
   const locale = c.get('locale');
+  const ipAddress = c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip');
+  const userAgent = c.req.header('user-agent');
 
-  const result = await authService.verifyLoginTwoFactor(twoFactorToken, code, locale);
+  const result = await authService.verifyLoginTwoFactor(twoFactorToken, code, locale, ipAddress, userAgent);
 
   return c.json({
     data: {
@@ -963,6 +970,7 @@ authRouter.openapi(meRoute, async (c) => {
       emailVerified: user.emailVerified,
       twoFactorEnabled: user.twoFactorEnabled,
       hasPassword: user.hasPassword,
+      isPlatformAdmin: isPlatformAdminEmail(user.email),
       createdAt: user.createdAt,
     },
   });
