@@ -8,6 +8,7 @@
 - **Sign-in history** (`auth_events`, migration `0045`). Sessions are deleted on logout and expiry, so until now there was no record that a login ever happened. Every attempt is recorded — `register`, `login`, `login_failed`, `two_factor_required`, `two_factor_failed` — with method (`password` / `two_factor` / `github` / `google`), IP and user agent, from the password, 2FA-completion and both OAuth flows. Writes are fire-and-forget and can never fail a login. Registration and 2FA completion now also store IP/user-agent on the session they create.
 - **Why deploys fail.** `GET /admin/overview` now returns `failures`: the last 30 days of failed deployments grouped by the existing classifier's category (`lib/deploy-failure-summary.ts`), with count, distinct projects, blame (Pushify / server / project) and the latest raw message per bucket — the histogram that says which error to fix in the product rather than in one user's project. 6 tests.
 - **Stuck-user filters.** `GET /admin/users?filter=unverified|no_project|failing` — never verified, never created a project, or every deploy so far failed.
+- **`npm run stripe:audit`** — read-only look at the Stripe account from wherever the key lives: active recurring prices (is there a $15 Hobby / $29 Pro price at all?), what the last subscription checkouts actually charged, every `incomplete` / `incomplete_expired` / `past_due` subscription with its first invoice's payment error (decline code, 3DS next action), and the webhook endpoints. Creates and changes nothing.
 
 ## [0.2.0-beta.62] - 2026-08-21
 
