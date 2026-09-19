@@ -10,6 +10,9 @@
 - **Stuck-user filters.** `GET /admin/users?filter=unverified|no_project|failing` — never verified, never created a project, or every deploy so far failed.
 - **`npm run stripe:audit`** — read-only look at the Stripe account from wherever the key lives: active recurring prices (is there a $15 Hobby / $29 Pro price at all?), what the last subscription checkouts actually charged, every `incomplete` / `incomplete_expired` / `past_due` subscription with its first invoice's payment error (decline code, 3DS next action), and the webhook endpoints. Creates and changes nothing.
 
+### Fixed
+- **GitHub App webhooks never reached their handler.** `POST /api/v1/webhooks/github/app` was mounted *after* the per-project `POST /webhooks/github/:projectId`; Hono runs matching handlers in registration order, and the per-project route's uuid validator answered **400** for the literal `app` before the App handler could run — so every installation-sync and push/PR delivery from the GitHub App has failed since the App shipped (verified with `app.request()`: 400 ZodError before, the App handler after). The App router is now mounted first.
+
 ## [0.2.0-beta.62] - 2026-08-21
 
 ### Added
