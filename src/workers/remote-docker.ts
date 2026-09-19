@@ -774,6 +774,9 @@ export interface BlueGreenDeployOptions {
   imageName: string;
   containerName: string; // Base name (will use -blue/-green suffixes)
   hostPort: number;
+  /** Host port for the new container. The caller picks it from the port registry so it can
+   *  stay the container's port after the switch; without it a free 30000+ port is scanned. */
+  tempPort?: number;
   containerPort: number;
   envVars?: Record<string, string>;
   volumes?: string[];
@@ -801,6 +804,8 @@ export async function blueGreenDeploy(
   newContainerName?: string;
   newContainerId?: string;
   oldContainerName?: string;
+  /** Host port the new container is published on (only on success) */
+  tempPort?: number;
   logs: string;
 }> {
   const {
@@ -816,6 +821,7 @@ export async function blueGreenDeploy(
     framework,
     buildpackId,
     onProgress,
+    tempPort: requestedPort,
   } = options;
 
   const runMemory = getRunMemoryLimit(framework, buildpackId);
@@ -857,17 +863,19 @@ export async function blueGreenDeploy(
 
   onProgress?.(`📊 Active slot: ${activeSlot}, deploying to: ${newSlot}`);
 
-  // Find a temporary port for the new container
-  // We'll use a port in the high range that's different from the current
-  const tempPortResult = await ssh.exec(`
-    for port in $(seq 30000 30100); do
-      if ! ss -tlnp | grep -q ":$port "; then
-        echo $port
-        break
-      fi
-    done
-  `);
-  const tempPort = parseInt(tempPortResult.stdout.trim()) || 30000;
+  let tempPort = requestedPort;
+  if (!tempPort) {
+    // No port from the registry: scan the high range for something free.
+    const tempPortResult = await ssh.exec(`
+      for port in $(seq 30000 30100); do
+        if ! ss -tlnp | grep -q ":$port "; then
+          echo $port
+          break
+        fi
+      done
+    `);
+    tempPort = parseInt(tempPortResult.stdout.trim()) || 30000;
+  }
   onProgress?.(`🔌 Using temporary port ${tempPort} for new container`);
 
   // Build the docker run command for new container with resource limits
@@ -984,100 +992,8 @@ export async function blueGreenDeploy(
     newContainerName,
     newContainerId,
     oldContainerName,
-    logs: `Blue-green deployment ready. New container: ${newContainerName} (temp port: ${tempPort})`,
+    tempPort,
+    logs: `Blue-green deployment ready. New container: ${newContainerName} (port: ${tempPort})`,
   };
 }
 
-/**
- * Complete the blue-green switch by updating ports and stopping old container
- */
-export async function completeBlueGreenSwitch(
-  ssh: SSHClient,
-  options: {
-    newContainerName: string;
-    oldContainerName?: string;
-    targetPort: number;
-    containerPort: number;
-    onProgress?: (message: string) => void;
-  }
-): Promise<{ success: boolean; message: string }> {
-  const { newContainerName, oldContainerName, targetPort, containerPort, onProgress } = options;
-
-  try {
-    // Stop old container first (this frees up the port)
-    if (oldContainerName) {
-      onProgress?.(`🛑 Stopping old container: ${oldContainerName}`);
-      await ssh.exec(`docker stop ${oldContainerName} 2>/dev/null || true`);
-    }
-
-    // Get current container info
-    const inspectResult = await ssh.exec(`docker inspect ${newContainerName} 2>/dev/null`);
-    if (inspectResult.code !== 0) {
-      throw new Error(`New container not found: ${newContainerName}`);
-    }
-
-    // Stop new container, recreate with correct port
-    onProgress?.('🔄 Reconfiguring new container with production port...');
-
-    // Get container's image
-    const imageResult = await ssh.exec(`docker inspect -f '{{.Config.Image}}' ${newContainerName}`);
-    const imageName = imageResult.stdout.trim();
-
-    // Get environment variables
-    const envResult = await ssh.exec(`docker inspect -f '{{range .Config.Env}}{{.}}{{println}}{{end}}' ${newContainerName}`);
-    const envLines = envResult.stdout.trim().split('\n').filter(line => line);
-
-    // Carry over the container's mounts (persistent volumes / binds) — recreating without
-    // them would silently detach user data volumes at the traffic switch.
-    const mountsResult = await ssh.exec(
-      `docker inspect -f '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}:{{.Destination}}{{println}}{{end}}{{if eq .Type "bind"}}{{.Source}}:{{.Destination}}{{println}}{{end}}{{end}}' ${newContainerName}`
-    );
-    const mountLines = mountsResult.stdout.trim().split('\n').filter((line) => line.includes(':'));
-
-    // Stop and remove new container
-    await ssh.exec(`docker stop ${newContainerName} 2>/dev/null || true`);
-    await ssh.exec(`docker rm ${newContainerName} 2>/dev/null || true`);
-
-    // Recreate with correct port and resource limits
-    let runCmd = `docker run -d --name ${newContainerName}`;
-    runCmd += ` --memory ${env.DOCKER_MEMORY_LIMIT}`;
-    runCmd += ` --memory-swap 1g`;
-    runCmd += ` --cpus ${env.DOCKER_CPU_LIMIT}`;
-    runCmd += ` --pids-limit 256`;
-    runCmd += ` -p 0.0.0.0:${targetPort}:${containerPort}`;
-
-    for (const envLine of envLines) {
-      runCmd += ` -e ${shSingleQuote(envLine)}`;
-    }
-
-    for (const mountLine of mountLines) {
-      runCmd += ` -v ${shSingleQuote(mountLine)}`;
-    }
-
-    runCmd += ` --restart unless-stopped`;
-    runCmd += ` ${imageName}`;
-
-    const restartResult = await ssh.exec(runCmd);
-    if (restartResult.code !== 0) {
-      throw new Error(`Failed to restart container: ${restartResult.stderr}`);
-    }
-
-    onProgress?.(`✅ New container running on port ${targetPort}`);
-
-    // Remove old container
-    if (oldContainerName) {
-      onProgress?.(`🗑️ Removing old container: ${oldContainerName}`);
-      await ssh.exec(`docker rm -f ${oldContainerName} 2>/dev/null || true`);
-    }
-
-    return {
-      success: true,
-      message: `Blue-green switch completed. Active: ${newContainerName}`,
-    };
-  } catch (error) {
-    return {
-      success: false,
-      message: error instanceof Error ? error.message : String(error),
-    };
-  }
-}
