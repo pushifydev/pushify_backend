@@ -44,6 +44,10 @@ interface DockerStatsOutput {
 /**
  * Start the metrics worker
  */
+const METRICS_RETENTION_DAYS = 7;
+const METRICS_CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // once an hour
+let lastCleanupAt = 0;
+
 export async function startMetricsWorker(): Promise<void> {
   if (isRunning) {
     logger.warn('Metrics worker is already running');
@@ -71,6 +75,13 @@ export function stopMetricsWorker(): void {
 async function pollForMetrics(): Promise<void> {
   while (isRunning) {
     try {
+      // Retention: the table grew without bound because nothing ever called cleanOldMetrics.
+      if (Date.now() - lastCleanupAt > METRICS_CLEANUP_INTERVAL_MS) {
+        const deleted = await metricsService.cleanOldMetrics(METRICS_RETENTION_DAYS);
+        lastCleanupAt = Date.now();
+        if (deleted > 0) logger.info({ deleted, days: METRICS_RETENTION_DAYS }, 'Old container metrics pruned');
+      }
+
       // Get all projects with running containers
       const projectsToMonitor = await metricsService.getProjectsForMetricsCollection();
 
