@@ -12,6 +12,7 @@
 
 ### Fixed
 - **GitHub App webhooks never reached their handler.** `POST /api/v1/webhooks/github/app` was mounted *after* the per-project `POST /webhooks/github/:projectId`; Hono runs matching handlers in registration order, and the per-project route's uuid validator answered **400** for the literal `app` before the App handler could run — so every installation-sync and push/PR delivery from the GitHub App has failed since the App shipped (verified with `app.request()`: 400 ZodError before, the App handler after). The App router is now mounted first.
+- **Deployment log history was wiped every minute.** The log collector's retention pass called `and()` with no conditions; drizzle returns `undefined` for that, and `.where(undefined)` is no WHERE at all — so the cleanup ran `DELETE FROM container_logs` on every 60-second collection cycle since the collector shipped. That is why the Deployments → History view was always empty while live streaming worked. Now deletes only rows older than the 7-day retention window, once an hour (`lib/…` generated SQL checked: `where created_at < $1`).
 
 ## [0.2.0-beta.62] - 2026-08-21
 

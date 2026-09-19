@@ -1,4 +1,4 @@
-import { eq, and, desc, ilike } from 'drizzle-orm';
+import { eq, and, desc, ilike, lt } from 'drizzle-orm';
 import { db } from '../db';
 import { containerLogs } from '../db/schema/container-logs';
 import { deployments } from '../db/schema/deployments';
@@ -15,6 +15,8 @@ import { getContainerLogs as getLocalContainerLogs, isContainerRunning as isLoca
 const COLLECTION_INTERVAL = 60000; // 1 minute
 const MAX_LINES_PER_CHUNK = 1000;
 const LOG_RETENTION_DAYS = 7;
+const CLEANUP_INTERVAL = 60 * 60 * 1000; // prune once an hour, not every collection cycle
+let lastCleanupAt = 0;
 
 let isRunning = false;
 
@@ -48,7 +50,10 @@ async function collectLogs(): Promise<void> {
   while (isRunning) {
     try {
       await collectAllDeploymentLogs();
-      await cleanupOldLogs();
+      if (Date.now() - lastCleanupAt > CLEANUP_INTERVAL) {
+        await cleanupOldLogs();
+        lastCleanupAt = Date.now();
+      }
     } catch (error) {
       logger.error({ err: error }, 'Error in log collection cycle');
     }
@@ -188,18 +193,14 @@ async function cleanupOldLogs(): Promise<void> {
   const cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - LOG_RETENTION_DAYS);
 
-  // Note: Using raw SQL for the date comparison since drizzle doesn't have lt/gt exported here
-  await db
+  // An empty and() is undefined, and .where(undefined) is no WHERE at all — this used to wipe
+  // the whole table every minute, which is why deployment log history was always empty.
+  const deleted = await db
     .delete(containerLogs)
-    .where(
-      and(
-        // Only delete logs older than retention period
-        // This is a simplified cleanup - in production you might want batch deletion
-      )
-    );
+    .where(lt(containerLogs.createdAt, cutoffDate))
+    .returning({ id: containerLogs.id });
 
-  // For now, just log that cleanup ran
-  logger.debug('Log cleanup cycle completed');
+  logger.debug({ deleted: deleted.length, cutoffDate }, 'Log cleanup cycle completed');
 }
 
 /**
