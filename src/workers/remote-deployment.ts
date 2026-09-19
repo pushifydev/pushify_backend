@@ -1111,7 +1111,10 @@ export async function deployToRemoteServer(
     }
 
     // Check if project has any domains; if not, create auto subdomain (only on managed servers)
-    let primaryDomain = await getPrimaryDomain(projectId);
+    // A preview deploy (deploySuffix) must never touch the project's domains: this block would
+    // repoint the primary domain's vhost at the PR container's port, and a project without a
+    // domain would get its production auto-subdomain created for the preview.
+    let primaryDomain = deploySuffix ? null : await getPrimaryDomain(projectId);
 
     const { env: envConfig } = await import('../config/env');
     const previewBaseUrl = envConfig.PREVIEW_BASE_URL;
@@ -1142,7 +1145,7 @@ export async function deployToRemoteServer(
       primaryDomain = null;
     }
 
-    if (!primaryDomain) {
+    if (!primaryDomain && !deploySuffix) {
       if (previewBaseUrl && hasWildcardSSL) {
         onProgress('🌐 No domain configured, creating auto subdomain...');
         try {
