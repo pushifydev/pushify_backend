@@ -10,6 +10,7 @@ import { pickRunnerServerId } from '../lib/runner-routing';
 import { getProjectVolumeMounts } from '../lib/project-volumes';
 import { createLogMasker } from '../lib/log-masking';
 import { selectDeployEnvVars } from '../lib/deploy-env-vars';
+import { previewHostname } from '../lib/preview-remote';
 import { cloneRepository, cleanupRepository } from './git';
 import {
   buildImage,
@@ -767,6 +768,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         onProgress: onRemoteProgress,
         marketplace: marketplaceConfig,
         deploySuffix: previewCtx?.deploySuffix,
+        previewDomain: previewCtx ? previewHostname(previewCtx.previewUrl) ?? undefined : undefined,
       });
 
       if (!remoteResult.success) {
@@ -785,7 +787,11 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         })
         .where(eq(deployments.id, job.id));
 
-      const successUrl = previewCtx ? previewCtx.previewUrl : remoteResult.deploymentUrl;
+      // The deployer reports where the preview really answers: its vhost when the server has
+      // the wildcard cert, otherwise IP:port — that is what the PR comment must carry.
+      const successUrl = previewCtx
+        ? remoteResult.deploymentUrl || previewCtx.previewUrl
+        : remoteResult.deploymentUrl;
 
       if (previewCtx) {
         await previewService.updatePreviewStatus(
@@ -793,6 +799,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
           previewCtx.prNumber,
           'running',
           remoteResult.containerPort ?? undefined,
+          successUrl,
         );
         addLog(`✅ Preview deployment live: ${successUrl}`);
       } else {

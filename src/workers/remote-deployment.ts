@@ -49,6 +49,8 @@ export interface RemoteDeploymentConfig {
   onProgress: (message: string) => void;
   /** e.g. `-pr-42` for preview deployments (separate container/image from production) */
   deploySuffix?: string;
+  /** Preview vhost to serve the PR container under (`pr-42-<slug>.<PREVIEW_BASE_URL>`) */
+  previewDomain?: string;
   // Marketplace fields
   marketplace?: {
     id?: string;
@@ -372,6 +374,7 @@ export async function deployToRemoteServer(
     accessToken,
     onProgress,
     deploySuffix = '',
+    previewDomain,
   } = config;
 
   const rootDirectory = normalizeRootDirectory(rootDirectoryInput);
@@ -1283,6 +1286,36 @@ export async function deployToRemoteServer(
       }
     }
 
+    // PR preview: its own `pr-N-<slug>.<preview base>` vhost on the wildcard cert, so the URL
+    // posted to the PR actually resolves. Never touches the project's own domains. Without the
+    // wildcard cert (a person's own server) the preview stays on its IP:port.
+    let previewVhostUrl: string | null = null;
+    if (deploySuffix && previewDomain) {
+      if (isPushifyAutoSubdomain(previewDomain) && hasWildcardSSL) {
+        onProgress(`🌐 Configuring Nginx for preview: ${previewDomain}`);
+        const addResult = await addAutoSubdomainSite(ssh, {
+          domain: previewDomain,
+          containerPort: hostPort,
+          projectSlug: deploySlug,
+        });
+        if (!addResult.success) {
+          onProgress(`⚠️ Preview nginx warning: ${addResult.message}`);
+        } else {
+          const reloadResult = await reloadNginx(ssh);
+          if (!reloadResult.success) {
+            onProgress(`⚠️ Nginx reload warning: ${reloadResult.message}`);
+          } else {
+            previewVhostUrl = `https://${previewDomain}`;
+            onProgress(`✅ Preview reachable at ${previewVhostUrl}`);
+          }
+        }
+      } else {
+        onProgress(
+          `🌐 ${previewDomain} needs the *.${previewBaseUrl || 'preview'} wildcard certificate, which this server does not have — preview served via http://${server.ipv4}:${hostPort}`
+        );
+      }
+    }
+
     // Only now — nginx already points at the new container — take the old one down.
     if (retireOldContainer) {
       await retireOldContainer();
@@ -1293,6 +1326,8 @@ export async function deployToRemoteServer(
     let deploymentUrl: string;
     if (primaryDomain) {
       deploymentUrl = `https://${primaryDomain}`;
+    } else if (previewVhostUrl) {
+      deploymentUrl = previewVhostUrl;
     } else {
       deploymentUrl = `http://${server.ipv4}:${hostPort}`;
     }

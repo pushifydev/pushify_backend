@@ -54,6 +54,10 @@ export function buildRemoteTeardownScript(slug: string, isCompose: boolean): str
   const filesystemAndNginx = [
     `rm -rf ${projectDir}`,
     `rm -f /etc/nginx/conf.d/${safeSlug}.pushify.dev.conf /etc/nginx/sites-enabled/${safeSlug}.pushify.dev.conf /etc/nginx/sites-available/${safeSlug}.pushify.dev.conf 2>/dev/null || true`,
+    // The vhosts the deployer actually writes (`pushify-<slug>` for the auto-subdomain, one
+    // `pushify-<slug>-pr-N` per PR preview) — left behind, they kept proxying to dead ports.
+    `rm -f /etc/nginx/sites-enabled/pushify-${safeSlug} /etc/nginx/sites-available/pushify-${safeSlug} /opt/pushify/nginx/pushify-${safeSlug}.conf 2>/dev/null || true`,
+    `rm -f /etc/nginx/sites-enabled/pushify-${safeSlug}-pr-* /etc/nginx/sites-available/pushify-${safeSlug}-pr-* /opt/pushify/nginx/pushify-${safeSlug}-pr-*.conf /etc/nginx/conf.d/preview-${safeSlug}-pr-*.conf 2>/dev/null || true`,
     'nginx -t 2>/dev/null && nginx -s reload 2>/dev/null || true',
   ].join('; ');
 
