@@ -9,6 +9,7 @@ import { logger } from '../lib/logger';
 import { pickRunnerServerId } from '../lib/runner-routing';
 import { getProjectVolumeMounts } from '../lib/project-volumes';
 import { createLogMasker } from '../lib/log-masking';
+import { selectDeployEnvVars } from '../lib/deploy-env-vars';
 import { cloneRepository, cleanupRepository } from './git';
 import {
   buildImage,
@@ -484,8 +485,9 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         .from(environmentVariables)
         .where(eq(environmentVariables.projectId, job.projectId));
 
+      // Production rows only; a preview deploy layers its `preview` rows on top (lib/deploy-env-vars.ts).
       const envVarsDecrypted: Record<string, string> = {};
-      for (const envVar of envVars) {
+      for (const envVar of selectDeployEnvVars(envVars, { preview: !!previewCtx })) {
         envVarsDecrypted[envVar.key] = decrypt(envVar.valueEncrypted);
       }
       // Everything logged from here on has the project's secrets masked.
@@ -858,7 +860,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       .where(eq(environmentVariables.projectId, job.projectId));
 
     const envVarsDecrypted: Record<string, string> = {};
-    for (const ev of localEnvVars) {
+    for (const ev of selectDeployEnvVars(localEnvVars, { preview: !!previewCtx })) {
       envVarsDecrypted[ev.key] = decrypt(ev.valueEncrypted);
     }
 
