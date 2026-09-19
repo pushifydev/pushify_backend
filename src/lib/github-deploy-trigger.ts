@@ -7,6 +7,7 @@
  */
 import { deploymentRepository } from '../repositories/deployment.repository';
 import { previewService } from '../services/preview.service';
+import { checkPushDeployAllowed, recordRefusedPushDeploy } from './push-deploy-gate';
 import { logger } from './logger';
 
 export interface GitHubPushPayload {
@@ -59,6 +60,21 @@ export async function handlePushEvent(
   // No commits means something like a branch deletion.
   if (!payload.head_commit) {
     return { message: 'No commits in push, skipping deployment' };
+  }
+
+  // Same plan/billing gates as a dashboard deploy; a refusal is left behind as a failed
+  // deployment so the person can see why the push did nothing.
+  const gate = await checkPushDeployAllowed(project.organizationId);
+  if (!gate.allowed) {
+    const refused = await recordRefusedPushDeploy({
+      projectId: project.id,
+      organizationId: project.organizationId,
+      commitHash: payload.head_commit.id,
+      commitMessage: payload.head_commit.message.substring(0, 500),
+      branch,
+      reason: gate.reason,
+    });
+    return { message: `Deployment not started: `, deploymentId: refused.id };
   }
 
   const deployment = await deploymentRepository.create({
