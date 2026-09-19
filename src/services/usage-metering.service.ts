@@ -9,6 +9,7 @@ import { getImagesFootprintBytes } from '../lib/docker-disk-usage';
 import { decrypt } from '../lib/encryption';
 import { getSSHConnection, SSHClient } from '../utils/ssh';
 import { logger } from '../lib/logger';
+import { projectImageRepos } from '../lib/project-image-names';
 
 export const BYTES_PER_GB = 1024 ** 3;
 
@@ -201,12 +202,12 @@ export const usageMeteringService = {
     const orgTotals = new Map<string, number>();
 
     for (const server of runningServers) {
-      // Image repos for this server's projects → `pushify/<slug>` prefixes.
+      // Image repos for this server's projects, in both naming forms.
       const serverProjects = await db
         .select({ slug: projects.slug })
         .from(projects)
         .where(eq(projects.serverId, server.id));
-      const repos = serverProjects.map((p) => `pushify/${p.slug}`);
+      const repos = serverProjects.flatMap((p) => projectImageRepos(p.slug));
       if (repos.length === 0) continue;
 
       let bytes = 0;
@@ -244,7 +245,7 @@ export const usageMeteringService = {
     const localReposByOrg = new Map<string, string[]>();
     for (const p of localHostProjects) {
       const list = localReposByOrg.get(p.organizationId) ?? [];
-      list.push(`pushify/${p.slug}`);
+      list.push(...projectImageRepos(p.slug));
       localReposByOrg.set(p.organizationId, list);
     }
 

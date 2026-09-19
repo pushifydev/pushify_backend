@@ -6,6 +6,7 @@ import { decrypt } from './encryption';
 import { logger } from './logger';
 import { getSSHConnection, SSHClient } from '../utils/ssh';
 import { releasePort } from '../workers/port-manager';
+import { projectImageReferenceFilters } from './project-image-names';
 
 type ProjectRow = typeof projects.$inferSelect;
 
@@ -38,10 +39,12 @@ export function buildRemoteTeardownScript(slug: string, isCompose: boolean): str
     : '';
 
   // Reclaim disk by removing the project's built images (the big space consumer that
-  // container removal alone leaves behind). Matches the project repo + its preview repos
-  // (pushify/<slug>, pushify/<slug><suffix>). Runs after containers are gone.
-  const removeImages =
-    `docker images -q --filter=reference='pushify/${safeSlug}*' | sort -u | xargs -r docker rmi -f 2>/dev/null || true`;
+  // container removal alone leaves behind): the image in both naming forms plus its preview
+  // builds, and nothing that merely shares the slug as a prefix. Runs after containers are gone.
+  const listImages = projectImageReferenceFilters(safeSlug)
+    .map((ref) => `docker images -q --filter=reference='${ref}'`)
+    .join('; ');
+  const removeImages = `{ ${listImages}; } | sort -u | xargs -r docker rmi -f 2>/dev/null || true`;
 
   // Remove the project's persistent named volumes (pushify-vol-<slug>-*) — data is gone
   // with the project, matching user expectation on delete.

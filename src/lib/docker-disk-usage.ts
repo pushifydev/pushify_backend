@@ -1,6 +1,7 @@
 import type { SSHClient } from '../utils/ssh';
 import { execCommand } from '../workers/shell';
 import { logger } from './logger';
+import { imageRepoBelongsTo } from './project-image-names';
 
 const DOCKER_DF_TYPES = new Set(['Images', 'Containers', 'Local Volumes']);
 
@@ -74,9 +75,9 @@ async function runDockerCommand(
  * instead of the whole-host docker disk. This keeps multi-tenant hosts fair: each org
  * is only charged for the images built from its own projects.
  *
- * `repoPrefixes` are the project image repositories (e.g. `pushify/<slug>`). A row matches
- * when its Repository equals a prefix exactly OR startsWith the prefix — the latter also
- * captures preview-deploy images such as `pushify/<slug><deploySuffix>`.
+ * `repos` are the project image repositories in both naming forms (see project-image-names.ts).
+ * A row matches when its Repository is one of them exactly or one of their preview builds
+ * (`<repo>-pr-N`) — never a sibling project whose slug merely shares a prefix.
  *
  * Image IDs are de-duplicated so a multi-tagged image is counted once, then each unique
  * image's real size is read via `docker image inspect -f '{{.Size}}'` (raw bytes) and summed.
@@ -84,9 +85,9 @@ async function runDockerCommand(
  */
 export async function getImagesFootprintBytes(
   ssh: SSHClient | null,
-  repoPrefixes: string[],
+  repos: string[],
 ): Promise<number> {
-  if (repoPrefixes.length === 0) return 0;
+  if (repos.length === 0) return 0;
 
   try {
     // List every image's ID + Repository so we can select this org's images by repo prefix.
@@ -99,10 +100,7 @@ export async function getImagesFootprintBytes(
       const [id, repository] = line.split('\t');
       if (!id || !repository) continue;
       const repo = repository.trim();
-      const matches = repoPrefixes.some(
-        (prefix) => repo === prefix || repo.startsWith(prefix),
-      );
-      if (matches) uniqueIds.add(id.trim());
+      if (imageRepoBelongsTo(repo, repos)) uniqueIds.add(id.trim());
     }
 
     if (uniqueIds.size === 0) return 0;
