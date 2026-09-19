@@ -43,6 +43,8 @@ export interface RemoteDeploymentConfig {
   framework?: string;
   /** From local/remote buildpack detection */
   buildpackId?: string;
+  /** `framework` was pinned by pushify.yaml: use it as-is instead of auto-detecting */
+  frameworkForced?: boolean;
   accessToken?: string;
   onProgress: (message: string) => void;
   /** e.g. `-pr-42` for preview deployments (separate container/image from production) */
@@ -366,6 +368,7 @@ export async function deployToRemoteServer(
     outputDirectory,
     framework: frameworkHint,
     buildpackId: configBuildpackId,
+    frameworkForced = false,
     accessToken,
     onProgress,
     deploySuffix = '',
@@ -941,11 +944,20 @@ export async function deployToRemoteServer(
 
     if (!hasDockerfile) {
       // Use buildpack system for detection and Dockerfile generation
-      const { detectBuildpackRemote, detectNextStandaloneRemote, getBuildpack } =
+      const { detectBuildpackRemote, detectNextStandaloneRemote, getBuildpack, buildpackIdForFramework } =
         await import('../buildpacks');
 
-      onProgress('🔍 Auto-detecting language and framework...');
-      let detection = await detectBuildpackRemote(ssh, repoDir, rootDirectory);
+      const pinnedBuildpackId = frameworkForced && frameworkHint ? buildpackIdForFramework(frameworkHint) : null;
+      let detection: { buildpackId: string; framework: string; confidence: number } | null;
+      if (pinnedBuildpackId && frameworkHint) {
+        // pushify.yaml `framework:` wins over whatever the repo layout suggests (a Laravel app
+        // with a package.json used to be built as Node).
+        onProgress(`📌 Framework set by pushify.yaml: ${frameworkHint}`);
+        detection = { buildpackId: pinnedBuildpackId, framework: frameworkHint, confidence: 100 };
+      } else {
+        onProgress('🔍 Auto-detecting language and framework...');
+        detection = await detectBuildpackRemote(ssh, repoDir, rootDirectory);
+      }
       if (!detection && frameworkHint) {
         detection = {
           buildpackId: configBuildpackId || 'nodejs',

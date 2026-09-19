@@ -3,6 +3,9 @@ import path from 'path';
 import { goModDownloadRun } from '../lib/platform-docker';
 import type { Buildpack, BuildpackDetectResult, BuildpackConfig } from './types';
 
+/** `CMD ["sh", "-c", …]` so a start command may use env vars, `&&` and pipes. */
+const shCmd = (cmd: string): string => `CMD ["sh", "-c", ${JSON.stringify(cmd)}]`;
+
 export const goBuildpack: Buildpack = {
   id: 'go',
   name: 'Go',
@@ -30,6 +33,11 @@ export const goBuildpack: Buildpack = {
     const rootDir = config.rootDirectory || '.';
     const workdir = rootDir === '.' || rootDir === './' ? '/app' : `/app/${rootDir}`;
     const copyPrefix = rootDir === '.' ? '' : rootDir + '/';
+    // A custom build command must leave the binary at ./server (it is copied to /server);
+    // a custom start command replaces /server entirely.
+    const build = config.buildCommand
+      ? `RUN ${config.buildCommand} && cp ./server /server`
+      : 'RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /server .';
 
     return `FROM golang:1.22-alpine AS builder
 
@@ -42,7 +50,7 @@ ${goModDownloadRun()}
 
 COPY ${rootDir === '.' ? '.' : rootDir} .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /server .
+${build}
 
 FROM alpine:3.19 AS runner
 
@@ -53,7 +61,7 @@ COPY --from=builder /server /server
 EXPOSE ${port}
 ENV PORT=${port}
 
-CMD ["/server"]
+${config.startCommand ? shCmd(config.startCommand) : 'CMD ["/server"]'}
 `;
   },
 

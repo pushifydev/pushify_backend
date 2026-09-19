@@ -684,8 +684,10 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
 
       let deployFramework = (projectSettings?.framework as string) || undefined;
       let deployBuildpackId: string | undefined;
+      // pushify.yaml `framework:` pins the buildpack; auto-detection is skipped for it.
+      let frameworkForced = false;
+      const { detectBuildpack, buildpackIdForFramework } = await import('../buildpacks');
       if (localClone) {
-        const { detectBuildpack } = await import('../buildpacks');
         const localDetection = await detectBuildpack(
           localClone.workDir,
           normalizeRootDirectory(project.rootDirectory)
@@ -709,7 +711,17 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         } else if (loaded.config) {
           fileConfig = loaded.config;
           addLog(`📄 ${loaded.source} applied — ${describeOverrides(fileConfig) || 'no overrides'}`);
-          if (fileConfig.framework) deployFramework = fileConfig.framework;
+          if (fileConfig.framework) {
+            deployFramework = fileConfig.framework;
+            const pinned = buildpackIdForFramework(fileConfig.framework);
+            if (pinned) {
+              deployBuildpackId = pinned;
+              frameworkForced = true;
+              addLog(`📌 Framework pinned by config: ${fileConfig.framework} (${pinned})`);
+            } else {
+              addLog(`⚠️ Unknown framework "${fileConfig.framework}" in config — auto-detecting instead`);
+            }
+          }
           // Declared cron jobs / volumes sync only on production deploys
           if (!previewCtx) {
             const volumesChanged = await syncDeclaredResources(project.id, fileConfig, addLog);
@@ -750,6 +762,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         outputDirectory: effOutputDirectory,
         framework: deployFramework,
         buildpackId: deployBuildpackId,
+        frameworkForced,
         accessToken,
         onProgress: onRemoteProgress,
         marketplace: marketplaceConfig,

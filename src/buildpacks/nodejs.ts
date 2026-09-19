@@ -13,6 +13,9 @@ import {
 import { detectNodeFrameworkFromPackageJson } from './nodejs-detect';
 import type { Buildpack, BuildpackDetectResult, BuildpackConfig } from './types';
 
+/** `CMD ["sh", "-c", …]` so a start command may use env vars, `&&` and pipes. */
+const shCmd = (cmd: string): string => `CMD ["sh", "-c", ${JSON.stringify(cmd)}]`;
+
 export const nodejsBuildpack: Buildpack = {
   id: 'nodejs',
   name: 'Node.js',
@@ -41,16 +44,16 @@ export const nodejsBuildpack: Buildpack = {
     const argLines = envEntries.map(([k]) => `ARG ${k}`).join('\n');
     const envLines = envEntries.map(([k]) => `ENV ${k}=$${k}`).join('\n');
 
-    if (framework === 'nextjs') return this._nextjs(workdir, install, port, argLines, envLines, nextStandalone);
-    if (framework === 'nuxt') return this._nuxt(workdir, install, port, argLines, envLines);
+    // build / start from the dashboard or pushify.yaml win over the framework defaults
+    // (they used to be ignored by everything but the generic path).
+    const build = config.buildCommand || 'npm run build';
+    const start = config.startCommand || null;
+    if (framework === 'nextjs') return this._nextjs(workdir, install, build, start, port, argLines, envLines, nextStandalone);
+    if (framework === 'nuxt') return this._nuxt(workdir, install, build, start, port, argLines, envLines);
     if (['react', 'vue', 'svelte', 'astro'].includes(framework)) {
-      return this._static(
-        workdir,
-        install,
-        config.buildCommand || 'npm run build',
-        config.outputDirectory || 'dist',
-        port
-      );
+      // SvelteKit's static adapter writes build/, the others dist/.
+      const defaultOut = framework === 'svelte' ? 'build' : 'dist';
+      return this._static(workdir, install, build, config.outputDirectory || defaultOut, port);
     }
     return this._generic(
       workdir,
@@ -90,11 +93,16 @@ export const nodejsBuildpack: Buildpack = {
   _nextjs(
     workdir: string,
     install: string,
+    build: string,
+    start: string | null,
     port: number,
     argLines: string,
     envLines: string,
     standalone: boolean
   ): string {
+    // A custom start command applies to the full runner; standalone output ships its own
+    // server.js entrypoint.
+    const cmd = start ? shCmd(start) : 'CMD ["npm", "start"]';
     const runner = standalone
       ? nextStandaloneRunnerLines(workdir, port)
       : `
@@ -111,7 +119,7 @@ USER nextjs
 EXPOSE ${port}
 ENV PORT=${port}
 ENV HOSTNAME="0.0.0.0"
-CMD ["npm", "start"]
+${cmd}
 `;
 
     const standaloneNote = standalone
@@ -123,16 +131,17 @@ ${nodeLightningcssGlibcFixLines()}
 ${argLines}
 ${envLines}
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN --mount=type=cache,target=${workdir}/.next/cache npm run build
+RUN --mount=type=cache,target=${workdir}/.next/cache ${build}
 ${runner}`;
   },
 
-  _nuxt(workdir: string, install: string, port: number, argLines: string, envLines: string): string {
+  _nuxt(workdir: string, install: string, build: string, start: string | null, port: number, argLines: string, envLines: string): string {
+    const cmd = start ? shCmd(start) : 'CMD ["node", ".output/server/index.mjs"]';
     return `${this._nodeBuilderHeader()}${nodeInstallLines(install)}
 ${nodeLightningcssGlibcFixLines()}
 ${argLines}
 ${envLines}
-RUN --mount=type=cache,target=${workdir}/.nuxt npm run build
+RUN --mount=type=cache,target=${workdir}/.nuxt ${build}
 
 FROM ${NODE_RUN_IMAGE} AS runner
 WORKDIR ${workdir}
@@ -141,7 +150,7 @@ COPY --from=builder ${workdir}/.output ./.output
 EXPOSE ${port}
 ENV PORT=${port}
 ENV HOST="0.0.0.0"
-CMD ["node", ".output/server/index.mjs"]
+${cmd}
 `;
   },
 
