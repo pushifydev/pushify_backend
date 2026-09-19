@@ -1,4 +1,5 @@
 import { Worker, Job } from 'bullmq';
+import { env } from '../../config/env';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { servers } from '../../db/schema/servers';
@@ -13,7 +14,7 @@ import { usageMeteringService } from '../../services/usage-metering.service';
 function getProviderToken(provider: ProviderType): string {
   switch (provider) {
     case 'hetzner':
-      return process.env.HETZNER_API_TOKEN || '';
+      return env.HETZNER_API_TOKEN || '';
     case 'digitalocean':
       return process.env.DIGITALOCEAN_API_TOKEN || '';
     case 'aws':

@@ -523,7 +523,10 @@ githubRouter.openapi(appInstallRoute, async (c) => {
   }
 
   const state = await createOAuthState({ kind: 'github_app_install', userId, organizationId });
-  return c.json({ data: { url: githubAppService.installUrl(state), configured: true } });
+  // Without GITHUB_APP_SLUG there is no install URL; say so instead of an enabled button that
+  // does nothing.
+  const url = githubAppService.installUrl(state);
+  return c.json({ data: { url, configured: url !== null } });
 });
 
 githubRouter.openapi(appSetupRoute, async (c) => {

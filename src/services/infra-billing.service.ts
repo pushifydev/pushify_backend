@@ -1,4 +1,5 @@
 import { HTTPException } from 'hono/http-exception';
+import { env } from '../config/env';
 import { eq, and, desc, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { organizations, infraWalletTransactions } from '../db/schema';
@@ -30,7 +31,7 @@ import { adminNotify } from './admin-notify.service';
 function getProviderToken(provider: ProviderType): string {
   switch (provider) {
     case 'hetzner':
-      return process.env.HETZNER_API_TOKEN || '';
+      return env.HETZNER_API_TOKEN || '';
     default:
       return '';
   }

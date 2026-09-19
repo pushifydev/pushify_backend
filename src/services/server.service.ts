@@ -1,4 +1,5 @@
 import { HTTPException } from 'hono/http-exception';
+import { env } from '../config/env';
 import { eq, and, desc, count, ne, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { servers } from '../db/schema/servers';
@@ -420,7 +421,7 @@ function getProviderToken(provider: ProviderType): string {
   // In the future, this could be per-organization credentials (BYOC)
   switch (provider) {
     case 'hetzner':
-      return process.env.HETZNER_API_TOKEN || '';
+      return env.HETZNER_API_TOKEN || '';
     case 'digitalocean':
       return process.env.DIGITALOCEAN_API_TOKEN || '';
     case 'aws':

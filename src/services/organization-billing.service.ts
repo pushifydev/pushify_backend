@@ -1,4 +1,5 @@
 import { HTTPException } from 'hono/http-exception';
+import { env } from '../config/env';
 import { eq, and, ne, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { organizations, projects, servers } from '../db/schema';
@@ -17,7 +18,7 @@ const PAYMENT_FAILED_EMAIL_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 function getProviderToken(provider: ProviderType): string {
   switch (provider) {
     case 'hetzner':
-      return process.env.HETZNER_API_TOKEN || '';
+      return env.HETZNER_API_TOKEN || '';
     default:
       return '';
   }

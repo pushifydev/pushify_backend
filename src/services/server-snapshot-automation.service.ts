@@ -1,4 +1,5 @@
 import { and, eq } from 'drizzle-orm';
+import { env } from '../config/env';
 import { db } from '../db';
 import { servers } from '../db/schema/servers';
 import { organizations } from '../db/schema/organizations';
@@ -7,7 +8,7 @@ import { createProvider, type ProviderType } from '../providers';
 function getProviderToken(provider: ProviderType): string {
   switch (provider) {
     case 'hetzner':
-      return process.env.HETZNER_API_TOKEN || '';
+      return env.HETZNER_API_TOKEN || '';
     case 'digitalocean':
       return process.env.DIGITALOCEAN_API_TOKEN || '';
     default:

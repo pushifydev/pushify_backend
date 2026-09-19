@@ -102,6 +102,10 @@ const envSchema = z.object({
   // AI Assistant
   ANTHROPIC_API_KEY: z.string().optional(),
 
+  /** Hetzner Cloud API token — managed server provisioning, resize, snapshots, infra billing.
+   *  Unset = managed servers unavailable (BYOS still works). */
+  HETZNER_API_TOKEN: z.string().optional(),
+
   /**
    * Number of trusted reverse-proxy hops in front of the app (e.g. 1 when behind a
    * single nginx/load balancer). Controls how the client IP is derived for rate limiting:
@@ -112,7 +116,11 @@ const envSchema = z.object({
   TRUSTED_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(0),
 
   // Rate Limiting (see middleware/rate-limit.ts)
-  RATE_LIMIT_ENABLED: z.coerce.boolean().default(true),
+  // Not z.coerce.boolean(): Boolean('false') is true, so RATE_LIMIT_ENABLED=false never disabled it.
+  RATE_LIMIT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => !v || !/^(false|0|no|off)$/i.test(v.trim())),
   /** Login, register, refresh, OAuth callbacks — per IP, per minute */
   RATE_LIMIT_AUTH_MAX: z.coerce.number().default(20),
   /** Unauthenticated `/api/*` routes — per IP, per minute (authenticated routes use plan limits) */

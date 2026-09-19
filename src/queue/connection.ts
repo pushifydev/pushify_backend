@@ -1,11 +1,15 @@
 import { Redis } from 'ioredis';
+import { env } from '../config/env';
 
-// Redis connection configuration
-const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
-
-// Create Redis connection for BullMQ
+// Create Redis connection for BullMQ. Reads the validated env — the old `process.env` read
+// fell back to redis://localhost:6379 when REDIS_URL was unset, so the server-status and
+// server-setup workers retried a Redis that was never there instead of staying off like
+// every other queue does.
 export const createRedisConnection = () => {
-  return new Redis(REDIS_URL, {
+  if (!env.REDIS_URL) {
+    throw new Error('REDIS_URL is not configured — BullMQ workers stay off');
+  }
+  return new Redis(env.REDIS_URL, {
     maxRetriesPerRequest: null, // Required by BullMQ
     enableReadyCheck: false,
   });

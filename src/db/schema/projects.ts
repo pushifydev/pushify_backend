@@ -20,7 +20,7 @@ export const projects = pgTable('projects', {
   // Git configuration
   gitRepoUrl: varchar('git_repo_url', { length: 500 }),
   gitBranch: varchar('git_branch', { length: 100 }).default('main'),
-  gitProvider: varchar('git_provider', { length: 50 }), // github, gitlab, bitbucket
+  gitProvider: varchar('git_provider', { length: 50 }), // github, gitlab (Bitbucket has no integration)
 
   // Build configuration
   installCommand: varchar('install_command', { length: 500 }),
