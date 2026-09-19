@@ -7,6 +7,7 @@ import { organizationRepository } from '../repositories/organization.repository'
 import { encrypt, decrypt } from '../lib/encryption';
 import { assertPublicUrl } from '../lib/ssrf-guard';
 import { logger } from '../lib/logger';
+import { deploymentAlertService } from './deployment-alert.service';
 import { t, type SupportedLocale } from '../i18n';
 import { env } from '../config/env';
 import { addNotificationJob, isQueueAvailable } from '../lib/queue';
@@ -339,6 +340,12 @@ export const notificationService = {
         logger.warn({ projectId, event }, 'Cannot send notifications: project not found');
         return;
       }
+
+      // Personal email alerts (Settings → Notifications) ride on the same events as channels,
+      // and must not wait on — or fail — channel delivery.
+      deploymentAlertService
+        .handleDeploymentEvent(event, { id: project.id, name: project.name, organizationId: project.organizationId }, payload)
+        .catch((error) => logger.warn({ error, projectId, event }, 'Deployment alert emails failed'));
 
       // Find active channels for this event
       const channels = await notificationRepository.findActiveChannelsForEvent(projectId, event);

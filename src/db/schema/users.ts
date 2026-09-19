@@ -19,7 +19,7 @@ export const users = pgTable('users', {
   /** Email notification preferences; keys: deploymentAlerts, securityAlerts, weeklyDigest, productUpdates */
   notificationPrefs: jsonb('notification_prefs')
     .$type<Record<string, boolean>>()
-    .default({ deploymentAlerts: true, securityAlerts: true, weeklyDigest: false, productUpdates: false })
+    .default({ deploymentAlerts: true, securityAlerts: true, weeklyDigest: false })
     .notNull(),
   twoFactorSecret: varchar('two_factor_secret', { length: 255 }),
   twoFactorBackupCodes: text('two_factor_backup_codes'), // JSON array of hashed backup codes
