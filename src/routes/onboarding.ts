@@ -7,12 +7,11 @@ import { verifyUnsubscribeToken } from '../lib/onboarding';
 import { authMiddleware } from '../middleware/auth';
 import type { AppEnv } from '../types';
 
-const PREF_KEYS = ['deploymentAlerts', 'securityAlerts', 'weeklyDigest', 'productUpdates'] as const;
+const PREF_KEYS = ['deploymentAlerts', 'securityAlerts', 'weeklyDigest'] as const;
 const DEFAULT_PREFS: Record<string, boolean> = {
   deploymentAlerts: true,
   securityAlerts: true,
   weeklyDigest: false,
-  productUpdates: false,
 };
 
 const prefsSchema = z
@@ -20,7 +19,6 @@ const prefsSchema = z
     deploymentAlerts: z.boolean().optional(),
     securityAlerts: z.boolean().optional(),
     weeklyDigest: z.boolean().optional(),
-    productUpdates: z.boolean().optional(),
     /** true = receive onboarding emails (maps to !onboardingEmailsOptOut) */
     onboardingEmails: z.boolean().optional(),
   })

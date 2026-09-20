@@ -6,7 +6,7 @@ import { domains } from '../db/schema/projects';
 import { SSHClient } from '../utils/ssh';
 import { syncWorkerContainersOnDeploy } from './worker-process-sync';
 import { decrypt } from '../lib/encryption';
-import { buildImage, checkDocker, getImageId, tagImage, cleanupOldImages, runContainerFromImage, imageExists, blueGreenDeploy, completeBlueGreenSwitch } from './remote-docker';
+import { buildImage, checkDocker, getImageId, tagImage, cleanupOldImages, runContainerFromImage, imageExists, blueGreenDeploy } from './remote-docker';
 import { addSite, addAutoSubdomainSite, reloadNginx, requestSSLCertificate } from './nginx-manager';
 import {
   applyCalcomEnvDefaults,
@@ -15,7 +15,7 @@ import {
   getCalcomAllowedHostPlaceholder,
 } from '../marketplace/helpers';
 import { buildCalcomImageScript, calcomImageTag } from '../marketplace/calcom-image';
-import { getOrAssignPort } from './port-manager';
+import { getOrAssignPort, pickSwitchPort, recordPortAssignment } from './port-manager';
 import { generateDockerfile } from './dockerfile';
 import { normalizeRootDirectory } from '../lib/normalize-root-directory';
 import { checkServerDiskSpace } from '../lib/server-disk-check';
@@ -43,10 +43,14 @@ export interface RemoteDeploymentConfig {
   framework?: string;
   /** From local/remote buildpack detection */
   buildpackId?: string;
+  /** `framework` was pinned by pushify.yaml: use it as-is instead of auto-detecting */
+  frameworkForced?: boolean;
   accessToken?: string;
   onProgress: (message: string) => void;
   /** e.g. `-pr-42` for preview deployments (separate container/image from production) */
   deploySuffix?: string;
+  /** Preview vhost to serve the PR container under (`pr-42-<slug>.<PREVIEW_BASE_URL>`) */
+  previewDomain?: string;
   // Marketplace fields
   marketplace?: {
     id?: string;
@@ -122,6 +126,26 @@ export async function openFirewallPort(
       `If the site is not reachable externally, open TCP port ${port} in your cloud provider's firewall / security group.`,
     );
   }
+}
+
+/** Close a host port we opened for a container that no longer exists (blue-green retire). */
+export async function closeFirewallPort(
+  ssh: SSHClient,
+  port: number,
+  onProgress: (message: string) => void,
+): Promise<void> {
+  const script =
+    `if command -v ufw >/dev/null 2>&1; then ` +
+    `(ufw delete allow ${port}/tcp 2>&1 || sudo ufw delete allow ${port}/tcp 2>&1) >/dev/null 2>&1; echo PUSHIFY_FW=ufw; ` +
+    `elif command -v firewall-cmd >/dev/null 2>&1; then ` +
+    `(firewall-cmd --permanent --remove-port=${port}/tcp 2>&1 || sudo firewall-cmd --permanent --remove-port=${port}/tcp 2>&1) >/dev/null 2>&1; ` +
+    `(firewall-cmd --reload 2>&1 || sudo firewall-cmd --reload 2>&1) >/dev/null 2>&1; echo PUSHIFY_FW=firewalld; ` +
+    `elif command -v iptables >/dev/null 2>&1; then ` +
+    `(iptables -D INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null || sudo iptables -D INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null); echo PUSHIFY_FW=iptables; ` +
+    `else echo PUSHIFY_FW=none; fi`;
+
+  await ssh.exec(script);
+  onProgress(`🔒 Firewall port ${port} closed`);
 }
 
 /**
@@ -346,9 +370,11 @@ export async function deployToRemoteServer(
     outputDirectory,
     framework: frameworkHint,
     buildpackId: configBuildpackId,
+    frameworkForced = false,
     accessToken,
     onProgress,
     deploySuffix = '',
+    previewDomain,
   } = config;
 
   const rootDirectory = normalizeRootDirectory(rootDirectoryInput);
@@ -921,11 +947,20 @@ export async function deployToRemoteServer(
 
     if (!hasDockerfile) {
       // Use buildpack system for detection and Dockerfile generation
-      const { detectBuildpackRemote, detectNextStandaloneRemote, getBuildpack } =
+      const { detectBuildpackRemote, detectNextStandaloneRemote, getBuildpack, buildpackIdForFramework } =
         await import('../buildpacks');
 
-      onProgress('🔍 Auto-detecting language and framework...');
-      let detection = await detectBuildpackRemote(ssh, repoDir, rootDirectory);
+      const pinnedBuildpackId = frameworkForced && frameworkHint ? buildpackIdForFramework(frameworkHint) : null;
+      let detection: { buildpackId: string; framework: string; confidence: number } | null;
+      if (pinnedBuildpackId && frameworkHint) {
+        // pushify.yaml `framework:` wins over whatever the repo layout suggests (a Laravel app
+        // with a package.json used to be built as Node).
+        onProgress(`📌 Framework set by pushify.yaml: ${frameworkHint}`);
+        detection = { buildpackId: pinnedBuildpackId, framework: frameworkHint, confidence: 100 };
+      } else {
+        onProgress('🔍 Auto-detecting language and framework...');
+        detection = await detectBuildpackRemote(ssh, repoDir, rootDirectory);
+      }
       if (!detection && frameworkHint) {
         detection = {
           buildpackId: configBuildpackId || 'nodejs',
@@ -1038,6 +1073,8 @@ export async function deployToRemoteServer(
 
     // Determine host port: if user specified PORT in env, use that; otherwise use port-manager
     let hostPort: number;
+    // Set by the blue-green step; runs after nginx points at the new container.
+    let retireOldContainer: (() => Promise<void>) | null = null;
     let portSource: string;
 
     if (envPort) {
@@ -1054,13 +1091,20 @@ export async function deployToRemoteServer(
       onProgress(`✅ Port assigned: ${hostPort} (${portSource})`);
     }
 
-    // Use blue-green deployment for zero-downtime updates
+    // Blue-green, for real: the new container gets its own host port, is health-checked
+    // there, nginx is re-pointed at it (a reload, no dropped requests) and only then is the
+    // old container retired. The previous switch stopped the old container, then stopped and
+    // re-created the new one on the production port — a full cold start of downtime on every
+    // deploy, and the container that survived was not the one that had passed the check.
     onProgress('🔵🟢 Starting blue-green deployment...');
+    const previousHostPort = hostPort;
+    const switchPort = await pickSwitchPort(ssh, hostPort);
 
     const blueGreenResult = await blueGreenDeploy(ssh, {
       imageName: `${imageName}:${imageTag}`,
       containerName: `pushify-${deploySlug}`,
       hostPort,
+      tempPort: switchPort,
       containerPort,
       envVars,
       volumes: config.volumes,
@@ -1075,20 +1119,21 @@ export async function deployToRemoteServer(
       throw new Error(`Blue-green deployment failed:\n${blueGreenResult.logs}`);
     }
 
-    // Complete the blue-green switch (update ports and stop old container)
-    onProgress('🔄 Switching traffic to new container...');
-    const switchResult = await completeBlueGreenSwitch(ssh, {
-      newContainerName: blueGreenResult.newContainerName!,
-      oldContainerName: blueGreenResult.oldContainerName,
-      targetPort: hostPort,
-      containerPort,
-      onProgress,
-    });
-
-    if (!switchResult.success) {
-      throw new Error(`Blue-green switch failed: ${switchResult.message}`);
+    // The health-checked container is the one that stays; it now owns the project's port.
+    hostPort = blueGreenResult.tempPort ?? switchPort;
+    await recordPortAssignment(ssh, deploySlug, hostPort);
+    if (blueGreenResult.oldContainerName) {
+      const oldContainerName = blueGreenResult.oldContainerName;
+      const retireSsh = ssh; // narrowed here; the closure runs before the connection is released
+      retireOldContainer = async () => {
+        onProgress(`🗑️ Retiring old container: ${oldContainerName}`);
+        await retireSsh.exec(`docker rm -f ${oldContainerName} 2>/dev/null || true`);
+        if (previousHostPort !== hostPort) {
+          await closeFirewallPort(retireSsh, previousHostPort, onProgress);
+        }
+      };
     }
-    onProgress('✅ Zero-downtime deployment successful');
+    onProgress(`✅ New container healthy on port ${hostPort}`);
 
     // Open firewall port for external access (root-first; works on BYOS without sudo/ufw)
     await openFirewallPort(ssh, hostPort, onProgress);
@@ -1111,7 +1156,10 @@ export async function deployToRemoteServer(
     }
 
     // Check if project has any domains; if not, create auto subdomain (only on managed servers)
-    let primaryDomain = await getPrimaryDomain(projectId);
+    // A preview deploy (deploySuffix) must never touch the project's domains: this block would
+    // repoint the primary domain's vhost at the PR container's port, and a project without a
+    // domain would get its production auto-subdomain created for the preview.
+    let primaryDomain = deploySuffix ? null : await getPrimaryDomain(projectId);
 
     const { env: envConfig } = await import('../config/env');
     const previewBaseUrl = envConfig.PREVIEW_BASE_URL;
@@ -1142,7 +1190,7 @@ export async function deployToRemoteServer(
       primaryDomain = null;
     }
 
-    if (!primaryDomain) {
+    if (!primaryDomain && !deploySuffix) {
       if (previewBaseUrl && hasWildcardSSL) {
         onProgress('🌐 No domain configured, creating auto subdomain...');
         try {
@@ -1238,10 +1286,48 @@ export async function deployToRemoteServer(
       }
     }
 
+    // PR preview: its own `pr-N-<slug>.<preview base>` vhost on the wildcard cert, so the URL
+    // posted to the PR actually resolves. Never touches the project's own domains. Without the
+    // wildcard cert (a person's own server) the preview stays on its IP:port.
+    let previewVhostUrl: string | null = null;
+    if (deploySuffix && previewDomain) {
+      if (isPushifyAutoSubdomain(previewDomain) && hasWildcardSSL) {
+        onProgress(`🌐 Configuring Nginx for preview: ${previewDomain}`);
+        const addResult = await addAutoSubdomainSite(ssh, {
+          domain: previewDomain,
+          containerPort: hostPort,
+          projectSlug: deploySlug,
+        });
+        if (!addResult.success) {
+          onProgress(`⚠️ Preview nginx warning: ${addResult.message}`);
+        } else {
+          const reloadResult = await reloadNginx(ssh);
+          if (!reloadResult.success) {
+            onProgress(`⚠️ Nginx reload warning: ${reloadResult.message}`);
+          } else {
+            previewVhostUrl = `https://${previewDomain}`;
+            onProgress(`✅ Preview reachable at ${previewVhostUrl}`);
+          }
+        }
+      } else {
+        onProgress(
+          `🌐 ${previewDomain} needs the *.${previewBaseUrl || 'preview'} wildcard certificate, which this server does not have — preview served via http://${server.ipv4}:${hostPort}`
+        );
+      }
+    }
+
+    // Only now — nginx already points at the new container — take the old one down.
+    if (retireOldContainer) {
+      await retireOldContainer();
+      onProgress('✅ Zero-downtime deployment successful');
+    }
+
     // Determine deployment URL
     let deploymentUrl: string;
     if (primaryDomain) {
       deploymentUrl = `https://${primaryDomain}`;
+    } else if (previewVhostUrl) {
+      deploymentUrl = previewVhostUrl;
     } else {
       deploymentUrl = `http://${server.ipv4}:${hostPort}`;
     }

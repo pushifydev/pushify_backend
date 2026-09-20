@@ -2,6 +2,11 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import type { Buildpack, BuildpackDetectResult, BuildpackConfig } from './types';
 
+type RubyCommands = { install?: string | null; build?: string | null; start?: string | null };
+
+/** `CMD ["sh", "-c", …]` so a start command may use env vars, `&&` and pipes. */
+const shCmd = (cmd: string): string => `CMD ["sh", "-c", ${JSON.stringify(cmd)}]`;
+
 export const rubyBuildpack: Buildpack = {
   id: 'ruby',
   name: 'Ruby',
@@ -27,8 +32,9 @@ export const rubyBuildpack: Buildpack = {
     const rootDir = config.rootDirectory || '.';
     const copyPrefix = rootDir === '.' ? '' : rootDir + '/';
 
-    if (framework === 'rails') return this._rails(copyPrefix, rootDir, port);
-    return this._generic(copyPrefix, rootDir, port, config.startCommand);
+    const cmds = { install: config.installCommand, build: config.buildCommand, start: config.startCommand };
+    if (framework === 'rails') return this._rails(copyPrefix, rootDir, port, cmds);
+    return this._generic(copyPrefix, rootDir, port, cmds);
   },
 
   getDefaultPort(): number { return 3000; },
@@ -43,7 +49,13 @@ export const rubyBuildpack: Buildpack = {
   getDefaultInstallCommand(): string { return 'bundle install --without development test'; },
   getHealthCheckPath(): string { return '/'; },
 
-  _rails(copyPrefix: string, rootDir: string, port: number): string {
+  _rails(copyPrefix: string, rootDir: string, port: number, cmds: RubyCommands): string {
+    const install = cmds.install || `bundle config set --local without 'development test' \\
+    && bundle install --jobs 4 --retry 3`;
+    const build = cmds.build
+      ? `RUN ${cmds.build}`
+      : `RUN bundle exec rails assets:precompile 2>/dev/null || true \\
+    && bundle exec rails db:migrate 2>/dev/null || true`;
     return `FROM ruby:3.3-slim
 
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \\
@@ -52,13 +64,11 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \\
 WORKDIR /app
 
 COPY ${copyPrefix}Gemfile ${copyPrefix}Gemfile.lock* ./
-RUN bundle config set --local without 'development test' \\
-    && bundle install --jobs 4 --retry 3
+RUN ${install}
 
 COPY ${rootDir === '.' ? '.' : rootDir} .
 
-RUN bundle exec rails assets:precompile 2>/dev/null || true \\
-    && bundle exec rails db:migrate 2>/dev/null || true
+${build}
 
 EXPOSE ${port}
 ENV PORT=${port}
@@ -66,12 +76,13 @@ ENV RAILS_ENV=production
 ENV RAILS_SERVE_STATIC_FILES=true
 ENV RAILS_LOG_TO_STDOUT=true
 
-CMD ["bundle", "exec", "rails", "server", "-b", "0.0.0.0", "-p", "${port}"]
+${cmds.start ? shCmd(cmds.start) : `CMD ["bundle", "exec", "rails", "server", "-b", "0.0.0.0", "-p", "${port}"]`}
 `;
   },
 
-  _generic(copyPrefix: string, rootDir: string, port: number, startCmd?: string | null): string {
-    const cmd = startCmd || 'bundle exec ruby app.rb';
+  _generic(copyPrefix: string, rootDir: string, port: number, cmds: RubyCommands): string {
+    const install = cmds.install || 'bundle install --without development test';
+    const build = cmds.build ? `RUN ${cmds.build}\n` : '';
     return `FROM ruby:3.3-slim
 
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \\
@@ -80,14 +91,14 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \\
 WORKDIR /app
 
 COPY ${copyPrefix}Gemfile ${copyPrefix}Gemfile.lock* ./
-RUN bundle install --without development test
+RUN ${install}
 
 COPY ${rootDir === '.' ? '.' : rootDir} .
-
+${build}
 EXPOSE ${port}
 ENV PORT=${port}
 
-CMD ${JSON.stringify(cmd.split(' '))}
+${shCmd(cmds.start || 'bundle exec ruby app.rb')}
 `;
   },
 } as Buildpack & Record<string, any>;

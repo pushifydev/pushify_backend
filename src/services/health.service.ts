@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import { db } from '../db';
 import { env } from '../config/env';
 import { logger } from '../lib/logger';
+import { getOptionalRedis } from '../lib/redis-client';
 import { execCommand } from '../workers/shell';
 
 export interface HealthCheckResult {
@@ -64,16 +65,19 @@ export const healthService = {
 
     const start = Date.now();
     try {
-      // For now, just check if the URL is valid
-      // In production, you would use a Redis client to ping
-      const url = new URL(env.REDIS_URL);
-      if (url.protocol !== 'redis:' && url.protocol !== 'rediss:') {
-        throw new Error('Invalid Redis URL protocol');
-      }
+      // A real round trip. The old check only parsed the URL, so /health said "healthy" while
+      // Redis was down and every queue-backed feature had silently stopped.
+      const redis = getOptionalRedis();
+      if (!redis) throw new Error('Redis client unavailable');
+      const pong = await Promise.race([
+        redis.ping(),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Redis ping timed out')), 2000)),
+      ]);
+      if (pong !== 'PONG') throw new Error(`Unexpected PING reply: ${String(pong)}`);
 
       return {
         status: 'healthy',
-        message: 'Redis URL configured',
+        message: 'Redis reachable',
         responseTime: Date.now() - start,
       };
     } catch (error) {

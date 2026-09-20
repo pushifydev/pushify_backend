@@ -122,6 +122,11 @@ export async function detectBuildpackRemote(
     return { buildpackId: 'custom', framework: 'dockerfile', confidence: 100 };
   }
 
+  // Every language is checked and the most confident match wins — like the local detector.
+  // Returning on the first hit (package.json first) built any Laravel, Rails or Django repo
+  // that also ships a package.json for its front-end as a Node app.
+  const candidates: DetectionResult[] = [];
+
   const pkgRaw = await sshRead(ssh, `${base}/package.json`);
   if (pkgRaw) {
     try {
@@ -131,7 +136,7 @@ export async function detectBuildpackRemote(
       };
       const node = detectNodeFrameworkFromPackageJson(pkg);
       if (node.detected) {
-        return { buildpackId: 'nodejs', framework: node.framework, confidence: node.confidence };
+        candidates.push({ buildpackId: 'nodejs', framework: node.framework, confidence: node.confidence });
       }
     } catch {
       /* invalid package.json */
@@ -140,7 +145,7 @@ export async function detectBuildpackRemote(
 
   const goMod = await sshRead(ssh, `${base}/go.mod`);
   const goHit = goMod ? detectGoFromGoMod(goMod) : null;
-  if (goHit) return goHit;
+  if (goHit) candidates.push(goHit);
 
   const pyHit = detectPythonFromFiles({
     requirements: await sshRead(ssh, `${base}/requirements.txt`),
@@ -150,32 +155,34 @@ export async function detectBuildpackRemote(
     hasAppPy: await sshExists(ssh, `${base}/app.py`),
     hasMainPy: await sshExists(ssh, `${base}/main.py`),
   });
-  if (pyHit) return pyHit;
+  if (pyHit) candidates.push(pyHit);
 
   const composer = await sshRead(ssh, `${base}/composer.json`);
   const phpHit = detectPhpFromComposer(composer || '', await sshExists(ssh, `${base}/index.php`));
-  if (phpHit) return phpHit;
+  if (phpHit) candidates.push(phpHit);
 
   const gemfile = await sshRead(ssh, `${base}/Gemfile`);
   const rubyHit = gemfile ? detectRubyFromGemfile(gemfile) : null;
-  if (rubyHit) return rubyHit;
+  if (rubyHit) candidates.push(rubyHit);
 
   const cargo = await sshRead(ssh, `${base}/Cargo.toml`);
   const rustHit = cargo ? detectRustFromCargo(cargo) : null;
-  if (rustHit) return rustHit;
+  if (rustHit) candidates.push(rustHit);
 
   const javaHit = detectJavaFromFiles(
     await sshRead(ssh, `${base}/pom.xml`),
     (await sshRead(ssh, `${base}/build.gradle`)) ||
       (await sshRead(ssh, `${base}/build.gradle.kts`))
   );
-  if (javaHit) return javaHit;
+  if (javaHit) candidates.push(javaHit);
 
   if (await sshExists(ssh, `${base}/index.html`)) {
-    return { buildpackId: 'static', framework: 'static', confidence: 50 };
+    candidates.push({ buildpackId: 'static', framework: 'static', confidence: 50 });
   }
 
-  return null;
+  // Stable sort: on equal confidence the earlier (more specific) check wins.
+  candidates.sort((a, b) => b.confidence - a.confidence);
+  return candidates[0] ?? null;
 }
 
 /** True when next.config enables output: 'standalone' (safe for slim runner image). */

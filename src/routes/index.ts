@@ -78,8 +78,10 @@ export function registerRoutes(app: OpenAPIHono<any>) {
   app.route('/api/v1/marketplace', marketplaceRoutes);
   app.route('/api/v1/site-studio', siteStudioRoutes);
 
-  // Webhook routes (no auth required - verified by signature)
-  app.route('/api/v1/webhooks', webhookRoutes);
-  // GitHub App deliveries arrive on one endpoint for every installation
+  // Webhook routes (no auth required - verified by signature).
+  // The GitHub App endpoint (/github/app) MUST be mounted before the per-project one
+  // (/github/:projectId): Hono runs matching handlers in registration order, and the
+  // :projectId route's uuid validator would answer 400 for "app" before this one ran.
   app.route('/api/v1/webhooks', githubAppWebhookRoutes);
+  app.route('/api/v1/webhooks', webhookRoutes);
 }

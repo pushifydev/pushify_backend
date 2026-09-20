@@ -6,6 +6,7 @@ import { decrypt } from './encryption';
 import { logger } from './logger';
 import { getSSHConnection, SSHClient } from '../utils/ssh';
 import { releasePort } from '../workers/port-manager';
+import { projectImageReferenceFilters } from './project-image-names';
 
 type ProjectRow = typeof projects.$inferSelect;
 
@@ -38,10 +39,12 @@ export function buildRemoteTeardownScript(slug: string, isCompose: boolean): str
     : '';
 
   // Reclaim disk by removing the project's built images (the big space consumer that
-  // container removal alone leaves behind). Matches the project repo + its preview repos
-  // (pushify/<slug>, pushify/<slug><suffix>). Runs after containers are gone.
-  const removeImages =
-    `docker images -q --filter=reference='pushify/${safeSlug}*' | sort -u | xargs -r docker rmi -f 2>/dev/null || true`;
+  // container removal alone leaves behind): the image in both naming forms plus its preview
+  // builds, and nothing that merely shares the slug as a prefix. Runs after containers are gone.
+  const listImages = projectImageReferenceFilters(safeSlug)
+    .map((ref) => `docker images -q --filter=reference='${ref}'`)
+    .join('; ');
+  const removeImages = `{ ${listImages}; } | sort -u | xargs -r docker rmi -f 2>/dev/null || true`;
 
   // Remove the project's persistent named volumes (pushify-vol-<slug>-*) — data is gone
   // with the project, matching user expectation on delete.
@@ -51,6 +54,10 @@ export function buildRemoteTeardownScript(slug: string, isCompose: boolean): str
   const filesystemAndNginx = [
     `rm -rf ${projectDir}`,
     `rm -f /etc/nginx/conf.d/${safeSlug}.pushify.dev.conf /etc/nginx/sites-enabled/${safeSlug}.pushify.dev.conf /etc/nginx/sites-available/${safeSlug}.pushify.dev.conf 2>/dev/null || true`,
+    // The vhosts the deployer actually writes (`pushify-<slug>` for the auto-subdomain, one
+    // `pushify-<slug>-pr-N` per PR preview) — left behind, they kept proxying to dead ports.
+    `rm -f /etc/nginx/sites-enabled/pushify-${safeSlug} /etc/nginx/sites-available/pushify-${safeSlug} /opt/pushify/nginx/pushify-${safeSlug}.conf 2>/dev/null || true`,
+    `rm -f /etc/nginx/sites-enabled/pushify-${safeSlug}-pr-* /etc/nginx/sites-available/pushify-${safeSlug}-pr-* /opt/pushify/nginx/pushify-${safeSlug}-pr-*.conf /etc/nginx/conf.d/preview-${safeSlug}-pr-*.conf 2>/dev/null || true`,
     'nginx -t 2>/dev/null && nginx -s reload 2>/dev/null || true',
   ].join('; ');
 

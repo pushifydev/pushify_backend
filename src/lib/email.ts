@@ -1493,3 +1493,131 @@ export async function sendWeeklyDigestEmail(
     return false;
   }
 }
+
+// ============ Deployment alerts (Settings → Notifications) ============
+
+export interface DeploymentAlertEmailInput {
+  projectName: string;
+  branch?: string;
+  error?: string;
+  url: string;
+}
+
+function deploymentFailedTemplate(input: DeploymentAlertEmailInput, locale: 'en' | 'tr'): string {
+  const texts = {
+    en: {
+      title: 'Deployment failed',
+      greeting: 'Hi there,',
+      button: 'Open deployment',
+      note: 'You get this because Deployment alerts is on in Settings → Notifications.',
+    },
+    tr: {
+      title: 'Deploy başarısız oldu',
+      greeting: 'Merhaba,',
+      button: 'Deploy\'u aç',
+      note: 'Bu e-postayı Ayarlar → Bildirimler\'de "Deploy uyarıları" açık olduğu için alıyorsunuz.',
+    },
+  };
+  const t = texts[locale] ?? texts.en;
+  const safeProject = esc(input.projectName);
+  const branch = input.branch ? ` <span style="color:#71717a;">(${esc(input.branch)})</span>` : '';
+  const error = input.error
+    ? `<br><br><code style="display:block;padding:10px 12px;background:#f4f4f5;border-radius:6px;color:#18181b;font-size:13px;white-space:pre-wrap;word-break:break-word;">${esc(input.error.slice(0, 600))}</code>`
+    : '';
+  const bodyHtml =
+    locale === 'tr'
+      ? `<strong style="color:#18181b;">${safeProject}</strong>${branch} projesinin son deploy'u başarısız oldu.${error}`
+      : `The latest deployment of <strong style="color:#18181b;">${safeProject}</strong>${branch} failed.${error}`;
+
+  return renderTransactionalEmail({
+    title: t.title,
+    greeting: t.greeting,
+    bodyHtml,
+    button: { href: input.url, label: t.button },
+    notes: [t.note],
+  });
+}
+
+function deploymentRecoveredTemplate(input: DeploymentAlertEmailInput, locale: 'en' | 'tr'): string {
+  const texts = {
+    en: {
+      title: 'Deployment recovered',
+      greeting: 'Hi there,',
+      button: 'Open deployment',
+      note: 'You get this because Deployment alerts is on in Settings → Notifications.',
+    },
+    tr: {
+      title: 'Deploy tekrar düzeldi',
+      greeting: 'Merhaba,',
+      button: 'Deploy\'u aç',
+      note: 'Bu e-postayı Ayarlar → Bildirimler\'de "Deploy uyarıları" açık olduğu için alıyorsunuz.',
+    },
+  };
+  const t = texts[locale] ?? texts.en;
+  const safeProject = esc(input.projectName);
+  const branch = input.branch ? ` <span style="color:#71717a;">(${esc(input.branch)})</span>` : '';
+  const bodyHtml =
+    locale === 'tr'
+      ? `<strong style="color:#18181b;">${safeProject}</strong>${branch} projesinin yeni deploy'u başarılı — önceki hata giderildi.`
+      : `A new deployment of <strong style="color:#18181b;">${safeProject}</strong>${branch} succeeded after the previous one failed.`;
+
+  return renderTransactionalEmail({
+    title: t.title,
+    greeting: t.greeting,
+    bodyHtml,
+    button: { href: input.url, label: t.button },
+    notes: [t.note],
+  });
+}
+
+export async function sendDeploymentFailedEmail(
+  to: string,
+  input: DeploymentAlertEmailInput,
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping deployment failed email');
+    return;
+  }
+  const subjects = {
+    en: `Deployment failed: ${input.projectName}`,
+    tr: `Deploy başarısız: ${input.projectName}`,
+  };
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: subjects[locale] ?? subjects.en,
+      html: deploymentFailedTemplate(input, locale),
+    });
+    logger.info({ to, project: input.projectName }, 'Deployment failed email sent');
+  } catch (error) {
+    logger.error({ error, to, project: input.projectName }, 'Failed to send deployment failed email');
+  }
+}
+
+export async function sendDeploymentRecoveredEmail(
+  to: string,
+  input: DeploymentAlertEmailInput,
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping deployment recovered email');
+    return;
+  }
+  const subjects = {
+    en: `Deployment recovered: ${input.projectName}`,
+    tr: `Deploy düzeldi: ${input.projectName}`,
+  };
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: subjects[locale] ?? subjects.en,
+      html: deploymentRecoveredTemplate(input, locale),
+    });
+    logger.info({ to, project: input.projectName }, 'Deployment recovered email sent');
+  } catch (error) {
+    logger.error({ error, to, project: input.projectName }, 'Failed to send deployment recovered email');
+  }
+}

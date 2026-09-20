@@ -31,6 +31,11 @@ export function getBuildpack(id: string): Buildpack | undefined {
   return buildpackRegistry.find((bp) => bp.id === id);
 }
 
+/** The buildpack that knows a framework name (`laravel` → php); null for names no buildpack owns. */
+export function buildpackIdForFramework(framework: string): string | null {
+  return buildpackRegistry.find((bp) => bp.frameworks.includes(framework))?.id ?? null;
+}
+
 export type { Buildpack, BuildpackDetectResult, BuildpackConfig } from './types';
 export {
   detectBuildpack,

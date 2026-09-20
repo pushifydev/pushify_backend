@@ -11,6 +11,7 @@ import {
 } from '../lib/github-deploy-trigger';
 import { previewService } from '../services/preview.service';
 import { canOrganizationDeploy } from '../services/organization-billing.service';
+import { checkPushDeployAllowed, recordRefusedPushDeploy } from '../lib/push-deploy-gate';
 import { webhookRateLimiter } from '../middleware/rate-limit';
 import { verifyGitHubSignature } from '../lib/github-webhook';
 import { verifyGitLabWebhookToken } from '../lib/gitlab-webhook';
@@ -302,6 +303,20 @@ webhookRouter.openapi(gitlabWebhookRoute, async (c) => {
   const commitHash = push.checkout_sha || push.commits?.[0]?.id;
   if (!commitHash) {
     return c.json({ message: 'No commit in push, skipping deployment' });
+  }
+
+  // Same plan/billing gates as a dashboard deploy (see lib/push-deploy-gate.ts).
+  const gate = await checkPushDeployAllowed(project.organizationId);
+  if (!gate.allowed) {
+    const refused = await recordRefusedPushDeploy({
+      projectId: project.id,
+      organizationId: project.organizationId,
+      commitHash,
+      commitMessage: push.commits?.[0]?.message?.substring(0, 500),
+      branch,
+      reason: gate.reason,
+    });
+    return c.json({ message: `Deployment not started: `, deploymentId: refused.id });
   }
 
   const deployment = await deploymentRepository.create({

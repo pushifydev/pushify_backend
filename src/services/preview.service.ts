@@ -10,6 +10,10 @@ import { decrypt } from '../lib/encryption';
 import { logger } from '../lib/logger';
 import { t, type SupportedLocale } from '../i18n';
 import { stopContainer, removeContainer } from '../workers/docker';
+import { getSSHConnection } from '../utils/ssh';
+import { releasePort } from '../workers/port-manager';
+import { resolveDeployServerForCleanup } from '../lib/project-remote-cleanup';
+import { buildPreviewTeardownScript, previewDeploySlug } from '../lib/preview-remote';
 import { env } from '../config/env';
 import type { PreviewDeployment } from '../db/schema';
 import { canOrganizationDeploy } from './organization-billing.service';
@@ -169,18 +173,25 @@ export const previewService = {
     projectId: string,
     prNumber: number,
     status: 'running' | 'failed',
-    hostPort?: number
+    hostPort?: number,
+    /** Where the preview actually answers (vhost, or IP:port on a server without the wildcard cert) */
+    liveUrl?: string
   ): Promise<void> {
     const preview = await previewRepository.findByProjectAndPr(projectId, prNumber);
     if (!preview) return;
 
+    const previewUrl = liveUrl || preview.previewUrl;
     await previewRepository.update(preview.id, {
       status: status === 'running' ? 'running' : 'failed',
       hostPort: hostPort || preview.hostPort,
+      previewUrl,
     });
 
-    if (status === 'running' && !preview.githubCommentId) {
-      await this.postPreviewComment(projectId, prNumber, preview.previewUrl!);
+    if (status !== 'running') return;
+    if (!preview.githubCommentId) {
+      await this.postPreviewComment(projectId, prNumber, previewUrl!);
+    } else if (previewUrl !== preview.previewUrl) {
+      await this.updatePreviewComment(projectId, prNumber, 'updated');
     }
   },
 
@@ -196,8 +207,14 @@ export const previewService = {
 
     logger.info({ projectId, prNumber }, 'Cleaning up preview deployment');
 
-    // Stop and remove the container
-    if (preview.containerName) {
+    // Server deploys: the container, image, vhost, port and firewall rule live on the server —
+    // this used to run `docker rm` on the API host only, so every closed PR left its
+    // container running on the server. Local deploys keep the local path.
+    const project = await projectRepository.findById(projectId);
+    const server = project ? await resolveDeployServerForCleanup(project) : null;
+    if (project && server?.ipv4 && server.sshPrivateKey) {
+      await this.teardownRemotePreview(project.slug, preview, server);
+    } else if (preview.containerName) {
       try {
         await stopContainer(preview.containerName);
         await removeContainer(preview.containerName);
@@ -205,12 +222,51 @@ export const previewService = {
       } catch (error) {
         logger.error({ error, containerName: preview.containerName }, 'Failed to remove preview container');
       }
+      if (project) await this.removeLocalPreviewVhost(project.slug, prNumber);
     }
 
     // Mark preview as closed
     await previewRepository.close(preview.id);
 
     await this.updatePreviewComment(projectId, prNumber, 'closed');
+  },
+
+  async teardownRemotePreview(
+    slug: string,
+    preview: PreviewDeployment,
+    server: { id: string; ipv4: string | null; sshPrivateKey: string | null }
+  ): Promise<void> {
+    const ssh = await getSSHConnection({
+      host: server.ipv4!,
+      port: 22,
+      username: 'root',
+      privateKey: decrypt(server.sshPrivateKey!),
+    });
+    try {
+      await ssh.exec(buildPreviewTeardownScript(slug, preview.prNumber));
+      await releasePort(ssh, previewDeploySlug(slug, preview.prNumber));
+      if (preview.hostPort) {
+        const { closeFirewallPort } = await import('../workers/remote-deployment');
+        await closeFirewallPort(ssh, preview.hostPort, () => {});
+      }
+      logger.info({ slug, prNumber: preview.prNumber, serverId: server.id }, 'Preview removed from server');
+    } catch (error) {
+      logger.error({ error, slug, prNumber: preview.prNumber, serverId: server.id }, 'Failed to remove preview from server');
+    } finally {
+      ssh.disconnect();
+    }
+  },
+
+  /** The local deploy path writes /etc/nginx/conf.d/preview-<slug>-pr-N.conf; drop it with the container. */
+  async removeLocalPreviewVhost(slug: string, prNumber: number): Promise<void> {
+    try {
+      const { promises: fs } = await import('fs');
+      const { execSync } = await import('child_process');
+      await fs.rm(`/etc/nginx/conf.d/preview-${previewDeploySlug(slug, prNumber)}.conf`, { force: true });
+      execSync('nginx -t && nginx -s reload', { timeout: 10000, stdio: 'ignore' });
+    } catch {
+      /* no nginx on this host, or nothing to remove */
+    }
   },
 
   /**

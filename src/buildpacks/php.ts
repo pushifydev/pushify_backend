@@ -2,6 +2,11 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import type { Buildpack, BuildpackDetectResult, BuildpackConfig } from './types';
 
+type PhpCommands = { install?: string | null; build?: string | null; start?: string | null };
+
+/** `CMD ["sh", "-c", …]` so a start command may use env vars, `&&` and pipes. */
+const shCmd = (cmd: string): string => `CMD ["sh", "-c", ${JSON.stringify(cmd)}]`;
+
 export const phpBuildpack: Buildpack = {
   id: 'php',
   name: 'PHP',
@@ -31,8 +36,10 @@ export const phpBuildpack: Buildpack = {
     const rootDir = config.rootDirectory || '.';
     const copyPrefix = rootDir === '.' ? '' : rootDir + '/';
 
-    if (framework === 'laravel') return this._laravel(copyPrefix, rootDir, port);
-    return this._generic(copyPrefix, rootDir, port);
+    // install / build / start from the dashboard or pushify.yaml win over the defaults.
+    const cmds = { install: config.installCommand, build: config.buildCommand, start: config.startCommand };
+    if (framework === 'laravel') return this._laravel(copyPrefix, rootDir, port, cmds);
+    return this._generic(copyPrefix, rootDir, port, cmds);
   },
 
   getDefaultPort(): number { return 8000; },
@@ -47,7 +54,13 @@ export const phpBuildpack: Buildpack = {
   getDefaultInstallCommand(): string { return 'composer install --no-dev --optimize-autoloader'; },
   getHealthCheckPath(): string { return '/'; },
 
-  _laravel(copyPrefix: string, rootDir: string, port: number): string {
+  _laravel(copyPrefix: string, rootDir: string, port: number, cmds: PhpCommands): string {
+    const install = cmds.install || 'composer install --no-dev --optimize-autoloader --no-scripts';
+    const build = cmds.build
+      ? `RUN ${cmds.build}`
+      : `RUN composer dump-autoload --optimize \\
+    && php artisan config:cache 2>/dev/null || true \\
+    && php artisan route:cache 2>/dev/null || true`;
     return `FROM php:8.3-fpm-alpine
 
 RUN apk add --no-cache nginx supervisor curl \\
@@ -58,14 +71,12 @@ RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local
 WORKDIR /var/www/html
 
 COPY ${copyPrefix}composer.json ${copyPrefix}composer.lock* ./
-RUN composer install --no-dev --optimize-autoloader --no-scripts
+RUN ${install}
 
 COPY ${rootDir === '.' ? '.' : rootDir} .
 
-RUN composer dump-autoload --optimize \\
-    && php artisan config:cache 2>/dev/null || true \\
-    && php artisan route:cache 2>/dev/null || true \\
-    && chown -R www-data:www-data storage bootstrap/cache
+${build}
+RUN chown -R www-data:www-data storage bootstrap/cache
 
 COPY <<'NGINX' /etc/nginx/http.d/default.conf
 server {
@@ -92,11 +103,13 @@ command=nginx -g "daemon off;"
 SUPERVISOR
 
 EXPOSE ${port}
-CMD ["supervisord", "-c", "/etc/supervisord.conf"]
+${cmds.start ? shCmd(cmds.start) : 'CMD ["supervisord", "-c", "/etc/supervisord.conf"]'}
 `;
   },
 
-  _generic(copyPrefix: string, rootDir: string, port: number): string {
+  _generic(copyPrefix: string, rootDir: string, port: number, cmds: PhpCommands): string {
+    const install = cmds.install || 'composer install --no-dev --optimize-autoloader';
+    const build = cmds.build ? `RUN ${cmds.build}\n` : '';
     return `FROM php:8.3-apache
 
 RUN a2enmod rewrite
@@ -107,8 +120,8 @@ COPY ${rootDir === '.' ? '.' : rootDir} .
 
 RUN if [ -f composer.json ]; then \\
     curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer \\
-    && composer install --no-dev --optimize-autoloader; fi
-
+    && ${install}; fi
+${build}
 RUN chown -R www-data:www-data /var/www/html
 
 EXPOSE ${port}
@@ -116,7 +129,7 @@ ENV APACHE_PORT=${port}
 
 RUN sed -i "s/80/${port}/g" /etc/apache2/sites-available/000-default.conf /etc/apache2/ports.conf
 
-CMD ["apache2-foreground"]
+${cmds.start ? shCmd(cmds.start) : 'CMD ["apache2-foreground"]'}
 `;
   },
 } as Buildpack & Record<string, any>;

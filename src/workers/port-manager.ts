@@ -339,3 +339,41 @@ export async function getPortStats(
     utilizationPercent: Math.round((usedPorts / totalPorts) * 100),
   };
 }
+
+/**
+ * A free host port for the incoming blue-green container. The current port stays with the
+ * container that is still serving; the new one gets its own, so traffic moves by re-pointing
+ * nginx and the old container is retired afterwards — no cold start on the production port.
+ * When nothing listens on the current port (first deploy, stack down) it is simply reused.
+ */
+export async function pickSwitchPort(
+  ssh: SSHClient,
+  currentPort: number,
+  range?: PortRange
+): Promise<number> {
+  if (!(await isPortListening(ssh, currentPort))) return currentPort;
+
+  const r = range ?? { min: MIN_PORT, max: MAX_PORT };
+  const registry = await loadRegistry(ssh);
+  const taken = new Set<number>([
+    ...(await getUsedPorts(ssh)),
+    ...registry.assignments.map((a) => a.port),
+    currentPort,
+  ]);
+  for (let p = r.min; p <= r.max; p++) {
+    if (!taken.has(p)) return p;
+  }
+  throw new Error(`No available ports in range ${r.min}-${r.max}`);
+}
+
+/** Record the port a project now serves on, replacing any earlier assignment for it. */
+export async function recordPortAssignment(
+  ssh: SSHClient,
+  projectSlug: string,
+  port: number
+): Promise<void> {
+  const registry = await loadRegistry(ssh);
+  registry.assignments = registry.assignments.filter((a) => a.projectSlug !== projectSlug);
+  registry.assignments.push({ port, projectSlug, assignedAt: new Date().toISOString() });
+  await saveRegistry(ssh, registry);
+}

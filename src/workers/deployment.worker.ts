@@ -9,6 +9,8 @@ import { logger } from '../lib/logger';
 import { pickRunnerServerId } from '../lib/runner-routing';
 import { getProjectVolumeMounts } from '../lib/project-volumes';
 import { createLogMasker } from '../lib/log-masking';
+import { selectDeployEnvVars } from '../lib/deploy-env-vars';
+import { previewHostname } from '../lib/preview-remote';
 import { cloneRepository, cleanupRepository } from './git';
 import {
   buildImage,
@@ -484,8 +486,9 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         .from(environmentVariables)
         .where(eq(environmentVariables.projectId, job.projectId));
 
+      // Production rows only; a preview deploy layers its `preview` rows on top (lib/deploy-env-vars.ts).
       const envVarsDecrypted: Record<string, string> = {};
-      for (const envVar of envVars) {
+      for (const envVar of selectDeployEnvVars(envVars, { preview: !!previewCtx })) {
         envVarsDecrypted[envVar.key] = decrypt(envVar.valueEncrypted);
       }
       // Everything logged from here on has the project's secrets masked.
@@ -682,8 +685,10 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
 
       let deployFramework = (projectSettings?.framework as string) || undefined;
       let deployBuildpackId: string | undefined;
+      // pushify.yaml `framework:` pins the buildpack; auto-detection is skipped for it.
+      let frameworkForced = false;
+      const { detectBuildpack, buildpackIdForFramework } = await import('../buildpacks');
       if (localClone) {
-        const { detectBuildpack } = await import('../buildpacks');
         const localDetection = await detectBuildpack(
           localClone.workDir,
           normalizeRootDirectory(project.rootDirectory)
@@ -707,7 +712,17 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         } else if (loaded.config) {
           fileConfig = loaded.config;
           addLog(`📄 ${loaded.source} applied — ${describeOverrides(fileConfig) || 'no overrides'}`);
-          if (fileConfig.framework) deployFramework = fileConfig.framework;
+          if (fileConfig.framework) {
+            deployFramework = fileConfig.framework;
+            const pinned = buildpackIdForFramework(fileConfig.framework);
+            if (pinned) {
+              deployBuildpackId = pinned;
+              frameworkForced = true;
+              addLog(`📌 Framework pinned by config: ${fileConfig.framework} (${pinned})`);
+            } else {
+              addLog(`⚠️ Unknown framework "${fileConfig.framework}" in config — auto-detecting instead`);
+            }
+          }
           // Declared cron jobs / volumes sync only on production deploys
           if (!previewCtx) {
             const volumesChanged = await syncDeclaredResources(project.id, fileConfig, addLog);
@@ -748,10 +763,12 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         outputDirectory: effOutputDirectory,
         framework: deployFramework,
         buildpackId: deployBuildpackId,
+        frameworkForced,
         accessToken,
         onProgress: onRemoteProgress,
         marketplace: marketplaceConfig,
         deploySuffix: previewCtx?.deploySuffix,
+        previewDomain: previewCtx ? previewHostname(previewCtx.previewUrl) ?? undefined : undefined,
       });
 
       if (!remoteResult.success) {
@@ -770,7 +787,11 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         })
         .where(eq(deployments.id, job.id));
 
-      const successUrl = previewCtx ? previewCtx.previewUrl : remoteResult.deploymentUrl;
+      // The deployer reports where the preview really answers: its vhost when the server has
+      // the wildcard cert, otherwise IP:port — that is what the PR comment must carry.
+      const successUrl = previewCtx
+        ? remoteResult.deploymentUrl || previewCtx.previewUrl
+        : remoteResult.deploymentUrl;
 
       if (previewCtx) {
         await previewService.updatePreviewStatus(
@@ -778,6 +799,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
           previewCtx.prNumber,
           'running',
           remoteResult.containerPort ?? undefined,
+          successUrl,
         );
         addLog(`✅ Preview deployment live: ${successUrl}`);
       } else {
@@ -858,7 +880,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       .where(eq(environmentVariables.projectId, job.projectId));
 
     const envVarsDecrypted: Record<string, string> = {};
-    for (const ev of localEnvVars) {
+    for (const ev of selectDeployEnvVars(localEnvVars, { preview: !!previewCtx })) {
       envVarsDecrypted[ev.key] = decrypt(ev.valueEncrypted);
     }
 
