@@ -9,6 +9,7 @@ import { decrypt } from '../lib/encryption';
 import { buildImage, checkDocker, getImageId, tagImage, cleanupOldImages, runContainerFromImage, imageExists, blueGreenDeploy } from './remote-docker';
 import { addAutoSubdomainSite, reloadNginx } from './nginx-manager';
 import { syncProjectSites, describeSyncedDomains } from '../lib/project-sites';
+import { isSharedRunnerServer } from '../lib/runner-routing';
 import {
   applyCalcomEnvDefaults,
   buildComposeEnvOverride,
@@ -219,6 +220,7 @@ async function configureProjectDomains(
     projectSlug: string;
     hostPort: number;
     serverIp: string | null;
+    serverId: string;
     primaryDomain: string;
     onProgress: (msg: string) => void;
   },
@@ -230,6 +232,7 @@ async function configureProjectDomains(
     containerPort: input.hostPort,
     serverIp: input.serverIp,
     requestCertificates: true,
+    sharedHost: isSharedRunnerServer(input.serverId),
     onProgress: input.onProgress,
   });
   if (!sync.success) {
@@ -338,6 +341,7 @@ async function setupNginxAndDomain(
       projectSlug,
       hostPort,
       serverIp: server.ipv4,
+      serverId: server.id,
       primaryDomain,
       onProgress,
     }));
@@ -1226,6 +1230,7 @@ export async function deployToRemoteServer(
         projectSlug,
         hostPort,
         serverIp: server.ipv4,
+        serverId: server.id,
         primaryDomain,
         onProgress,
       });

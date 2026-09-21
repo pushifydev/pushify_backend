@@ -7,9 +7,21 @@ import { env } from '../config/env';
  * always land on the same runner (its subdomain/state stay put) while projects spread across the
  * pool. Returns null when no runner is configured → caller falls back to the local host.
  */
-export function pickRunnerServerId(projectId: string): string | null {
+function runnerPool(): string[] {
   const raw = env.PUSHIFY_RUNNER_SERVER_IDS || env.PUSHIFY_RUNNER_SERVER_ID || '';
-  const pool = raw.split(',').map((s) => s.trim()).filter(Boolean);
+  return raw.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+/**
+ * Is this one of Pushify's shared runners — a host many customers' apps share? Anything that
+ * writes raw configuration into the host (custom Nginx location blocks) must not run there.
+ */
+export function isSharedRunnerServer(serverId: string | null | undefined): boolean {
+  return !!serverId && runnerPool().includes(serverId);
+}
+
+export function pickRunnerServerId(projectId: string): string | null {
+  const pool = runnerPool();
   if (pool.length === 0) return null;
   if (pool.length === 1) return pool[0];
   let h = 0;

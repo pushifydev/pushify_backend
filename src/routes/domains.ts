@@ -4,6 +4,7 @@ import { activityService } from '../services/activity.service';
 import { combinedAuthMiddleware } from '../middleware/auth';
 import { requireScope } from '../middleware/apikey-auth';
 import { t } from '../i18n';
+import { HEADER_NAME_RE, HEADER_VALUE_RE } from '../workers/nginx-manager';
 import type { AppEnv } from '../types';
 
 // ============ Schemas ============
@@ -44,7 +45,13 @@ const NginxSettingsSchema = z
     enableWebsocket: z.boolean().optional().openapi({ example: true }),
     enableGzip: z.boolean().optional().openapi({ example: true }),
     forceHttps: z.boolean().optional().openapi({ example: true }),
-    customHeaders: z.record(z.string(), z.string()).nullable().optional().openapi({ example: { 'X-Custom-Header': 'value' } }),
+    customHeaders: z
+      .record(
+        z.string().regex(HEADER_NAME_RE, 'Header names may only contain letters, digits and dashes'),
+        z.string().regex(HEADER_VALUE_RE, 'Header values may not contain quotes, backslashes or line breaks')
+      )
+      .nullable()
+      .optional().openapi({ example: { 'X-Custom-Header': 'value' } }),
     rateLimit: z.object({
       enabled: z.boolean(),
       requestsPerSecond: z.number().min(1).max(1000),

@@ -27,10 +27,18 @@ const DEFAULT_NGINX_SETTINGS: Required<Omit<NginxSettings, 'proxyPort' | 'custom
 /**
  * Generate custom headers block
  */
+/** A header name nginx accepts as a bare word. */
+export const HEADER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/;
+/** A value that can't leave its double quotes: no quote, backslash or control characters. */
+export const HEADER_VALUE_RE = /^[^"\\\x00-\x1f\x7f]{0,1024}$/;
+
 function generateCustomHeaders(customHeaders?: Record<string, string>): string {
   if (!customHeaders || Object.keys(customHeaders).length === 0) return '';
 
+  // Validated again here, not only at the API: a value with a `"` or a newline used to be written
+  // verbatim, which let anyone append their own directives to the host's Nginx config.
   return Object.entries(customHeaders)
+    .filter(([key, value]) => HEADER_NAME_RE.test(key) && typeof value === 'string' && HEADER_VALUE_RE.test(value))
     .map(([key, value]) => `        add_header ${key} "${value}";`)
     .join('\n');
 }

@@ -11,7 +11,7 @@ import { eq, and, desc, isNotNull } from 'drizzle-orm';
 import { SSHClient } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
 import { syncProjectSites } from '../lib/project-sites';
-import { resolveProjectServerId } from '../lib/runner-routing';
+import { resolveProjectServerId, isSharedRunnerServer } from '../lib/runner-routing';
 import { getOrAssignPort } from '../workers/port-manager';
 import { t, type SupportedLocale } from '../i18n';
 import { assertMemberProjectScope } from '../lib/member-project-scope';
@@ -437,6 +437,7 @@ export const domainService = {
         containerPort,
         serverIp: server.ipv4,
         requestCertificates: true,
+        sharedHost: isSharedRunnerServer(targetServerId),
       });
       ssh.disconnect();
       ssh = null;
@@ -512,6 +513,7 @@ export const domainService = {
               projectSlug: project.slug,
               containerPort,
               serverIp: server.ipv4,
+              sharedHost: isSharedRunnerServer(targetServerId),
             });
             if (!result.success) {
               logger.warn({ domainId, error: result.message }, 'Failed to update Nginx after domain delete');
@@ -567,6 +569,12 @@ export const domainService = {
 
     const updatedSettings = mergeNginxSettings(domain.nginxSettings, settings);
 
+    // Custom location blocks are raw config in the host's Nginx: fine on the customer's own
+    // server, never on a shared runner (they could read the host's files or reach other apps).
+    if (updatedSettings.customLocationBlocks && isSharedRunnerServer(resolveProjectServerId(project))) {
+      throw new HTTPException(400, { message: t(locale, 'domains', 'customLocationsOwnServerOnly') });
+    }
+
     // Update in database
     await domainRepository.updateNginxSettings(domainId, updatedSettings);
 
@@ -593,6 +601,7 @@ export const domainService = {
               projectSlug: project.slug,
               containerPort,
               serverIp: server.ipv4,
+              sharedHost: isSharedRunnerServer(targetServerId),
             });
             if (!result.success) throw new Error(result.message);
           } finally {
