@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   findOwner: vi.fn(),
   githubIntegration: vi.fn(),
   gitlabIntegration: vi.fn(),
+  repoAccess: vi.fn(),
 }));
 
 vi.mock('./github-app.service', async (importOriginal) => {
@@ -35,7 +36,7 @@ vi.mock('../repositories/organization.repository', () => ({
 }));
 
 vi.mock('./github.service', () => ({
-  githubService: { getIntegration: mocks.githubIntegration },
+  githubService: { getIntegration: mocks.githubIntegration, repoAccess: mocks.repoAccess },
 }));
 
 vi.mock('./gitlab.service', () => ({
@@ -47,7 +48,12 @@ vi.mock('../lib/encryption', () => ({
   encrypt: (value: string) => value,
 }));
 
-import { getProjectGitAccessToken, detectGitProviderFromUrl } from './git-provider-access.service';
+import {
+  getProjectGitAccessToken,
+  resolveProjectGitAccess,
+  detectGitProviderFromUrl,
+  noRepoAccessMessage,
+} from './git-provider-access.service';
 import { repoFullNameFromUrl } from './github-app.service';
 
 const project = (overrides: Record<string, unknown> = {}) => ({
@@ -66,6 +72,7 @@ beforeEach(() => {
   mocks.gitlabIntegration.mockResolvedValue({ accessToken: 'gitlab-token' });
   mocks.findInstallationForRepo.mockResolvedValue(null);
   mocks.tokenFor.mockResolvedValue('ghs_installation');
+  mocks.repoAccess.mockResolvedValue('yes');
 });
 
 describe('repoFullNameFromUrl', () => {
@@ -97,11 +104,11 @@ describe('detectGitProviderFromUrl', () => {
 
 describe('getProjectGitAccessToken', () => {
   it('prefers an App installation over the owner OAuth token', async () => {
-    mocks.findInstallationForRepo.mockResolvedValue({ installationId: 42 });
+    mocks.findInstallationForRepo.mockResolvedValue({ installationId: 42, accountLogin: 'acme' });
 
     const result = await getProjectGitAccessToken('project-1');
 
-    expect(result).toEqual({ provider: 'github', token: 'ghs_installation', source: 'app' });
+    expect(result).toEqual({ provider: 'github', token: 'ghs_installation', source: 'app', account: 'acme' });
     expect(mocks.githubIntegration).not.toHaveBeenCalled();
   });
 
@@ -117,13 +124,69 @@ describe('getProjectGitAccessToken', () => {
   });
 
   it('falls back to the owner OAuth token when no installation covers the repository', async () => {
+    mocks.githubIntegration.mockResolvedValue({ accessToken: 'oauth-token', providerUsername: 'acme-owner' });
+
     const result = await getProjectGitAccessToken('project-1');
 
     expect(result).toEqual({
       provider: 'github',
       token: 'decrypted:oauth-token',
       source: 'oauth',
+      account: 'acme-owner',
     });
+    expect(mocks.repoAccess).toHaveBeenCalledWith('acme', 'site', 'decrypted:oauth-token');
+  });
+
+  it('falls back to the owner OAuth token when the installation lookup fails', async () => {
+    // Returning null here sent private repos to `git clone` with no credentials at all
+    // ("could not read Username for 'https://github.com'") even though the owner token worked.
+    mocks.findInstallationForRepo.mockRejectedValue(new Error('github is down'));
+
+    const result = await getProjectGitAccessToken('project-1');
+    expect(result?.token).toBe('decrypted:oauth-token');
+    expect(result?.source).toBe('oauth');
+  });
+
+  it('falls back to the owner OAuth token when minting the installation token fails', async () => {
+    mocks.findInstallationForRepo.mockResolvedValue({ installationId: 42 });
+    mocks.tokenFor.mockRejectedValue(new Error('Could not mint a GitHub installation token (HTTP 401)'));
+
+    const result = await getProjectGitAccessToken('project-1');
+    expect(result?.token).toBe('decrypted:oauth-token');
+    expect(result?.source).toBe('oauth');
+  });
+
+  it("tries the acting member's own connection before the owner's", async () => {
+    mocks.githubIntegration.mockImplementation(async (userId: string) =>
+      userId === 'member-1' ? { accessToken: 'member-token' } : { accessToken: 'oauth-token' }
+    );
+
+    const result = await getProjectGitAccessToken('project-1', { preferUserId: 'member-1' });
+    expect(result?.token).toBe('decrypted:member-token');
+  });
+
+  it('skips a connection that cannot see the repository and uses the next one', async () => {
+    // The member switched their GitHub account: their token is valid but not for this repo.
+    mocks.githubIntegration.mockImplementation(async (userId: string) =>
+      userId === 'member-1' ? { accessToken: 'other-account' } : { accessToken: 'oauth-token' }
+    );
+    mocks.repoAccess.mockImplementation(async (_o: string, _r: string, token?: string) =>
+      token === 'decrypted:other-account' ? 'no' : 'yes'
+    );
+
+    const result = await getProjectGitAccessToken('project-1', { preferUserId: 'member-1' });
+    expect(result?.token).toBe('decrypted:oauth-token');
+  });
+
+  it('uses a connection GitHub could not confirm when nothing better exists', async () => {
+    mocks.repoAccess.mockResolvedValue('unknown');
+    const result = await getProjectGitAccessToken('project-1');
+    expect(result?.token).toBe('decrypted:oauth-token');
+  });
+
+  it('returns nothing when every connection is refused', async () => {
+    mocks.repoAccess.mockResolvedValue('no');
+    expect(await getProjectGitAccessToken('project-1')).toBeNull();
   });
 
   it('returns nothing when neither credential exists', async () => {
@@ -138,12 +201,13 @@ describe('getProjectGitAccessToken', () => {
 
     const result = await getProjectGitAccessToken('project-1');
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       provider: 'gitlab',
       token: 'decrypted:gitlab-token',
       source: 'oauth',
     });
     expect(mocks.findInstallationForRepo).not.toHaveBeenCalled();
+    expect(mocks.repoAccess).not.toHaveBeenCalled();
   });
 
   it('returns nothing for a project with no repository', async () => {
@@ -151,26 +215,50 @@ describe('getProjectGitAccessToken', () => {
     expect(await getProjectGitAccessToken('project-1')).toBeNull();
   });
 
-  it('falls back to the owner OAuth token when the installation lookup fails', async () => {
-    // Returning null here sent private repos to `git clone` with no credentials at all
-    // ("could not read Username for 'https://github.com'") even though the owner token worked.
-    mocks.findInstallationForRepo.mockRejectedValue(new Error('github is down'));
-
-    const result = await getProjectGitAccessToken('project-1');
-    expect(result).toEqual({ provider: 'github', token: 'decrypted:oauth-token', source: 'oauth' });
-  });
-
-  it('falls back to the owner OAuth token when minting the installation token fails', async () => {
-    mocks.findInstallationForRepo.mockResolvedValue({ installationId: 42 });
-    mocks.tokenFor.mockRejectedValue(new Error('Could not mint a GitHub installation token (HTTP 401)'));
-
-    const result = await getProjectGitAccessToken('project-1');
-    expect(result).toEqual({ provider: 'github', token: 'decrypted:oauth-token', source: 'oauth' });
-  });
-
   it('never throws outwards when every lookup fails', async () => {
     mocks.findInstallationForRepo.mockRejectedValue(new Error('github is down'));
     mocks.findOwner.mockRejectedValue(new Error('db is down'));
     expect(await getProjectGitAccessToken('project-1')).toBeNull();
+  });
+});
+
+describe('resolveProjectGitAccess', () => {
+  it('reports a private repo nobody connected can read', async () => {
+    mocks.repoAccess.mockResolvedValue('no');
+
+    const result = await resolveProjectGitAccess('project-1', { checkPublic: true });
+
+    expect(result).toMatchObject({ provider: 'github', repoFullName: 'acme/site', credential: null, isPublic: false });
+    // the last call is the anonymous one
+    expect(mocks.repoAccess).toHaveBeenLastCalledWith('acme', 'site');
+  });
+
+  it('reports a public repo, which clones without credentials', async () => {
+    mocks.githubIntegration.mockResolvedValue(null);
+    mocks.repoAccess.mockResolvedValue('yes');
+
+    const result = await resolveProjectGitAccess('project-1', { checkPublic: true });
+    expect(result).toMatchObject({ credential: null, isPublic: true });
+  });
+
+  it('does not look the repo up anonymously unless asked', async () => {
+    mocks.githubIntegration.mockResolvedValue(null);
+    const result = await resolveProjectGitAccess('project-1');
+    expect(result.isPublic).toBeNull();
+    expect(mocks.repoAccess).not.toHaveBeenCalled();
+  });
+
+  it('treats a non-git project as having no provider', async () => {
+    mocks.findProject.mockResolvedValue(project({ gitProvider: null, gitRepoUrl: 'https://wordpress.org' }));
+    const result = await resolveProjectGitAccess('project-1', { checkPublic: true });
+    expect(result).toEqual({ provider: null, repoFullName: null, credential: null, isPublic: null });
+  });
+});
+
+describe('noRepoAccessMessage', () => {
+  it('names the repository and the account the App has to be installed on', () => {
+    const message = noRepoAccessMessage('acme/site');
+    expect(message).toContain('github.com/acme/site');
+    expect(message).toContain('@acme');
   });
 });

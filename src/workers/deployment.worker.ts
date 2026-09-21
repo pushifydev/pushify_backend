@@ -2,7 +2,6 @@ import { db } from '../db';
 import { deployments } from '../db/schema/deployments';
 import { projects, environmentVariables } from '../db/schema/projects';
 import { organizations } from '../db/schema/organizations';
-import { gitIntegrations } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import { decrypt } from '../lib/encryption';
 import { logger } from '../lib/logger';
@@ -39,7 +38,7 @@ import { adminNotify } from '../services/admin-notify.service';
 import { activityService } from '../services/activity.service';
 import { previewService } from '../services/preview.service';
 import { previewRepository } from '../repositories/preview.repository';
-import { getProjectGitAccessToken } from '../services/git-provider-access.service';
+import { resolveProjectGitAccess, noRepoAccessMessage } from '../services/git-provider-access.service';
 import { env } from '../config/env';
 import { normalizeRootDirectory } from '../lib/normalize-root-directory';
 import {
@@ -446,28 +445,25 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
     const projectSettings = project.settings as Record<string, unknown>;
     const prStatusChecksEnabled = projectSettings?.prStatusChecksEnabled === true;
 
-    const projectGitAuth = await getProjectGitAccessToken(job.projectId);
-    if (projectGitAuth) {
-      accessToken = projectGitAuth.token;
-      logMasker.addSecrets([accessToken]);
-      addLog(`🔑 Using ${projectGitAuth.provider} credentials from organization owner`);
-    } else if (project.gitRepoUrl?.includes('github.com') && job.triggeredById) {
-      const integration = await db.query.gitIntegrations.findFirst({
-        where: and(
-          eq(gitIntegrations.userId, job.triggeredById),
-          eq(gitIntegrations.provider, 'github'),
-        ),
+    if (project.gitRepoUrl) {
+      const gitAccess = await resolveProjectGitAccess(job.projectId, {
+        preferUserId: job.triggeredById,
+        checkPublic: true,
       });
-
-      if (integration) {
-        accessToken = decrypt(integration.accessToken);
+      const credential = gitAccess.credential;
+      if (credential) {
+        accessToken = credential.token;
         logMasker.addSecrets([accessToken]);
-        addLog('🔑 Using GitHub credentials from user');
+        const via = credential.source === 'app' ? 'GitHub App installation' : `${credential.provider} account`;
+        addLog(`🔑 Using ${via}${credential.account ? ` @${credential.account}` : ''}`);
+      } else if (gitAccess.provider === 'github' && gitAccess.isPublic === false) {
+        // Fail here, with the fix in the message, instead of letting git die on a password prompt.
+        throw new Error(noRepoAccessMessage(gitAccess.repoFullName));
+      } else if (gitAccess.isPublic) {
+        addLog('🌐 Public repository — cloning without credentials');
+      } else if (gitAccess.provider) {
+        addLog('⚠️ No connected git account can read this repository — cloning anonymously (public repositories only)');
       }
-    }
-
-    if (!accessToken && project.gitRepoUrl) {
-      addLog('⚠️ No git credentials found — cloning anonymously, which only works for public repositories');
     }
 
     // Remote deployment when there's a target server (the user's own, or the shared runner).

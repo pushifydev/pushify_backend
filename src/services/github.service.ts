@@ -2,7 +2,6 @@ import { db } from '../db';
 import { gitIntegrations, type GitIntegration } from '../db/schema';
 import { encrypt, decrypt } from '../lib/encryption';
 import { env } from '../config/env';
-import { isAppConfigured } from './github-app.service';
 import { eq, and } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { t, type SupportedLocale } from '../i18n';
@@ -47,21 +46,29 @@ export interface GitHubBranch {
   protected: boolean;
 }
 
+/** Does a stored OAuth scope string (comma/space separated, or a JSON array) include `repo`? */
+export function hasRepoScope(scopes: string | null | undefined): boolean {
+  return String(scopes ?? '')
+    .split(/[\s,"[\]]+/)
+    .filter(Boolean)
+    .includes('repo');
+}
+
 class GitHubService {
   /**
    * Generate OAuth authorization URL.
    *
-   * The `repo` scope grants read/write to every repository the person can reach, which is far
-   * more than Pushify needs. Once a GitHub App is configured it owns repository access, so the
-   * OAuth app is asked only for identity. Without an App we still need `repo` to clone, so the
-   * scope stays as it was and nothing breaks for a deployment that has not set one up.
+   * Connecting a GitHub account is a full alternative to the GitHub App, not just a sign-in: it
+   * always asks for `repo`, because without it the token cannot clone a private repository.
+   * (Asking for identity only once an App was configured left every account connected after
+   * that unable to deploy its private repos.)
    */
   getAuthorizationUrl(state: string): string {
     if (!env.GITHUB_CLIENT_ID) {
       throw new Error('GitHub OAuth is not configured');
     }
 
-    const scope = isAppConfigured() ? 'read:user user:email' : 'repo read:user user:email';
+    const scope = 'repo read:user user:email';
 
     const params = new URLSearchParams({
       client_id: env.GITHUB_CLIENT_ID,
@@ -192,6 +199,30 @@ class GitHubService {
     }
 
     return response.json();
+  }
+
+  /**
+   * Can this token read `owner/repo`? Without a token: is the repository public?
+   * 'unknown' means GitHub didn't give a straight answer (network, 5xx, rate limit) — callers
+   * treat it as "maybe", never as a definite no.
+   */
+  async repoAccess(owner: string, repo: string, accessToken?: string): Promise<'yes' | 'no' | 'unknown'> {
+    try {
+      const response = await fetch(`${GITHUB_API_URL}/repos/${owner}/${repo}`, {
+        headers: {
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (response.ok) return 'yes';
+      // 404 is how GitHub says "private and you can't see it"; 401 is a revoked token.
+      if (response.status === 404 || response.status === 401) return 'no';
+      return 'unknown';
+    } catch {
+      return 'unknown';
+    }
   }
 
   /**
