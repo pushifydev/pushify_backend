@@ -62,8 +62,12 @@ class GitHubService {
    * always asks for `repo`, because without it the token cannot clone a private repository.
    * (Asking for identity only once an App was configured left every account connected after
    * that unable to deploy its private repos.)
+   *
+   * `selectAccount` shows GitHub's account picker. Without it GitHub silently re-authorizes
+   * whichever account is signed in on github.com (and skips the consent screen when the scopes
+   * were granted before), so "reconnect" could never switch to another GitHub account.
    */
-  getAuthorizationUrl(state: string): string {
+  getAuthorizationUrl(state: string, options: { selectAccount?: boolean } = {}): string {
     if (!env.GITHUB_CLIENT_ID) {
       throw new Error('GitHub OAuth is not configured');
     }
@@ -77,6 +81,7 @@ class GitHubService {
       state,
       allow_signup: 'true',
     });
+    if (options.selectAccount) params.set('prompt', 'select_account');
 
     return `${GITHUB_OAUTH_URL}?${params.toString()}`;
   }
