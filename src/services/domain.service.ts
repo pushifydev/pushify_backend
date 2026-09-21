@@ -5,13 +5,13 @@ import { projectRepository } from '../repositories/project.repository';
 import { organizationRepository } from '../repositories/organization.repository';
 import { db } from '../db';
 import { servers } from '../db/schema/servers';
-import { environmentVariables } from '../db/schema/projects';
+import { environmentVariables, type NginxSettings } from '../db/schema/projects';
 import { deployments } from '../db/schema/deployments';
 import { eq, and, desc, isNotNull } from 'drizzle-orm';
 import { SSHClient } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
 import { syncProjectSites } from '../lib/project-sites';
-import { resolveProjectServerId } from '../lib/runner-routing';
+import { resolveProjectServerId, isSharedRunnerServer } from '../lib/runner-routing';
 import { getOrAssignPort } from '../workers/port-manager';
 import { t, type SupportedLocale } from '../i18n';
 import { assertMemberProjectScope } from '../lib/member-project-scope';
@@ -66,6 +66,28 @@ async function resolveProjectPort(
   // 3) Last resort: the dynamically-assigned port.
   const { port } = await getOrAssignPort(ssh, projectSlug);
   return port;
+}
+
+/**
+ * Apply a settings update: fields left out keep their value, fields sent as null / '' / {} are
+ * removed. (A plain spread could never remove anything, so clearing "Custom location blocks",
+ * a proxy port, headers, rate limiting or caching in the dashboard silently kept the old ones.)
+ */
+export function mergeNginxSettings(
+  existing: NginxSettings | null | undefined,
+  patch: Record<string, unknown>
+): NginxSettings {
+  const merged: Record<string, unknown> = { ...(existing || {}), ...patch };
+  for (const [key, value] of Object.entries(merged)) {
+    const emptyObject =
+      typeof value === 'object' && value !== null && !Array.isArray(value) && Object.keys(value).length === 0;
+    if (value === null || value === undefined || value === '' || emptyObject) delete merged[key];
+    // A switched-off feature is as good as absent — don't keep its old numbers around.
+    else if (typeof value === 'object' && value !== null && (value as { enabled?: unknown }).enabled === false) {
+      delete merged[key];
+    }
+  }
+  return merged as NginxSettings;
 }
 
 interface CreateDomainInput {
@@ -415,6 +437,7 @@ export const domainService = {
         containerPort,
         serverIp: server.ipv4,
         requestCertificates: true,
+        sharedHost: isSharedRunnerServer(targetServerId),
       });
       ssh.disconnect();
       ssh = null;
@@ -490,6 +513,7 @@ export const domainService = {
               projectSlug: project.slug,
               containerPort,
               serverIp: server.ipv4,
+              sharedHost: isSharedRunnerServer(targetServerId),
             });
             if (!result.success) {
               logger.warn({ domainId, error: result.message }, 'Failed to update Nginx after domain delete');
@@ -543,8 +567,13 @@ export const domainService = {
       throw new HTTPException(404, { message: t(locale, 'domains', 'notFound') });
     }
 
-    // Merge with existing settings
-    const updatedSettings = { ...(domain.nginxSettings || {}), ...settings };
+    const updatedSettings = mergeNginxSettings(domain.nginxSettings, settings);
+
+    // Custom location blocks are raw config in the host's Nginx: fine on the customer's own
+    // server, never on a shared runner (they could read the host's files or reach other apps).
+    if (updatedSettings.customLocationBlocks && isSharedRunnerServer(resolveProjectServerId(project))) {
+      throw new HTTPException(400, { message: t(locale, 'domains', 'customLocationsOwnServerOnly') });
+    }
 
     // Update in database
     await domainRepository.updateNginxSettings(domainId, updatedSettings);
@@ -572,6 +601,7 @@ export const domainService = {
               projectSlug: project.slug,
               containerPort,
               serverIp: server.ipv4,
+              sharedHost: isSharedRunnerServer(targetServerId),
             });
             if (!result.success) throw new Error(result.message);
           } finally {

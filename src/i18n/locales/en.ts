@@ -113,6 +113,7 @@ export interface TranslationKeys {
     dnsPointsElsewhere: string;
     nginxUpdated: string;
     nginxUpdateFailed: string;
+    customLocationsOwnServerOnly: string;
     registrarNotConfigured: string;
     searchQueryRequired: string;
     notAvailable: string;
@@ -473,6 +474,7 @@ export const en: TranslationKeys = {
     dnsPointsElsewhere: 'DNS points to a different IP address.',
     nginxUpdated: 'Nginx settings updated successfully',
     nginxUpdateFailed: 'Failed to apply Nginx settings to server',
+    customLocationsOwnServerOnly: "Custom location blocks run in the server's own Nginx, so they are only available on your own server, not on the shared runner. Put your app's routing rules in your repository's nginx.conf instead.",
     registrarNotConfigured: 'Domain purchasing is not enabled on this platform',
     searchQueryRequired: 'Enter a domain or keyword to search',
     notAvailable: 'This domain is not available for registration',

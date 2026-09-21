@@ -270,7 +270,51 @@ describe('syncProjectSites', () => {
   });
 });
 
+describe('syncProjectSites on a shared runner', () => {
+  it('leaves custom location blocks out of the host config, whatever is stored', async () => {
+    const blocks = 'location /leak { alias /etc/; autoindex on; }';
+    mocks.findByProject.mockResolvedValue([row('yeliapp.com', { isPrimary: true, nginxSettings: { customLocationBlocks: blocks } })]);
+    dnsPointsHere('yeliapp.com');
+
+    const shared = fakeServer();
+    await sync(shared.ssh, { sharedHost: true });
+    expect(shared.vhost()).not.toContain('alias /etc/');
+
+    const own = fakeServer();
+    await sync(own.ssh);
+    expect(own.vhost()).toContain(blocks);
+  });
+});
+
 describe('generateProjectSitesConfig', () => {
+  it('never writes a header that could break out of its quotes', () => {
+    const config = generateProjectSitesConfig({
+      projectSlug: 'yeli',
+      containerPort: 3001,
+      domains: [
+        {
+          domain: 'a.com',
+          kind: 'custom',
+          ssl: false,
+          nginxSettings: {
+            customHeaders: {
+              'X-Ok': 'fine; value {with} $vars',
+              'X-Evil': 'a"; } location /leak { alias /etc/; } #',
+              'X-Newline': 'a\n    alias /etc/;',
+              'Bad Name': 'x',
+            },
+          },
+        },
+      ],
+    });
+
+    expect(config).toContain('add_header X-Ok "fine; value {with} $vars";');
+    expect(config).not.toContain('X-Evil');
+    expect(config).not.toContain('X-Newline');
+    expect(config).not.toContain('Bad Name');
+    expect(config).not.toContain('alias /etc/');
+  });
+
   it('gives each rate-limited domain its own zone, so two cannot collide', () => {
     const rateLimit = { enabled: true, requestsPerSecond: 10, burst: 20 };
     const config = generateProjectSitesConfig({

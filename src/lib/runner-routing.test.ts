@@ -13,7 +13,7 @@ const mockEnv = vi.hoisted(() => ({
 }));
 vi.mock('../config/env', () => mockEnv);
 
-import { pickRunnerServerId, resolveProjectServerId } from './runner-routing';
+import { pickRunnerServerId, resolveProjectServerId, isSharedRunnerServer } from './runner-routing';
 
 beforeEach(() => {
   mockEnv.env.PUSHIFY_RUNNER_SERVER_IDS = undefined;
@@ -78,5 +78,25 @@ describe('resolveProjectServerId', () => {
 
   it('returns null (local deploy) when unassigned and no runner is configured', () => {
     expect(resolveProjectServerId({ id: 'p1', serverId: null })).toBeNull();
+  });
+});
+
+describe('isSharedRunnerServer', () => {
+  it('knows the runner pool — raw host config (custom location blocks) is refused there', () => {
+    mockEnv.env.PUSHIFY_RUNNER_SERVER_IDS = 'runner-a, runner-b';
+    expect(isSharedRunnerServer('runner-a')).toBe(true);
+    expect(isSharedRunnerServer('runner-b')).toBe(true);
+    expect(isSharedRunnerServer('customer-server')).toBe(false);
+    expect(isSharedRunnerServer(null)).toBe(false);
+  });
+
+  it('marks an unassigned project as living on a shared runner', () => {
+    mockEnv.env.PUSHIFY_RUNNER_SERVER_IDS = 'runner-a';
+    expect(isSharedRunnerServer(resolveProjectServerId({ id: 'p1', serverId: null }))).toBe(true);
+    expect(isSharedRunnerServer(resolveProjectServerId({ id: 'p1', serverId: 'customer-server' }))).toBe(false);
+  });
+
+  it('is never true when no runner is configured', () => {
+    expect(isSharedRunnerServer('anything')).toBe(false);
   });
 });

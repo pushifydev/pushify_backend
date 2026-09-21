@@ -127,6 +127,7 @@ export const tr: TranslationKeys = {
     dnsPointsElsewhere: 'DNS farklı bir IP adresine işaret ediyor.',
     nginxUpdated: 'Nginx ayarları başarıyla güncellendi',
     nginxUpdateFailed: 'Nginx ayarları sunucuya uygulanamadı',
+    customLocationsOwnServerOnly: "Özel location blokları sunucunun kendi Nginx'inde çalışır; bu yüzden ortak runner'da değil, yalnızca kendi sunucunda kullanılabilir. Uygulamanın yönlendirme kurallarını reponun nginx.conf dosyasına koy.",
     registrarNotConfigured: 'Alan adı satın alma bu platformda etkin değil',
     searchQueryRequired: 'Aramak için bir alan adı veya anahtar kelime girin',
     notAvailable: 'Bu alan adı kayıt için uygun değil',
