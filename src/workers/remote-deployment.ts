@@ -7,7 +7,8 @@ import { SSHClient } from '../utils/ssh';
 import { syncWorkerContainersOnDeploy } from './worker-process-sync';
 import { decrypt } from '../lib/encryption';
 import { buildImage, checkDocker, getImageId, tagImage, cleanupOldImages, runContainerFromImage, imageExists, blueGreenDeploy } from './remote-docker';
-import { addSite, addAutoSubdomainSite, reloadNginx, requestSSLCertificate } from './nginx-manager';
+import { addAutoSubdomainSite, reloadNginx } from './nginx-manager';
+import { syncProjectSites, describeSyncedDomains } from '../lib/project-sites';
 import {
   applyCalcomEnvDefaults,
   buildComposeEnvOverride,
@@ -208,6 +209,38 @@ async function getPrimaryDomain(projectId: string): Promise<string | null> {
 }
 
 /**
+ * Point the project's whole vhost (every domain, www / apex counterparts included) at the new
+ * container and get missing certificates. Returns whether the primary domain is on HTTPS.
+ */
+async function configureProjectDomains(
+  ssh: SSHClient,
+  input: {
+    projectId: string;
+    projectSlug: string;
+    hostPort: number;
+    serverIp: string | null;
+    primaryDomain: string;
+    onProgress: (msg: string) => void;
+  },
+): Promise<boolean> {
+  input.onProgress("🌐 Configuring Nginx for the project's domains...");
+  const sync = await syncProjectSites(ssh, {
+    projectId: input.projectId,
+    projectSlug: input.projectSlug,
+    containerPort: input.hostPort,
+    serverIp: input.serverIp,
+    requestCertificates: true,
+    onProgress: input.onProgress,
+  });
+  if (!sync.success) {
+    input.onProgress(`⚠️ Nginx config warning: ${sync.message}`);
+    return false;
+  }
+  input.onProgress(`✅ Nginx configured: ${describeSyncedDomains(sync.domains)}`);
+  return sync.domains.find((d) => d.domain === input.primaryDomain)?.ssl ?? false;
+}
+
+/**
  * Put the deployed app and any Pushify-managed databases on a shared `pushify` Docker
  * network so the app can reach its database by container name (e.g. `pushify-db-myapp`)
  * — no host-IP guessing, no public exposure required. Only acts when the server actually
@@ -298,50 +331,20 @@ async function setupNginxAndDomain(
     }
   }
 
+  let primaryServedOverHttp = false;
   if (primaryDomain) {
-    const isAutoSubdomain = isPushifyAutoSubdomain(primaryDomain);
-
-    if (isAutoSubdomain) {
-      onProgress(`🌐 Configuring Nginx for auto subdomain: ${primaryDomain}`);
-      const addResult = await addAutoSubdomainSite(ssh, { domain: primaryDomain, containerPort: hostPort, projectSlug });
-      if (!addResult.success) {
-        onProgress(`⚠️ Nginx config warning: ${addResult.message}`);
-      } else {
-        onProgress('✅ Nginx site configured with wildcard SSL');
-        const reloadResult = await reloadNginx(ssh);
-        if (!reloadResult.success) onProgress(`⚠️ Nginx reload warning: ${reloadResult.message}`);
-        else onProgress('✅ Nginx reloaded');
-      }
-    } else {
-      onProgress(`🌐 Configuring Nginx for domain: ${primaryDomain}`);
-      const addResult = await addSite(ssh, { domain: primaryDomain, containerPort: hostPort, projectSlug, ssl: false });
-      if (!addResult.success) {
-        onProgress(`⚠️ Nginx config warning: ${addResult.message}`);
-      } else {
-        onProgress('✅ Nginx site configured');
-        const reloadResult = await reloadNginx(ssh);
-        if (!reloadResult.success) onProgress(`⚠️ Nginx reload warning: ${reloadResult.message}`);
-        else onProgress('✅ Nginx reloaded');
-
-        onProgress('🔐 Requesting SSL certificate...');
-        try {
-          const sslResult = await requestSSLCertificate(ssh, primaryDomain, 'ssl@pushify.app');
-          if (sslResult.success) {
-            onProgress('✅ SSL certificate obtained');
-            await addSite(ssh, { domain: primaryDomain, containerPort: hostPort, projectSlug, ssl: true });
-            await reloadNginx(ssh);
-          } else {
-            onProgress(`⚠️ SSL certificate failed: ${sslResult.message}`);
-          }
-        } catch (sslError) {
-          onProgress(`⚠️ SSL certificate error: ${sslError instanceof Error ? sslError.message : 'Unknown error'}`);
-        }
-      }
-    }
+    primaryServedOverHttp = !(await configureProjectDomains(ssh, {
+      projectId,
+      projectSlug,
+      hostPort,
+      serverIp: server.ipv4,
+      primaryDomain,
+      onProgress,
+    }));
   }
 
   if (primaryDomain) {
-    return `https://${primaryDomain}`;
+    return `${primaryServedOverHttp ? 'http' : 'https'}://${primaryDomain}`;
   }
   return `http://${server.ipv4}:${hostPort}`;
 }
@@ -1207,83 +1210,16 @@ export async function deployToRemoteServer(
       }
     }
 
-    // Configure Nginx
+    // Configure Nginx for every domain of the project (not only the primary one)
     if (primaryDomain) {
-      const isAutoSubdomain = isPushifyAutoSubdomain(primaryDomain);
-
-      if (isAutoSubdomain) {
-        // Use wildcard cert for auto subdomains
-        onProgress(`🌐 Configuring Nginx for auto subdomain: ${primaryDomain}`);
-
-        const addResult = await addAutoSubdomainSite(ssh, {
-          domain: primaryDomain,
-          containerPort: hostPort,
-          projectSlug,
-        });
-
-        if (!addResult.success) {
-          onProgress(`⚠️ Nginx config warning: ${addResult.message}`);
-        } else {
-          onProgress('✅ Nginx site configured with wildcard SSL');
-          const reloadResult = await reloadNginx(ssh);
-          if (!reloadResult.success) {
-            onProgress(`⚠️ Nginx reload warning: ${reloadResult.message}`);
-          } else {
-            onProgress('✅ Nginx reloaded');
-          }
-        }
-      } else {
-        // Custom domain — use standard flow
-        onProgress(`🌐 Configuring Nginx for domain: ${primaryDomain}`);
-
-        const addResult = await addSite(ssh, {
-          domain: primaryDomain,
-          containerPort: hostPort,
-          projectSlug,
-          ssl: false, // Start without SSL, will be added after
-        });
-
-        if (!addResult.success) {
-          onProgress(`⚠️ Nginx config warning: ${addResult.message}`);
-        } else {
-          onProgress('✅ Nginx site configured');
-
-          // Reload Nginx
-          const reloadResult = await reloadNginx(ssh);
-          if (!reloadResult.success) {
-            onProgress(`⚠️ Nginx reload warning: ${reloadResult.message}`);
-          } else {
-            onProgress('✅ Nginx reloaded');
-          }
-
-          // Try to get SSL certificate
-          onProgress('🔐 Requesting SSL certificate...');
-          try {
-            const sslResult = await requestSSLCertificate(
-              ssh,
-              primaryDomain,
-              'ssl@pushify.app'
-            );
-
-            if (sslResult.success) {
-              onProgress('✅ SSL certificate obtained');
-
-              // Update Nginx config with SSL
-              await addSite(ssh, {
-                domain: primaryDomain,
-                containerPort: hostPort,
-                projectSlug,
-                ssl: true,
-              });
-              await reloadNginx(ssh);
-            } else {
-              onProgress(`⚠️ SSL certificate failed: ${sslResult.message}`);
-            }
-          } catch (sslError) {
-            onProgress(`⚠️ SSL certificate error: ${sslError instanceof Error ? sslError.message : 'Unknown error'}`);
-          }
-        }
-      }
+      await configureProjectDomains(ssh, {
+        projectId,
+        projectSlug,
+        hostPort,
+        serverIp: server.ipv4,
+        primaryDomain,
+        onProgress,
+      });
     }
 
     // PR preview: its own `pr-N-<slug>.<preview base>` vhost on the wildcard cert, so the URL
