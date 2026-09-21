@@ -309,6 +309,7 @@ projectRouter.patch('/:projectId/status', requireScope('projects:write'));
 projectRouter.get('/:projectId/webhook', requireScope('projects:read'));
 projectRouter.post('/:projectId/webhook/regenerate', requireScope('projects:write'));
 projectRouter.post('/:projectId/webhook/github/install', requireScope('projects:write'));
+projectRouter.get('/:projectId/git-access', requireScope('projects:read'));
 projectRouter.patch('/:projectId/settings', requireScope('projects:write'));
 
 // List projects
@@ -508,6 +509,17 @@ projectRouter.get('/:projectId/webhook', async (c) => {
       autoDeploy: project.autoDeploy,
     },
   });
+});
+
+// Which credential can read the project's repository (status only — never the token)
+projectRouter.get('/:projectId/git-access', async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const projectId = c.req.param('projectId') as string;
+
+  const data = await projectService.getGitAccess(projectId, organizationId, userId, locale);
+  return c.json({ data });
 });
 
 // Install GitHub repo webhook via API (org owner's GitHub token)

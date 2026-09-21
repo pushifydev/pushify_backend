@@ -1,5 +1,5 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { githubService } from '../services/github.service';
+import { githubService, hasRepoScope } from '../services/github.service';
 import { authMiddleware } from '../middleware/auth';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
@@ -260,16 +260,15 @@ githubRouter.openapi(statusRoute, async (c) => {
   const userId = c.get('userId')!;
   const integration = await githubService.getIntegration(userId);
 
-  // OAuth tokens minted after a GitHub App was configured carry no `repo` scope, so the
-  // /user/repos listing is public-only — the picker uses this to explain what's missing.
-  const scopes = String(integration?.scopes ?? '').split(/[\s,"\[\]]+/).filter(Boolean);
-  const hasRepoScope = integration ? scopes.includes('repo') : undefined;
+  // Accounts connected while the OAuth flow asked for identity only (2026-08-21 → the fix) have
+  // no `repo` scope: public repos only. The dashboard uses this to ask them to reconnect.
+  const repoScope = integration ? hasRepoScope(integration.scopes) : undefined;
 
   return c.json({
     data: {
       connected: !!integration,
       username: integration?.providerUsername || null,
-      hasRepoScope,
+      hasRepoScope: repoScope,
     },
   });
 });

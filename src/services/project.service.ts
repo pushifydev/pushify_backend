@@ -457,6 +457,64 @@ export const projectService = {
   },
 
   /**
+   * Which credential Pushify would use to read this project's repository — never the token itself.
+   *
+   * `status` is about automatic deploys (a push has no acting member, so only the GitHub App and
+   * the organisation owner's connection count); `viewer_only` means just the caller's own GitHub
+   * account can read it, so deploys they start work but pushes don't.
+   */
+  async getGitAccess(
+    projectId: string,
+    organizationId: string,
+    userId: string,
+    locale: SupportedLocale = 'en'
+  ) {
+    const project = await this.getById(projectId, organizationId, userId, locale);
+
+    const [{ resolveProjectGitAccess }, { githubService, hasRepoScope }, { githubAppService }, { env }] =
+      await Promise.all([
+        import('./git-provider-access.service'),
+        import('./github.service'),
+        import('./github-app.service'),
+        import('../config/env'),
+      ]);
+
+    const shared = await resolveProjectGitAccess(project.id, { checkPublic: true });
+    let status: 'ok' | 'viewer_only' | 'public' | 'no_access' | 'unknown' | 'not_git';
+    let credential = shared.credential;
+
+    if (!shared.provider) {
+      status = 'not_git';
+    } else if (credential) {
+      status = 'ok';
+    } else if (shared.isPublic === true) {
+      // anyone can clone it, pushes included — whether the viewer's account could is moot
+      status = 'public';
+    } else {
+      const own = await resolveProjectGitAccess(project.id, { preferUserId: userId });
+      credential = own.credential;
+      status = credential ? 'viewer_only' : shared.isPublic === false ? 'no_access' : 'unknown';
+    }
+
+    const integration = await githubService.getIntegration(userId).catch(() => null);
+
+    return {
+      provider: shared.provider,
+      repoFullName: shared.repoFullName,
+      repoOwner: shared.repoFullName?.split('/')[0] ?? null,
+      status,
+      via: credential ? { source: credential.source ?? 'oauth', account: credential.account ?? null } : null,
+      viewer: {
+        connected: Boolean(integration),
+        username: integration?.providerUsername ?? null,
+        hasRepoScope: integration ? hasRepoScope(integration.scopes) : null,
+      },
+      appConfigured: githubAppService.isConfigured(),
+      oauthConfigured: Boolean(env.GITHUB_CLIENT_ID),
+    };
+  },
+
+  /**
    * Install or update GitHub repository webhook for this project (org owner's token).
    */
   async installGitHubWebhook(
@@ -484,7 +542,7 @@ export const projectService = {
     }
 
     const { getProjectGitAccessToken } = await import('./git-provider-access.service');
-    const gitAuth = await getProjectGitAccessToken(projectId);
+    const gitAuth = await getProjectGitAccessToken(projectId, { preferUserId: userId });
     if (!gitAuth || gitAuth.provider !== 'github') {
       throw new HTTPException(400, { message: t(locale, 'integrations', 'notConnected') });
     }

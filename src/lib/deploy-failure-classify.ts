@@ -1,4 +1,5 @@
 export type DeployFailureCategory =
+  | 'repository_access'
   | 'out_of_memory'
   | 'disk_space'
   | 'platform_native'
@@ -32,6 +33,23 @@ export function parseFailureCategoryFromLogs(logs: string): DeployFailureCategor
 
 export function classifyDeployFailure(logs: string, errorMessage?: string): ClassifiedDeployFailure {
   const text = `${logs}\n${errorMessage ?? ''}`.toLowerCase();
+
+  // First: a clone that failed for lack of credentials never gets far enough to hit the others.
+  if (
+    text.includes('pushify has no access to') ||
+    text.includes('could not read username') ||
+    text.includes('terminal prompts disabled') ||
+    text.includes('authentication failed for') ||
+    text.includes('repository not found')
+  ) {
+    return {
+      category: 'repository_access',
+      blame: 'project',
+      label: 'Repository access',
+      userHint:
+        'Pushify could not read the repository. Connect a GitHub account that can see it, or install the Pushify GitHub App on the repository owner (Project → Settings → GitHub access).',
+    };
+  }
 
   if (
     text.includes('no space left on device') ||
