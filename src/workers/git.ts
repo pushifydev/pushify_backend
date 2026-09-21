@@ -20,6 +20,19 @@ export interface CloneResult {
 }
 
 /**
+ * git stores the clone URL — access token included — in .git/config. Put the clean URL back so
+ * nothing that copies the checkout later (a static site's web root did) can publish the token.
+ */
+async function scrubCloneCredentials(workDir: string, repoUrl: string, cloneUrl: string): Promise<void> {
+  if (cloneUrl === repoUrl) return;
+  const result = await execCommand(`git remote set-url origin "${repoUrl}"`, { cwd: workDir });
+  if (result.exitCode !== 0) {
+    await fs.rm(path.dirname(workDir), { recursive: true, force: true });
+    throw new Error('Could not remove the access token from the cloned repository');
+  }
+}
+
+/**
  * Clone a Git repository to a temporary directory
  */
 export async function cloneRepository(options: CloneOptions): Promise<CloneResult> {
@@ -89,6 +102,7 @@ export async function cloneRepository(options: CloneOptions): Promise<CloneResul
       throw new Error(`Failed to clone repository: ${redactUrlCredentials(result.stderr)}`);
     }
 
+    await scrubCloneCredentials(newWorkDir, repoUrl, cloneUrl);
     onProgress?.('✅ Repository cloned successfully (using default branch)');
 
     // Get the actual branch name
@@ -119,6 +133,7 @@ export async function cloneRepository(options: CloneOptions): Promise<CloneResul
     throw new Error(`Failed to clone repository: ${redactUrlCredentials(result.stderr)}`);
   }
 
+  await scrubCloneCredentials(workDir, repoUrl, cloneUrl);
   onProgress?.('✅ Repository cloned successfully');
 
   // Get branch info

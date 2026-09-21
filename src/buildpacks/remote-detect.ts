@@ -176,8 +176,16 @@ export async function detectBuildpackRemote(
   );
   if (javaHit) candidates.push(javaHit);
 
-  if (await sshExists(ssh, `${base}/index.html`)) {
-    candidates.push({ buildpackId: 'static', framework: 'static', confidence: 50 });
+  // A static site: any page within two levels — an index page at the root is the strongest
+  // sign. (Only a root `index.html` used to count, so a site kept in site/ or with Index.html
+  // was never detected as one.)
+  const pages = await ssh.exec(
+    `find ${shellQuote(base)} -maxdepth 2 -type f \\( -iname '*.html' -o -iname '*.htm' \\) -not -path '*/node_modules/*' -not -path '*/.git/*' 2>/dev/null | head -n 50`
+  );
+  const pagePaths = pages.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (pagePaths.length > 0) {
+    const rootIndex = pagePaths.some((f) => /^index\.html?$/i.test(path.posix.relative(base, f)));
+    candidates.push({ buildpackId: 'static', framework: 'static', confidence: rootIndex ? 50 : 40 });
   }
 
   // Stable sort: on equal confidence the earlier (more specific) check wins.

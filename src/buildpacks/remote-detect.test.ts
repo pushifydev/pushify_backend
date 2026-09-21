@@ -2,13 +2,23 @@ import { describe, it, expect } from 'vitest';
 import { detectBuildpackRemote } from './remote-detect';
 import { buildpackIdForFramework } from './index';
 
-/** A repo as a path → content map served over a fake ssh (`cat` / `test -e`). */
+/** A repo as a path → content map served over a fake ssh (`cat` / `test -e` / page `find`). */
 function fakeSsh(files: Record<string, string>) {
   const commands: string[] = [];
   return {
     commands,
     exec: async (command: string) => {
       commands.push(command);
+      const find = command.match(/^find '([^']+)' -maxdepth 2/);
+      if (find) {
+        const prefix = find[1].replace('/repo', '').replace(/^\//, '');
+        const pages = Object.keys(files)
+          .filter((f) => (prefix ? f.startsWith(`${prefix}/`) : true))
+          .map((f) => (prefix ? f.slice(prefix.length + 1) : f))
+          .filter((f) => /\.html?$/i.test(f) && f.split('/').length <= 2)
+          .map((f) => `${find[1]}/${f}`);
+        return { stdout: pages.join('\n'), code: 0 };
+      }
       const m = command.match(/^(cat|test -e) '([^']+)'/);
       if (!m) return { stdout: '', code: 0 };
       const content = files[m[2].replace('/repo/', '')];
@@ -42,6 +52,17 @@ describe('detectBuildpackRemote', () => {
     });
     const hit = await detectBuildpackRemote(ssh, '/repo');
     expect(hit).toMatchObject({ buildpackId: 'python', framework: 'django' });
+  });
+
+  it('detects a static site kept in a subfolder or with a capitalised Index.html', async () => {
+    expect(await detectBuildpackRemote(fakeSsh({ 'site/index.html': '', 'nginx.conf': '' }), '/repo')).toMatchObject({
+      buildpackId: 'static',
+      confidence: 40,
+    });
+    expect(await detectBuildpackRemote(fakeSsh({ 'Index.html': '' }), '/repo')).toMatchObject({
+      buildpackId: 'static',
+      confidence: 50,
+    });
   });
 
   it('still builds a Node app as Node when only package.json and index.html exist', async () => {
