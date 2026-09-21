@@ -4,6 +4,7 @@ import { gitlabService } from './gitlab.service';
 import { githubService } from './github.service';
 import { projectRepository } from '../repositories/project.repository';
 import { organizationRepository } from '../repositories/organization.repository';
+import { logger } from '../lib/logger';
 
 export type GitProvider = 'github' | 'gitlab';
 
@@ -36,11 +37,13 @@ export async function getProjectGitAccessToken(projectId: string): Promise<{
     (project.gitProvider as GitProvider | null) || detectGitProviderFromUrl(project.gitRepoUrl);
   if (!provider) return null;
 
-  try {
-    // The App path first, and deliberately before the owner lookup: an installation belongs to
-    // the account, so it must keep working even when the organisation has no usable owner
-    // integration left — the exact case the OAuth model fails.
-    if (provider === 'github') {
+  // The App path first, and deliberately before the owner lookup: an installation belongs to
+  // the account, so it must keep working even when the organisation has no usable owner
+  // integration left — the exact case the OAuth model fails. It gets its own try: an App
+  // failure (bad key, removed installation, GitHub down) must fall through to the OAuth token,
+  // not leave the clone with no credentials at all.
+  if (provider === 'github') {
+    try {
       const installation = await githubAppService.findInstallationForRepo(
         project.organizationId,
         project.gitRepoUrl
@@ -53,8 +56,15 @@ export async function getProjectGitAccessToken(projectId: string): Promise<{
           source: 'app',
         };
       }
+    } catch (error) {
+      logger.warn(
+        { projectId, error: String(error) },
+        'GitHub App credential failed; falling back to the owner OAuth token'
+      );
     }
+  }
 
+  try {
     const owner = await organizationRepository.findOwner(project.organizationId);
     if (!owner) return null;
 
@@ -67,7 +77,8 @@ export async function getProjectGitAccessToken(projectId: string): Promise<{
     const integration = await githubService.getIntegration(owner.userId);
     if (!integration) return null;
     return { provider: 'github', token: decrypt(integration.accessToken), source: 'oauth' };
-  } catch {
+  } catch (error) {
+    logger.warn({ projectId, error: String(error) }, 'Owner OAuth git credential lookup failed');
     return null;
   }
 }

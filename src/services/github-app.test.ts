@@ -151,8 +151,26 @@ describe('getProjectGitAccessToken', () => {
     expect(await getProjectGitAccessToken('project-1')).toBeNull();
   });
 
-  it('never throws outwards when a lookup fails', async () => {
+  it('falls back to the owner OAuth token when the installation lookup fails', async () => {
+    // Returning null here sent private repos to `git clone` with no credentials at all
+    // ("could not read Username for 'https://github.com'") even though the owner token worked.
     mocks.findInstallationForRepo.mockRejectedValue(new Error('github is down'));
+
+    const result = await getProjectGitAccessToken('project-1');
+    expect(result).toEqual({ provider: 'github', token: 'decrypted:oauth-token', source: 'oauth' });
+  });
+
+  it('falls back to the owner OAuth token when minting the installation token fails', async () => {
+    mocks.findInstallationForRepo.mockResolvedValue({ installationId: 42 });
+    mocks.tokenFor.mockRejectedValue(new Error('Could not mint a GitHub installation token (HTTP 401)'));
+
+    const result = await getProjectGitAccessToken('project-1');
+    expect(result).toEqual({ provider: 'github', token: 'decrypted:oauth-token', source: 'oauth' });
+  });
+
+  it('never throws outwards when every lookup fails', async () => {
+    mocks.findInstallationForRepo.mockRejectedValue(new Error('github is down'));
+    mocks.findOwner.mockRejectedValue(new Error('db is down'));
     expect(await getProjectGitAccessToken('project-1')).toBeNull();
   });
 });
