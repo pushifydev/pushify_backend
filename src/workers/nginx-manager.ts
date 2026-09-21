@@ -272,6 +272,268 @@ export async function addSite(
   };
 }
 
+// ============ Whole-project sites ============
+
+/** Where HTTP-01 challenges are answered from (certbot --webroot), on every port-80 block. */
+export const ACME_WEBROOT = '/var/www/letsencrypt';
+
+export interface ProjectSiteDomain {
+  domain: string;
+  /** auto: *.<preview base> on the wildcard cert; custom: its own Let's Encrypt certificate */
+  kind: 'auto' | 'custom';
+  /** custom: a certificate for `domain` is installed at /etc/letsencrypt/live/<domain> */
+  ssl: boolean;
+  /** The www / apex counterpart(s): redirected to `domain` */
+  aliases?: string[];
+  /** Aliases the installed certificate also covers — they redirect over HTTPS too */
+  sslAliases?: string[];
+  nginxSettings?: NginxSettings;
+}
+
+export interface ProjectSitesConfig {
+  projectSlug: string;
+  containerPort: number;
+  domains: ProjectSiteDomain[];
+}
+
+const ACME_LOCATION = `
+    location ^~ /.well-known/acme-challenge/ {
+        root ${ACME_WEBROOT};
+        default_type text/plain;
+        try_files $uri =404;
+    }`;
+
+const TLS_SETTINGS = `
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSL:50m;
+    ssl_session_tickets off;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;`;
+
+function certLines(dir: string, withChain: boolean): string {
+  return `
+    ssl_certificate ${dir}/fullchain.pem;
+    ssl_certificate_key ${dir}/privkey.pem;${withChain ? `\n    ssl_trusted_certificate ${dir}/chain.pem;` : ''}`;
+}
+
+/** The body every block that actually serves the app shares. */
+function appLocation(
+  projectSlug: string,
+  zoneKey: string,
+  containerPort: number,
+  nginxSettings: NginxSettings | undefined
+): { zone: string; body: string; forceHttps: boolean } {
+  const settings = { ...DEFAULT_NGINX_SETTINGS, ...(nginxSettings || {}) };
+  const targetPort = settings.proxyPort || containerPort;
+  const websocketHeaders = settings.enableWebsocket ? `
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_cache_bypass $http_upgrade;` : '';
+  const gzipConfig = settings.enableGzip ? `
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_types text/plain text/css text/xml application/json application/javascript application/rss+xml application/atom+xml image/svg+xml;` : '';
+  const rateLimitLocation = generateRateLimitLocation(zoneKey, settings.rateLimit);
+  const cachingConfig = settings.caching?.enabled ? `
+        proxy_cache_valid 200 ${settings.caching.maxAge}s;
+        add_header X-Cache-Status $upstream_cache_status;` : '';
+  const customHeadersBlock = generateCustomHeaders(settings.customHeaders);
+  const customLocations = settings.customLocationBlocks ? `\n${settings.customLocationBlocks}` : '';
+
+  const body = `
+    # Proxy port: ${targetPort}${settings.proxyPort ? ` (overridden from ${containerPort})` : ''}
+    client_max_body_size ${settings.clientMaxBodySize};
+${gzipConfig}
+
+    location / {
+        proxy_pass http://127.0.0.1:${targetPort};
+        proxy_http_version 1.1;${websocketHeaders}
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout ${settings.proxyTimeout};
+        proxy_send_timeout ${settings.proxyTimeout};
+        proxy_connect_timeout 60;
+        proxy_buffering off;${rateLimitLocation ? '\n' + rateLimitLocation : ''}${cachingConfig}${customHeadersBlock ? '\n' + customHeadersBlock : ''}
+    }${customLocations}${generateWakeFallback(projectSlug)}`;
+
+  return {
+    zone: generateRateLimitZone(zoneKey, settings.rateLimit),
+    body,
+    forceHttps: settings.forceHttps !== false,
+  };
+}
+
+function renderProjectDomain(site: ProjectSiteDomain, projectSlug: string, containerPort: number, index: number) {
+  // One rate-limit zone per domain: two domains of one project each with rate limiting on
+  // would otherwise declare the same zone twice and fail `nginx -t`.
+  const zoneKey = index === 0 ? projectSlug : `${projectSlug}_${index}`;
+  const app = appLocation(projectSlug, zoneKey, containerPort, site.nginxSettings);
+  const blocks: string[] = [];
+  const aliases = site.aliases ?? [];
+  const sslAliases = (site.sslAliases ?? []).filter((a) => aliases.includes(a));
+
+  if (site.kind === 'auto') {
+    const wildcardCertDir = env.WILDCARD_SSL_PATH || `/etc/letsencrypt/live/${env.PREVIEW_BASE_URL || ''}`;
+    blocks.push(`server {
+    listen 80;
+    listen [::]:80;
+    server_name ${site.domain};
+    return 301 https://$host$request_uri;
+}`);
+    blocks.push(`server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${site.domain};
+${certLines(wildcardCertDir, false)}
+${TLS_SETTINGS}
+    add_header Strict-Transport-Security "max-age=63072000" always;
+${app.body}
+}`);
+    return { zone: app.zone, blocks };
+  }
+
+  const certDir = `/etc/letsencrypt/live/${site.domain}`;
+  if (site.ssl && app.forceHttps) {
+    // Every plain-HTTP name goes to the canonical https URL; challenges still answer on 80.
+    blocks.push(`server {
+    listen 80;
+    listen [::]:80;
+    server_name ${[site.domain, ...aliases].join(' ')};
+${ACME_LOCATION}
+    location / {
+        return 301 https://${site.domain}$request_uri;
+    }
+}`);
+  } else {
+    blocks.push(`server {
+    listen 80;
+    listen [::]:80;
+    server_name ${site.domain};
+${ACME_LOCATION}
+${app.body}
+}`);
+    if (aliases.length) {
+      blocks.push(`server {
+    listen 80;
+    listen [::]:80;
+    server_name ${aliases.join(' ')};
+${ACME_LOCATION}
+    location / {
+        return 301 http://${site.domain}$request_uri;
+    }
+}`);
+    }
+  }
+
+  if (site.ssl) {
+    blocks.push(`server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${site.domain};
+${certLines(certDir, true)}
+${TLS_SETTINGS}
+    add_header Strict-Transport-Security "max-age=63072000" always;
+${app.body}
+}`);
+    if (sslAliases.length) {
+      blocks.push(`server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${sslAliases.join(' ')};
+${certLines(certDir, true)}
+${TLS_SETTINGS}
+    return 301 https://${site.domain}$request_uri;
+}`);
+    }
+  }
+
+  return { zone: app.zone, blocks };
+}
+
+/**
+ * The project's whole vhost file: every domain it has, each with its own blocks. Written as
+ * one file so no writer (deploy, verify, settings edit) can drop another domain's config —
+ * which is what used to happen when each wrote only "its" domain into the shared file.
+ */
+export function generateProjectSitesConfig(config: ProjectSitesConfig): string {
+  const rendered = config.domains.map((site, i) =>
+    renderProjectDomain(site, config.projectSlug, config.containerPort, i)
+  );
+  const zones = rendered.map((r) => r.zone).filter(Boolean);
+  const names = config.domains
+    .map((d) => [d.domain, ...(d.aliases ?? [])].join(' + '))
+    .join(', ');
+
+  return `# Pushify site: ${config.projectSlug}
+# Domains: ${names || '(none)'}
+# Generated: ${new Date().toISOString()}
+${zones.length ? '\n' + zones.join('\n') + '\n' : ''}
+${rendered.flatMap((r) => r.blocks).join('\n\n')}
+`;
+}
+
+/**
+ * Write the project's vhost file and test it. On a failed `nginx -t` the previous file is put
+ * back (instead of deleting the site, which took every domain of the project offline).
+ */
+export async function writeProjectSites(
+  ssh: SSHClient,
+  config: ProjectSitesConfig
+): Promise<{ success: boolean; message: string }> {
+  const siteFileName = `pushify-${config.projectSlug}`;
+  const configPath = `${NGINX_SITES_DIR}/${siteFileName}`;
+  const backupPath = `${PUSHIFY_SITES_DIR}/${siteFileName}.prev`;
+
+  await ssh.exec(`mkdir -p ${PUSHIFY_SITES_DIR} ${ACME_WEBROOT}`);
+
+  if (config.domains.length === 0) {
+    await removeSite(ssh, config.projectSlug);
+    return { success: true, message: `Site ${config.projectSlug} has no domains; vhost removed` };
+  }
+
+  const hadPrevious = (await ssh.exec(`test -f ${configPath} && cp -f ${configPath} ${backupPath} && echo yes || true`))
+    .stdout.trim() === 'yes';
+
+  const content = generateProjectSitesConfig(config);
+  await ssh.uploadFile(content, configPath);
+  await ssh.exec(`ln -sf ${configPath} ${NGINX_ENABLED_DIR}/${siteFileName}`);
+
+  const testResult = await ssh.exec('nginx -t 2>&1');
+  if (testResult.code !== 0) {
+    if (hadPrevious) {
+      await ssh.exec(`cp -f ${backupPath} ${configPath}`);
+    } else {
+      await ssh.exec(`rm -f ${NGINX_ENABLED_DIR}/${siteFileName} ${configPath}`);
+    }
+    return {
+      success: false,
+      message: `Nginx configuration test failed: ${testResult.stderr || testResult.stdout}`,
+    };
+  }
+
+  await ssh.uploadFile(content, `${PUSHIFY_SITES_DIR}/${siteFileName}.conf`);
+  return { success: true, message: `Site ${config.projectSlug} written (${config.domains.length} domain(s))` };
+}
+
+/** The names an installed certificate covers, or null when there is none. */
+export async function readCertificateNames(ssh: SSHClient, domain: string): Promise<string[] | null> {
+  const certPath = `/etc/letsencrypt/live/${domain}/fullchain.pem`;
+  const result = await ssh.exec(
+    `test -f ${certPath} && openssl x509 -in ${certPath} -noout -text 2>/dev/null | grep -o 'DNS:[^,[:space:]]*' || echo __none__`
+  );
+  const out = result.stdout.trim();
+  if (!out || out === '__none__') return null;
+  return out
+    .split(/\s+/)
+    .map((entry) => entry.replace(/^DNS:/, '').toLowerCase())
+    .filter(Boolean);
+}
+
 export interface StaticSiteConfig {
   /** Project slug — site files live at /opt/pushify/site-studio/<slug>. */
   slug: string;
@@ -710,42 +972,41 @@ export async function isDomainConfigured(
 }
 
 /**
- * Request SSL certificate using Certbot
- * Uses certonly mode to avoid Certbot modifying Nginx config
- * We manage Nginx config ourselves
+ * Request an SSL certificate using Certbot (certonly — we manage the Nginx config ourselves).
+ *
+ * `aliases` go on the same certificate (e.g. www.example.com next to example.com). The lineage
+ * is pinned to `--cert-name <domain>` so it always lives at /etc/letsencrypt/live/<domain>
+ * (without it a second request with more names lands in `<domain>-0001` and Nginx keeps
+ * serving the old one), and `--expand` lets a later request add a name to it.
+ * Order: the nginx plugin, then the webroot our port-80 blocks serve, then standalone (only
+ * useful when Nginx is not holding port 80).
  */
 export async function requestSSLCertificate(
   ssh: SSHClient,
   domain: string,
-  email: string
+  email: string,
+  options: { aliases?: string[] } = {}
 ): Promise<{ success: boolean; message: string }> {
-  // Use certonly with webroot or standalone to get certificate without modifying nginx
-  // First try webroot (requires existing nginx config serving /.well-known/acme-challenge)
-  // Fall back to standalone if webroot fails (temporarily stops nginx)
+  const names = [domain, ...(options.aliases ?? []).filter((a) => a && a !== domain)];
+  const domainArgs = names.map((n) => `-d ${n}`).join(' ');
+  const common = `--cert-name ${domain} ${domainArgs} --expand --non-interactive --agree-tos -m ${email}`;
 
-  // Try certonly with nginx plugin (doesn't modify config, just uses it for auth)
-  const result = await ssh.exec(
-    `certbot certonly --nginx -d ${domain} --non-interactive --agree-tos -m ${email} 2>&1`
-  );
+  const attempts = [
+    `certbot certonly --nginx ${common} 2>&1`,
+    `mkdir -p ${ACME_WEBROOT} && certbot certonly --webroot -w ${ACME_WEBROOT} ${common} 2>&1`,
+    `certbot certonly --standalone --preferred-challenges http ${common} 2>&1`,
+  ];
 
-  if (result.code !== 0) {
-    // Try standalone as fallback (will temporarily bind to port 80)
-    const standaloneResult = await ssh.exec(
-      `certbot certonly --standalone -d ${domain} --non-interactive --agree-tos -m ${email} --preferred-challenges http 2>&1`
-    );
-
-    if (standaloneResult.code !== 0) {
-      return {
-        success: false,
-        message: `Failed to obtain SSL certificate: ${standaloneResult.stdout || standaloneResult.stderr}`,
-      };
+  let last = '';
+  for (const command of attempts) {
+    const result = await ssh.exec(command);
+    if (result.code === 0) {
+      return { success: true, message: `SSL certificate obtained for ${names.join(', ')}` };
     }
+    last = result.stdout || result.stderr;
   }
 
-  return {
-    success: true,
-    message: `SSL certificate obtained for ${domain}`,
-  };
+  return { success: false, message: `Failed to obtain SSL certificate: ${last}` };
 }
 
 /**
