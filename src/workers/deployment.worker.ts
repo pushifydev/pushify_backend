@@ -466,6 +466,10 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       }
     }
 
+    if (!accessToken && project.gitRepoUrl) {
+      addLog('⚠️ No git credentials found — cloning anonymously, which only works for public repositories');
+    }
+
     // Remote deployment when there's a target server (the user's own, or the shared runner).
     if (deployTargetServerId) {
       addLog(
