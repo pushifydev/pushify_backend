@@ -281,7 +281,8 @@ githubRouter.openapi(authUrlRoute, async (c) => {
   const state = await createOAuthState({ kind: 'github_integration', userId });
 
   try {
-    const url = githubService.getAuthorizationUrl(state);
+    // Connecting is how people switch GitHub accounts, so always let them pick one.
+    const url = githubService.getAuthorizationUrl(state, { selectAccount: true });
     return c.json({ data: { url, state } });
   } catch {
     throw new HTTPException(500, { message: t(locale, 'integrations', 'notConfigured') });
