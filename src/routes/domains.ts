@@ -35,26 +35,27 @@ const CreateDomainSchema = z
   })
   .openapi('CreateDomain');
 
+// A field sent as null (or '' / {}) is removed; a field left out keeps its current value.
 const NginxSettingsSchema = z
   .object({
-    proxyPort: z.number().min(1).max(65535).optional().openapi({ example: 3000, description: 'Override the container port for this domain' }),
+    proxyPort: z.number().min(1).max(65535).nullable().optional().openapi({ example: 3000, description: 'Override the container port for this domain' }),
     proxyTimeout: z.number().min(1).max(86400).optional().openapi({ example: 86400 }),
     clientMaxBodySize: z.string().regex(/^\d+[kmg]?$/i).optional().openapi({ example: '100m' }),
     enableWebsocket: z.boolean().optional().openapi({ example: true }),
     enableGzip: z.boolean().optional().openapi({ example: true }),
     forceHttps: z.boolean().optional().openapi({ example: true }),
-    customHeaders: z.record(z.string(), z.string()).optional().openapi({ example: { 'X-Custom-Header': 'value' } }),
+    customHeaders: z.record(z.string(), z.string()).nullable().optional().openapi({ example: { 'X-Custom-Header': 'value' } }),
     rateLimit: z.object({
       enabled: z.boolean(),
       requestsPerSecond: z.number().min(1).max(1000),
       burst: z.number().min(1).max(100),
-    }).optional(),
+    }).nullable().optional(),
     caching: z.object({
       enabled: z.boolean(),
       maxAge: z.number().min(1).max(31536000),
       staleWhileRevalidate: z.number().optional(),
-    }).optional(),
-    customLocationBlocks: z.string().max(10000).optional(),
+    }).nullable().optional(),
+    customLocationBlocks: z.string().max(10000).nullable().optional(),
   })
   .openapi('NginxSettings');
 
