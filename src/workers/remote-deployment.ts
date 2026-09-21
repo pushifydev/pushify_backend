@@ -927,6 +927,15 @@ export async function deployToRemoteServer(
     if (cloneResult.code !== 0) {
       throw new Error(`Failed to clone repository: ${redactUrlCredentials(cloneResult.stderr)}`);
     }
+    // git writes the clone URL — token included — into .git/config. Anything that later copies
+    // the checkout (a static site's web root did) would publish it; keep only the clean URL.
+    if (cloneUrl !== repoUrl) {
+      const scrub = await ssh.exec(`git -C "${repoDir}" remote set-url origin "${repoUrl}"`);
+      if (scrub.code !== 0) {
+        await ssh.exec(`rm -rf "${repoDir}"`);
+        throw new Error('Could not remove the access token from the cloned repository');
+      }
+    }
     onProgress('✅ Repository cloned');
 
     const disk = await checkServerDiskSpace(ssh);
