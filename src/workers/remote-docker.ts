@@ -1,3 +1,4 @@
+import { dockerConfigPrefix } from '../lib/registry';
 import type { SSHClient } from '../utils/ssh';
 import { env } from '../config/env';
 import { dockerBuildKitPrefix, getBuildMemoryLimit, getRunMemoryLimit } from '../lib/platform-docker';
@@ -12,6 +13,10 @@ export interface BuildImageOptions {
   /** From buildpack detection — tunes build memory limits */
   framework?: string;
   buildpackId?: string;
+  /** This deploy's private-registry logins (`lib/registry.ts`), for a private `FROM` base image */
+  dockerConfig?: string | null;
+  /** Re-fetch the `FROM` image instead of using the copy on the server (image deploys) */
+  pullBase?: boolean;
   onProgress?: (message: string) => void;
 }
 
@@ -78,7 +83,7 @@ export async function buildImage(
   ssh: SSHClient,
   options: BuildImageOptions
 ): Promise<{ success: boolean; logs: string }> {
-  const { workDir, imageName, tag, dockerfilePath, buildArgs, framework, buildpackId, onProgress } =
+  const { workDir, imageName, tag, dockerfilePath, buildArgs, framework, buildpackId, dockerConfig, pullBase, onProgress } =
     options;
   const buildMemory = getBuildMemoryLimit(framework, buildpackId);
 
@@ -92,22 +97,17 @@ export async function buildImage(
     onProgress?.(`🩺 Docker on server: ${diagLine.slice(0, 400)}`);
   }
 
-  let dockerArgs = `${dockerBuildKitPrefix()} ${REMOTE_DOCKER_BIN} build --memory ${buildMemory}`;
+  // DOCKER_CONFIG points at this deploy's registry logins, if it has any — that is what lets a
+  // Dockerfile's `FROM` pull a private base image.
+  let dockerArgs = `${dockerConfigPrefix(dockerConfig ?? null)}${dockerBuildKitPrefix()} ${REMOTE_DOCKER_BIN} build --memory ${buildMemory}`;
   dockerArgs += ` --build-arg BUILDKIT_INLINE_CACHE=1`;
+  // An image deploy must fetch the reference again — the point of redeploying a moved tag
+  if (pullBase) dockerArgs += ' --pull';
 
-  // Only reuse local image cache when the tag already exists (avoids registry pull errors)
-  const cacheProbe = await ssh.exec(
-    `/bin/bash --noprofile --norc -c ${shSingleQuote(
-      `docker image inspect ${imageName}:latest >/dev/null 2>&1 && echo latest; docker image inspect ${imageName}:${tag} >/dev/null 2>&1 && echo tag`,
-    )}`,
-  );
-  const cacheHits = `${cacheProbe.stdout}${cacheProbe.stderr}`;
-  if (cacheHits.includes('latest')) {
-    dockerArgs += ` --cache-from ${imageName}:latest`;
-  }
-  if (cacheHits.includes('tag')) {
-    dockerArgs += ` --cache-from ${imageName}:${tag}`;
-  }
+  // No --cache-from: BuildKit (always on here) reads it as a *registry* reference, so pointing it
+  // at a local-only tag never cached anything and printed "failed to configure registry cache
+  // importer: pull access denied" into every customer's build log. Layer caching comes from
+  // BuildKit's own store on the server, which survives between builds.
 
   if (dockerfilePath) {
     dockerArgs += ` -f ${shSingleQuote(dockerfilePath)}`;

@@ -49,6 +49,33 @@ mkdir -p /etc/letsencrypt
 printf 'server = https://127.0.0.1:14000/dir\nno-verify-ssl = true\n' > /etc/letsencrypt/cli.ini
 for _ in $(seq 1 30); do curl -sk https://127.0.0.1:14000/dir >/dev/null && break; sleep 1; done
 
+log "starting a private registry (htpasswd auth, for the private-registry test)"
+# Best effort: if Docker Hub is having a bad day, that one test skips instead of failing the run
+start_registry() {
+  mkdir -p /opt/e2e-registry/auth
+  docker run --rm --entrypoint htpasswd httpd:2 -Bbn e2euser e2epass > /opt/e2e-registry/auth/htpasswd
+  docker run -d --name pushify-e2e-registry --network e2e-infra -p 127.0.0.1:5000:5000 \
+    -v /opt/e2e-registry/auth:/auth \
+    -e REGISTRY_AUTH=htpasswd -e REGISTRY_AUTH_HTPASSWD_REALM=pushify \
+    -e REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd registry:2 >/dev/null
+  # /v2/ answers 401 once htpasswd is in place — that is the registry being up, not an error
+  for _ in $(seq 1 30); do
+    case "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5000/v2/ || true)" in
+      200|401) return 0 ;;
+    esac
+    sleep 1
+  done
+  return 1
+}
+if start_registry; then
+  # Docker treats localhost registries as plain HTTP, so no certificate is needed in here
+  export PUSHIFY_E2E_REGISTRY=localhost:5000
+  export PUSHIFY_E2E_REGISTRY_USER=e2euser
+  export PUSHIFY_E2E_REGISTRY_PASS=e2epass
+else
+  log "WARNING: no private registry — the private-registry test will be skipped"
+fi
+
 # Fixture repos are created by the test process; git refuses repos owned by "someone else"
 git config --system --add safe.directory '*'
 git config --system user.email e2e@pushify.test

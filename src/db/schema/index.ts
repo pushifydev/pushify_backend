@@ -7,6 +7,9 @@ export * from './organizations';
 // Projects
 export * from './projects';
 
+// Private container registries
+export * from './registry-credentials';
+
 // Deployments
 export * from './deployments';
 

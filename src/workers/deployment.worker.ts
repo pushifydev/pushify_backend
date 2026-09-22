@@ -69,6 +69,7 @@ import {
   getServerDeployActiveCount,
 } from '../lib/deploy-concurrency';
 import { isQueueAvailable } from '../lib/queue';
+import { registryCredentialService } from '../services/registry-credential.service';
 
 const POLL_INTERVAL = 5000; // 5 seconds
 
@@ -692,10 +693,15 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
 
       // Check if this is a marketplace project (skip git clone)
       const isMarketplace = !!(projectSettings?.marketplaceTemplateId);
+      // A project deployed from a ready image has no repository to clone
+      const deployImage = project.dockerImage?.trim() || undefined;
 
       let localClone: { workDir: string; branch: string; commitHash: string; commitMessage: string } | null = null;
 
-      if (isMarketplace) {
+      if (deployImage) {
+        addLog(`📦 Image project: ${deployImage}`);
+        addLog('⏭️ Skipping git clone — the image is deployed as it is');
+      } else if (isMarketplace) {
         addLog(`📦 Marketplace app: ${projectSettings.marketplaceTemplateId}`);
         addLog('⏭️ Skipping git clone — using Docker image directly');
       } else {
@@ -850,6 +856,8 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         fileConfig?.output ?? ((projectSettings?.outputDirectory as string) || undefined);
       const effPort = fileConfig?.port ?? (project.port || 3000);
 
+      const deployRegistries = await registryCredentialService.forDeploy(project.organizationId);
+
       const remoteResult = await deployToRemoteServer({
         serverId: deployTargetServerId,
         projectId: project.id,
@@ -858,7 +866,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         deploymentId: job.id,
         repoUrl: project.gitRepoUrl || '',
         branch: localClone?.branch || job.branch || (environment === 'staging' ? project.stagingBranch : project.gitBranch) || 'main',
-        commitHash: localClone?.commitHash || 'marketplace',
+        commitHash: localClone?.commitHash || (deployImage ? 'image' : 'marketplace'),
         port: effPort,
         envVars: envVarsDecrypted,
         buildCommand: effBuildCommand,
@@ -873,6 +881,10 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         accessToken,
         onProgress: onRemoteProgress,
         marketplace: marketplaceConfig,
+        dockerImage: deployImage,
+        // The organization's private-registry logins: for a private `FROM` base image and for
+        // image projects on a private registry. Empty for everyone who has none.
+        registryCredentials: deployRegistries,
         deploySuffix: previewCtx?.deploySuffix ?? (environment === 'staging' ? '-staging' : undefined),
         environment,
         // Previews stay a single container whatever the project runs in production.
@@ -883,6 +895,11 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       if (!remoteResult.success) {
         throw new Error(remoteResult.error || 'Remote deployment failed');
       }
+
+      // The deploy got past the logins, so these credentials still work — say when last
+      registryCredentialService
+        .markUsed(project.organizationId, deployRegistries.map((credential) => credential.registry))
+        .catch(() => undefined);
 
       // Update deployment as successful (including image info for rollback)
       await db
@@ -972,7 +989,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         await notificationService.sendNotifications(job.projectId, 'deployment.success', {
           deploymentId: job.id,
           branch: localClone?.branch || 'main',
-          commitHash: localClone?.commitHash || 'marketplace',
+          commitHash: localClone?.commitHash || (deployImage ? 'image' : 'marketplace'),
           status: 'running',
           message: 'Deployment completed successfully',
           url: remoteResult.deploymentUrl,
@@ -989,6 +1006,15 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       throw new Error(
         'This project has no server to deploy to. Assign a server in the project settings — ' +
           'deploying on the Pushify control plane itself is disabled.'
+      );
+    }
+
+    // The local fallback builds from a checkout; an image project has none. It is a dev-only
+    // path anyway (customer code on the control plane), so say what to do instead of failing
+    // three steps later on a clone of an empty URL.
+    if (project.dockerImage?.trim()) {
+      throw new Error(
+        'Deploying from an image needs a server. Assign one in the project settings.'
       );
     }
 

@@ -15,6 +15,7 @@ import { assertOrganizationCanMutateResources } from './organization-billing.ser
 import { getApiBaseUrl } from '../lib/api-base-url';
 import { planLimitsService } from './plan-limits.service';
 import { firstRepoSettingsError, firstProjectSettingsError, validateGitBranch } from '../lib/repo-settings-validate';
+import { validateImageReference } from '../lib/registry';
 
 // Types
 interface CreateProjectInput {
@@ -30,6 +31,8 @@ interface CreateProjectInput {
   port?: number;
   autoDeploy?: boolean;
   serverId?: string; // Server to deploy to (optional)
+  /** Deploy a ready image instead of a repository (`ghcr.io/acme/api:1.4`) */
+  dockerImage?: string;
 }
 
 interface UpdateProjectInput {
@@ -48,6 +51,8 @@ interface UpdateProjectInput {
   dockerfilePath?: string;
   port?: number;
   autoDeploy?: boolean;
+  /** Deploy a ready image instead of a repository; null goes back to the repository */
+  dockerImage?: string | null;
   serverId?: string | null; // Server to deploy to (optional, null to remove)
   sleepEnabled?: boolean;
   sleepAfterMinutes?: number;
@@ -72,6 +77,11 @@ export const projectService = {
     await assertOrganizationCanMutateResources(organizationId, locale);
 
     // Repo URL, branch, paths and commands reach a root shell on the deploy server.
+    if (input.dockerImage) {
+      const imageProblem = validateImageReference(input.dockerImage);
+      if (imageProblem) throw new HTTPException(400, { message: imageProblem });
+    }
+
     const repoProblem = firstRepoSettingsError(input);
     if (repoProblem) {
       throw new HTTPException(400, { message: repoProblem });
@@ -124,6 +134,7 @@ export const projectService = {
       startCommand: input.startCommand,
       rootDirectory: input.rootDirectory || '/',
       dockerfilePath: input.dockerfilePath,
+      dockerImage: input.dockerImage?.trim() || null,
       port: input.port || 3000,
       autoDeploy: input.autoDeploy ?? true,
       serverId: validatedServerId,
@@ -224,6 +235,12 @@ export const projectService = {
 
     if (input.replicas !== undefined && (!Number.isInteger(input.replicas) || input.replicas < 1 || input.replicas > 10)) {
       throw new HTTPException(400, { message: 'Replicas must be between 1 and 10' });
+    }
+
+    // The image reference ends up in a Dockerfile on the deploy server
+    if (input.dockerImage) {
+      const imageProblem = validateImageReference(input.dockerImage);
+      if (imageProblem) throw new HTTPException(400, { message: imageProblem });
     }
 
     // The staging branch reaches a shell on the deploy server, same as the production one.

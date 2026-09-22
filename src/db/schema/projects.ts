@@ -30,6 +30,14 @@ export const projects = pgTable('projects', {
   rootDirectory: varchar('root_directory', { length: 255 }).default('/'),
   dockerfilePath: varchar('dockerfile_path', { length: 255 }),
 
+  /**
+   * Deploy a ready image instead of building a repository: `ghcr.io/acme/api:1.4`. When this is
+   * set the project needs no git repository — each deploy pulls the reference again, so moving a
+   * tag and redeploying ships the new image. A private registry needs the organization's
+   * credentials for that host (`registry_credentials`).
+   */
+  dockerImage: varchar('docker_image', { length: 400 }),
+
   // Runtime configuration
   port: integer('port').default(3000),
   autoDeploy: boolean('auto_deploy').default(true).notNull(),

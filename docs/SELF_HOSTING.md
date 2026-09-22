@@ -49,6 +49,19 @@ works:
 This keeps untrusted app builds isolated from the platform itself — one server or many, same
 model.
 
+### Private registries and image deploys
+
+**Settings → Private registries** stores a login per registry for the organization (`ghcr.io`,
+`registry.gitlab.com`, a self-hosted `registry.example.com:5000` — host only, no scheme). Before
+each build and pull the deploy signs in on the server with them, into a directory it deletes
+afterwards, so a Dockerfile can `FROM` a private base image. The token is write-only: it can be
+replaced but never read back.
+
+A project can also deploy a **ready image** instead of a repository: put the reference in project
+settings → *Docker image* (`ghcr.io/acme/api:1.4`) and every deploy pulls that reference again —
+moving the tag and redeploying ships the new image. Such a project needs a server; the no-server
+fallback cannot do it.
+
 ## Configuration
 
 Everything lives in `pushify/.env`. Required values are generated for you; optional integrations

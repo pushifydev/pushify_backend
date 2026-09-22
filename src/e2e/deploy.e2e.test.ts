@@ -1064,4 +1064,90 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
     },
     600_000
   );
+
+  it.runIf(!!process.env.PUSHIFY_E2E_REGISTRY)(
+    'private registry: an image project deploys only with the organization\'s credentials',
+    async () => {
+      onTestFailed(() => console.error(serverState()));
+      const registry = process.env.PUSHIFY_E2E_REGISTRY!;
+      const username = process.env.PUSHIFY_E2E_REGISTRY_USER!;
+      const password = process.env.PUSHIFY_E2E_REGISTRY_PASS!;
+      const image = `${registry}/e2e/app-${run}:1`;
+
+      // Put an image in the registry: a small server, pushed as the customer would have
+      const context = await fs.mkdtemp(path.join(os.tmpdir(), 'pushify-e2e-image-'));
+      tmpDirs.push(context);
+      await fs.writeFile(
+        path.join(context, 'app.js'),
+        "const http = require('http');\nhttp.createServer((req, res) => res.end('E2E-IMAGE v1')).listen(process.env.PORT || 3000);\n"
+      );
+      await fs.writeFile(
+        path.join(context, 'Dockerfile'),
+        ['FROM node:20-alpine', 'COPY app.js /app.js', 'EXPOSE 3000', 'CMD ["node", "/app.js"]', ''].join('\n')
+      );
+      execSync(`docker build -q -t ${image} ${context}`, { stdio: 'pipe' });
+      execSync(`echo '${password}' | docker login ${registry} -u ${username} --password-stdin`, { stdio: 'pipe', shell: '/bin/bash' });
+      execSync(`docker push -q ${image}`, { stdio: 'pipe' });
+      // Forget the push login and the local copy, so only Pushify's own login can get it back
+      execSync(`docker logout ${registry}`, { stdio: 'pipe' });
+      execSync(`docker rmi -f ${image}`, { stdio: 'pipe' });
+
+      const domain = `image-${run}.127.0.0.1.nip.io`;
+      const [project] = await db
+        .insert(schema.projects)
+        .values({
+          organizationId,
+          name: `e2e-image-${run}`,
+          slug: `e2e-image-${run}`,
+          serverId,
+          dockerImage: image,
+          port: 3000,
+          autoDeploy: false,
+        })
+        .returning();
+      await db.insert(schema.domains).values({ projectId: project.id, domain, isPrimary: true });
+
+      const { registryCredentialService } = await import('../services/registry-credential.service');
+
+      // Without credentials the image is simply not readable — the deploy must say so
+      const [failed] = await db
+        .insert(schema.deployments)
+        .values({ projectId: project.id, status: 'pending', trigger: 'manual', branch: 'main', triggeredById: userId })
+        .returning();
+      await executeDeploymentJob((await loadDeploymentJobById(failed.id))!);
+      const failedRow = await db.query.deployments.findFirst({ where: (d, { eq }) => eq(d.id, failed.id) });
+      expect(failedRow?.status).toBe('failed');
+
+      // With them, the same deploy pulls the image and serves it
+      await registryCredentialService.create(organizationId, userId, {
+        name: 'E2E registry',
+        registry,
+        username,
+        password,
+      });
+      await deploy(project.id);
+      expect(request(`https://${domain}/`).body).toBe('E2E-IMAGE v1');
+
+      // The image's own CMD runs it — no Dockerfile, no build commands were involved
+      const container = execSync(`docker ps --filter name=pushify-${project.slug} --format '{{.Names}}'`, { encoding: 'utf8' })
+        .split('\n')
+        .filter(Boolean);
+      expect(container).toHaveLength(1);
+
+      // A moved tag ships on redeploy: the pull is forced, not served from the server's cache
+      await fs.writeFile(
+        path.join(context, 'app.js'),
+        "const http = require('http');\nhttp.createServer((req, res) => res.end('E2E-IMAGE v2')).listen(process.env.PORT || 3000);\n"
+      );
+      execSync(`echo '${password}' | docker login ${registry} -u ${username} --password-stdin`, { stdio: 'pipe', shell: '/bin/bash' });
+      execSync(`docker build -q -t ${image} ${context} && docker push -q ${image}`, { stdio: 'pipe', shell: '/bin/bash' });
+      execSync(`docker logout ${registry}`, { stdio: 'pipe' });
+      await deploy(project.id);
+      expect(request(`https://${domain}/`).body).toBe('E2E-IMAGE v2');
+
+      // The token does not outlive the deploy: no config directory is left on the server
+      expect(tryExec('ls -d /tmp/pushify-registry-* 2>/dev/null || true')).toBe('');
+    },
+    900_000
+  );
 });

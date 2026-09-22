@@ -45,6 +45,16 @@ import { generateDockerfile } from './dockerfile';
 import { normalizeRootDirectory } from '../lib/normalize-root-directory';
 import { checkServerDiskSpace } from '../lib/server-disk-check';
 import { domainService } from '../services/domain.service';
+import { checkComposeFile, checkVolumes } from '../lib/host-access-guard';
+import {
+  buildLoginCommand,
+  buildLogoutCommand,
+  credentialsToApply,
+  dockerConfigDir,
+  dockerConfigPrefix,
+  validateImageReference,
+  type RegistryCredential,
+} from '../lib/registry';
 import path from 'path';
 
 export interface RemoteDeploymentConfig {
@@ -80,6 +90,16 @@ export interface RemoteDeploymentConfig {
   replicas?: number;
   /** Preview vhost to serve the PR container under (`pr-42-<slug>.<PREVIEW_BASE_URL>`) */
   previewDomain?: string;
+  /**
+   * The organization's private-registry logins, decrypted. Applied before the build and any
+   * pull, into a config directory removed when the deploy ends.
+   */
+  registryCredentials?: RegistryCredential[];
+  /**
+   * Deploy this image instead of building a repository (`ghcr.io/acme/api:1.4`). The project
+   * then needs no git repository; each deploy pulls the reference again.
+   */
+  dockerImage?: string;
   // Marketplace fields
   marketplace?: {
     id?: string;
@@ -528,6 +548,7 @@ export async function deployToRemoteServer(
     previewDomain,
     environment = 'production',
     replicas: requestedReplicas = 1,
+    registryCredentials = [],
   } = config;
   // Previews stay single-container; production and staging can run several.
   const replicas = Math.max(1, Math.min(10, Math.round(requestedReplicas)));
@@ -549,6 +570,8 @@ export async function deployToRemoteServer(
   }
 
   let ssh: SSHClient | null = null;
+  /** Set once this deploy has logged in to a private registry; removed in `finally`. */
+  let dockerConfig: string | null = null;
 
   try {
     // Connect to server
@@ -563,6 +586,23 @@ export async function deployToRemoteServer(
       throw new Error(`Docker is not available on server: ${dockerStatus.error}`);
     }
     onProgress(`✅ Docker ${dockerStatus.version} is available`);
+
+    // Private registries: log in for this deploy only. The logins live in a directory of
+    // their own that is deleted in `finally`, so a shared runner never keeps one customer's
+    // token for the next deploy, and the server's own docker config is never touched.
+    const applied = credentialsToApply(registryCredentials);
+    if (applied.length > 0) {
+      dockerConfig = dockerConfigDir(deploymentId);
+      for (const credential of applied) {
+        const login = await ssh.exec(buildLoginCommand(dockerConfig, credential));
+        if (login.code !== 0) {
+          // A wrong token must say so here, not as "pull access denied" three minutes later
+          const reason = (login.stderr || login.stdout).trim().split('\n').pop() || 'docker login failed';
+          throw new Error(`Could not sign in to ${credential.registry} as "${credential.name}": ${reason}`);
+        }
+        onProgress(`🔑 Signed in to ${credential.registry} (${credential.name})`);
+      }
+    }
 
     // One host for many customers: apps are published on loopback only (nginx is the way in)
     // and the isolation rules are re-applied before anything of this deploy runs.
@@ -694,6 +734,11 @@ export async function deployToRemoteServer(
           );
         }
       }
+      // Many customers on one box: a stack may not take the host with it (the Docker socket,
+      // privileged, network_mode: host …). On the customer's own server this is their call.
+      const composeProblem = checkComposeFile(composeContent, { sharedHost, projectDir });
+      if (composeProblem) throw new Error(`Refusing to deploy: ${composeProblem}`);
+
       onProgress(`📝 Writing docker-compose.yml...`);
       await ssh.uploadFile(composeContent, composePath);
 
@@ -946,7 +991,7 @@ export async function deployToRemoteServer(
       }
 
       onProgress(`📦 Pulling Docker image: ${dockerImage}`);
-      const pullResult = await ssh.exec(`docker pull ${dockerImage}`);
+      const pullResult = await ssh.exec(`${dockerConfigPrefix(dockerConfig)}docker pull ${dockerImage}`);
       if (pullResult.code !== 0) {
         throw new Error(`Failed to pull image: ${pullResult.stderr}`);
       }
@@ -978,6 +1023,11 @@ export async function deployToRemoteServer(
       const envFlags = Object.entries(envVars)
         .map(([k, v]) => `-e ${k}='${v.replace(/'/g, "'\\''")}'`)
         .join(' ');
+
+      // Same rule for a single container: on a shared runner it mounts its own directory only.
+      // Portainer's whole point is the server's Docker socket, so it lands here.
+      const mountProblem = checkVolumes(volumes, { sharedHost, projectDir });
+      if (mountProblem) throw new Error(`Refusing to deploy: ${mountProblem}`);
 
       // Build volume flags. Templates can specify volumes in two formats:
       //   '/path/in/container'        → host path auto-derived from project dir
@@ -1068,52 +1118,65 @@ export async function deployToRemoteServer(
       };
     }
 
-    // ── Standard git deploy flow ──
-    await ssh.exec(`rm -rf ${repoDir}`);
+    // ── Standard deploy flow: a repository to build, or a ready image to run ──
+    // An image project has no repository. Instead of a second deploy path (the marketplace one
+    // has no blue-green, no replicas, no staging), the image becomes a one-line build context:
+    // `FROM <image>` inherits its CMD, ENV and ports, and everything after this is unchanged.
+    const deployImage = config.dockerImage?.trim();
+    if (deployImage) {
+      const imageError = validateImageReference(deployImage);
+      if (imageError) throw new Error(`Refusing to deploy: ${imageError}`);
+      onProgress(`📦 Deploying image: ${deployImage}`);
+      await ssh.exec(`rm -rf ${repoDir} && mkdir -p ${repoDir}`);
+      await ssh.uploadFile(`FROM ${deployImage}\n`, path.posix.join(repoDir, 'Dockerfile'));
+    } else {
+      await ssh.exec(`rm -rf ${repoDir}`);
 
-    // Clone repository
-    onProgress(`📥 Cloning repository: ${repoUrl}`);
+      // Clone repository
+      onProgress(`📥 Cloning repository: ${repoUrl}`);
 
-    // Build clone URL with token if available
-    let cloneUrl = repoUrl;
-    if (accessToken && repoUrl.includes('github.com')) {
-      cloneUrl = repoUrl.replace('https://', `https://x-access-token:${accessToken}@`);
-    } else if (accessToken && repoUrl.includes('gitlab')) {
-      try {
-        const parsed = new URL(repoUrl);
-        cloneUrl = `${parsed.protocol}//oauth2:${accessToken}@${parsed.host}${parsed.pathname}`;
-      } catch {
-        cloneUrl = repoUrl.replace('https://', `https://oauth2:${accessToken}@`);
+      // Build clone URL with token if available
+      let cloneUrl = repoUrl;
+      if (accessToken && repoUrl.includes('github.com')) {
+        cloneUrl = repoUrl.replace('https://', `https://x-access-token:${accessToken}@`);
+      } else if (accessToken && repoUrl.includes('gitlab')) {
+        try {
+          const parsed = new URL(repoUrl);
+          cloneUrl = `${parsed.protocol}//oauth2:${accessToken}@${parsed.host}${parsed.pathname}`;
+        } catch {
+          cloneUrl = repoUrl.replace('https://', `https://oauth2:${accessToken}@`);
+        }
       }
-    }
 
-    // Every value single-quoted and `--` before the URL: these came from the customer and this
-    // runs as root (a branch like `x;curl …|sh` or a URL with `$(…)` used to execute).
-    const cloneCmd =
-      `git clone --depth 1 ${branch ? `--branch=${shSingleQuote(branch)} ` : ''}` +
-      `-- ${shSingleQuote(cloneUrl)} ${shSingleQuote(repoDir)}`;
+      // Every value single-quoted and `--` before the URL: these came from the customer and this
+      // runs as root (a branch like `x;curl …|sh` or a URL with `$(…)` used to execute).
+      const cloneCmd =
+        `git clone --depth 1 ${branch ? `--branch=${shSingleQuote(branch)} ` : ''}` +
+        `-- ${shSingleQuote(cloneUrl)} ${shSingleQuote(repoDir)}`;
 
-    const cloneResult = await ssh.exec(cloneCmd);
-    if (cloneResult.code !== 0) {
-      throw new Error(`Failed to clone repository: ${redactUrlCredentials(cloneResult.stderr)}`);
-    }
-    // git writes the clone URL — token included — into .git/config. Anything that later copies
-    // the checkout (a static site's web root did) would publish it; keep only the clean URL.
-    if (cloneUrl !== repoUrl) {
-      const scrub = await ssh.exec(`git -C ${shSingleQuote(repoDir)} remote set-url origin ${shSingleQuote(repoUrl)}`);
-      if (scrub.code !== 0) {
-        await ssh.exec(`rm -rf ${shSingleQuote(repoDir)}`);
-        throw new Error('Could not remove the access token from the cloned repository');
+      const cloneResult = await ssh.exec(cloneCmd);
+      if (cloneResult.code !== 0) {
+        throw new Error(`Failed to clone repository: ${redactUrlCredentials(cloneResult.stderr)}`);
       }
-    }
-    onProgress('✅ Repository cloned');
+      // git writes the clone URL — token included — into .git/config. Anything that later copies
+      // the checkout (a static site's web root did) would publish it; keep only the clean URL.
+      if (cloneUrl !== repoUrl) {
+        const scrub = await ssh.exec(`git -C ${shSingleQuote(repoDir)} remote set-url origin ${shSingleQuote(repoUrl)}`);
+        if (scrub.code !== 0) {
+          await ssh.exec(`rm -rf ${shSingleQuote(repoDir)}`);
+          throw new Error('Could not remove the access token from the cloned repository');
+        }
+      }
+      onProgress('✅ Repository cloned');
 
-    const disk = await checkServerDiskSpace(ssh);
-    onProgress(disk.message);
-    if (!disk.ok) {
-      throw new Error(
-        `Server disk is critically full (${disk.usedPercent}% used, ${disk.availGb} GB free). Free space on the server before deploying.`
-      );
+      const disk = await checkServerDiskSpace(ssh);
+      onProgress(disk.message);
+      if (!disk.ok) {
+        throw new Error(
+          `Server disk is critically full (${disk.usedPercent}% used, ${disk.availGb} GB free). Free space on the server before deploying.`
+        );
+      }
+
     }
 
     // Check if Dockerfile exists
@@ -1199,7 +1262,8 @@ export async function deployToRemoteServer(
 
     // Build Docker image
     const imageName = `pushify-${deploySlug}`;
-    const imageTag = commitHash.substring(0, 7);
+    // An image deploy has no commit; the deployment's own id keeps each one separate
+    const imageTag = (deployImage ? deploymentId : commitHash).substring(0, 7);
 
     onProgress(`🔨 Building Docker image: ${imageName}:${imageTag}`);
 
@@ -1218,6 +1282,8 @@ export async function deployToRemoteServer(
       buildArgs: Object.keys(buildArgs).length > 0 ? buildArgs : undefined,
       framework: resolvedFramework,
       buildpackId: resolvedBuildpackId,
+      dockerConfig,
+      pullBase: !!deployImage,
       onProgress,
     });
 
@@ -1555,6 +1621,10 @@ export async function deployToRemoteServer(
       error: errorMessage,
     };
   } finally {
+    // The registry tokens do not outlive the deploy
+    if (ssh && dockerConfig) {
+      await ssh.exec(buildLogoutCommand(dockerConfig)).catch(() => undefined);
+    }
     // Disconnect SSH
     if (ssh) {
       ssh.disconnect();

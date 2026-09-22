@@ -16,6 +16,8 @@ export type CreateProjectInput = {
   startCommand?: string;
   rootDirectory?: string;
   dockerfilePath?: string;
+  /** Deploy a ready image instead of building the repository */
+  dockerImage?: string | null;
   port?: number;
   autoDeploy?: boolean;
   serverId?: string;
@@ -36,6 +38,8 @@ export type UpdateProjectInput = {
   startCommand?: string;
   rootDirectory?: string;
   dockerfilePath?: string;
+  /** Deploy a ready image instead of building the repository; null goes back to the repository */
+  dockerImage?: string | null;
   port?: number;
   autoDeploy?: boolean;
   serverId?: string | null; // Allow null to clear server assignment
