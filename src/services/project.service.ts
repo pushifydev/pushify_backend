@@ -39,6 +39,8 @@ interface UpdateProjectInput {
   gitBranch?: string;
   /** Pushes here deploy the staging copy; null turns staging off */
   stagingBranch?: string | null;
+  /** How many containers of the app run behind nginx */
+  replicas?: number;
   gitProvider?: string;
   buildCommand?: string;
   startCommand?: string;
@@ -218,6 +220,10 @@ export const projectService = {
     const repoProblem = firstRepoSettingsError(input);
     if (repoProblem) {
       throw new HTTPException(400, { message: repoProblem });
+    }
+
+    if (input.replicas !== undefined && (!Number.isInteger(input.replicas) || input.replicas < 1 || input.replicas > 10)) {
+      throw new HTTPException(400, { message: 'Replicas must be between 1 and 10' });
     }
 
     // The staging branch reaches a shell on the deploy server, same as the production one.

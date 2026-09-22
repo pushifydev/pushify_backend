@@ -665,6 +665,58 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
   }
 
   it(
+    'replicas: several containers share the traffic, and scaling back down removes them',
+    async () => {
+      onTestFailed(() => console.error(serverState()));
+      const repo = await fixtureRepo({
+        'package.json': JSON.stringify(
+          { name: 'e2e-rep', version: '1.0.0', private: true, scripts: { build: 'echo built', start: 'node server.js' } },
+          null,
+          2
+        ),
+        // Each replica answers with its own container id, so the spread is visible
+        'server.js': [
+          "const http = require('http');",
+          "const os = require('os');",
+          "http.createServer((req, res) => res.end('E2E-REP ' + os.hostname())).listen(process.env.PORT || 3000);",
+          '',
+        ].join('\n'),
+      });
+      const domain = `rep-${run}.127.0.0.1.nip.io`;
+      const project = await createProject('rep', repo, domain);
+      await db.update(schema.projects).set({ replicas: 3 }).where(eqOp(schema.projects.id, project.id));
+
+      await deploy(project.id);
+      const containers = () =>
+        execSync(`docker ps --filter name=pushify-${project.slug} --format '{{.Names}}'`, { encoding: 'utf8' })
+          .split('\n')
+          .filter(Boolean);
+      expect(containers()).toHaveLength(3);
+      expect(execSync('nginx -T 2>/dev/null | grep -c "least_conn" || true', { encoding: 'utf8' }).trim()).not.toBe('0');
+
+      const answers = new Set<string>();
+      for (let i = 0; i < 12; i++) {
+        const body = request(`https://${domain}/`).body;
+        expect(body).toMatch(/^E2E-REP /);
+        answers.add(body);
+      }
+      expect(answers.size, `replicas answering: ${[...answers].join(', ')}`).toBeGreaterThan(1);
+
+      // A redeploy replaces all three and leaves nothing of the old slot behind
+      await deploy(project.id);
+      expect(containers()).toHaveLength(3);
+      expect(request(`https://${domain}/`).body).toMatch(/^E2E-REP /);
+
+      // Back to one: the extra containers go
+      await db.update(schema.projects).set({ replicas: 1 }).where(eqOp(schema.projects.id, project.id));
+      await deploy(project.id);
+      expect(containers()).toHaveLength(1);
+      expect(request(`https://${domain}/`).body).toMatch(/^E2E-REP /);
+    },
+    900_000
+  );
+
+  it(
     'staging: its own container, domain and variables beside production, then promoted to it',
     async () => {
       onTestFailed(() => console.error(serverState()));

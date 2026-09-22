@@ -20,6 +20,8 @@ export interface RunContainerOptions {
   containerName: string;
   hostPort: number;
   containerPort: number;
+  /** Host address the port is published on: 0.0.0.0 (default) or 127.0.0.1 behind nginx only */
+  bindAddress?: string;
   envVars?: Record<string, string>;
   volumes?: string[];
   networkMode?: string;
@@ -163,6 +165,7 @@ export async function runContainer(
     envVars,
     volumes,
     networkMode,
+    bindAddress = '0.0.0.0',
     restart = 'unless-stopped',
     framework,
     buildpackId,
@@ -187,7 +190,7 @@ export async function runContainer(
   runCmd += APP_CONTAINER_HARDENING;
 
   // Port mapping - bind to all interfaces for external access
-  runCmd += ` -p 0.0.0.0:${hostPort}:${containerPort}`;
+  runCmd += ` -p ${bindAddress}:${hostPort}:${containerPort}`;
 
   // Environment variables — single-quote the whole NAME=value so an env value
   // containing $(...), backticks or ${...} cannot be expanded by the remote shell.
@@ -796,6 +799,61 @@ export async function runContainerFromImage(
     containerId,
     logs: `Container ${containerName} started successfully`,
   };
+}
+
+/**
+ * Start the extra replicas of an app beside the one blue-green just brought up, each on its own
+ * port, and wait for each to answer. nginx balances across all of them (nginx-manager's
+ * upstream). Named `<container>-<slot>-2`, `-3`, … so the first replica keeps the name
+ * everything else (logs, restart, rollback) already uses.
+ */
+export async function startExtraReplicas(
+  ssh: SSHClient,
+  options: RunContainerOptions & {
+    /** Host ports for replicas 2..n */
+    replicaPorts: number[];
+    /** blue | green — the slot the new containers belong to */
+    slot: string;
+    bindAddress?: string;
+    healthCheckTimeout?: number;
+  },
+): Promise<{ success: boolean; started: string[]; logs: string }> {
+  const { replicaPorts, slot, healthCheckTimeout = 60, onProgress } = options;
+  const started: string[] = [];
+
+  for (const [index, port] of replicaPorts.entries()) {
+    const name = `${options.containerName}-${slot}-${index + 2}`;
+    const run = await runContainer(ssh, { ...options, containerName: name, hostPort: port });
+    if (!run.success) {
+      for (const running of started) await ssh.exec(`docker rm -f ${running} 2>/dev/null || true`);
+      return { success: false, started: [], logs: `Replica ${index + 2} did not start:\n${run.logs}` };
+    }
+
+    const deadline = Date.now() + healthCheckTimeout * 1000;
+    let healthy = false;
+    while (Date.now() < deadline) {
+      const running = await ssh.exec(`docker inspect -f '{{.State.Running}}' ${name}`);
+      if (running.stdout.trim() !== 'true') break;
+      const probe = await ssh.exec(tcpProbeCommand(port));
+      if (probe.stdout.trim() === 'OK') {
+        healthy = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+
+    if (!healthy) {
+      const logs = await ssh.exec(`docker logs ${name} 2>&1 | tail -20`);
+      await ssh.exec(`docker rm -f ${name} 2>/dev/null || true`);
+      for (const running of started) await ssh.exec(`docker rm -f ${running} 2>/dev/null || true`);
+      return { success: false, started: [], logs: `Replica ${index + 2} never answered:\n${logs.stdout}` };
+    }
+
+    started.push(name);
+    onProgress?.(`✅ Replica ${index + 2} healthy on port ${port}`);
+  }
+
+  return { success: true, started, logs: '' };
 }
 
 /**

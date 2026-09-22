@@ -875,6 +875,8 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         marketplace: marketplaceConfig,
         deploySuffix: previewCtx?.deploySuffix ?? (environment === 'staging' ? '-staging' : undefined),
         environment,
+        // Previews stay a single container whatever the project runs in production.
+        replicas: previewCtx ? 1 : project.replicas ?? 1,
         previewDomain: previewCtx ? previewHostname(previewCtx.previewUrl) ?? undefined : undefined,
       });
 

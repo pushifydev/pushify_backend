@@ -40,6 +40,9 @@ export const projects = pgTable('projects', {
   // Status
   status: projectStatusEnum('status').default('active').notNull(),
 
+  /** How many containers of this app run behind nginx (1 = the usual single container) */
+  replicas: integer('replicas').default(1).notNull(),
+
   /**
    * Staging: pushes to this branch deploy a second copy of the project — its own container,
    * port, domain and `staging` environment variables — which can then be promoted to production.

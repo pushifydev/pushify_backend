@@ -43,6 +43,8 @@ export interface SyncProjectSitesOptions {
   /** Only this environment's domains go in that file — production and staging never mix. */
   environment?: 'production' | 'staging';
   containerPort: number;
+  /** Every replica's port when the project runs more than one container. */
+  containerPorts?: number[];
   /** The server's public IPv4: DNS is checked against it before Let's Encrypt is asked. */
   serverIp: string | null;
   /** Ask Let's Encrypt for missing certificates (deploy, verify) — settings edits don't. */
@@ -156,6 +158,7 @@ export async function syncProjectSites(
   const write = async () => {
     const result = await writeProjectSites(ssh, {
       projectSlug: options.projectSlug,
+      containerPorts: options.containerPorts,
       containerPort: options.containerPort,
       domains: plan.map(toSite),
     });

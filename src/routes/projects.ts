@@ -111,6 +111,7 @@ const UpdateProjectSchema = z
     rootDirectory: z.string().max(255).optional(),
     dockerfilePath: z.string().max(255).optional(),
     port: z.number().int().min(1).max(65535).optional(),
+    replicas: z.number().int().min(1).max(10).optional(),
     autoDeploy: z.boolean().optional(),
     serverId: z.string().uuid().nullable().optional(),
   })

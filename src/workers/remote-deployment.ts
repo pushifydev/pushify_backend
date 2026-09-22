@@ -6,7 +6,17 @@ import { domains } from '../db/schema/projects';
 import { SSHClient } from '../utils/ssh';
 import { syncWorkerContainersOnDeploy } from './worker-process-sync';
 import { decrypt } from '../lib/encryption';
-import { buildImage, checkDocker, getImageId, tagImage, cleanupOldImages, imageExists, blueGreenDeploy, APP_CONTAINER_HARDENING } from './remote-docker';
+import {
+  buildImage,
+  checkDocker,
+  getImageId,
+  tagImage,
+  cleanupOldImages,
+  imageExists,
+  blueGreenDeploy,
+  startExtraReplicas,
+  APP_CONTAINER_HARDENING,
+} from './remote-docker';
 import { addAutoSubdomainSite, reloadNginx, CATCH_ALL_TLS_SCRIPT } from './nginx-manager';
 import { shSingleQuote } from './shell';
 import { syncProjectSites, describeSyncedDomains } from '../lib/project-sites';
@@ -30,7 +40,7 @@ import {
   getCalcomAllowedHostPlaceholder,
 } from '../marketplace/helpers';
 import { buildCalcomImageScript, calcomImageTag } from '../marketplace/calcom-image';
-import { getOrAssignPort, pickSwitchPort, recordPortAssignment } from './port-manager';
+import { getOrAssignPort, pickFreePorts, pickSwitchPort, recordPortAssignment } from './port-manager';
 import { generateDockerfile } from './dockerfile';
 import { normalizeRootDirectory } from '../lib/normalize-root-directory';
 import { checkServerDiskSpace } from '../lib/server-disk-check';
@@ -66,6 +76,8 @@ export interface RemoteDeploymentConfig {
   deploySuffix?: string;
   /** Which copy of the project this is: staging gets its own container, port and domains */
   environment?: 'production' | 'staging';
+  /** How many containers to run behind nginx (1 = a single container, as before) */
+  replicas?: number;
   /** Preview vhost to serve the PR container under (`pr-42-<slug>.<PREVIEW_BASE_URL>`) */
   previewDomain?: string;
   // Marketplace fields
@@ -238,6 +250,8 @@ async function configureProjectDomains(
     serverId: string;
     primaryDomain: string;
     environment?: 'production' | 'staging';
+    /** Every replica's port; nginx balances across them when there is more than one */
+    containerPorts?: number[];
     onProgress: (msg: string) => void;
   },
 ): Promise<boolean> {
@@ -247,6 +261,7 @@ async function configureProjectDomains(
     projectSlug: input.projectSlug,
     environment: input.environment ?? 'production',
     containerPort: input.hostPort,
+    containerPorts: input.containerPorts,
     serverIp: input.serverIp,
     requestCertificates: true,
     sharedHost: isSharedRunnerServer(input.serverId),
@@ -343,11 +358,11 @@ async function pointPublicPort(
   ssh: SSHClient,
   slug: string,
   publicPort: number,
-  containerPort: number,
+  containerPorts: number | number[],
   retireOldContainer: (() => Promise<void>) | null,
   onProgress: (msg: string) => void,
 ): Promise<boolean> {
-  const written = await writePublicPortProxy(ssh, slug, publicPort, containerPort);
+  const written = await writePublicPortProxy(ssh, slug, publicPort, containerPorts);
   if (!written.success) throw new Error(`Could not route public port ${publicPort}: ${written.message}`);
   let retired = false;
   const holder = await containerHoldingPort(ssh, publicPort);
@@ -362,7 +377,9 @@ async function pointPublicPort(
   if (!(await publicPortAnswers(ssh, publicPort))) {
     throw new Error(`nginx is not answering on public port ${publicPort} after the reload`);
   }
-  onProgress(`🔀 Public port ${publicPort} → new container (127.0.0.1:${containerPort})`);
+  onProgress(
+    `🔀 Public port ${publicPort} → new container${Array.isArray(containerPorts) && containerPorts.length > 1 ? 's' : ''} (127.0.0.1:${Array.isArray(containerPorts) ? containerPorts.join(', ') : containerPorts})`
+  );
   return retired;
 }
 
@@ -510,7 +527,10 @@ export async function deployToRemoteServer(
     deploySuffix = '',
     previewDomain,
     environment = 'production',
+    replicas: requestedReplicas = 1,
   } = config;
+  // Previews stay single-container; production and staging can run several.
+  const replicas = Math.max(1, Math.min(10, Math.round(requestedReplicas)));
   // A PR preview and a staging copy both run beside production; only a preview gets the
   // PR treatment (no domains of its own, no auto subdomain for the project).
   const isPreview = !!deploySuffix && environment !== 'staging';
@@ -1298,24 +1318,67 @@ export async function deployToRemoteServer(
     // The health-checked container is the one that stays; it now owns the project's port.
     hostPort = blueGreenResult.tempPort ?? switchPort;
     await recordPortAssignment(ssh, deploySlug, hostPort);
+
+    // More than one replica: the rest start beside it, each on its own port, and nginx
+    // balances across all of them (nginx-manager's upstream).
+    const containerPorts = [hostPort];
+    if (replicas > 1 && blueGreenResult.newContainerName) {
+      const slot = blueGreenResult.newContainerName.endsWith('-blue') ? 'blue' : 'green';
+      const extraPorts = await pickFreePorts(ssh, replicas - 1, [hostPort, ...(publicPort ? [publicPort] : [])]);
+      onProgress(`👥 Starting ${replicas - 1} more replica(s)...`);
+      const extra = await startExtraReplicas(ssh, {
+        imageName: `${imageName}:${imageTag}`,
+        containerName: `pushify-${deploySlug}`,
+        hostPort,
+        containerPort,
+        envVars,
+        volumes: config.volumes,
+        networkMode: appNetwork,
+        bindAddress: loopbackOnly || publicPort ? '127.0.0.1' : undefined,
+        framework: resolvedFramework,
+        buildpackId: resolvedBuildpackId,
+        replicaPorts: extraPorts,
+        slot,
+        onProgress,
+      });
+      if (!extra.success) {
+        await ssh.exec(`docker rm -f ${blueGreenResult.newContainerName} 2>/dev/null || true`);
+        throw new Error(`Replicas failed to start:\n${extra.logs}`);
+      }
+      containerPorts.push(...extraPorts);
+      for (const [index, port] of extraPorts.entries()) {
+        await recordPortAssignment(ssh, `${deploySlug}#${index + 2}`, port);
+        if (!loopbackOnly && !publicPort) await openFirewallPort(ssh, port, onProgress);
+      }
+    }
+
     if (blueGreenResult.oldContainerName) {
       const oldContainerName = blueGreenResult.oldContainerName;
+      const oldSlot = oldContainerName.endsWith('-blue') ? 'blue' : 'green';
       const retireSsh = ssh; // narrowed here; the closure runs before the connection is released
       retireOldContainer = async () => {
         onProgress(`🗑️ Retiring old container: ${oldContainerName}`);
         await retireSsh.exec(`docker rm -f ${oldContainerName} 2>/dev/null || true`);
+        // …and the replicas of that slot, however many it had (the count may have changed)
+        await retireSsh.exec(
+          `docker ps -aq --filter name='^pushify-${deploySlug}-${oldSlot}-[0-9]+$' | xargs -r docker rm -f 2>/dev/null || true`
+        );
         if (previousHostPort !== hostPort && previousHostPort !== publicPort) {
           await closeFirewallPort(retireSsh, previousHostPort, onProgress);
         }
       };
     }
-    onProgress(`✅ New container healthy on port ${hostPort}`);
+    onProgress(
+      replicas > 1
+        ? `✅ ${replicas} replicas healthy on ports ${containerPorts.join(', ')}`
+        : `✅ New container healthy on port ${hostPort}`
+    );
 
     // Open firewall port for external access (root-first; works on BYOS without sudo/ufw).
     // Not when the port is on loopback: then nginx is the only way in.
     if (publicPort) {
       await openFirewallPort(ssh, publicPort, onProgress);
-      if (await pointPublicPort(ssh, deploySlug, publicPort, hostPort, retireOldContainer, onProgress)) {
+      if (await pointPublicPort(ssh, deploySlug, publicPort, containerPorts, retireOldContainer, onProgress)) {
         retireOldContainer = null;
       }
     } else {
@@ -1409,6 +1472,7 @@ export async function deployToRemoteServer(
         projectSlug: deploySlug,
         environment,
         hostPort,
+        containerPorts,
         serverIp: server.ipv4,
         serverId: server.id,
         primaryDomain,
