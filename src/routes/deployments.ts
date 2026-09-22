@@ -79,6 +79,7 @@ const CreateDeploymentSchema = z
     commitHash: z.string().max(40).optional().openapi({ example: 'abc123def456' }),
     commitMessage: z.string().max(500).optional().openapi({ example: 'Fix bug in auth' }),
     branch: z.string().max(100).optional().openapi({ example: 'main' }),
+    environment: z.enum(['production', 'staging']).optional().openapi({ example: 'staging' }),
   })
   .openapi('CreateDeployment');
 
@@ -327,6 +328,24 @@ deploymentRouter.openapi(listDeploymentsRoute, async (c) => {
   return c.json({
     data: deployments.map((d) => enrichDeploymentWithQueue(d)),
   });
+});
+
+// Promote the staging copy to production (same commit, production variables)
+deploymentRouter.post('/promote', async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const projectId = c.req.param('projectId')!;
+  const body = await c.req.json().catch(() => ({}));
+
+  const deployment = await deploymentService.promote(
+    projectId,
+    organizationId,
+    userId,
+    { deploymentId: typeof body?.deploymentId === 'string' ? body.deploymentId : undefined },
+    locale
+  );
+  return c.json({ data: deployment, message: 'Promoting staging to production' }, 201);
 });
 
 // Create deployment

@@ -34,6 +34,8 @@ export interface DeployTargetProject {
   organizationId: string;
   autoDeploy: boolean | null;
   gitBranch: string | null;
+  /** Pushes here deploy the staging copy instead of production */
+  stagingBranch?: string | null;
 }
 
 export interface TriggerResult {
@@ -53,8 +55,13 @@ export async function handlePushEvent(
   // refs/heads/main -> main
   const branch = payload.ref.replace('refs/heads/', '');
 
-  if (project.gitBranch && branch !== project.gitBranch) {
-    return { message: `Push to '${branch}' ignored, project tracks '${project.gitBranch}'` };
+  // The staging branch deploys the staging copy; the project's own branch, production.
+  const environment = project.stagingBranch && branch === project.stagingBranch ? 'staging' : 'production';
+  if (environment === 'production' && project.gitBranch && branch !== project.gitBranch) {
+    const tracked = project.stagingBranch
+      ? `'${project.gitBranch}' (production) or '${project.stagingBranch}' (staging)`
+      : `'${project.gitBranch}'`;
+    return { message: `Push to '${branch}' ignored, project tracks ${tracked}` };
   }
 
   // No commits means something like a branch deletion.
@@ -83,17 +90,18 @@ export async function handlePushEvent(
     commitHash: payload.head_commit.id,
     commitMessage: payload.head_commit.message.substring(0, 500),
     branch,
+    environment,
   });
 
   const { scheduleDeploymentProcessing } = await import('./deployment-scheduler');
   await scheduleDeploymentProcessing(deployment.id, project.id);
 
   logger.info(
-    { projectId: project.id, deploymentId: deployment.id, projectName: project.name },
+    { projectId: project.id, deploymentId: deployment.id, projectName: project.name, environment },
     'Deployment created from GitHub push webhook'
   );
 
-  return { message: 'Deployment triggered', deploymentId: deployment.id };
+  return { message: `Deployment triggered (${environment})`, deploymentId: deployment.id };
 }
 
 export async function handlePullRequestEvent(

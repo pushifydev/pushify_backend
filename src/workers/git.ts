@@ -7,6 +7,8 @@ import os from 'os';
 export interface CloneOptions {
   repoUrl: string;
   branch?: string;
+  /** Deploy exactly this commit (promoting staging to production), not the branch tip */
+  commit?: string;
   accessToken?: string;
   depth?: number;
   onProgress?: (message: string) => void;
@@ -36,7 +38,7 @@ async function scrubCloneCredentials(workDir: string, repoUrl: string, cloneUrl:
  * Clone a Git repository to a temporary directory
  */
 export async function cloneRepository(options: CloneOptions): Promise<CloneResult> {
-  const { repoUrl, branch, accessToken, depth = 1, onProgress } = options;
+  const { repoUrl, branch, commit, accessToken, depth = 1, onProgress } = options;
 
   // Create temp directory
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pushify-'));
@@ -131,6 +133,19 @@ export async function cloneRepository(options: CloneOptions): Promise<CloneResul
     // Clean up on failure
     await fs.rm(tmpDir, { recursive: true, force: true });
     throw new Error(`Failed to clone repository: ${redactUrlCredentials(result.stderr)}`);
+  }
+
+  // Promotion deploys the very commit that was tried on staging, whatever the branch did since.
+  if (commit && /^[0-9a-f]{7,40}$/i.test(commit)) {
+    onProgress?.(`📌 Checking out ${commit.substring(0, 7)}...`);
+    const fetched = await execCommand(`git fetch --depth 1 origin ${shSingleQuote(commit)}`, { cwd: workDir });
+    const checkout = fetched.exitCode === 0
+      ? await execCommand('git checkout --detach FETCH_HEAD', { cwd: workDir })
+      : await execCommand(`git checkout --detach ${shSingleQuote(commit)}`, { cwd: workDir });
+    if (checkout.exitCode !== 0) {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+      throw new Error(`Commit ${commit.substring(0, 7)} not found in the repository`);
+    }
   }
 
   await scrubCloneCredentials(workDir, repoUrl, cloneUrl);

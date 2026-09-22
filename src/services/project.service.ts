@@ -14,7 +14,7 @@ import { assertMemberProjectScope, getMemberAllowedProjectIds } from '../lib/mem
 import { assertOrganizationCanMutateResources } from './organization-billing.service';
 import { getApiBaseUrl } from '../lib/api-base-url';
 import { planLimitsService } from './plan-limits.service';
-import { firstRepoSettingsError, firstProjectSettingsError } from '../lib/repo-settings-validate';
+import { firstRepoSettingsError, firstProjectSettingsError, validateGitBranch } from '../lib/repo-settings-validate';
 
 // Types
 interface CreateProjectInput {
@@ -37,6 +37,8 @@ interface UpdateProjectInput {
   description?: string;
   gitRepoUrl?: string;
   gitBranch?: string;
+  /** Pushes here deploy the staging copy; null turns staging off */
+  stagingBranch?: string | null;
   gitProvider?: string;
   buildCommand?: string;
   startCommand?: string;
@@ -216,6 +218,19 @@ export const projectService = {
     const repoProblem = firstRepoSettingsError(input);
     if (repoProblem) {
       throw new HTTPException(400, { message: repoProblem });
+    }
+
+    // The staging branch reaches a shell on the deploy server, same as the production one.
+    if (input.stagingBranch) {
+      const branchProblem = validateGitBranch(input.stagingBranch);
+      if (branchProblem) {
+        throw new HTTPException(400, { message: branchProblem });
+      }
+      if (input.stagingBranch === (input.gitBranch ?? existing.gitBranch)) {
+        throw new HTTPException(400, {
+          message: 'The staging branch must differ from the production branch',
+        });
+      }
     }
 
     if (

@@ -81,6 +81,11 @@ export interface DeploymentJob {
   branch: string | null;
   triggeredById: string | null;
   rollbackFromDeploymentId: string | null; // For quick rollback
+  /** production | staging — staging runs beside production with its own container and domains */
+  environment?: string | null;
+  /** A promotion builds this exact commit (the one staging proved), not the branch tip */
+  commitHash?: string | null;
+  promotedFromDeploymentId?: string | null;
   serverId: string | null; // Server ID for concurrency tracking
   isPreview: boolean;
   previewPrNumber: number | null;
@@ -185,6 +190,9 @@ const deploymentJobSelect = {
   branch: deployments.branch,
   triggeredById: deployments.triggeredById,
   rollbackFromDeploymentId: deployments.rollbackFromDeploymentId,
+  environment: deployments.environment,
+  commitHash: deployments.commitHash,
+  promotedFromDeploymentId: deployments.promotedFromDeploymentId,
   isPreview: deployments.isPreview,
   previewPrNumber: deployments.previewPrNumber,
   serverId: projects.serverId,
@@ -405,8 +413,12 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
     // runner (PUSHIFY_RUNNER_SERVER_ID) so free/unassigned deploys never run on the control
     // plane. Falls back to the local host only when no runner is configured.
     const deployTargetServerId = project.serverId || pickRunnerServerId(project.id);
-    // Persistent volume mounts — applied on every container start path below.
-    let volumeMounts = await getProjectVolumeMounts(project.id, project.slug);
+    // Staging: a second copy of the project beside production, with its own container, port,
+    // domains and `staging` environment variables (lib/deploy-env-vars.ts).
+    const environment = job.environment === 'staging' ? 'staging' : 'production';
+    const deploySlug = environment === 'staging' ? `${project.slug}-staging` : project.slug;
+    // Persistent volume mounts — staging keeps its own data, never production's.
+    let volumeMounts = await getProjectVolumeMounts(project.id, deploySlug);
 
     // A deploy starts a fresh container — clear any sleep state and give the idle
     // sweeper a fresh grace window.
@@ -568,11 +580,15 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
 
       // Production rows only; a preview deploy layers its `preview` rows on top (lib/deploy-env-vars.ts).
       const envVarsDecrypted: Record<string, string> = {};
-      for (const envVar of selectDeployEnvVars(envVars, { preview: !!previewCtx })) {
+      for (const envVar of selectDeployEnvVars(envVars, { target: previewCtx ? 'preview' : environment })) {
         envVarsDecrypted[envVar.key] = decrypt(envVar.valueEncrypted);
       }
       // Databases linked under Databases → Connect become variables (DATABASE_URL by default).
-      const linkedDatabases = await linkedDatabaseEnv(job.projectId, deployTargetServerId, envVarsDecrypted);
+      // Production only: a staging copy pointing at the production database would write to it.
+      const linkedDatabases =
+        environment === 'production'
+          ? await linkedDatabaseEnv(job.projectId, deployTargetServerId, envVarsDecrypted)
+          : { vars: {}, notes: ['Staging does not get the project\'s linked databases — give it its own DATABASE_URL under staging variables'] };
       Object.assign(envVarsDecrypted, linkedDatabases.vars);
       // Everything logged from here on has the project's secrets masked.
       logMasker.addEnvVars(envVarsDecrypted);
@@ -696,10 +712,16 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
           throw new Error('No repository URL configured');
         }
 
+        if (job.promotedFromDeploymentId && job.commitHash) {
+          addLog(`⬆️ Promoting the commit staging ran: ${job.commitHash.substring(0, 7)}`);
+        }
+
         // Clone locally just to get commit info
         localClone = await cloneRepository({
           repoUrl: project.gitRepoUrl,
           branch,
+          // A promotion builds the commit staging proved, not whatever the branch points at now
+          commit: job.promotedFromDeploymentId ? job.commitHash ?? undefined : undefined,
           accessToken,
           onProgress: addLog,
         });
@@ -811,7 +833,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
           if (!previewCtx) {
             const volumesChanged = await syncDeclaredResources(project.id, fileConfig, addLog);
             if (volumesChanged) {
-              volumeMounts = await getProjectVolumeMounts(project.id, project.slug);
+              volumeMounts = await getProjectVolumeMounts(project.id, deploySlug);
             }
           }
         }
@@ -835,7 +857,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         volumes: volumeMounts,
         deploymentId: job.id,
         repoUrl: project.gitRepoUrl || '',
-        branch: localClone?.branch || job.branch || 'main',
+        branch: localClone?.branch || job.branch || (environment === 'staging' ? project.stagingBranch : project.gitBranch) || 'main',
         commitHash: localClone?.commitHash || 'marketplace',
         port: effPort,
         envVars: envVarsDecrypted,
@@ -851,7 +873,8 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         accessToken,
         onProgress: onRemoteProgress,
         marketplace: marketplaceConfig,
-        deploySuffix: previewCtx?.deploySuffix,
+        deploySuffix: previewCtx?.deploySuffix ?? (environment === 'staging' ? '-staging' : undefined),
+        environment,
         previewDomain: previewCtx ? previewHostname(previewCtx.previewUrl) ?? undefined : undefined,
       });
 
@@ -890,7 +913,9 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         // Update project with production URL (+ refresh marketplace compose from latest template)
         const settingsUpdate: Record<string, unknown> = {
           ...(project.settings as Record<string, unknown>),
-          productionUrl: remoteResult.deploymentUrl,
+          ...(environment === 'staging'
+            ? { stagingUrl: remoteResult.deploymentUrl }
+            : { productionUrl: remoteResult.deploymentUrl }),
           lastDeploymentId: job.id,
         };
         if (marketplaceConfig && projectSettings?.marketplaceTemplateId) {
@@ -972,7 +997,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       .where(eq(environmentVariables.projectId, job.projectId));
 
     const envVarsDecrypted: Record<string, string> = {};
-    for (const ev of selectDeployEnvVars(localEnvVars, { preview: !!previewCtx })) {
+    for (const ev of selectDeployEnvVars(localEnvVars, { target: previewCtx ? 'preview' : environment })) {
       envVarsDecrypted[ev.key] = decrypt(ev.valueEncrypted);
     }
 

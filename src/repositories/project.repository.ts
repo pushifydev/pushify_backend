@@ -28,6 +28,8 @@ export type UpdateProjectInput = {
   description?: string;
   gitRepoUrl?: string;
   gitBranch?: string;
+  /** Pushes here deploy the staging copy; null turns staging off */
+  stagingBranch?: string | null;
   gitProvider?: string;
   buildCommand?: string;
   startCommand?: string;

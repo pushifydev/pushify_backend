@@ -26,6 +26,7 @@ type Db = typeof import('../db')['db'];
 type Schema = typeof import('../db/schema');
 let db: Db;
 let schema: Schema;
+let encryptValue: typeof import('../lib/encryption')['encrypt'];
 let executeDeploymentJob: typeof import('../workers/deployment.worker')['executeDeploymentJob'];
 let loadDeploymentJobById: typeof import('../workers/deployment.worker')['loadDeploymentJobById'];
 let userId: string;
@@ -34,15 +35,17 @@ let serverId: string;
 const tmpDirs: string[] = [];
 
 /** A git repo with these files, committed on main. Returns a file:// URL the worker can clone. */
-async function fixtureRepo(files: Record<string, string>, existing?: string): Promise<string> {
+async function fixtureRepo(files: Record<string, string>, existing?: string, branch?: string): Promise<string> {
   const dir = existing ?? (await fs.mkdtemp(path.join(os.tmpdir(), 'pushify-e2e-repo-')));
   if (!existing) tmpDirs.push(dir);
+  if (branch) execSync(`git checkout -q ${branch}`, { cwd: dir });
   for (const [name, content] of Object.entries(files)) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
     await fs.writeFile(path.join(dir, name), content);
   }
   if (!existing) execSync('git init -q -b main', { cwd: dir });
   execSync('git add -A && git commit -qm "e2e"', { cwd: dir });
+  if (branch) execSync('git checkout -q main', { cwd: dir });
   return dir;
 }
 
@@ -108,14 +111,15 @@ async function createProject(name: string, repoDir: string, domain: string) {
 }
 
 /** Queue a deployment the way the API does, then run it the way the worker does. */
-async function deploy(projectId: string, options: { rollbackFrom?: string } = {}) {
+async function deploy(projectId: string, options: { rollbackFrom?: string; environment?: 'production' | 'staging' } = {}) {
   const [row] = await db
     .insert(schema.deployments)
     .values({
       projectId,
       status: 'pending',
       trigger: options.rollbackFrom ? 'rollback' : 'manual',
-      branch: 'main',
+      branch: options.environment === 'staging' ? 'develop' : 'main',
+      environment: options.environment ?? 'production',
       triggeredById: userId,
       rollbackFromDeploymentId: options.rollbackFrom,
     })
@@ -159,6 +163,7 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
     schema = await import('../db/schema');
     ({ executeDeploymentJob, loadDeploymentJobById } = await import('../workers/deployment.worker'));
     const { encrypt } = await import('../lib/encryption');
+    encryptValue = encrypt;
 
     // Every fixture domain (and its www twin) points at this box.
     const realResolve4 = dns.resolve4.bind(dns);
@@ -658,6 +663,72 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
       600_000
     );
   }
+
+  it(
+    'staging: its own container, domain and variables beside production, then promoted to it',
+    async () => {
+      onTestFailed(() => console.error(serverState()));
+      const server = (version: string) =>
+        [
+          "const http = require('http');",
+          `http.createServer((req, res) => res.end('E2E-ENV ${version} ' + (process.env.GREETING || 'none'))).listen(process.env.PORT || 3000);`,
+          '',
+        ].join('\n');
+      const repo = await fixtureRepo({
+        'package.json': JSON.stringify(
+          { name: 'e2e-env', version: '1.0.0', private: true, scripts: { build: 'echo built', start: 'node server.js' } },
+          null,
+          2
+        ),
+        'server.js': server('v1'),
+      });
+      const domain = `env-${run}.127.0.0.1.nip.io`;
+      const project = await createProject('env', repo, domain);
+      // Production runs `main`; staging runs `develop`
+      execSync('git branch -f develop main', { cwd: repo });
+      await db.update(schema.projects).set({ stagingBranch: 'develop' }).where(eqOp(schema.projects.id, project.id));
+      await db.insert(schema.environmentVariables).values([
+        { projectId: project.id, environment: 'production', key: 'GREETING', valueEncrypted: encryptValue('prod') },
+        { projectId: project.id, environment: 'staging', key: 'GREETING', valueEncrypted: encryptValue('staging') },
+      ]);
+
+      await deploy(project.id);
+      expect(request(`https://${domain}/`).body).toBe('E2E-ENV v1 prod');
+
+      // Staging deploys the staging branch, with the staging variables
+      await fixtureRepo({ 'server.js': server('v2') }, repo, 'develop');
+      const stagingDomain = `env-${run}-staging.127.0.0.1.nip.io`;
+      const [stagingDomainRow] = await db
+        .insert(schema.domains)
+        .values({ projectId: project.id, domain: stagingDomain, isPrimary: true, environment: 'staging' })
+        .returning();
+      expect(stagingDomainRow.environment).toBe('staging');
+      await deploy(project.id, { environment: 'staging' });
+
+      expect(request(`https://${stagingDomain}/`).body).toBe('E2E-ENV v2 staging');
+      // …and production is untouched
+      expect(request(`https://${domain}/`).body).toBe('E2E-ENV v1 prod');
+
+      const containers = execSync(`docker ps --filter name=pushify-${project.slug} --format '{{.Names}}'`, { encoding: 'utf8' })
+        .split('\n')
+        .filter(Boolean)
+        .sort();
+      expect(containers.some((name) => name.startsWith(`pushify-${project.slug}-staging-`))).toBe(true);
+      expect(containers.some((name) => /-(blue|green)$/.test(name) && !name.includes('-staging-'))).toBe(true);
+
+      // Promote: the commit staging ran, built again with production's variables
+      const { deploymentService } = await import('../services/deployment.service');
+      const promoted = await deploymentService.promote(project.id, organizationId, userId, {}, 'en');
+      const job = await loadDeploymentJobById(promoted.id);
+      await executeDeploymentJob(job!);
+      const done = await db.query.deployments.findFirst({ where: (d, { eq }) => eq(d.id, promoted.id) });
+      expect(done?.status).toBe('running');
+      expect(done?.environment).toBe('production');
+      expect(request(`https://${domain}/`).body).toBe('E2E-ENV v2 prod');
+      expect(request(`https://${stagingDomain}/`).body).toBe('E2E-ENV v2 staging');
+    },
+    900_000
+  );
 
   it(
     "own server: an app without a domain keeps its <server-ip>:<port> URL across deploys",

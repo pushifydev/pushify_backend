@@ -29,6 +29,7 @@ const ProjectSchema = z
     description: z.string().nullable(),
     gitRepoUrl: z.string().nullable(),
     gitBranch: z.string().nullable(),
+    stagingBranch: z.string().nullable().optional(),
     gitProvider: z.string().nullable(),
     installCommand: z.string().nullable(),
     buildCommand: z.string().nullable(),
@@ -100,6 +101,8 @@ const UpdateProjectSchema = z
     description: z.string().max(1000).optional(),
     gitRepoUrl: z.string().url().optional(),
     gitBranch: z.string().max(100).optional(),
+    /** Pushes here deploy the staging copy; null turns staging off */
+    stagingBranch: z.string().max(100).nullable().optional(),
     gitProvider: z.enum(['github', 'gitlab']).optional(),
     installCommand: z.string().max(500).optional(),
     buildCommand: z.string().max(500).optional(),
