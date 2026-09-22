@@ -244,6 +244,17 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
 
       const row = await db.query.domains.findFirst({ where: (d, { eq }) => eq(d.domain, domain) });
       expect(row?.sslStatus).toBe('active');
+
+      // The daily certificate check reads what the domain serves; 10 days before that expiry the
+      // first warning goes out — once. (Pebble's certificates are short-lived: the first check is
+      // pinned to a date long before.)
+      const { certExpiryService } = await import('../services/cert-expiry.service');
+      expect(await certExpiryService.checkDomains({ domainIds: [row!.id], now: new Date('2000-01-01') })).toEqual({ checked: 1, warned: 0 });
+      const checkedRow = await db.query.domains.findFirst({ where: (d, { eq }) => eq(d.id, row!.id) });
+      expect(checkedRow?.sslExpiresAt).toBeInstanceOf(Date);
+      const now = new Date(checkedRow!.sslExpiresAt!.getTime() - 10 * 24 * 60 * 60 * 1000);
+      expect(await certExpiryService.checkDomains({ domainIds: [row!.id], now })).toEqual({ checked: 1, warned: 1 });
+      expect(await certExpiryService.checkDomains({ domainIds: [row!.id], now })).toEqual({ checked: 1, warned: 0 });
     },
     600_000
   );

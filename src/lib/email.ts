@@ -784,6 +784,59 @@ export async function sendBackupVerificationFailedEmail(
   }
 }
 
+export async function sendCertificateExpiryEmail(
+  to: string,
+  details: { orgName: string; domain: string; projectName: string; projectId: string; expiresAt: Date; daysLeft: number; final: boolean },
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping certificate expiry email');
+    return;
+  }
+
+  const { orgName, domain, projectName, projectId, expiresAt, daysLeft, final } = details;
+  const projectUrl = `${env.FRONTEND_URL}/dashboard/projects/${projectId}`;
+  const date = expiresAt.toISOString().slice(0, 10);
+  const expired = daysLeft < 0;
+  const subjects = {
+    en: expired
+      ? `HTTPS certificate expired — ${domain} (${orgName})`
+      : `HTTPS certificate for ${domain} expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'} (${orgName})`,
+    tr: expired
+      ? `HTTPS sertifikasının süresi doldu — ${domain} (${orgName})`
+      : `${domain} HTTPS sertifikasının süresi ${daysLeft} gün içinde doluyor (${orgName})`,
+  };
+  const copy = {
+    en: {
+      lead: expired
+        ? `The HTTPS certificate of <strong>${domain}</strong> (${projectName}) expired on ${date}. Visitors now see a security warning.`
+        : `The HTTPS certificate of <strong>${domain}</strong> (${projectName}) expires on ${date}${final ? ' — this is the last reminder' : ''}.`,
+      why: 'Pushify renews certificates automatically, so this one is failing to renew. The usual causes: the domain\'s DNS (A record) no longer points at the server, or port 80 is blocked by a firewall. Check the domain in Pushify and verify it again.',
+      cta: 'Open the project',
+    },
+    tr: {
+      lead: expired
+        ? `<strong>${domain}</strong> (${projectName}) alan adının HTTPS sertifikasının süresi ${date} tarihinde doldu. Ziyaretçiler artık güvenlik uyarısı görüyor.`
+        : `<strong>${domain}</strong> (${projectName}) alan adının HTTPS sertifikasının süresi ${date} tarihinde doluyor${final ? ' — bu son hatırlatma' : ''}.`,
+      why: 'Pushify sertifikaları otomatik yeniler; bu sertifika yenilenemiyor. En sık sebepler: alan adının DNS kaydı (A kaydı) artık sunucuyu göstermiyor ya da 80 numaralı port bir güvenlik duvarında kapalı. Alan adını Pushify’da kontrol edip yeniden doğrulayın.',
+      cta: 'Projeyi aç',
+    },
+  }[locale];
+
+  const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#f9fafb;font-family:ui-sans-serif,system-ui,sans-serif">
+<div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:24px">
+  <p style="margin:0 0 12px;font-size:15px;color:#111827">${copy.lead}</p>
+  <p style="margin:0 0 20px;font-size:14px;color:#4b5563">${copy.why}</p>
+  <a href="${projectUrl}" style="display:inline-block;padding:10px 16px;background:#111827;color:#ffffff;border-radius:8px;font-size:14px;text-decoration:none">${copy.cta}</a>
+</div></body></html>`;
+
+  try {
+    await transporter.sendMail({ from: FROM_ADDRESS, to, subject: subjects[locale] ?? subjects.en, html });
+  } catch (err) {
+    logger.error({ err, to }, 'Failed to send certificate expiry email');
+  }
+}
+
 export async function sendInfraServerSuspendedEmail(
   to: string,
   orgName: string,

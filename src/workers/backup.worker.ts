@@ -1,15 +1,18 @@
 import { databaseRepository } from '../repositories/database.repository';
 import { databaseBackupService } from '../services/database-backup.service';
+import { certExpiryService } from '../services/cert-expiry.service';
 import { logger } from '../lib/logger';
 
 const POLL_INTERVAL = 60 * 60 * 1000; // 1 hour
 const CLEANUP_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
 const VERIFY_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours — each pass verifies a few due backups
 const BACKUP_THRESHOLD = 24 * 60 * 60 * 1000; // 24 hours
+const CERT_CHECK_INTERVAL = 24 * 60 * 60 * 1000; // daily — certificate expiry warnings
 
 let isRunning = false;
 let lastCleanup = 0;
 let lastVerify = 0;
+let lastCertCheck = 0;
 
 /**
  * Start the backup worker
@@ -70,6 +73,18 @@ async function pollForBackups(): Promise<void> {
           lastVerify = now;
         } catch (error) {
           logger.error({ err: error }, 'Error verifying backups');
+        }
+      }
+
+      // Certificates about to expire (custom domains, and the auto-subdomain wildcard)
+      if (now - lastCertCheck >= CERT_CHECK_INTERVAL) {
+        lastCertCheck = now;
+        try {
+          const result = await certExpiryService.checkDomains();
+          certExpiryService.checkPlatformWildcard();
+          logger.info(result, 'Certificate expiry check');
+        } catch (error) {
+          logger.error({ err: error }, 'Error checking certificate expiry');
         }
       }
 
