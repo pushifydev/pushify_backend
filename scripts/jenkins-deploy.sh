@@ -43,9 +43,18 @@ echo "==> Deploy pushify_backend in $(pwd)"
 # npm run typecheck
 # npm run test -- --run
 
-# Clean install (keep package-lock.json for reproducible builds)
+# Dependencies — but `npm ci` deletes node_modules, and the running API loads parts of it on
+# demand, so it is only done when package-lock.json actually changed since the last deploy.
+LOCK_STAMP="node_modules/.pushify-lock-sha"
 if [[ -f package-lock.json ]]; then
-  npm ci
+  LOCK_SHA="$(sha256sum package-lock.json | cut -d' ' -f1)"
+  if [[ -d node_modules ]] && [[ -f "$LOCK_STAMP" ]] && [[ "$(cat "$LOCK_STAMP")" == "$LOCK_SHA" ]]; then
+    echo "==> Dependencies unchanged — skipping npm ci"
+  else
+    echo "==> package-lock.json changed — npm ci (the API may be short of a module for a moment)"
+    npm ci
+    echo "$LOCK_SHA" >"$LOCK_STAMP"
+  fi
 else
   echo "WARN: no package-lock.json — using npm install"
   npm install
@@ -57,7 +66,14 @@ if [[ "$(uname -s)" == "Linux" ]] && [[ ! -d node_modules/@rollup/rollup-linux-x
   npm install @rollup/rollup-linux-x64-gnu@4.57.0 --no-save
 fi
 
-npm run build
+# Build beside the running one, then put it in place in a single move: overwriting dist/ under a
+# live process can hand it a half-written file.
+rm -rf dist.new dist.old
+TSUP_OUT_DIR=dist.new npm run build
+[[ -f dist.new/index.js ]] || { echo "ERROR: build produced no dist.new/index.js" >&2; exit 1; }
+if [[ -d dist ]]; then mv dist dist.old; fi
+mv dist.new dist
+rm -rf dist.old
 
 # Database migrations (requires DATABASE_URL in .env)
 if [[ -f .env ]] && grep -q '^DATABASE_URL=' .env; then
@@ -82,6 +98,21 @@ else
 fi
 
 pm2 save
+
+# Reloading a single fork-mode process is a stop and a start: the API is unreachable while it
+# boots. Two cluster instances restart one after the other instead (ecosystem.config.example.cjs).
+api_mode="$(pm2 jlist 2>/dev/null | node -e '
+  let d = ""; process.stdin.on("data", (c) => (d += c)).on("end", () => {
+    let list = [];
+    try { list = JSON.parse(d.slice(d.indexOf("["))); } catch {}
+    const api = list.filter((p) => p.name === "pushify-api");
+    process.stdout.write(api.length ? `${api[0].pm2_env.exec_mode}:${api.length}` : "");
+  });' || true)"
+if [[ -n "$api_mode" ]] && [[ "$api_mode" != cluster_mode:* ]]; then
+  echo "NOTE: pushify-api runs as a single fork process — deploys interrupt it for a few seconds."
+  echo "      For rolling restarts set instances: 2 / exec_mode: 'cluster' in ecosystem.config.cjs,"
+  echo "      then once: pm2 delete pushify-api && pm2 start ecosystem.config.cjs && pm2 save"
+fi
 
 echo "==> Deploy finished"
 pm2 status

@@ -8,8 +8,11 @@ module.exports = {
       name: 'pushify-api',
       cwd: __dirname,
       script: 'dist/index.js',
-      instances: 1,
-      exec_mode: 'fork',
+      // Two instances in cluster mode: `pm2 reload` restarts them one after the other, so a
+      // deploy never leaves the API unanswered. Safe because this process serves HTTP only —
+      // background jobs run in pushify-worker, and rate limits / WebSockets go through Redis.
+      instances: 2,
+      exec_mode: 'cluster',
       autorestart: true,
       watch: false,
       max_memory_restart: '768M',
