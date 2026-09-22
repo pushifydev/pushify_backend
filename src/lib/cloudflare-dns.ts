@@ -127,3 +127,31 @@ export async function deleteAutoSubdomainRecordQuietly(name: string): Promise<vo
     logger.warn({ name, err }, 'Could not remove auto subdomain DNS record');
   }
 }
+
+/**
+ * Empty the CDN's copy of a site after a deploy.
+ *
+ * Cloudflare sits in front of every auto subdomain (the records above are proxied), so a visitor
+ * can be served the previous deploy's files from an edge cache until they expire — and with
+ * fingerprinted assets now cached for a year, "until they expire" is not an option. Purging by
+ * hostname empties only that site's copy, not the whole zone, so one project's deploy never
+ * costs every other project its cache.
+ *
+ * Best effort by design: a cache that was not emptied is a stale page for a few minutes, not a
+ * reason to fail a deploy that already succeeded. Needs the token to carry Cache Purge.
+ */
+export async function purgeCachedHostnames(hostnames: string[]): Promise<'purged' | 'skipped' | 'failed'> {
+  const hosts = [...new Set(hostnames.map((host) => host.trim().toLowerCase()).filter(Boolean))];
+  if (!cloudflareDnsConfigured() || hosts.length === 0) return 'skipped';
+
+  try {
+    // Cloudflare takes at most 30 hostnames per call
+    for (let i = 0; i < hosts.length; i += 30) {
+      await cf('/purge_cache', { method: 'POST', body: JSON.stringify({ hosts: hosts.slice(i, i + 30) }) });
+    }
+    return 'purged';
+  } catch (err) {
+    logger.warn({ err, hosts }, 'Cloudflare cache purge failed');
+    return 'failed';
+  }
+}

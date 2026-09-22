@@ -106,6 +106,25 @@ describe('static site script', () => {
     expect(await out.read('html/index.html')).toBe('old school');
   });
 
+  it('caches hashed assets for a year and everything else for an hour', async () => {
+    const conf = (await prepare({ 'index.html': 'x' })).read('conf/default.conf');
+    const config = (await conf)!;
+
+    // The rules a build tool's output lands in — Next, Nuxt, Astro, Vite, CRA, Remix
+    expect(config).toMatch(/\^\/\(\?:_next\/static\/\|_nuxt\/\|_astro\/\|assets\/\|static\/\(\?:js\|css\|media\)\/\|build\/_shared\/\)/);
+    // …and a hashed file name anywhere else
+    expect(config).toContain('[.-][0-9a-zA-Z_-]{8,}\\.(?:css|js|mjs|woff2?)$');
+    expect(config).toContain('public, max-age=31536000, immutable');
+
+    // A name without a hash can mean new bytes after the next deploy: one hour, no more
+    expect(config).toContain('expires 1h;');
+    // …and HTML is never cached, or a deploy would not be visible
+    expect(config).toContain('add_header Cache-Control "no-cache";');
+
+    // The immutable rules must come before the catch-all, or nginx would never reach them
+    expect(config.indexOf('immutable')).toBeLessThan(config.indexOf('expires 1h;'));
+  });
+
   it('drops TLS and HTTPS redirects from a config written for a VPS (they would loop behind the proxy)', async () => {
     const out = await prepare({
       'index.html': 'x',

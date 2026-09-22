@@ -5,7 +5,13 @@ const mockEnv = vi.hoisted(() => ({
 }));
 vi.mock('../config/env', () => mockEnv);
 
-import { deleteAutoSubdomainRecord, ensureAutoSubdomainRecord, hostnameOf, OUR_COMMENT } from './cloudflare-dns';
+import {
+  deleteAutoSubdomainRecord,
+  ensureAutoSubdomainRecord,
+  hostnameOf,
+  purgeCachedHostnames,
+  OUR_COMMENT,
+} from './cloudflare-dns';
 
 type Call = { method: string; url: string; body?: Record<string, unknown> };
 
@@ -87,5 +93,47 @@ describe('hostnameOf', () => {
     expect(hostnameOf('https://pr-3-shop.pushify.dev/')).toBe('pr-3-shop.pushify.dev');
     expect(hostnameOf('not a url')).toBeNull();
     expect(hostnameOf(null)).toBeNull();
+  });
+});
+
+describe('purgeCachedHostnames', () => {
+  /**
+   * Fingerprinted assets are cached for a year now, so a deploy that does not empty the edge
+   * cache can leave visitors on the previous release. It purges by hostname, never the zone —
+   * one project's deploy must not cost every other project its cache.
+   */
+  it('purges the given hosts, lower-cased and without duplicates', async () => {
+    const calls = fakeZone([]);
+    expect(await purgeCachedHostnames(['Shop.example.com', 'shop.example.com', ' www.example.com '])).toBe('purged');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe('POST');
+    expect(calls[0].url).toContain('/zones/zone/purge_cache');
+    expect(calls[0].body).toEqual({ hosts: ['shop.example.com', 'www.example.com'] });
+  });
+
+  it("sends at most 30 hosts per call, which is Cloudflare's limit", async () => {
+    const calls = fakeZone([]);
+    const hosts = Array.from({ length: 31 }, (_, i) => `site${i}.example.com`);
+    await purgeCachedHostnames(hosts);
+    expect(calls).toHaveLength(2);
+    expect((calls[0].body as { hosts: string[] }).hosts).toHaveLength(30);
+    expect((calls[1].body as { hosts: string[] }).hosts).toHaveLength(1);
+  });
+
+  it('does nothing without a token, or without hosts', async () => {
+    mockEnv.env.CLOUDFLARE_API_TOKEN = undefined;
+    const calls = fakeZone([]);
+    expect(await purgeCachedHostnames(['shop.example.com'])).toBe('skipped');
+    mockEnv.env.CLOUDFLARE_API_TOKEN = 'token';
+    expect(await purgeCachedHostnames([])).toBe('skipped');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('reports a failure instead of throwing — a stale page is not a failed deploy', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ success: false, errors: [{ message: 'no permission' }] }), { status: 403 }))
+    );
+    expect(await purgeCachedHostnames(['shop.example.com'])).toBe('failed');
   });
 });

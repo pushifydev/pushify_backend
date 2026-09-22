@@ -959,6 +959,11 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         addLog(`✅ Remote deployment successful! URL: ${remoteResult.deploymentUrl}`);
       }
 
+      // Empty the CDN's copy of this site. Cloudflare sits in front of every auto subdomain, and
+      // fingerprinted assets are now cached for a year, so without this a visitor could be served
+      // the previous deploy for a long time. Only this project's hostnames are purged.
+      await purgeProjectCache(job.projectId, remoteResult.deploymentUrl, addLog);
+
       // Publish running status via WebSocket
       wsManager.publish(`project:${job.projectId}`, {
         type: 'deployment:status',
@@ -1740,4 +1745,35 @@ async function syncDeclaredResources(
   }
 
   return volumesChanged;
+}
+
+/**
+ * The hostnames this project answers on, emptied from Cloudflare's cache after a deploy.
+ * Never fails a deploy: a cache that was not emptied is a stale page, not a broken release.
+ */
+async function purgeProjectCache(
+  projectId: string,
+  deploymentUrl: string | undefined,
+  addLog: (message: string) => void
+): Promise<void> {
+  try {
+    const { cloudflareDnsConfigured, hostnameOf, purgeCachedHostnames } = await import('../lib/cloudflare-dns');
+    if (!cloudflareDnsConfigured()) return;
+    const { domains } = await import('../db/schema/projects');
+
+    const rows = await db
+      .select({ domain: domains.domain })
+      .from(domains)
+      .where(eq(domains.projectId, projectId));
+    const hosts = [...rows.map((row) => row.domain), hostnameOf(deploymentUrl)].filter(
+      (host): host is string => !!host
+    );
+    if (hosts.length === 0) return;
+
+    const result = await purgeCachedHostnames(hosts);
+    if (result === 'purged') addLog(`🧹 Emptied the CDN cache for ${hosts.join(', ')}`);
+    else if (result === 'failed') addLog('⚠️ Could not empty the CDN cache — visitors may see the previous version for a while');
+  } catch {
+    // Not worth a word in the log, let alone a failed deploy
+  }
 }

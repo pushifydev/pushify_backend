@@ -100,6 +100,20 @@ server {
     index index.html index.htm;
     $ERR
     location ~ /\\.(?!well-known) { return 404; }
+    # A build tool puts a content hash in the file name, so that exact file never changes: it can
+    # be cached for a year. Everything else gets an hour, because the same name can mean new
+    # bytes after the next deploy. Without this every visitor re-downloaded the whole bundle
+    # hourly, and a CDN in front had nothing worth keeping.
+    location ~* "^/(?:_next/static/|_nuxt/|_astro/|assets/|static/(?:js|css|media)/|build/_shared/)" {
+        expires 1y;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        try_files \\$uri =404;
+    }
+    location ~* "[.-][0-9a-zA-Z_-]{8,}\\.(?:css|js|mjs|woff2?)\\$" {
+        expires 1y;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        try_files \\$uri =404;
+    }
     location ~* \\.(?:css|js|mjs|json|png|jpg|jpeg|gif|svg|webp|avif|ico|woff2?|ttf|eot|map)\\$ {
         expires 1h;
         try_files \\$uri =404;
