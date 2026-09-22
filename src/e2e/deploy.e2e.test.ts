@@ -590,6 +590,48 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
     );
   }
 
+  it(
+    "own server: an app without a domain keeps its <server-ip>:<port> URL across deploys",
+    async () => {
+      onTestFailed(() => console.error(serverState()));
+      const server = (version: string) =>
+        ["const http = require('http');", `http.createServer((req, res) => res.end('E2E-OWN ${version}')).listen(process.env.PORT || 3000);`, ''].join('\n');
+      const repo = await fixtureRepo({
+        'package.json': JSON.stringify(
+          { name: 'e2e-own', version: '1.0.0', private: true, scripts: { build: 'echo built', start: 'node server.js' } },
+          null,
+          2
+        ),
+        'server.js': server('v1'),
+      });
+      const project = await createProject('own', repo, `unused-own-${run}.127.0.0.1.nip.io`);
+      await db.delete(schema.domains).where(eqOp(schema.domains.projectId, project.id));
+
+      const publicPort = () =>
+        (JSON.parse(readFileSync('/opt/pushify/port-registry.json', 'utf8')).assignments as Array<{ port: number; projectSlug: string }>).find(
+          (a) => a.projectSlug === `${project.slug}:public`
+        )?.port;
+      const boxIp = execSync(`hostname -I | awk '{print $1}'`, { encoding: 'utf8' }).trim();
+      const get = (port: number) => tryExec(`curl -s --max-time 10 http://${boxIp}:${port}/`);
+
+      await deploy(project.id);
+      const port = publicPort()!;
+      expect(port).toBeGreaterThan(0);
+      expect(get(port)).toBe('E2E-OWN v1');
+
+      // Blue-green moves the container to another port; the URL stays
+      await fixtureRepo({ 'server.js': server('v2') }, repo);
+      await deploy(project.id);
+      expect(publicPort()).toBe(port);
+      expect(get(port)).toBe('E2E-OWN v2');
+
+      const name = execSync(`docker ps --filter name=pushify-${project.slug} --format '{{.Names}}'`, { encoding: 'utf8' }).trim();
+      const bindings = JSON.parse(execSync(`docker inspect -f '{{json .HostConfig.PortBindings}}' ${name}`, { encoding: 'utf8' }));
+      expect(Object.values(bindings as Record<string, Array<{ HostIp: string }>>)[0][0].HostIp).toBe('127.0.0.1');
+    },
+    600_000
+  );
+
   // Last on purpose: it turns the box into a shared runner, and its firewall rules stay for the run.
   it(
     'shared runner: apps are reachable through nginx only, not from each other, the host or the public port',
