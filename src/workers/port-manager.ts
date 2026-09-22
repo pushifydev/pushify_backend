@@ -349,9 +349,11 @@ export async function getPortStats(
 export async function pickSwitchPort(
   ssh: SSHClient,
   currentPort: number,
-  range?: PortRange
+  range?: PortRange,
+  /** Ports the new container must not take (a domain-less app's public port, held by nginx) */
+  avoid: number[] = []
 ): Promise<number> {
-  if (!(await isPortListening(ssh, currentPort))) return currentPort;
+  if (!avoid.includes(currentPort) && !(await isPortListening(ssh, currentPort))) return currentPort;
 
   const r = range ?? { min: MIN_PORT, max: MAX_PORT };
   const registry = await loadRegistry(ssh);
@@ -359,6 +361,7 @@ export async function pickSwitchPort(
     ...(await getUsedPorts(ssh)),
     ...registry.assignments.map((a) => a.port),
     currentPort,
+    ...avoid,
   ]);
   for (let p = r.min; p <= r.max; p++) {
     if (!taken.has(p)) return p;

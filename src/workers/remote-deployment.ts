@@ -13,6 +13,13 @@ import { syncProjectSites, describeSyncedDomains } from '../lib/project-sites';
 import { isSharedRunnerServer } from '../lib/runner-routing';
 import { DATABASE_NETWORK } from '../lib/managed-database';
 import { applyRunnerIsolationCommand, RUNNER_APP_NETWORK } from '../lib/runner-isolation';
+import {
+  containerHoldingPort,
+  nginxAvailable,
+  removePublicPortProxy,
+  resolvePublicPort,
+  writePublicPortProxy,
+} from './public-port-proxy';
 import { logger } from '../lib/logger';
 import {
   applyCalcomEnvDefaults,
@@ -300,6 +307,36 @@ async function servedThroughNginx(
   const domain = isPreview ? previewDomain ?? null : await getPrimaryDomain(projectId);
   if (!domain) return false;
   return !isAutoSubdomain(domain) || hasWildcardSSL;
+}
+
+/**
+ * A domain-less app on a runner: point its fixed public port (nginx) at the container that just
+ * passed its health check. On the first deploy behind the proxy the old container still publishes
+ * that port itself, so it is retired first — a moment of downtime, once. Returns true when the old
+ * container was retired here.
+ */
+async function pointPublicPort(
+  ssh: SSHClient,
+  slug: string,
+  publicPort: number,
+  containerPort: number,
+  retireOldContainer: (() => Promise<void>) | null,
+  onProgress: (msg: string) => void,
+): Promise<boolean> {
+  const written = await writePublicPortProxy(ssh, slug, publicPort, containerPort);
+  if (!written.success) throw new Error(`Could not route public port ${publicPort}: ${written.message}`);
+  let retired = false;
+  const holder = await containerHoldingPort(ssh, publicPort);
+  if (holder) {
+    if (!retireOldContainer) throw new Error(`Public port ${publicPort} is held by ${holder}`);
+    onProgress(`🔀 Moving public port ${publicPort} from ${holder} to nginx`);
+    await retireOldContainer();
+    retired = true;
+  }
+  const reload = await reloadNginx(ssh);
+  if (!reload.success) throw new Error(`Could not route public port ${publicPort}: ${reload.message}`);
+  onProgress(`🔀 Public port ${publicPort} → new container (127.0.0.1:${containerPort})`);
+  return retired;
 }
 
 /**
@@ -1175,11 +1212,17 @@ export async function deployToRemoteServer(
     // deploy, and the container that survived was not the one that had passed the check.
     onProgress('🔵🟢 Starting blue-green deployment...');
     const previousHostPort = hostPort;
-    const switchPort = await pickSwitchPort(ssh, hostPort);
     // Started on its network, not joined to it afterwards: an app that connects (or migrates)
     // at boot would otherwise race the join. On a runner that is the isolated apps network.
     const appNetwork = sharedHost ? RUNNER_APP_NETWORK : await prepareDatabaseNetwork(ssh, serverId, onProgress);
     const loopbackOnly = sharedHost && (await servedThroughNginx(ssh, projectId, previewDomain, !!deploySuffix));
+    // A domain-less app on a runner keeps one public port across deploys, held by nginx
+    // (workers/public-port-proxy.ts); its container is on loopback like the others.
+    const publicPort =
+      sharedHost && !loopbackOnly && !deploySuffix && (await nginxAvailable(ssh))
+        ? await resolvePublicPort(ssh, deploySlug, hostPort)
+        : null;
+    const switchPort = await pickSwitchPort(ssh, hostPort, undefined, publicPort ? [publicPort] : []);
 
     const blueGreenResult = await blueGreenDeploy(ssh, {
       imageName: `${imageName}:${imageTag}`,
@@ -1190,7 +1233,7 @@ export async function deployToRemoteServer(
       envVars,
       volumes: config.volumes,
       networkMode: appNetwork,
-      bindAddress: loopbackOnly ? '127.0.0.1' : undefined,
+      bindAddress: loopbackOnly || publicPort ? '127.0.0.1' : undefined,
       restart: 'unless-stopped',
       healthCheckTimeout: 60, // 60 seconds to become healthy
       framework: resolvedFramework,
@@ -1211,7 +1254,7 @@ export async function deployToRemoteServer(
       retireOldContainer = async () => {
         onProgress(`🗑️ Retiring old container: ${oldContainerName}`);
         await retireSsh.exec(`docker rm -f ${oldContainerName} 2>/dev/null || true`);
-        if (previousHostPort !== hostPort) {
+        if (previousHostPort !== hostPort && previousHostPort !== publicPort) {
           await closeFirewallPort(retireSsh, previousHostPort, onProgress);
         }
       };
@@ -1220,8 +1263,21 @@ export async function deployToRemoteServer(
 
     // Open firewall port for external access (root-first; works on BYOS without sudo/ufw).
     // Not when the port is on loopback: then nginx is the only way in.
-    if (loopbackOnly) {
+    if (publicPort) {
+      await openFirewallPort(ssh, publicPort, onProgress);
+      if (await pointPublicPort(ssh, deploySlug, publicPort, hostPort, retireOldContainer, onProgress)) {
+        retireOldContainer = null;
+      }
+    } else if (loopbackOnly) {
       onProgress(`🔒 Port ${hostPort} is bound to 127.0.0.1 — reachable through nginx only`);
+      if (sharedHost && !deploySuffix) {
+        // Served under a domain now: a public port it had while it had none goes away.
+        const formerPublicPort = await removePublicPortProxy(ssh, deploySlug);
+        if (formerPublicPort) {
+          await closeFirewallPort(ssh, formerPublicPort, onProgress);
+          onProgress(`🔒 Public port ${formerPublicPort} closed — the app is served under its domain`);
+        }
+      }
     } else {
       await openFirewallPort(ssh, hostPort, onProgress);
     }
@@ -1267,7 +1323,7 @@ export async function deployToRemoteServer(
     // wildcard cert) — e.g. it was moved to the user's own server. The subdomain's DNS
     // points at Pushify's host, not here. Drop the auto-generated record; serve via IP.
     if (isPushifyAutoSubdomain(primaryDomain) && !hasWildcardSSL) {
-      onProgress(`🌐 Auto subdomain ${primaryDomain} only works on Pushify's shared host — this is your own server. Serving via http://${server.ipv4}:${hostPort}`);
+      onProgress(`🌐 Auto subdomain ${primaryDomain} only works on Pushify's shared host — this is your own server. Serving via http://${server.ipv4}:${publicPort ?? hostPort}`);
       try {
         await db.delete(domains).where(and(eq(domains.projectId, projectId), eq(domains.isAutoGenerated, true)));
       } catch (err) {
@@ -1289,7 +1345,7 @@ export async function deployToRemoteServer(
           onProgress(`⚠️ Auto subdomain creation warning: ${autoSubError instanceof Error ? autoSubError.message : 'Unknown error'}`);
         }
       } else {
-        onProgress(`🌐 No domain configured. Access via: http://${server.ipv4}:${hostPort}`);
+        onProgress(`🌐 No domain configured. Access via: http://${server.ipv4}:${publicPort ?? hostPort}`);
       }
     }
 
@@ -1349,7 +1405,7 @@ export async function deployToRemoteServer(
     } else if (previewVhostUrl) {
       deploymentUrl = previewVhostUrl;
     } else {
-      deploymentUrl = `http://${server.ipv4}:${hostPort}`;
+      deploymentUrl = `http://${server.ipv4}:${publicPort ?? hostPort}`;
     }
 
     onProgress(`✅ Deployment successful! URL: ${deploymentUrl}`);
@@ -1501,9 +1557,11 @@ export async function quickRollbackToDeployment(
     // re-pointed anyway.
     onProgress(`🔵🟢 Rolling back to ${fullImageName} (blue-green)...`);
     const previousHostPort = hostPort;
-    const switchPort = await pickSwitchPort(ssh, hostPort);
     const appNetwork = sharedHost ? RUNNER_APP_NETWORK : await prepareDatabaseNetwork(ssh, serverId, onProgress);
     const loopbackOnly = sharedHost && (await servedThroughNginx(ssh, projectId, undefined, false));
+    const publicPort =
+      sharedHost && !loopbackOnly && (await nginxAvailable(ssh)) ? await resolvePublicPort(ssh, projectSlug, hostPort) : null;
+    const switchPort = await pickSwitchPort(ssh, hostPort, undefined, publicPort ? [publicPort] : []);
     const blueGreenResult = await blueGreenDeploy(ssh, {
       imageName: fullImageName,
       containerName: `pushify-${projectSlug}`,
@@ -1513,7 +1571,7 @@ export async function quickRollbackToDeployment(
       envVars,
       volumes: config.volumes,
       networkMode: appNetwork,
-      bindAddress: loopbackOnly ? '127.0.0.1' : undefined,
+      bindAddress: loopbackOnly || publicPort ? '127.0.0.1' : undefined,
       restart: 'unless-stopped',
       healthCheckTimeout: 60,
       onProgress,
@@ -1524,7 +1582,19 @@ export async function quickRollbackToDeployment(
     hostPort = blueGreenResult.tempPort ?? switchPort;
     await recordPortAssignment(ssh, projectSlug, hostPort);
     onProgress(`✅ Rollback container healthy on port ${hostPort}`);
-    if (!loopbackOnly) await openFirewallPort(ssh, hostPort, onProgress);
+    const oldContainerName = blueGreenResult.oldContainerName;
+    let oldRetired = false;
+    if (publicPort) {
+      await openFirewallPort(ssh, publicPort, onProgress);
+      const retireOld = oldContainerName
+        ? async () => {
+            await ssh!.exec(`docker rm -f ${oldContainerName} 2>/dev/null || true`);
+          }
+        : null;
+      oldRetired = await pointPublicPort(ssh, projectSlug, publicPort, hostPort, retireOld, onProgress);
+    } else if (!loopbackOnly) {
+      await openFirewallPort(ssh, hostPort, onProgress);
+    }
 
     // Restart worker processes from the rollback image so app + workers stay in sync
     await syncWorkerContainersOnDeploy(ssh, {
@@ -1555,17 +1625,19 @@ export async function quickRollbackToDeployment(
         onProgress,
       });
     }
-    if (blueGreenResult.oldContainerName) {
-      onProgress(`🗑️ Retiring old container: ${blueGreenResult.oldContainerName}`);
-      await ssh.exec(`docker rm -f ${blueGreenResult.oldContainerName} 2>/dev/null || true`);
-      if (previousHostPort !== hostPort) {
+    if (oldContainerName) {
+      if (!oldRetired) {
+        onProgress(`🗑️ Retiring old container: ${oldContainerName}`);
+        await ssh.exec(`docker rm -f ${oldContainerName} 2>/dev/null || true`);
+      }
+      if (previousHostPort !== hostPort && previousHostPort !== publicPort) {
         await closeFirewallPort(ssh, previousHostPort, onProgress);
       }
     }
 
     const deploymentUrl = primaryDomain
       ? `${primaryOnHttps ? 'https' : 'http'}://${primaryDomain}`
-      : `http://${server.ipv4}:${hostPort}`;
+      : `http://${server.ipv4}:${publicPort ?? hostPort}`;
 
     onProgress(`✅ Rollback successful! URL: ${deploymentUrl}`);
 
