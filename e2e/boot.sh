@@ -38,10 +38,11 @@ log "starting nginx (no systemd here: Pushify falls back to nginx -s reload)"
 nginx
 
 log "starting pebble (ACME test CA; validation skipped — there is no public DNS in here)"
-docker rm -f pebble >/dev/null 2>&1 || true
-# Not on Docker's default bridge: on a runner that bridge is for builds only (lib/runner-isolation.ts)
+docker rm -f pebble pushify-e2e-pebble >/dev/null 2>&1 || true
+# Not on Docker's default bridge (builds only, on a runner), and named like Pushify's own so the
+# runner rules treat its network as ours (lib/runner-isolation.ts)
 docker network create e2e-infra >/dev/null 2>&1 || true
-docker run -d --name pebble --network e2e-infra -p 14000:14000 \
+docker run -d --name pushify-e2e-pebble --network e2e-infra -p 14000:14000 \
   -e PEBBLE_VA_ALWAYS_VALID=1 -e PEBBLE_VA_NOSLEEP=1 -e PEBBLE_WFE_NONCEREJECT=0 \
   ghcr.io/letsencrypt/pebble:latest >/dev/null
 mkdir -p /etc/letsencrypt

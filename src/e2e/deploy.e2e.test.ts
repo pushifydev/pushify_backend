@@ -755,6 +755,37 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
         await deploy(buildProject.id);
         expect(JSON.parse(request(`https://${buildDomain}/`).body)).toEqual({ hostService: 'closed', neighbour: 'closed', internet: 'open' });
 
+        // A marketplace app with its own database runs on a network of its own: the app reaches
+        // its database there, and nothing more than any other app.
+        const mkNet = `pushify-e2e-mk-${run}`;
+        execSync(`docker network create ${mkNet}`);
+        execSync(
+          `docker run -d --name pushify-e2e-mk-db-${run} --network ${mkNet} node:20-bookworm-slim node -e "require('net').createServer((s) => s.end('db')).listen(5432)"`
+        );
+        const mkDbIp = execSync(`docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' pushify-e2e-mk-db-${run}`, { encoding: 'utf8' }).trim();
+        const mkGateway = execSync(`docker network inspect ${mkNet} -f '{{(index .IPAM.Config 0).Gateway}}'`, { encoding: 'utf8' }).trim();
+        const mkProbe = [
+          "const net = require('net');",
+          'const probe = (host, port) => new Promise((resolve) => {',
+          '  const socket = net.connect({ host, port, timeout: 3000 });',
+          "  socket.on('connect', () => { socket.destroy(); resolve('open'); });",
+          "  socket.on('timeout', () => { socket.destroy(); resolve('closed'); });",
+          "  socket.on('error', () => resolve('closed'));",
+          '});',
+          '(async () => console.log(JSON.stringify({',
+          `  ownDatabase: await probe('${mkDbIp}', 5432),`,
+          `  hostService: await probe('${mkGateway}', ${hostServicePort}),`,
+          `  neighbour: await probe('${neighbourIp}', 7777),`,
+          "  internet: await probe('1.1.1.1', 443),",
+          '})))();',
+        ].join('\n');
+        const mkResult = execFileSync(
+          'docker',
+          ['run', '--rm', '--name', `pushify-e2e-mk-app-${run}`, '--network', mkNet, 'node:20-bookworm-slim', 'node', '-e', mkProbe],
+          { encoding: 'utf8' }
+        );
+        expect(JSON.parse(mkResult.trim())).toEqual({ ownDatabase: 'open', hostService: 'closed', neighbour: 'closed', internet: 'open' });
+
         // No domain (and no wildcard certificate for an auto subdomain): <server-ip>:<port> is the
         // app's only URL. nginx holds that port and forwards to whichever container is current,
         // so the URL survives deploys (it used to flip with every blue-green switch) and the
@@ -810,7 +841,8 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
       } finally {
         env.PUSHIFY_RUNNER_SERVER_IDS = previousRunners;
         hostService.close();
-        tryExec(`docker rm -f pushify-e2e-neighbour-${run}`);
+        tryExec(`docker rm -f pushify-e2e-neighbour-${run} pushify-e2e-mk-db-${run}`);
+        tryExec(`docker network rm pushify-e2e-mk-${run}`);
       }
     },
     600_000
