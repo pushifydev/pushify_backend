@@ -15,7 +15,8 @@ import { DATABASE_NETWORK } from '../lib/managed-database';
 import { applyRunnerIsolationCommand, RUNNER_APP_NETWORK } from '../lib/runner-isolation';
 import {
   containerHoldingPort,
-  nginxAvailable,
+  canServePublicPort,
+  publicPortAnswers,
   removePublicPortProxy,
   resolvePublicPort,
   writePublicPortProxy,
@@ -354,6 +355,9 @@ async function pointPublicPort(
   }
   const reload = await reloadNginx(ssh);
   if (!reload.success) throw new Error(`Could not route public port ${publicPort}: ${reload.message}`);
+  if (!(await publicPortAnswers(ssh, publicPort))) {
+    throw new Error(`nginx is not answering on public port ${publicPort} after the reload`);
+  }
   onProgress(`🔀 Public port ${publicPort} → new container (127.0.0.1:${containerPort})`);
   return retired;
 }
@@ -367,6 +371,10 @@ async function applyRunnerIsolation(ssh: SSHClient, onProgress: (msg: string) =>
   const result = await ssh.exec(applyRunnerIsolationCommand());
   if (result.stdout.includes('PUSHIFY_ISOLATION_OK')) {
     onProgress('🛡️ Shared-runner network isolation in place');
+    const skipped = result.stdout.match(/PUSHIFY_ISOLATION_BUILDS_SKIPPED: (.*)/);
+    if (skipped) {
+      onProgress(`⚠️ Builds are not isolated: containers that aren't Pushify's use Docker's default bridge (${skipped[1].trim()})`);
+    }
   } else {
     onProgress(`⚠️ Could not apply shared-runner network isolation: ${(result.stderr || result.stdout).trim().slice(0, 300)}`);
     logger.warn({ stdout: result.stdout, stderr: result.stderr }, 'Shared-runner network isolation failed');
@@ -1243,11 +1251,13 @@ export async function deployToRemoteServer(
     // Started on its network, not joined to it afterwards: an app that connects (or migrates)
     // at boot would otherwise race the join. On a runner that is the isolated apps network.
     const appNetwork = sharedHost ? RUNNER_APP_NETWORK : await prepareDatabaseNetwork(ssh, serverId, onProgress);
-    const loopbackOnly = sharedHost && (await servedThroughNginx(ssh, projectId, previewDomain, !!deploySuffix));
-    // A domain-less app on a runner keeps one public port across deploys, held by nginx
-    // (workers/public-port-proxy.ts); its container is on loopback like the others.
+    const servedByDomain = await servedThroughNginx(ssh, projectId, previewDomain, !!deploySuffix);
+    const loopbackOnly = sharedHost && servedByDomain;
+    // A domain-less app keeps one public port across deploys, held by nginx
+    // (workers/public-port-proxy.ts); its container is on loopback. Where nginx can't hold it
+    // (not running, no sites-enabled, SELinux), the container publishes its port as before.
     const publicPort =
-      sharedHost && !loopbackOnly && !deploySuffix && (await nginxAvailable(ssh))
+      !servedByDomain && !deploySuffix && (await canServePublicPort(ssh))
         ? await resolvePublicPort(ssh, deploySlug, hostPort)
         : null;
     const switchPort = await pickSwitchPort(ssh, hostPort, undefined, publicPort ? [publicPort] : []);
@@ -1296,18 +1306,21 @@ export async function deployToRemoteServer(
       if (await pointPublicPort(ssh, deploySlug, publicPort, hostPort, retireOldContainer, onProgress)) {
         retireOldContainer = null;
       }
-    } else if (loopbackOnly) {
-      onProgress(`🔒 Port ${hostPort} is bound to 127.0.0.1 — reachable through nginx only`);
-      if (sharedHost && !deploySuffix) {
+    } else {
+      if (loopbackOnly) {
+        onProgress(`🔒 Port ${hostPort} is bound to 127.0.0.1 — reachable through nginx only`);
+      } else {
+        await openFirewallPort(ssh, hostPort, onProgress);
+      }
+      if (servedByDomain && !deploySuffix) {
         // Served under a domain now: a public port it had while it had none goes away.
         const formerPublicPort = await removePublicPortProxy(ssh, deploySlug);
         if (formerPublicPort) {
+          await reloadNginx(ssh);
           await closeFirewallPort(ssh, formerPublicPort, onProgress);
           onProgress(`🔒 Public port ${formerPublicPort} closed — the app is served under its domain`);
         }
       }
-    } else {
-      await openFirewallPort(ssh, hostPort, onProgress);
     }
 
     // Worker processes run from the same image — production deploys only, never previews.
@@ -1594,9 +1607,10 @@ export async function quickRollbackToDeployment(
     onProgress(`🔵🟢 Rolling back to ${fullImageName} (blue-green)...`);
     const previousHostPort = hostPort;
     const appNetwork = sharedHost ? RUNNER_APP_NETWORK : await prepareDatabaseNetwork(ssh, serverId, onProgress);
-    const loopbackOnly = sharedHost && (await servedThroughNginx(ssh, projectId, undefined, false));
+    const servedByDomain = await servedThroughNginx(ssh, projectId, undefined, false);
+    const loopbackOnly = sharedHost && servedByDomain;
     const publicPort =
-      sharedHost && !loopbackOnly && (await nginxAvailable(ssh)) ? await resolvePublicPort(ssh, projectSlug, hostPort) : null;
+      !servedByDomain && (await canServePublicPort(ssh)) ? await resolvePublicPort(ssh, projectSlug, hostPort) : null;
     const switchPort = await pickSwitchPort(ssh, hostPort, undefined, publicPort ? [publicPort] : []);
     const blueGreenResult = await blueGreenDeploy(ssh, {
       imageName: fullImageName,

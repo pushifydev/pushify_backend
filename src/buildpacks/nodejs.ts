@@ -181,7 +181,9 @@ CMD ["nginx", "-g", "daemon off;"]
     startCmd: string,
     port: number
   ): string {
-    const buildStep = buildCmd ? `RUN ${buildCmd}\n` : '';
+    // No build command set: run the package's own "build" script when it has one (tsc, bundlers)
+    // — like Heroku / Railway. Without it a TypeScript API started from dist/ that was never built.
+    const buildStep = `RUN ${buildCmd || 'npm run build --if-present'}\n`;
     return `${this._nodeBuilderHeader()}${nodeInstallLines(install)}
 ${nodeLightningcssGlibcFixLines()}
 ${buildStep}EXPOSE ${port}

@@ -2,7 +2,7 @@ import type { SSHClient } from '../utils/ssh';
 import { getAssignedPort, getOrAssignPort, recordPortAssignment, releasePort } from './port-manager';
 
 /**
- * An app on a shared runner without a domain is reached at <server-ip>:<port>. Blue-green gives
+ * An app without a domain is reached at <server-ip>:<port>. Blue-green gives
  * every deploy's container a new port, so that port can't be the container's: it used to flip
  * (3005 → 3006 → 3005 …) and every link to the app broke on each deploy. The public port is
  * nginx's instead — a fixed port per project, forwarded to whichever container is current — so
@@ -44,10 +44,25 @@ server {
 `;
 }
 
-/** Can this server serve a public port through nginx at all? */
-export async function nginxAvailable(ssh: SSHClient): Promise<boolean> {
-  const result = await ssh.exec(`command -v nginx >/dev/null 2>&1 && test -d ${ENABLED_DIR} && echo yes || echo no`);
+/**
+ * Can this server hold a public port in nginx? nginx has to be running and load sites-enabled,
+ * and SELinux must not be enforcing (it only lets nginx bind the http ports, so the reload would
+ * fail after the old container had already let go of the port). Anything else keeps the old
+ * behaviour: the container publishes its port itself.
+ */
+export async function canServePublicPort(ssh: SSHClient): Promise<boolean> {
+  const result = await ssh.exec(
+    `command -v nginx >/dev/null 2>&1 && pgrep -x nginx >/dev/null 2>&1 && ` +
+      `nginx -T 2>/dev/null | sed 's/#.*$//' | grep -Eq 'include[[:space:]]+${ENABLED_DIR}/' && ` +
+      `[ "$(getenforce 2>/dev/null)" != "Enforcing" ] && echo yes || echo no`
+  );
   return result.stdout.trim() === 'yes';
+}
+
+/** Does nginx answer on the public port now? (Any HTTP status counts — 000 is "nothing there".) */
+export async function publicPortAnswers(ssh: SSHClient, port: number): Promise<boolean> {
+  const result = await ssh.exec(`curl -s -o /dev/null -m 5 -w '%{http_code}' http://127.0.0.1:${port}/ || true`);
+  return result.stdout.trim() !== '000' && result.stdout.trim() !== '';
 }
 
 /**
