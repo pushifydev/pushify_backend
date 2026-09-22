@@ -35,6 +35,7 @@
     "refund:infra-overcharge": "tsx scripts/refund-infra-overcharge.ts",
     "stripe:create-prices": "tsx scripts/create-stripe-prices.ts",
     "stripe:audit": "tsx scripts/stripe-audit.ts",
+    "cert:install-wildcard": "tsx scripts/install-wildcard-cert.ts",
     "marketplace:export": "tsx scripts/export-marketplace.ts",
     "test:e2e": "bash e2e/run.sh",
     "test:studio": "PUSHIFY_STUDIO_IT=1 vitest run --no-file-parallelism src/lib/studio-engine.integration.test.ts src/lib/studio-nosql.integration.test.ts"

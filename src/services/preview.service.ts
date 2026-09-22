@@ -245,6 +245,9 @@ export const previewService = {
     try {
       await ssh.exec(buildPreviewTeardownScript(slug, preview.prNumber));
       await releasePort(ssh, previewDeploySlug(slug, preview.prNumber));
+      const { deleteAutoSubdomainRecordQuietly, hostnameOf } = await import('../lib/cloudflare-dns');
+      const previewHost = hostnameOf(preview.previewUrl);
+      if (previewHost) await deleteAutoSubdomainRecordQuietly(previewHost);
       if (preview.hostPort) {
         const { closeFirewallPort } = await import('../workers/remote-deployment');
         await closeFirewallPort(ssh, preview.hostPort, () => {});

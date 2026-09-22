@@ -633,6 +633,9 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
         // Visitors still get in, through nginx
         expect(request(`https://${domainA}/`).body).toBe('E2E-ISO');
         expect(request(`https://${domainB}/`).body).toBe('E2E-ISO');
+        // …but a name nginx has no site for gets nothing — not the first customer site it loaded
+        const stranger = `nosuchsite-${run}.example.com`;
+        expect(tryExec(`curl -sk --max-time 10 --resolve ${stranger}:443:${SERVER_IP} https://${stranger}/`)).toBeUndefined();
 
         const container = (slug: string) =>
           execSync(`docker ps --filter name=pushify-${slug} --format '{{.Names}}'`, { encoding: 'utf8' }).trim();

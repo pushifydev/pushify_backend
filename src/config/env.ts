@@ -74,6 +74,10 @@ const envSchema = z.object({
   // Preview Deployments
   PREVIEW_BASE_URL: z.string().optional(),
   WILDCARD_SSL_PATH: z.string().optional(), // e.g. /etc/letsencrypt/live/pushify.dev-0001
+  // Cloudflare zone of PREVIEW_BASE_URL: each auto subdomain gets its own proxied A record to the
+  // server hosting the app (lib/cloudflare-dns.ts). Token: Zone → DNS → Edit, that zone only.
+  CLOUDFLARE_API_TOKEN: z.string().optional(),
+  CLOUDFLARE_ZONE_ID: z.string().optional(),
   // Dedicated runner server pool (comma-separated `servers` row ids) that free/unassigned
   // deploys land on, keeping untrusted workloads off the control-plane host. A project is
   // stickily mapped to one runner (deterministic by project id) so its redeploys stay put.

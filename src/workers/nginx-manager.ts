@@ -861,6 +861,31 @@ export async function removeSite(
 }
 
 /**
+ * Shared hosts: a TLS catch-all, so a name nginx has no site for gets its connection closed —
+ * without one nginx answers with the first TLS site it loaded, i.e. another customer's site and
+ * certificate. Self-signed (it is never meant to validate). Skipped when a 443 default_server
+ * exists already; removed again if nginx rejects it.
+ */
+export const CATCH_ALL_TLS_SCRIPT = `
+# nginx -T without comments: Debian's stock default site carries "# listen 443 ssl default_server;"
+LIVE_CONF=$(nginx -T 2>/dev/null | sed 's/#.*$//')
+if ! printf '%s\\n' "$LIVE_CONF" | grep -Eq 'listen[[:space:]][^;]*443[^;]*default_server'; then
+  mkdir -p /etc/nginx/pushify-default
+  [ -f /etc/nginx/pushify-default/cert.pem ] || openssl req -x509 -nodes -newkey rsa:2048 -days 3650 -subj /CN=invalid \\
+    -keyout /etc/nginx/pushify-default/key.pem -out /etc/nginx/pushify-default/cert.pem >/dev/null 2>&1
+  V6=''
+  printf '%s\\n' "$LIVE_CONF" | grep -Eq 'listen[[:space:]]+\\[::\\]:443' && V6='    listen [::]:443 ssl default_server;'
+  printf '%s\\n' '# Pushify: unknown names on 443 get nothing (not another site) — generated' 'server {' \\
+    '    listen 443 ssl default_server;' "$V6" '    server_name _;' \\
+    '    ssl_certificate /etc/nginx/pushify-default/cert.pem;' '    ssl_certificate_key /etc/nginx/pushify-default/key.pem;' \\
+    '    return 444;' '}' > ${NGINX_SITES_DIR}/pushify-00-default
+  ln -sf ${NGINX_SITES_DIR}/pushify-00-default ${NGINX_ENABLED_DIR}/pushify-00-default
+  if nginx -t >/dev/null 2>&1; then echo PUSHIFY_CATCHALL=added; else rm -f ${NGINX_ENABLED_DIR}/pushify-00-default ${NGINX_SITES_DIR}/pushify-00-default; echo PUSHIFY_CATCHALL=rejected; fi
+else
+  echo PUSHIFY_CATCHALL=present
+fi`;
+
+/**
  * Reload Nginx configuration
  */
 export async function reloadNginx(
