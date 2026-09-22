@@ -15,6 +15,8 @@ Pushify.
 - Linux server (2 GB RAM minimum, 4 GB recommended), or macOS for local evaluation
 - Docker Engine 24+ with the Compose v2 plugin
 - `git`, `curl`, `openssl` (present on virtually every distro)
+- `rclone`, only for keeping backups off the machine — the control-plane backup script and
+  `DB_BACKUP_RCLONE_REMOTE` both use it
 
 ## What the installer does
 
