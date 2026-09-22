@@ -110,34 +110,37 @@ function firstPort(service: ComposeService | undefined): number | null {
 }
 
 /**
- * The override compose writes beside the customer's file.
+ * The compose file Pushify actually deploys: the customer's, with its ports decided here.
  *
- * Their `ports:` are replaced wholesale: the public service is published on the host port nginx
- * proxies, and every other service's published ports are dropped. Left alone, `ports: "5432:5432"`
- * on a database would put it on the internet — on a shared runner that is everyone's problem, and
- * on the customer's own server it is a surprise nobody asked for. Services still reach each other
- * by name on the stack's own network, which is what compose files expect.
+ * This is a rewritten copy, not an override file. Compose *merges* `ports:` by appending, so an
+ * override listing `ports: []` leaves the original mapping in place — the database stayed on the
+ * host exactly as before (the e2e caught this). Replacing the file is the only way to be sure.
+ *
+ * The public service is published on the host port nginx proxies; every other service publishes
+ * nothing. Left alone, `ports: "5432:5432"` on a database would put it on the internet — on a
+ * shared runner that is everyone's problem, and on the customer's own server it is a surprise
+ * nobody asked for. Services still reach each other by name on the stack's network, which is what
+ * compose files expect.
  */
-export function composePortOverride(
+export function renderDeployableCompose(
+  composeYaml: string,
   plan: ComposePlan,
   options: { hostPort: number; bindAddress?: string }
 ): { yaml: string; dropped: string[] } {
+  const document = parseYaml(composeYaml) as { services: Record<string, ComposeService> };
   const bind = options.bindAddress ? `${options.bindAddress}:` : '';
-  const services: Record<string, { ports: string[] }> = {
-    [plan.service]: { ports: [`${bind}${options.hostPort}:${plan.containerPort}`] },
-  };
-
   const dropped: string[] = [];
-  for (const [name, service] of Object.entries(plan.services)) {
-    if (name === plan.service) continue;
+
+  for (const [name, service] of Object.entries(document.services)) {
+    if (name === plan.service) {
+      service.ports = [`${bind}${options.hostPort}:${plan.containerPort}`];
+      continue;
+    }
     if (Array.isArray(service?.ports) && service.ports.length > 0) {
-      services[name] = { ports: [] };
+      delete service.ports;
       dropped.push(name);
     }
   }
 
-  return {
-    yaml: stringifyYaml({ services }),
-    dropped,
-  };
+  return { yaml: stringifyYaml(document), dropped };
 }

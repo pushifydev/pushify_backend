@@ -1214,6 +1214,13 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
       expect(apiContainer, 'the api service should be running').toBeTruthy();
       const apiPorts = execSync(`docker port ${apiContainer} 2>/dev/null || true`, { encoding: 'utf8' }).trim();
       expect(apiPorts).toBe('');
+      expect(tryExec('ss -ltn 2>/dev/null || netstat -ltn')).not.toMatch(/:4000\b/);
+
+      // …and the web service is published only on the port Pushify chose, not its own 8080
+      const webContainer = containers.find((name) => name.includes('-web-'))!;
+      const webPorts = execSync(`docker port ${webContainer}`, { encoding: 'utf8' }).trim();
+      expect(webPorts).not.toMatch(/:8080\b/);
+      expect(webPorts).toMatch(/^3000\/tcp -> /m);
 
       // A second deploy replaces the stack rather than piling a new one beside it
       await deploy(project.id);

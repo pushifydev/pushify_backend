@@ -4,7 +4,7 @@ import type { servers } from '../db/schema/servers';
 import { getOrAssignPort } from './port-manager';
 import { shSingleQuote } from './shell';
 import { checkComposeFile } from '../lib/host-access-guard';
-import { COMPOSE_FILENAMES, composePortOverride, planCompose } from '../lib/compose-project';
+import { COMPOSE_FILENAMES, planCompose, renderDeployableCompose } from '../lib/compose-project';
 import { dockerConfigPrefix } from '../lib/registry';
 
 /**
@@ -95,8 +95,11 @@ export async function deployComposeFromRepo(
   if (read.code !== 0) throw new Error(`Could not read the compose file: ${read.stderr.trim()}`);
   const composeYaml = read.stdout;
 
-  // What may it take from the host? On a shared runner: its own directory and nothing else.
-  const hostProblem = checkComposeFile(composeYaml, { sharedHost, projectDir: composeDir });
+  // What may it take from the host? On a shared runner: the project's own directory and nothing
+  // else. That is the project directory, not the checkout inside it — the checkout is wiped and
+  // cloned again every deploy, so anything bind-mounted from it would lose its data. A stack
+  // that wants a host path for state should use /opt/pushify/apps/<slug>/… (or a named volume).
+  const hostProblem = checkComposeFile(composeYaml, { sharedHost, projectDir });
   if (hostProblem) throw new Error(`Refusing to deploy: ${hostProblem}`);
 
   // Which service does the world reach, and on which port?
@@ -124,18 +127,19 @@ export async function deployComposeFromRepo(
     .map((file) => `--env-file ${shSingleQuote(file)}`)
     .join(' ');
 
-  // The override decides the ports: the public service on the host port nginx proxies, and every
-  // other service's published ports dropped — a compose file that puts its database on 5432 would
-  // otherwise put it on the internet. Services still reach each other by name inside the stack.
-  const override = composePortOverride(plan, {
+  // What is deployed is a rewritten copy of their file, beside it so relative `build:` contexts
+  // still resolve: the public service on the host port nginx proxies, every other service
+  // publishing nothing. An override file cannot do this — compose appends to `ports:` instead of
+  // replacing it, so the original mapping would survive.
+  const rendered = renderDeployableCompose(composeYaml, plan, {
     hostPort,
     bindAddress: sharedHost ? '127.0.0.1' : undefined,
   });
-  const overridePath = path.posix.join(composeDir, 'docker-compose.pushify.yml');
-  await ssh.uploadFile(override.yaml, overridePath);
-  if (override.dropped.length > 0) {
+  const deployablePath = path.posix.join(composeDir, 'docker-compose.pushify.yml');
+  await ssh.uploadFile(rendered.yaml, deployablePath);
+  if (rendered.dropped.length > 0) {
     onProgress(
-      `🔒 Not publishing ports for ${override.dropped.join(', ')} — they are reachable inside the stack by name`
+      `🔒 Not publishing ports for ${rendered.dropped.join(', ')} — they are reachable inside the stack by name`
     );
   }
 
@@ -143,7 +147,7 @@ export async function deployComposeFromRepo(
   // and `build:` steps with a private base image.
   const compose = (args: string) =>
     `cd ${shSingleQuote(composeDir)} && ${dockerConfigPrefix(dockerConfig)}docker compose ${envFileFlags} ` +
-    `-f ${shSingleQuote(composeFile)} -f ${shSingleQuote(overridePath)} -p ${shSingleQuote(stackName)} ${args}`;
+    `-f ${shSingleQuote(deployablePath)} -p ${shSingleQuote(stackName)} ${args}`;
 
   // A previous stack of this project, if any — its containers hold the ports
   onProgress('🛑 Stopping the previous stack (if any)...');

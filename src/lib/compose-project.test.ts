@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parse as parseYaml } from 'yaml';
-import { composePortOverride, containerPortOf, planCompose } from './compose-project';
+import { containerPortOf, planCompose, renderDeployableCompose } from './compose-project';
 
 const plan = (yaml: string, options?: { service?: string | null; port?: number | null }) => {
   const result = planCompose(yaml, options);
@@ -89,24 +89,59 @@ services:
   });
 });
 
-describe('composePortOverride', () => {
-  it('publishes the public service and takes every other port off the host', () => {
-    const { yaml, dropped } = composePortOverride(plan(stack, { service: 'web' }), {
+describe('renderDeployableCompose', () => {
+  /**
+   * Regression: this was an override file with `ports: []`, and compose *appends* to `ports:`
+   * instead of replacing it — so every original mapping survived and the api stayed published on
+   * the host. The e2e caught it. What deploys is a rewritten copy of the file.
+   */
+  it('publishes the served service and takes every other port off the host', () => {
+    const { yaml, dropped } = renderDeployableCompose(stack, plan(stack, { service: 'web' }), {
       hostPort: 5010,
       bindAddress: '127.0.0.1',
     });
-    const parsed = parseYaml(yaml) as { services: Record<string, { ports: string[] }> };
+    const parsed = parseYaml(yaml) as { services: Record<string, { ports?: string[]; image?: string }> };
     expect(parsed.services.web.ports).toEqual(['127.0.0.1:5010:80']);
-    // A database published on the host is how a stack ends up on the internet
-    expect(parsed.services.db.ports).toEqual([]);
+    // Not an empty list — the key is gone, because an empty list would have been merged away
+    expect(parsed.services.db.ports).toBeUndefined();
+    expect('ports' in parsed.services.db).toBe(false);
     expect(dropped).toEqual(['db']);
-    // A service that published nothing is left out entirely
-    expect(parsed.services.worker).toBeUndefined();
   });
 
-  it('publishes on all interfaces when no bind address is given (own server)', () => {
-    const { yaml } = composePortOverride(plan(stack, { service: 'web' }), { hostPort: 5010 });
-    const parsed = parseYaml(yaml) as { services: Record<string, { ports: string[] }> };
+  it('keeps everything else of the file as it was', () => {
+    const { yaml } = renderDeployableCompose(stack, plan(stack, { service: 'web' }), { hostPort: 5010 });
+    const parsed = parseYaml(yaml) as {
+      services: Record<string, { image?: string; environment?: Record<string, string>; depends_on?: string[]; ports?: string[] }>;
+    };
     expect(parsed.services.web.ports).toEqual(['5010:80']);
+    expect(parsed.services.db.image).toBe('postgres:16');
+    expect(parsed.services.worker.image).toBe('acme/worker');
+    // A service that published nothing is untouched
+    expect('ports' in parsed.services.worker).toBe(false);
+  });
+
+  it('carries the rest of a service through — env, volumes, depends_on', () => {
+    const source = `
+services:
+  web:
+    image: nginx
+    ports: ["8080:80"]
+    environment:
+      API: http://api:4000
+    depends_on: [api]
+    volumes:
+      - ./site:/usr/share/nginx/html
+  api:
+    image: acme/api
+    ports: ["4000:4000"]
+`;
+    const { yaml } = renderDeployableCompose(source, plan(source, { service: 'web' }), { hostPort: 5010 });
+    const parsed = parseYaml(yaml) as {
+      services: Record<string, { environment?: Record<string, string>; depends_on?: string[]; volumes?: string[]; ports?: string[] }>;
+    };
+    expect(parsed.services.web.environment).toEqual({ API: 'http://api:4000' });
+    expect(parsed.services.web.depends_on).toEqual(['api']);
+    expect(parsed.services.web.volumes).toEqual(['./site:/usr/share/nginx/html']);
+    expect(parsed.services.api.ports).toBeUndefined();
   });
 });
