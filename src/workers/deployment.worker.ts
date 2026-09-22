@@ -890,6 +890,14 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
     }
 
     // === LOCAL DEPLOYMENT (fallback when no server assigned) ===
+    // Runs customer code on this machine — the control plane. Refused in production unless
+    // PUSHIFY_ALLOW_LOCAL_DEPLOYS is set (see config/env.ts).
+    if (!(env.PUSHIFY_ALLOW_LOCAL_DEPLOYS ?? env.NODE_ENV !== 'production')) {
+      throw new Error(
+        'This project has no server to deploy to. Assign a server in the project settings — ' +
+          'deploying on the Pushify control plane itself is disabled.'
+      );
+    }
 
     // Get environment variables early (needed for Dockerfile generation + build args)
     const localEnvVars = await db
