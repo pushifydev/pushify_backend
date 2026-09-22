@@ -44,6 +44,22 @@ const REMOTE_DOCKER_BIN = '/usr/bin/docker';
 /**
  * Build a Docker image on a remote server with BuildKit caching
  */
+/**
+ * Shell that prints OK when something accepts TCP on 127.0.0.1:<port>, FAIL otherwise. `nc` is
+ * not on every server (Pushify's setup never installs it; Debian/RHEL images lack it), and
+ * relying on it alone failed every deploy there with "health check timeout" while the app ran —
+ * so fall back to bash's /dev/tcp, then curl.
+ */
+export function tcpProbeCommand(port: number): string {
+  const p = Math.trunc(port);
+  // curl: 0 = HTTP answer, 52/56 = connected but no HTTP (still a listening port)
+  return (
+    `(nc -z 127.0.0.1 ${p} || bash -c 'exec 3<>/dev/tcp/127.0.0.1/${p}' || ` +
+    `{ curl -s -o /dev/null --max-time 3 http://127.0.0.1:${p}/; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 52 ] || [ $rc -eq 56 ]; }) ` +
+    `>/dev/null 2>&1 && echo OK || echo FAIL`
+  );
+}
+
 export async function buildImage(
   ssh: SSHClient,
   options: BuildImageOptions
@@ -960,7 +976,7 @@ export async function blueGreenDeploy(
       }
     } else {
       // No health check path - just check if container is accepting connections
-      const tcpCheck = await ssh.exec(`nc -z 127.0.0.1 ${tempPort} 2>/dev/null && echo "OK" || echo "FAIL"`);
+      const tcpCheck = await ssh.exec(tcpProbeCommand(tempPort));
       if (tcpCheck.stdout.trim() === 'OK') {
         isHealthy = true;
         break;

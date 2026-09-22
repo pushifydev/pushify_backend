@@ -31,8 +31,21 @@ export function parseFailureCategoryFromLogs(logs: string): DeployFailureCategor
   return m ? (m[1] as DeployFailureCategory) : null;
 }
 
+/**
+ * The error says what went wrong; the log only says what ran. Classify on the error first and
+ * fall back to the whole log only when the error is unspecific — every Node build log contains
+ * the generated `RUN if [ -d node_modules/lightningcss ] …` line, so matching the log first
+ * blamed "native module (platform)" for any Node deploy that failed after its build.
+ */
 export function classifyDeployFailure(logs: string, errorMessage?: string): ClassifiedDeployFailure {
-  const text = `${logs}\n${errorMessage ?? ''}`.toLowerCase();
+  if (errorMessage) {
+    const fromError = classifyText(errorMessage.toLowerCase());
+    if (fromError.category !== 'unknown') return fromError;
+  }
+  return classifyText(`${logs}\n${errorMessage ?? ''}`.toLowerCase());
+}
+
+function classifyText(text: string): ClassifiedDeployFailure {
 
   // First: a clone that failed for lack of credentials never gets far enough to hit the others.
   if (

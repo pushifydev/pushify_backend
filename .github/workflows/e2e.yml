@@ -1,0 +1,25 @@
+name: E2E
+
+# A real deploy to a real server on every change: the e2e box (e2e/) is a privileged container
+# that is both the customer's VPS (sshd, Docker, nginx, certbot → Pebble) and the control plane's
+# Postgres; src/e2e/*.e2e.test.ts deploys fixture repos into it and checks them over HTTP(S).
+on:
+  push:
+    branches: [master, main, 'release/**']
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy to a real server
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run e2e box
+        run: bash e2e/run.sh

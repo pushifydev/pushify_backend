@@ -33,6 +33,13 @@ refactor: extract modal into shared component
 3. Write a clear PR description explaining what changed and why
 4. Link any related issues
 
+## Tests
+
+- `npm test` — unit tests (fast, no services needed).
+- `npm run test:e2e` — deploys real fixture repos to a real server and checks them over HTTP(S): git clone, Docker build, nginx vhost, certificates, blue-green redeploy. The "server" is a privileged container (`e2e/`) with sshd, Docker, nginx and certbot pointed at Pebble, Let's Encrypt's test CA; needs Docker, takes a few minutes, and never writes to your checkout. Tests live in `src/e2e/`. CI runs it on every push and PR (`.github/workflows/e2e.yml`).
+
+Anything that talks to a server through SSH — deploys, nginx, certificates, containers — should get an e2e case: that is where unit tests with a fake SSH have missed real bugs.
+
 ## Code Style
 
 - **TypeScript** — All code must be typed, avoid `any`
