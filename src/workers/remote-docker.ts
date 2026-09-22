@@ -967,7 +967,7 @@ export async function blueGreenDeploy(
     // If health check path is provided, do HTTP check
     if (healthCheckPath) {
       const healthResult = await ssh.exec(
-        `curl -sf http://127.0.0.1:${tempPort}${healthCheckPath} -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000"`
+        `curl -sf ${shSingleQuote(`http://127.0.0.1:${tempPort}${healthCheckPath}`)} -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000"`
       );
       const statusCode = healthResult.stdout.trim();
       if (statusCode === '200' || statusCode === '204') {

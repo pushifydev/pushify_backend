@@ -66,4 +66,6 @@ log "migrating"
 npx tsx src/migrate.ts
 
 log "running e2e tests"
+# Fixture repos are local (file://), which production refuses (lib/repo-settings-validate.ts)
+export PUSHIFY_ALLOW_LOCAL_REPOS=1
 PUSHIFY_E2E=1 npx vitest run --no-file-parallelism src/e2e "$@"

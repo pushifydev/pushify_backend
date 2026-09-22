@@ -1,4 +1,4 @@
-import { execCommand, execStreamingCommand, type StreamingCommandOptions } from './shell';
+import { execCommand, execStreamingCommand, shSingleQuote, type StreamingCommandOptions } from './shell';
 import { redactUrlCredentials } from '../lib/utils';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -25,7 +25,7 @@ export interface CloneResult {
  */
 async function scrubCloneCredentials(workDir: string, repoUrl: string, cloneUrl: string): Promise<void> {
   if (cloneUrl === repoUrl) return;
-  const result = await execCommand(`git remote set-url origin "${repoUrl}"`, { cwd: workDir });
+  const result = await execCommand(`git remote set-url origin ${shSingleQuote(repoUrl)}`, { cwd: workDir });
   if (result.exitCode !== 0) {
     await fs.rm(path.dirname(workDir), { recursive: true, force: true });
     throw new Error('Could not remove the access token from the cloned repository');
@@ -67,7 +67,7 @@ export async function cloneRepository(options: CloneOptions): Promise<CloneResul
   if (depth > 0) {
     cloneArgs.push('--depth', String(depth));
   }
-  cloneArgs.push(cloneUrl, workDir);
+  cloneArgs.push('--', cloneUrl, workDir);
 
   const streamOptions: StreamingCommandOptions = {
     onStdout: (data) => onProgress?.(data.trim()),
@@ -93,7 +93,7 @@ export async function cloneRepository(options: CloneOptions): Promise<CloneResul
     if (depth > 0) {
       defaultCloneArgs.push('--depth', String(depth));
     }
-    defaultCloneArgs.push(cloneUrl, newWorkDir);
+    defaultCloneArgs.push('--', cloneUrl, newWorkDir);
 
     result = await execStreamingCommand('git', defaultCloneArgs, streamOptions);
 

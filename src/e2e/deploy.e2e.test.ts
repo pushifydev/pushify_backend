@@ -217,6 +217,36 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
     600_000
   );
 
+  it('refuses a branch that is a shell command before anything runs on the server', async () => {
+    const marker = `/tmp/pushify-e2e-pwned-${run}`;
+    const repo = await fixtureRepo({ 'index.html': 'x' });
+    // Straight into the database: rows written before the API validated, or a webhook branch
+    const [project] = await db
+      .insert(schema.projects)
+      .values({
+        organizationId,
+        name: `e2e-inject-${run}`,
+        slug: `e2e-inject-${run}`,
+        serverId,
+        gitRepoUrl: `file://${repo}`,
+        gitBranch: `main;touch${'${IFS}'}${marker}`,
+        port: 3000,
+        autoDeploy: false,
+      })
+      .returning();
+    const [row] = await db
+      .insert(schema.deployments)
+      .values({ projectId: project.id, status: 'pending', trigger: 'manual', triggeredById: userId })
+      .returning();
+
+    await executeDeploymentJob((await loadDeploymentJobById(row.id))!);
+
+    const done = await db.query.deployments.findFirst({ where: (d, { eq }) => eq(d.id, row.id) });
+    expect(done?.status).toBe('failed');
+    expect(done?.errorMessage).toContain('Refusing to deploy');
+    await expect(fs.access(marker)).rejects.toThrow();
+  }, 120_000);
+
   it(
     'node app: builds from package.json, redeploys blue-green, keeps its domain',
     async () => {

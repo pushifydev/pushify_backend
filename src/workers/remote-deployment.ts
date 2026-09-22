@@ -8,6 +8,7 @@ import { syncWorkerContainersOnDeploy } from './worker-process-sync';
 import { decrypt } from '../lib/encryption';
 import { buildImage, checkDocker, getImageId, tagImage, cleanupOldImages, runContainerFromImage, imageExists, blueGreenDeploy } from './remote-docker';
 import { addAutoSubdomainSite, reloadNginx } from './nginx-manager';
+import { shSingleQuote } from './shell';
 import { syncProjectSites, describeSyncedDomains } from '../lib/project-sites';
 import { isSharedRunnerServer } from '../lib/runner-routing';
 import {
@@ -923,9 +924,11 @@ export async function deployToRemoteServer(
       }
     }
 
-    const cloneCmd = branch
-      ? `git clone --depth 1 --branch ${branch} "${cloneUrl}" "${repoDir}"`
-      : `git clone --depth 1 "${cloneUrl}" "${repoDir}"`;
+    // Every value single-quoted and `--` before the URL: these came from the customer and this
+    // runs as root (a branch like `x;curl …|sh` or a URL with `$(…)` used to execute).
+    const cloneCmd =
+      `git clone --depth 1 ${branch ? `--branch=${shSingleQuote(branch)} ` : ''}` +
+      `-- ${shSingleQuote(cloneUrl)} ${shSingleQuote(repoDir)}`;
 
     const cloneResult = await ssh.exec(cloneCmd);
     if (cloneResult.code !== 0) {
@@ -934,9 +937,9 @@ export async function deployToRemoteServer(
     // git writes the clone URL — token included — into .git/config. Anything that later copies
     // the checkout (a static site's web root did) would publish it; keep only the clean URL.
     if (cloneUrl !== repoUrl) {
-      const scrub = await ssh.exec(`git -C "${repoDir}" remote set-url origin "${repoUrl}"`);
+      const scrub = await ssh.exec(`git -C ${shSingleQuote(repoDir)} remote set-url origin ${shSingleQuote(repoUrl)}`);
       if (scrub.code !== 0) {
-        await ssh.exec(`rm -rf "${repoDir}"`);
+        await ssh.exec(`rm -rf ${shSingleQuote(repoDir)}`);
         throw new Error('Could not remove the access token from the cloned repository');
       }
     }
