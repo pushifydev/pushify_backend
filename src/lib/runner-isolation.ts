@@ -10,9 +10,10 @@
  * inter-container traffic off), and the rules below match that bridge only, so nothing else
  * that runs on the host is touched. They live in two chains of our own, rebuilt on every run:
  *  - PUSHIFY-FWD (jumped to from DOCKER-USER, i.e. forwarded traffic):
- *      replies to existing connections pass; app → app, app → private / link-local / CGNAT
- *      ranges (other Docker networks included), and new connections from outside straight to an
- *      app container (published ports) are dropped. Visitors reach apps through nginx only.
+ *      replies to existing connections pass; app → app and app → private / link-local / CGNAT
+ *      ranges (other Docker networks included) are dropped. Apps served under a domain are
+ *      published on 127.0.0.1 (nginx is the only way in); apps without one keep their public
+ *      <server-ip>:<port>, the only URL they have.
  *  - PUSHIFY-IN (jumped to from INPUT for traffic arriving from the apps' bridge):
  *      replies pass, new connections to the host's 80/443 pass (an app may call its own public
  *      URL), everything else to the host is dropped.
@@ -57,7 +58,6 @@ for ns in $(awk '/^nameserver/ {print $2}' /etc/resolv.conf /run/systemd/resolve
   ipt -A PUSHIFY-FWD -i ${br} -d "$ns" -p tcp --dport 53 -j RETURN
 done
 ${BLOCKED_RANGES.map((range) => `ipt -A PUSHIFY-FWD -i ${br} -d ${range} -j DROP`).join('\n')}
-ipt -A PUSHIFY-FWD ! -i ${br} -o ${br} -m conntrack --ctstate NEW -j DROP
 ipt -A PUSHIFY-FWD -j RETURN
 ipt -C DOCKER-USER -j PUSHIFY-FWD 2>/dev/null || ipt -I DOCKER-USER 1 -j PUSHIFY-FWD
 

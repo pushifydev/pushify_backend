@@ -45,12 +45,15 @@ describe('runnerIsolationScript', () => {
     expect(input[input.length - 1]).toBe('ipt -A PUSHIFY-IN -j DROP');
   });
 
-  it('drops app → app, app → metadata/private ranges and outside → published ports', () => {
+  it('drops app → app and app → metadata/private ranges', () => {
     expect(script).toContain('ipt -A PUSHIFY-FWD -i pushify-apps0 -o pushify-apps0 -j DROP');
     expect(script).toContain('ipt -A PUSHIFY-FWD -i pushify-apps0 -d 169.254.0.0/16 -j DROP');
     expect(script).toContain('ipt -A PUSHIFY-FWD -i pushify-apps0 -d 10.0.0.0/8 -j DROP');
     expect(script).toContain('ipt -A PUSHIFY-FWD -i pushify-apps0 -d 172.16.0.0/12 -j DROP');
-    expect(script).toContain('ipt -A PUSHIFY-FWD ! -i pushify-apps0 -o pushify-apps0 -m conntrack --ctstate NEW -j DROP');
+  });
+
+  it("leaves visitors' own connections alone — an app without a domain is served on <ip>:<port>", () => {
+    expect(script).not.toContain('! -i pushify-apps0');
   });
 
   it('only lets apps reach the host on 80/443', () => {

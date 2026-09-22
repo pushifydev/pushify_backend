@@ -277,6 +277,32 @@ async function prepareDatabaseNetwork(
 }
 
 /**
+ * Will nginx serve this deploy under a domain? Only then can a shared-runner app be published on
+ * loopback. Without one — no custom domain, and no wildcard certificate here for an auto
+ * subdomain — the app's URL is <server-ip>:<port>, which has to stay public. Deliberately looks
+ * at domains that exist already: an auto subdomain created later in this deploy moves the app
+ * behind nginx on its next deploy.
+ */
+async function servedThroughNginx(
+  ssh: SSHClient,
+  projectId: string,
+  previewDomain: string | undefined,
+  isPreview: boolean,
+): Promise<boolean> {
+  const { env: envConfig } = await import('../config/env');
+  const previewBaseUrl = envConfig.PREVIEW_BASE_URL;
+  const isAutoSubdomain = (d: string) => !!previewBaseUrl && d.endsWith(`.${previewBaseUrl}`);
+  let hasWildcardSSL = false;
+  if (previewBaseUrl) {
+    const sslPath = envConfig.WILDCARD_SSL_PATH || `/etc/letsencrypt/live/${previewBaseUrl}`;
+    hasWildcardSSL = (await ssh.exec(`test -f ${sslPath}/fullchain.pem && echo exists || echo missing`)).stdout.trim() === 'exists';
+  }
+  const domain = isPreview ? previewDomain ?? null : await getPrimaryDomain(projectId);
+  if (!domain) return false;
+  return !isAutoSubdomain(domain) || hasWildcardSSL;
+}
+
+/**
  * Shared runner only: (re)apply the firewall rules that keep customers' containers away from each
  * other, from the host and from private networks (lib/runner-isolation.ts). Runs on every deploy,
  * so a rebooted or rebuilt runner is covered by its next deploy even without the boot unit.
@@ -602,7 +628,7 @@ export async function deployToRemoteServer(
       }
 
       // Open firewall port (best-effort; ufw / firewalld / iptables, root-first for BYOS)
-      if (!sharedHost) await openFirewallPort(ssh, publicHostPort, onProgress);
+      await openFirewallPort(ssh, publicHostPort, onProgress);
 
       // Start the stack (--env-file required for ${VAR} substitution in compose YAML)
       onProgress(`🚀 Starting stack...`);
@@ -897,7 +923,8 @@ export async function deployToRemoteServer(
         : sharedHost
           ? `--network ${RUNNER_APP_NETWORK}`
           : '';
-      const runCmd = `docker run -d --name ${containerName} --restart unless-stopped${APP_CONTAINER_HARDENING} ${networkFlag} -p ${sharedHost ? '127.0.0.1:' : ''}${hostPort}:${containerPort} ${envFlags} ${volFlags} ${imageName}:latest${cmdOverride}`;
+      const loopbackOnly = sharedHost && (await servedThroughNginx(ssh, projectId, undefined, false));
+      const runCmd = `docker run -d --name ${containerName} --restart unless-stopped${APP_CONTAINER_HARDENING} ${networkFlag} -p ${loopbackOnly ? '127.0.0.1:' : ''}${hostPort}:${containerPort} ${envFlags} ${volFlags} ${imageName}:latest${cmdOverride}`;
 
       onProgress(`🚀 Starting container: ${containerName}`);
       const runResult = await ssh.exec(runCmd);
@@ -1152,6 +1179,7 @@ export async function deployToRemoteServer(
     // Started on its network, not joined to it afterwards: an app that connects (or migrates)
     // at boot would otherwise race the join. On a runner that is the isolated apps network.
     const appNetwork = sharedHost ? RUNNER_APP_NETWORK : await prepareDatabaseNetwork(ssh, serverId, onProgress);
+    const loopbackOnly = sharedHost && (await servedThroughNginx(ssh, projectId, previewDomain, !!deploySuffix));
 
     const blueGreenResult = await blueGreenDeploy(ssh, {
       imageName: `${imageName}:${imageTag}`,
@@ -1162,7 +1190,7 @@ export async function deployToRemoteServer(
       envVars,
       volumes: config.volumes,
       networkMode: appNetwork,
-      bindAddress: sharedHost ? '127.0.0.1' : undefined,
+      bindAddress: loopbackOnly ? '127.0.0.1' : undefined,
       restart: 'unless-stopped',
       healthCheckTimeout: 60, // 60 seconds to become healthy
       framework: resolvedFramework,
@@ -1191,8 +1219,12 @@ export async function deployToRemoteServer(
     onProgress(`✅ New container healthy on port ${hostPort}`);
 
     // Open firewall port for external access (root-first; works on BYOS without sudo/ufw).
-    // Not on the shared runner: the port is on loopback there, reachable through nginx only.
-    if (!sharedHost) await openFirewallPort(ssh, hostPort, onProgress);
+    // Not when the port is on loopback: then nginx is the only way in.
+    if (loopbackOnly) {
+      onProgress(`🔒 Port ${hostPort} is bound to 127.0.0.1 — reachable through nginx only`);
+    } else {
+      await openFirewallPort(ssh, hostPort, onProgress);
+    }
 
     // Worker processes run from the same image — production deploys only, never previews.
     if (!deploySuffix) {
@@ -1471,6 +1503,7 @@ export async function quickRollbackToDeployment(
     const previousHostPort = hostPort;
     const switchPort = await pickSwitchPort(ssh, hostPort);
     const appNetwork = sharedHost ? RUNNER_APP_NETWORK : await prepareDatabaseNetwork(ssh, serverId, onProgress);
+    const loopbackOnly = sharedHost && (await servedThroughNginx(ssh, projectId, undefined, false));
     const blueGreenResult = await blueGreenDeploy(ssh, {
       imageName: fullImageName,
       containerName: `pushify-${projectSlug}`,
@@ -1480,7 +1513,7 @@ export async function quickRollbackToDeployment(
       envVars,
       volumes: config.volumes,
       networkMode: appNetwork,
-      bindAddress: sharedHost ? '127.0.0.1' : undefined,
+      bindAddress: loopbackOnly ? '127.0.0.1' : undefined,
       restart: 'unless-stopped',
       healthCheckTimeout: 60,
       onProgress,
@@ -1491,7 +1524,7 @@ export async function quickRollbackToDeployment(
     hostPort = blueGreenResult.tempPort ?? switchPort;
     await recordPortAssignment(ssh, projectSlug, hostPort);
     onProgress(`✅ Rollback container healthy on port ${hostPort}`);
-    if (!sharedHost) await openFirewallPort(ssh, hostPort, onProgress);
+    if (!loopbackOnly) await openFirewallPort(ssh, hostPort, onProgress);
 
     // Restart worker processes from the rollback image so app + workers stay in sync
     await syncWorkerContainersOnDeploy(ssh, {

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi, onTestFailed } from 'vitest';
+import { eq as eqOp } from 'drizzle-orm';
 import { execFileSync, execSync } from 'node:child_process';
 import { promises as fs, readFileSync } from 'node:fs';
 import { promises as dns } from 'node:dns';
@@ -655,6 +656,25 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
         expect(probe(gateway, bindingB.HostPort)).toBe('closed'); // another app's host port
         expect(probe(gateway, 443)).toBe('open'); // the host's nginx (an app calling its own URL)
         expect(probe('1.1.1.1', 443)).toBe('open'); // the internet
+
+        // No domain (and no wildcard certificate for an auto subdomain): <server-ip>:<port> is the
+        // app's only URL, so it stays public — binding it to loopback took such apps offline.
+        const c = await createProject('iso-c', repo, `unused-${run}.127.0.0.1.nip.io`);
+        await db.delete(schema.domains).where(eqOp(schema.domains.projectId, c.id));
+        await deploy(c.id);
+        const containerC = container(c.slug);
+        const bindingC = Object.values(
+          JSON.parse(execSync(`docker inspect -f '{{json .HostConfig.PortBindings}}' ${containerC}`, { encoding: 'utf8' })) as Record<
+            string,
+            Array<{ HostIp: string; HostPort: string }>
+          >
+        )[0][0];
+        expect(['', '0.0.0.0']).toContain(bindingC.HostIp);
+        const boxIp = execSync(`hostname -I | awk '{print $1}'`, { encoding: 'utf8' }).trim();
+        expect(execSync(`curl -s --max-time 10 http://${boxIp}:${bindingC.HostPort}/`, { encoding: 'utf8' })).toBe('E2E-ISO');
+        // …and its container is still out of other apps' reach (its public port is public anyway)
+        const ipC = execSync(`docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ${containerC}`, { encoding: 'utf8' }).trim();
+        expect(probe(ipC, 3000)).toBe('closed');
       } finally {
         env.PUSHIFY_RUNNER_SERVER_IDS = previousRunners;
       }
