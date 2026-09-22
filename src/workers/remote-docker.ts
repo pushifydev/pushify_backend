@@ -861,8 +861,9 @@ export async function blueGreenDeploy(
   const runMemory = getRunMemoryLimit(framework, buildpackId);
 
   // Determine current active slot (blue or green)
-  const blueExists = (await ssh.exec(`docker inspect ${containerName}-blue 2>/dev/null`)).code === 0;
-  const greenExists = (await ssh.exec(`docker inspect ${containerName}-green 2>/dev/null`)).code === 0;
+  // --type container: a bare `docker inspect <name>` also matches the image of that name.
+  const blueExists = (await ssh.exec(`docker inspect --type container ${containerName}-blue >/dev/null 2>&1`)).code === 0;
+  const greenExists = (await ssh.exec(`docker inspect --type container ${containerName}-green >/dev/null 2>&1`)).code === 0;
 
   let activeSlot: 'blue' | 'green' | 'none' = 'none';
   let newSlot: 'blue' | 'green';
@@ -882,7 +883,7 @@ export async function blueGreenDeploy(
     await ssh.exec(`docker rm -f ${containerName}-${newSlot} 2>/dev/null || true`);
   } else {
     // Neither exists - check for legacy container without suffix
-    const legacyExists = (await ssh.exec(`docker inspect ${containerName} 2>/dev/null`)).code === 0;
+    const legacyExists = (await ssh.exec(`docker inspect --type container ${containerName} >/dev/null 2>&1`)).code === 0;
     if (legacyExists) {
       onProgress?.('🔄 Migrating from legacy single-container to blue-green...');
       // Rename legacy container to blue

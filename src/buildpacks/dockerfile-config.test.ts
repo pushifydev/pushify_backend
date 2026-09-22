@@ -14,6 +14,13 @@ describe('nodejs buildpack', () => {
     expect(df).not.toContain('CMD ["npm", "start"]');
   });
 
+  it("plain Node: runs the package's build script when there is one, a configured command instead", () => {
+    expect(gen('nodejs', { framework: 'nodejs' })).toContain('RUN npm run build --if-present');
+    const custom = gen('nodejs', { framework: 'nodejs', buildCommand: 'npx tsc -p .' });
+    expect(custom).toContain('RUN npx tsc -p .');
+    expect(custom).not.toContain('npm run build --if-present');
+  });
+
   it('nextjs: keeps npm defaults when nothing is configured', () => {
     const df = gen('nodejs', { framework: 'nextjs' });
     expect(df).toContain('npm run build');

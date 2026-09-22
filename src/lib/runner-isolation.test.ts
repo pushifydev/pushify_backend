@@ -22,19 +22,22 @@ describe('runnerIsolationScript', () => {
     expect(script).toContain('-o com.docker.network.bridge.enable_icc=false');
   });
 
-  it("only matches the apps' bridge — nothing else on the host is touched", () => {
-    for (const rule of rules.filter((r) => /-[io] /.test(r))) {
-      expect(rule).toMatch(/-[io] pushify-apps0/);
+  it("matches the apps' bridge, and the default bridge (builds) only while nothing foreign is on it", () => {
+    expect(script).toContain('BRIDGES="pushify-apps0"');
+    expect(script).toContain(`docker ps --filter network=bridge --format '{{.Names}}' 2>/dev/null | grep -v '^pushify-' || true`);
+    expect(script).toContain('BRIDGES="$BRIDGES $DEFAULT_BRIDGE"');
+    expect(script).toContain('ipt -D INPUT -i "$DEFAULT_BRIDGE" -j PUSHIFY-IN');
+    expect(script).toContain('PUSHIFY_ISOLATION_BUILDS_SKIPPED');
+    for (const rule of rules.filter((r) => /-[io] /.test(r) && !r.includes('DEFAULT_BRIDGE'))) {
+      expect(rule).toMatch(/-[io] "\$b"/);
     }
-    expect(script).not.toContain('docker0');
-    expect(script).not.toContain('br-+');
   });
 
   it('rebuilds its own chains instead of appending duplicates', () => {
     expect(script).toContain('ipt -F PUSHIFY-FWD');
     expect(script).toContain('ipt -F PUSHIFY-IN');
     expect(script).toContain('ipt -C DOCKER-USER -j PUSHIFY-FWD 2>/dev/null || ipt -I DOCKER-USER 1 -j PUSHIFY-FWD');
-    expect(script).toContain('ipt -C INPUT -i pushify-apps0 -j PUSHIFY-IN 2>/dev/null || ipt -I INPUT 1 -i pushify-apps0 -j PUSHIFY-IN');
+    expect(script).toContain('ipt -C INPUT -i "$b" -j PUSHIFY-IN 2>/dev/null || ipt -I INPUT 1 -i "$b" -j PUSHIFY-IN');
   });
 
   it('lets replies through before any drop', () => {
@@ -46,14 +49,13 @@ describe('runnerIsolationScript', () => {
   });
 
   it('drops app → app and app → metadata/private ranges', () => {
-    expect(script).toContain('ipt -A PUSHIFY-FWD -i pushify-apps0 -o pushify-apps0 -j DROP');
-    expect(script).toContain('ipt -A PUSHIFY-FWD -i pushify-apps0 -d 169.254.0.0/16 -j DROP');
-    expect(script).toContain('ipt -A PUSHIFY-FWD -i pushify-apps0 -d 10.0.0.0/8 -j DROP');
-    expect(script).toContain('ipt -A PUSHIFY-FWD -i pushify-apps0 -d 172.16.0.0/12 -j DROP');
+    expect(script).toContain('ipt -A PUSHIFY-FWD -i "$b" -o "$b" -j DROP');
+    expect(script).toContain('for range in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16; do');
+    expect(script).toContain('ipt -A PUSHIFY-FWD -i "$b" -d "$range" -j DROP');
   });
 
   it("leaves visitors' own connections alone — an app without a domain is served on <ip>:<port>", () => {
-    expect(script).not.toContain('! -i pushify-apps0');
+    expect(script).not.toContain('! -i');
   });
 
   it('only lets apps reach the host on 80/443', () => {

@@ -640,6 +640,11 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
       const { env } = await import('../config/env');
       const previousRunners = env.PUSHIFY_RUNNER_SERVER_IDS;
       env.PUSHIFY_RUNNER_SERVER_IDS = serverId;
+      // A service on the host, on all interfaces — what a tenant would go looking for
+      const net = await import('node:net');
+      const hostService = net.createServer((socket) => socket.end('host'));
+      await new Promise<void>((resolve) => hostService.listen(0, '0.0.0.0', resolve));
+      const hostServicePort = (hostService.address() as { port: number }).port;
       try {
         // Answers /probe?host=&port= with open/closed — what a hostile tenant would try
         const repo = await fixtureRepo({
@@ -698,9 +703,57 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
 
         expect(probe(ipB, 3000)).toBe('closed'); // another tenant's container
         expect(probe(gateway, 22)).toBe('closed'); // the host's sshd
+        expect(probe(gateway, hostServicePort)).toBe('closed'); // any other service on the host
         expect(probe(gateway, bindingB.HostPort)).toBe('closed'); // another app's host port
         expect(probe(gateway, 443)).toBe('open'); // the host's nginx (an app calling its own URL)
         expect(probe('1.1.1.1', 443)).toBe('open'); // the internet
+
+        // Builds run on Docker's default bridge: the same limits apply while they run. The build
+        // step below probes and writes what it could reach; the app then serves that file.
+        const buildGateway = execSync(`docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}'`, { encoding: 'utf8' }).trim();
+        // A neighbour on the default bridge (reachable from build steps without the rules)
+        execSync(
+          `docker run -d --name pushify-e2e-neighbour-${run} node:20-bookworm-slim node -e "require('net').createServer((s) => s.end('hi')).listen(7777)"`
+        );
+        const neighbourIp = execSync(`docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' pushify-e2e-neighbour-${run}`, { encoding: 'utf8' }).trim();
+        const buildRepo = await fixtureRepo({
+          'package.json': JSON.stringify(
+            { name: 'e2e-iso-build', version: '1.0.0', private: true, scripts: { build: 'node probe.js', start: 'node server.js' } },
+            null,
+            2
+          ),
+          'targets.json': JSON.stringify({ gateway: buildGateway, hostPort: hostServicePort, neighbour: neighbourIp }),
+          'probe.js': [
+            "const net = require('net');",
+            "const fs = require('fs');",
+            "const targets = JSON.parse(fs.readFileSync('targets.json', 'utf8'));",
+            'const probe = (host, port) => new Promise((resolve) => {',
+            '  const socket = net.connect({ host, port, timeout: 3000 });',
+            "  socket.on('connect', () => { socket.destroy(); resolve('open'); });",
+            "  socket.on('timeout', () => { socket.destroy(); resolve('closed'); });",
+            "  socket.on('error', () => resolve('closed'));",
+            '});',
+            '(async () => {',
+            '  const result = {',
+            '    hostService: await probe(targets.gateway, targets.hostPort),',
+            '    neighbour: await probe(targets.neighbour, 7777),',
+            "    internet: await probe('1.1.1.1', 443),",
+            '  };',
+            "  fs.writeFileSync('probe-result.json', JSON.stringify(result));",
+            '})();',
+            '',
+          ].join('\n'),
+          'server.js': [
+            "const http = require('http');",
+            "const fs = require('fs');",
+            "http.createServer((req, res) => res.end(fs.readFileSync('probe-result.json'))).listen(process.env.PORT || 3000);",
+            '',
+          ].join('\n'),
+        });
+        const buildDomain = `iso-build-${run}.127.0.0.1.nip.io`;
+        const buildProject = await createProject('iso-build', buildRepo, buildDomain);
+        await deploy(buildProject.id);
+        expect(JSON.parse(request(`https://${buildDomain}/`).body)).toEqual({ hostService: 'closed', neighbour: 'closed', internet: 'open' });
 
         // No domain (and no wildcard certificate for an auto subdomain): <server-ip>:<port> is the
         // app's only URL. nginx holds that port and forwards to whichever container is current,
@@ -756,6 +809,8 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
         expect(hostIpOf(container(d.slug))).toBe('127.0.0.1');
       } finally {
         env.PUSHIFY_RUNNER_SERVER_IDS = previousRunners;
+        hostService.close();
+        tryExec(`docker rm -f pushify-e2e-neighbour-${run}`);
       }
     },
     600_000

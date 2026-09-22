@@ -7,8 +7,9 @@
  * the cloud metadata address — and every app port was also published on the public interface.
  *
  * Apps on a runner run on a network of their own, `pushify-apps` (bridge `pushify-apps0`,
- * inter-container traffic off), and the rules below match that bridge only, so nothing else
- * that runs on the host is touched. They live in two chains of our own, rebuilt on every run:
+ * inter-container traffic off). The rules below match that bridge — and Docker's default bridge,
+ * where builds run, as long as nothing but Pushify is attached to it — so nothing else on the
+ * host is touched. They live in two chains of our own, rebuilt on every run:
  *  - PUSHIFY-FWD (jumped to from DOCKER-USER, i.e. forwarded traffic):
  *      replies to existing connections pass; app → app and app → private / link-local / CGNAT
  *      ranges (other Docker networks included) are dropped. Apps served under a domain are
@@ -46,18 +47,37 @@ docker network inspect ${RUNNER_APP_NETWORK} >/dev/null 2>&1 || docker network c
 modprobe br_netfilter 2>/dev/null || true
 sysctl -qw net.bridge.bridge-nf-call-iptables=1 2>/dev/null || true
 
+# Builds (RUN steps of docker build) run on Docker's default bridge. On a runner nothing else
+# belongs there, so it gets the same rules — unless a container that isn't Pushify's is attached
+# to it: then that bridge is left alone and the deploy log says why.
+BRIDGES="${br}"
+DEFAULT_BRIDGE=$(docker network inspect bridge -f '{{index .Options "com.docker.network.bridge.name"}}' 2>/dev/null || true)
+[ -n "$DEFAULT_BRIDGE" ] || DEFAULT_BRIDGE=docker0
+FOREIGN=$(docker ps --filter network=bridge --format '{{.Names}}' 2>/dev/null | grep -v '^pushify-' || true)
+if [ -z "$FOREIGN" ]; then
+  BRIDGES="$BRIDGES $DEFAULT_BRIDGE"
+else
+  ipt -D INPUT -i "$DEFAULT_BRIDGE" -j PUSHIFY-IN 2>/dev/null || true
+  echo "PUSHIFY_ISOLATION_BUILDS_SKIPPED: $(echo $FOREIGN)"
+fi
+
+# Name lookups go to the host's resolvers, which may sit in a private range.
+NAMESERVERS=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf /run/systemd/resolve/resolv.conf 2>/dev/null | grep -v ':' | grep -v '^127\.' | sort -u)
+
 ipt -N DOCKER-USER 2>/dev/null || true
 ipt -N PUSHIFY-FWD 2>/dev/null || true
 ipt -F PUSHIFY-FWD
 ipt -A PUSHIFY-FWD -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
-ipt -A PUSHIFY-FWD -i ${br} -o ${br} -j DROP
-# Name lookups go to the host's resolvers, which may sit in a private range.
-for ns in $(awk '/^nameserver/ {print $2}' /etc/resolv.conf /run/systemd/resolve/resolv.conf 2>/dev/null | sort -u); do
-  case "$ns" in *:*|127.*) continue ;; esac
-  ipt -A PUSHIFY-FWD -i ${br} -d "$ns" -p udp --dport 53 -j RETURN
-  ipt -A PUSHIFY-FWD -i ${br} -d "$ns" -p tcp --dport 53 -j RETURN
+for b in $BRIDGES; do
+  ipt -A PUSHIFY-FWD -i "$b" -o "$b" -j DROP
+  for ns in $NAMESERVERS; do
+    ipt -A PUSHIFY-FWD -i "$b" -d "$ns" -p udp --dport 53 -j RETURN
+    ipt -A PUSHIFY-FWD -i "$b" -d "$ns" -p tcp --dport 53 -j RETURN
+  done
+  for range in ${BLOCKED_RANGES.join(' ')}; do
+    ipt -A PUSHIFY-FWD -i "$b" -d "$range" -j DROP
+  done
 done
-${BLOCKED_RANGES.map((range) => `ipt -A PUSHIFY-FWD -i ${br} -d ${range} -j DROP`).join('\n')}
 ipt -A PUSHIFY-FWD -j RETURN
 ipt -C DOCKER-USER -j PUSHIFY-FWD 2>/dev/null || ipt -I DOCKER-USER 1 -j PUSHIFY-FWD
 
@@ -66,7 +86,9 @@ ipt -F PUSHIFY-IN
 ipt -A PUSHIFY-IN -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 ipt -A PUSHIFY-IN -p tcp -m multiport --dports 80,443 -j RETURN
 ipt -A PUSHIFY-IN -j DROP
-ipt -C INPUT -i ${br} -j PUSHIFY-IN 2>/dev/null || ipt -I INPUT 1 -i ${br} -j PUSHIFY-IN
+for b in $BRIDGES; do
+  ipt -C INPUT -i "$b" -j PUSHIFY-IN 2>/dev/null || ipt -I INPUT 1 -i "$b" -j PUSHIFY-IN
+done
 echo PUSHIFY_ISOLATION_OK
 `;
 }
