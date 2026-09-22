@@ -661,7 +661,7 @@ export async function addStaticSite(
     };
   }
 
-  await ssh.exec('systemctl reload nginx 2>&1 || nginx -s reload 2>&1');
+  await ssh.exec(RELOAD_AND_SETTLE);
   return { success: true, message: `Static site ${config.slug} added to Nginx` };
 }
 
@@ -875,12 +875,14 @@ export async function reloadNginx(
     };
   }
 
-  // Reload nginx
-  const reloadResult = await ssh.exec('systemctl reload nginx');
+  // Reload nginx — systemd when there is one, otherwise signal the master directly (LXC,
+  // containers, OpenRC hosts: `systemctl` alone failed there and took every domain step with it)
+  // — and return only once the new config is what answers (see RELOAD_AND_SETTLE).
+  const reloadResult = await ssh.exec(RELOAD_AND_SETTLE);
   if (reloadResult.code !== 0) {
     return {
       success: false,
-      message: `Failed to reload Nginx: ${reloadResult.stderr}`,
+      message: `Failed to reload Nginx: ${reloadResult.stderr || reloadResult.stdout}`,
     };
   }
 
@@ -891,12 +893,39 @@ export async function reloadNginx(
 }
 
 /**
+ * `nginx -s reload` only signals the master: until each old worker handles the signal it keeps
+ * accepting new connections with the old config. A deploy that retired the old container right
+ * after the reload could send those requests to a container that was gone (502), and "deployed"
+ * didn't yet mean "serving". So: note the master's workers before reloading, then wait (≤5s)
+ * until each has exited or is "shutting down" — it no longer accepts connections then. Only the
+ * host master's children are watched; app containers run nginx workers too.
+ */
+export const RELOAD_AND_SETTLE = [
+  'm=$(cat /run/nginx.pid 2>/dev/null || cat /var/run/nginx.pid 2>/dev/null)',
+  'old=$([ -n "$m" ] && pgrep -P "$m" 2>/dev/null | tr "\\n" " ")',
+  '(systemctl reload nginx 2>&1 || nginx -s reload 2>&1); rc=$?',
+  'if [ $rc -eq 0 ] && [ -n "$old" ]; then',
+  '  for _ in $(seq 1 50); do',
+  '    busy=0',
+  '    for p in $old; do',
+  '      t=$(tr "\\0" " " < /proc/$p/cmdline 2>/dev/null)',
+  '      case "$t" in ""|*"shutting down"*) ;; *) busy=1 ;; esac',
+  '    done',
+  '    [ $busy -eq 0 ] && break',
+  '    sleep 0.1',
+  '  done',
+  'fi',
+  'exit $rc',
+].join('\n');
+
+/**
  * Restart Nginx service
  */
 export async function restartNginx(
   ssh: SSHClient
 ): Promise<{ success: boolean; message: string }> {
-  const result = await ssh.exec('systemctl restart nginx');
+  // Without systemd: stop if running (ignore "not running"), then start the binary.
+  const result = await ssh.exec('systemctl restart nginx 2>&1 || { nginx -s quit 2>/dev/null; sleep 1; nginx 2>&1; }');
 
   return {
     success: result.code === 0,

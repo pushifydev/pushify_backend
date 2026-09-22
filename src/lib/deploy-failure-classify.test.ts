@@ -19,3 +19,25 @@ describe('classifyDeployFailure — repository access', () => {
     expect(result.category).toBe('repository_access');
   });
 });
+
+describe('classifyDeployFailure — the error wins over the log', () => {
+  const nodeBuildLog = [
+    '#14 [builder 8/8] RUN if [ -d node_modules/lightningcss ]; then LC_VER=$(node -p "require(\'lightningcss/package.json\').version"); fi',
+    '#14 DONE 0.2s',
+  ].join('\n');
+
+  it('does not call a container that failed to start a native-module problem', () => {
+    const result = classifyDeployFailure(nodeBuildLog, 'Blue-green deployment failed: container failed to start');
+    expect(result.category).toBe('container_start');
+  });
+
+  it('still reads the log when the error says nothing specific', () => {
+    const result = classifyDeployFailure('npm ERR! code ELIFECYCLE', 'Deployment failed');
+    expect(result.category).toBe('application_build');
+  });
+
+  it('still finds a real native-module failure', () => {
+    const result = classifyDeployFailure('', "Error: Cannot find module '../lightningcss.linux-x64-musl.node'");
+    expect(result.category).toBe('platform_native');
+  });
+});

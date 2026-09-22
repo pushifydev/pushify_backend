@@ -14,6 +14,7 @@ import { assertMemberProjectScope, getMemberAllowedProjectIds } from '../lib/mem
 import { assertOrganizationCanMutateResources } from './organization-billing.service';
 import { getApiBaseUrl } from '../lib/api-base-url';
 import { planLimitsService } from './plan-limits.service';
+import { firstRepoSettingsError, firstProjectSettingsError } from '../lib/repo-settings-validate';
 
 // Types
 interface CreateProjectInput {
@@ -65,6 +66,13 @@ export const projectService = {
     }
 
     await assertOrganizationCanMutateResources(organizationId, locale);
+
+    // Repo URL, branch, paths and commands reach a root shell on the deploy server.
+    const repoProblem = firstRepoSettingsError(input);
+    if (repoProblem) {
+      throw new HTTPException(400, { message: repoProblem });
+    }
+
     await planLimitsService.assertProjectsQuota(organizationId, locale);
 
     // Generate slug from name
@@ -204,6 +212,11 @@ export const projectService = {
     }
 
     await assertMemberProjectScope(membership, organizationId, userId, projectId, locale);
+
+    const repoProblem = firstRepoSettingsError(input);
+    if (repoProblem) {
+      throw new HTTPException(400, { message: repoProblem });
+    }
 
     if (
       input.sleepAfterMinutes !== undefined &&
@@ -601,6 +614,11 @@ export const projectService = {
     }
 
     await assertMemberProjectScope(membership, organizationId, userId, projectId, locale);
+
+    const settingsProblem = firstProjectSettingsError(settings);
+    if (settingsProblem) {
+      throw new HTTPException(400, { message: settingsProblem });
+    }
 
     if (settings.previewDeploymentsEnabled === true) {
       await planLimitsService.assertPreviewDeploymentsAllowed(organizationId, locale);

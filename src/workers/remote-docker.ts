@@ -44,6 +44,34 @@ const REMOTE_DOCKER_BIN = '/usr/bin/docker';
 /**
  * Build a Docker image on a remote server with BuildKit caching
  */
+/**
+ * Flags every customer app container gets. On a shared runner many customers' containers share
+ * one Docker bridge: without NET_RAW a container can't ARP-spoof its neighbours (and read the
+ * plain-HTTP traffic nginx sends them); no-new-privileges stops setuid escalation inside it; and
+ * a capped json-file log keeps one chatty app from filling the host's disk (the default is
+ * unbounded). The driver is named explicitly: `max-size` alone fails on a daemon whose default
+ * driver is journald.
+ */
+export const APP_CONTAINER_HARDENING =
+  ' --cap-drop NET_RAW --security-opt no-new-privileges' +
+  ' --log-driver json-file --log-opt max-size=10m --log-opt max-file=3';
+
+/**
+ * Shell that prints OK when something accepts TCP on 127.0.0.1:<port>, FAIL otherwise. `nc` is
+ * not on every server (Pushify's setup never installs it; Debian/RHEL images lack it), and
+ * relying on it alone failed every deploy there with "health check timeout" while the app ran —
+ * so fall back to bash's /dev/tcp, then curl.
+ */
+export function tcpProbeCommand(port: number): string {
+  const p = Math.trunc(port);
+  // curl: 0 = HTTP answer, 52/56 = connected but no HTTP (still a listening port)
+  return (
+    `(nc -z 127.0.0.1 ${p} || bash -c 'exec 3<>/dev/tcp/127.0.0.1/${p}' || ` +
+    `{ curl -s -o /dev/null --max-time 3 http://127.0.0.1:${p}/; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 52 ] || [ $rc -eq 56 ]; }) ` +
+    `>/dev/null 2>&1 && echo OK || echo FAIL`
+  );
+}
+
 export async function buildImage(
   ssh: SSHClient,
   options: BuildImageOptions
@@ -156,6 +184,7 @@ export async function runContainer(
   runCmd += ` --memory-swap ${runMemory}`;
   runCmd += ` --cpus ${env.DOCKER_CPU_LIMIT}`;
   runCmd += ` --pids-limit 256`;
+  runCmd += APP_CONTAINER_HARDENING;
 
   // Port mapping - bind to all interfaces for external access
   runCmd += ` -p 0.0.0.0:${hostPort}:${containerPort}`;
@@ -637,6 +666,7 @@ export async function runWorkerContainer(
   runCmd += ` --memory-swap ${runMemory}`;
   runCmd += ` --cpus ${env.DOCKER_CPU_LIMIT}`;
   runCmd += ` --pids-limit 256`;
+  runCmd += APP_CONTAINER_HARDENING;
 
   if (envVars) {
     for (const [key, value] of Object.entries(envVars)) {
@@ -703,6 +733,7 @@ export async function runContainerFromImage(
   runCmd += ` --memory-swap ${runMemory}`;
   runCmd += ` --cpus ${env.DOCKER_CPU_LIMIT}`;
   runCmd += ` --pids-limit 256`;
+  runCmd += APP_CONTAINER_HARDENING;
 
   // Port mapping
   runCmd += ` -p 0.0.0.0:${hostPort}:${containerPort}`;
@@ -886,6 +917,7 @@ export async function blueGreenDeploy(
   runCmd += ` --memory-swap ${runMemory}`;
   runCmd += ` --cpus ${env.DOCKER_CPU_LIMIT}`;
   runCmd += ` --pids-limit 256`;
+  runCmd += APP_CONTAINER_HARDENING;
 
   // Port mapping - use temporary port initially
   runCmd += ` -p 0.0.0.0:${tempPort}:${containerPort}`;
@@ -951,7 +983,7 @@ export async function blueGreenDeploy(
     // If health check path is provided, do HTTP check
     if (healthCheckPath) {
       const healthResult = await ssh.exec(
-        `curl -sf http://127.0.0.1:${tempPort}${healthCheckPath} -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000"`
+        `curl -sf ${shSingleQuote(`http://127.0.0.1:${tempPort}${healthCheckPath}`)} -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000"`
       );
       const statusCode = healthResult.stdout.trim();
       if (statusCode === '200' || statusCode === '204') {
@@ -960,7 +992,7 @@ export async function blueGreenDeploy(
       }
     } else {
       // No health check path - just check if container is accepting connections
-      const tcpCheck = await ssh.exec(`nc -z 127.0.0.1 ${tempPort} 2>/dev/null && echo "OK" || echo "FAIL"`);
+      const tcpCheck = await ssh.exec(tcpProbeCommand(tempPort));
       if (tcpCheck.stdout.trim() === 'OK') {
         isHealthy = true;
         break;

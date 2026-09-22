@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { validateCronExpression, isValidTimezone, nextCronRun } from './cron-schedule';
 import { validateVolumeName, validateContainerPath } from './volume-validate';
 import { validateWorkerName, validateWorkerCommand, MAX_WORKERS_PER_PROJECT } from './worker-validate';
+import { validateSingleLineCommand, validateRepoRelativePath } from './repo-settings-validate';
 
 /**
  * Config-as-code: a `pushify.yaml` at the repo root (or project root directory)
@@ -60,6 +61,20 @@ const FILE_NAMES = ['pushify.yaml', 'pushify.yml'];
 
 /** Deep validation beyond shape: cron expressions, timezones, volume names/paths. */
 export function validatePushifyConfig(config: PushifyFileConfig): string | null {
+  // build / install / start end up in a Dockerfile RUN or sh -c, output in a COPY path — on a
+  // server that runs as root (see lib/repo-settings-validate.ts)
+  for (const [value, label] of [
+    [config.build, 'build'],
+    [config.install, 'install'],
+    [config.start, 'start'],
+  ] as const) {
+    const error = value ? validateSingleLineCommand(value, label) : null;
+    if (error) return error;
+  }
+  if (config.output) {
+    const error = validateRepoRelativePath(config.output, 'output');
+    if (error) return error;
+  }
   for (const item of config.cron ?? []) {
     const scheduleError = validateCronExpression(item.schedule, item.timezone ?? 'UTC');
     if (scheduleError) return `cron "${item.name}": ${scheduleError}`;

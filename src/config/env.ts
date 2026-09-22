@@ -115,6 +115,17 @@ const envSchema = z.object({
    */
   TRUSTED_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(0),
 
+  /**
+   * Deploy on the control plane's own Docker when a project has no server and no runner is
+   * configured. Unset = allowed outside production, refused in production: that fallback put
+   * customer code on the machine holding Pushify's own database. Every real server — even the
+   * same machine — attaches over SSH instead.
+   */
+  PUSHIFY_ALLOW_LOCAL_DEPLOYS: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v.trim() === '' ? undefined : /^(true|1|yes|on)$/i.test(v.trim()))),
+
   // Rate Limiting (see middleware/rate-limit.ts)
   // Not z.coerce.boolean(): Boolean('false') is true, so RATE_LIMIT_ENABLED=false never disabled it.
   RATE_LIMIT_ENABLED: z

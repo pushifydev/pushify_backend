@@ -39,6 +39,7 @@ import { activityService } from '../services/activity.service';
 import { previewService } from '../services/preview.service';
 import { previewRepository } from '../repositories/preview.repository';
 import { resolveProjectGitAccess, noRepoAccessMessage } from '../services/git-provider-access.service';
+import { firstRepoSettingsError, firstProjectSettingsError } from '../lib/repo-settings-validate';
 import { env } from '../config/env';
 import { normalizeRootDirectory } from '../lib/normalize-root-directory';
 import {
@@ -444,6 +445,23 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
     let accessToken: string | undefined;
     const projectSettings = project.settings as Record<string, unknown>;
     const prStatusChecksEnabled = projectSettings?.prStatusChecksEnabled === true;
+
+    // Checked at the API too, but rows written before that — and branches that arrive in
+    // webhooks — reach a root shell on the server from here: refuse before cloning anything.
+    const repoProblem =
+      firstRepoSettingsError({
+        gitRepoUrl: project.gitRepoUrl,
+        gitBranch: job.branch || project.gitBranch,
+        rootDirectory: project.rootDirectory,
+        dockerfilePath: project.dockerfilePath,
+        buildCommand: project.buildCommand,
+        installCommand: project.installCommand,
+        startCommand: project.startCommand,
+        outputDirectory: project.outputDirectory,
+      }) ?? firstProjectSettingsError(projectSettings);
+    if (repoProblem) {
+      throw new Error(`Refusing to deploy: ${repoProblem}`);
+    }
 
     if (project.gitRepoUrl) {
       const gitAccess = await resolveProjectGitAccess(job.projectId, {
@@ -872,6 +890,14 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
     }
 
     // === LOCAL DEPLOYMENT (fallback when no server assigned) ===
+    // Runs customer code on this machine — the control plane. Refused in production unless
+    // PUSHIFY_ALLOW_LOCAL_DEPLOYS is set (see config/env.ts).
+    if (!(env.PUSHIFY_ALLOW_LOCAL_DEPLOYS ?? env.NODE_ENV !== 'production')) {
+      throw new Error(
+        'This project has no server to deploy to. Assign a server in the project settings — ' +
+          'deploying on the Pushify control plane itself is disabled.'
+      );
+    }
 
     // Get environment variables early (needed for Dockerfile generation + build args)
     const localEnvVars = await db
