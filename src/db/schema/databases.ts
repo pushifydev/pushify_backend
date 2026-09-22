@@ -54,6 +54,9 @@ export const databases = pgTable('databases', {
   username: varchar('username', { length: 255 }).notNull(),
   password: text('password').notNull(), // Encrypted
   connectionString: text('connection_string'), // Encrypted, full connection URL
+  // Read-only user for connections with permissions 'readonly' — created on demand (not for Redis)
+  readonlyUsername: varchar('readonly_username', { length: 100 }),
+  readonlyPassword: text('readonly_password'), // Encrypted
 
   // Status
   status: databaseStatusEnum('status').default('provisioning').notNull(),

@@ -96,26 +96,49 @@ async function linkedDatabaseEnv(
   targetServerId: string,
   explicitEnv: Record<string, string>
 ): Promise<{ vars: Record<string, string>; notes: string[] }> {
+  const notes: string[] = [];
   try {
     const connections = await databaseRepository.findConnectionsByProject(projectId);
-    const links: LinkedDatabase[] = connections.map(({ envVarName, database }) => {
-      const password = decrypt(database.password);
-      return {
+    const links: LinkedDatabase[] = [];
+    for (const { envVarName, permissions, database } of connections) {
+      const readonly = permissions === 'readonly';
+      let username = database.username;
+      let password = decrypt(database.password);
+      if (readonly) {
+        // Read-only connections get the database's read-only user (created on first use)
+        try {
+          if (database.readonlyUsername && database.readonlyPassword) {
+            username = database.readonlyUsername;
+            password = decrypt(database.readonlyPassword);
+          } else {
+            const { databaseService } = await import('../services/database.service');
+            ({ username, password } = await databaseService.ensureReadonlyUser(database.id));
+          }
+        } catch (err) {
+          notes.push(
+            `Database "${database.name}" is connected read-only but its read-only user could not be set up — ${envVarName} not set (${err instanceof Error ? err.message : String(err)})`
+          );
+          continue;
+        }
+      }
+      links.push({
         envVarName,
+        readonly,
         name: database.name,
         type: database.type,
         serverId: database.serverId,
         containerName: database.containerName,
-        username: database.username,
+        username,
         databaseName: database.databaseName,
         externalAccess: database.externalAccess,
         password,
         connectionString: database.host
-          ? buildConnectionString(database.type, database.host, database.port, database.username, password, database.databaseName)
+          ? buildConnectionString(database.type, database.host, database.port, username, password, database.databaseName)
           : null,
-      };
-    });
-    return planLinkedDatabaseEnv(links, targetServerId, new Set(Object.keys(explicitEnv)));
+      });
+    }
+    const plan = planLinkedDatabaseEnv(links, targetServerId, new Set(Object.keys(explicitEnv)));
+    return { vars: plan.vars, notes: [...notes, ...plan.notes] };
   } catch (err) {
     return {
       vars: {},

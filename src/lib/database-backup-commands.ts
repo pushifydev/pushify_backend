@@ -65,8 +65,9 @@ export function buildRestoreCommand(
     case 'postgresql':
       // One transaction, stop on the first error: a restore either lands whole or leaves the
       // database as it was. The public schema is reset first so older dumps (no --clean) don't
-      // collide with the tables they are meant to replace.
-      return `docker cp ${ePath} ${eCont}:/tmp/${eFile} && docker exec ${eCont} bash -c "set -o pipefail; { echo 'DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;'; gunzip -c /tmp/${eFile}; } | psql -q -v ON_ERROR_STOP=1 --single-transaction -U ${eUser} -d ${eDb} >/dev/null"; rc=$?; docker exec ${eCont} rm -f /tmp/${eFile}; exit $rc`;
+      // collide with the tables they are meant to replace; USAGE for PUBLIC is what a fresh
+      // database's public schema has (the read-only user relies on it).
+      return `docker cp ${ePath} ${eCont}:/tmp/${eFile} && docker exec ${eCont} bash -c "set -o pipefail; { echo 'DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; GRANT USAGE ON SCHEMA public TO PUBLIC;'; gunzip -c /tmp/${eFile}; } | psql -q -v ON_ERROR_STOP=1 --single-transaction -U ${eUser} -d ${eDb} >/dev/null"; rc=$?; docker exec ${eCont} rm -f /tmp/${eFile}; exit $rc`;
 
     case 'mysql':
       return `docker cp ${ePath} ${eCont}:/tmp/${eFile} && docker exec -e MYSQL_PWD=${ePass} ${eCont} bash -c "set -o pipefail; gunzip -c /tmp/${eFile} | mysql -u ${eUser} ${eDb}"; rc=$?; docker exec ${eCont} rm -f /tmp/${eFile}; exit $rc`;

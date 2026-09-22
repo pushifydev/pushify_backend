@@ -439,7 +439,7 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
           'const pool = new Pool({ connectionString: process.env.DATABASE_URL, idleTimeoutMillis: 1000 });',
           'async function handle(req) {',
           "  const url = new URL(req.url, 'http://x');",
-          "  await pool.query('CREATE TABLE IF NOT EXISTS notes (id serial primary key, body text not null)');",
+          "  if (url.pathname === '/add' || url.pathname === '/clear') await pool.query('CREATE TABLE IF NOT EXISTS notes (id serial primary key, body text not null)');",
           "  if (url.pathname === '/add') await pool.query('INSERT INTO notes (body) VALUES ($1)', [url.searchParams.get('body')]);",
           "  if (url.pathname === '/clear') await pool.query('DELETE FROM notes');",
           "  const { rows } = await pool.query('SELECT body FROM notes ORDER BY id');",
@@ -469,6 +469,23 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
       await read('/add?body=one');
       expect(await read('/add?body=two')).toBe('E2E-DB one,two');
 
+      // A second project connected read-only sees the same data and can't change it
+      const roDomain = `db-ro-${run}.127.0.0.1.nip.io`;
+      const roProject = await createProject('db-ro', repo, roDomain);
+      await databaseService.connectToProject(database.id, organizationId, userId, { projectId: roProject.id, permissions: 'readonly' }, 'en');
+      await deploy(roProject.id);
+      const roContainer = execSync(`docker ps --filter name=pushify-${roProject.slug} --format '{{.Names}}'`, { encoding: 'utf8' }).trim();
+      expect(execSync(`docker inspect -f '{{json .Config.Env}}' ${roContainer}`, { encoding: 'utf8' })).toContain(`${database.username}_ro:`);
+      const roRead = () =>
+        waitFor('the read-only app', async () => {
+          const res = request(`https://${roDomain}/`);
+          return res.status === 200 ? res.body : undefined;
+        }, 60_000);
+      expect(await roRead()).toBe('E2E-DB one,two');
+      const roWrite = request(`https://${roDomain}/add?body=nope`);
+      expect(roWrite.status).toBe(500);
+      expect(roWrite.body).toMatch(/read-only|permission denied/);
+
       const backup = await databaseBackupService.createBackup(database.id, organizationId, userId, 'en');
       await waitFor('the backup', async () => {
         const row = await db.query.databaseBackups.findFirst({ where: (b, { eq }) => eq(b.id, backup.id) });
@@ -491,6 +508,8 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
       expect(await read('/add?body=three')).toBe('E2E-DB three');
       await restore();
       expect(await read()).toBe('E2E-DB one,two');
+      // …and the read-only user still has access to the restored tables
+      expect(await roRead()).toBe('E2E-DB one,two');
 
       // The same backup restores again (it used to end up 'restored' and locked)
       expect(await read('/add?body=four')).toBe('E2E-DB one,two,four');
@@ -504,6 +523,8 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
       ).toBe('1');
       await deploy(project.id);
       expect(await read()).toBe('E2E-DB one,two');
+      // The read-only user has a password of its own: untouched by the reset
+      expect(await roRead()).toBe('E2E-DB one,two');
     },
     900_000
   );
@@ -579,6 +600,16 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
         expect(restored.errorMessage).toBeNull();
         const afterRestore = await waitFor('the restored data', async () => tryExec(client.read(c, details.password, u, d)));
         expect(afterRestore).toBe('before');
+
+        // Read-only access: reads work, writes don't — and Redis has no such mode
+        if (engine === 'redis') {
+          await expect(databaseService.ensureReadonlyUser(database.id)).rejects.toThrow(/Redis/);
+        } else {
+          const ro = await databaseService.ensureReadonlyUser(database.id);
+          expect(await waitFor('the read-only user', async () => tryExec(client.read(c, ro.password, ro.username, d)))).toBe('before');
+          expect(tryExec(client.write(c, ro.password, ro.username, d, 'hacked'))).toBeUndefined();
+          expect(tryExec(client.read(c, details.password, u, d))).toBe('before');
+        }
 
         const { password } = await databaseService.resetPassword(database.id, organizationId, userId, 'en');
         await waitFor(`${engine} with the new password`, async () => tryExec(client.ready(c, password, u, d)));

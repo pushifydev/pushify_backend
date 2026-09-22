@@ -316,6 +316,13 @@
       "when": 1787270400004,
       "tag": "0045_auth_events_admin_audit",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1787270400005,
+      "tag": "0046_database_readonly_user",
+      "breakpoints": true
     }
   ]
 }

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   buildConnectionString,
   buildDatabaseRunCommand,
+  buildReadonlyUserCommand,
   internalConnectionString,
   planLinkedDatabaseEnv,
   validateDatabaseVersion,
@@ -113,5 +114,43 @@ describe('input validation', () => {
     expect(validateEnvVarName('1ABC')).not.toBeNull();
     expect(validateEnvVarName('A=B')).not.toBeNull();
     expect(validateEnvVarName('A B')).not.toBeNull();
+  });
+});
+
+describe('buildReadonlyUserCommand', () => {
+  const base = {
+    containerName: 'pushify-db-app',
+    username: 'user_app',
+    password: 'pw',
+    databaseName: 'app',
+    readonlyUsername: 'user_app_ro',
+    readonlyPassword: 'ro-pw_1',
+  };
+
+  it('feeds its SQL through a quoted here-doc, so the shell expands nothing ($$ included)', () => {
+    const cmd = buildReadonlyUserCommand({ ...base, type: 'postgresql' });
+    expect(cmd).toMatch(/<<'PUSHIFY_SQL'\n/);
+    expect(cmd.endsWith('\nPUSHIFY_SQL')).toBe(true);
+    expect(cmd).toContain('DO $$ BEGIN');
+  });
+
+  it('postgres: select only, including tables created later, and read-only sessions', () => {
+    const cmd = buildReadonlyUserCommand({ ...base, type: 'postgresql' });
+    expect(cmd).toContain('GRANT SELECT ON ALL TABLES IN SCHEMA public TO "user_app_ro"');
+    expect(cmd).toContain('ALTER DEFAULT PRIVILEGES FOR ROLE "user_app" GRANT SELECT ON TABLES TO "user_app_ro"');
+    expect(cmd).toContain('SET default_transaction_read_only = on');
+    expect(cmd).not.toMatch(/GRANT (INSERT|UPDATE|DELETE|ALL)/);
+  });
+
+  it('mysql: SELECT and SHOW VIEW on its database only', () => {
+    const cmd = buildReadonlyUserCommand({ ...base, type: 'mysql' });
+    expect(cmd).toContain("GRANT SELECT, SHOW VIEW ON `app`.* TO 'user_app_ro'@'%'");
+    expect(cmd).toContain("<<'PUSHIFY_SQL'");
+  });
+
+  it("mongodb: the read role on its database, and a marker to check it ran", () => {
+    const cmd = buildReadonlyUserCommand({ ...base, type: 'mongodb' });
+    expect(cmd).toContain("role: 'read', db: 'app'");
+    expect(cmd).toContain("print('PUSHIFY_RO_OK')");
   });
 });
