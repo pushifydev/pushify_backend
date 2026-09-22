@@ -57,6 +57,8 @@ export function buildRemoteTeardownScript(slug: string, isCompose: boolean): str
     // The vhosts the deployer actually writes (`pushify-<slug>` for the auto-subdomain, one
     // `pushify-<slug>-pr-N` per PR preview) — left behind, they kept proxying to dead ports.
     `rm -f /etc/nginx/sites-enabled/pushify-${safeSlug} /etc/nginx/sites-available/pushify-${safeSlug} /opt/pushify/nginx/pushify-${safeSlug}.conf 2>/dev/null || true`,
+    // A domain-less app's public-port site (workers/public-port-proxy.ts)
+    `rm -f /etc/nginx/sites-enabled/pushify-${safeSlug}.port /etc/nginx/sites-available/pushify-${safeSlug}.port /etc/nginx/sites-available/pushify-${safeSlug}.port.prev 2>/dev/null || true`,
     `rm -f /etc/nginx/sites-enabled/pushify-${safeSlug}-pr-* /etc/nginx/sites-available/pushify-${safeSlug}-pr-* /opt/pushify/nginx/pushify-${safeSlug}-pr-*.conf /etc/nginx/conf.d/preview-${safeSlug}-pr-*.conf 2>/dev/null || true`,
     'nginx -t 2>/dev/null && nginx -s reload 2>/dev/null || true',
   ].join('; ');
@@ -271,6 +273,7 @@ export async function teardownProjectOnRemoteServer(
 
     try {
       await releasePort(ssh, project.slug);
+      await releasePort(ssh, `${project.slug}:public`);
     } catch (portErr) {
       logger.warn({ projectId: project.id, err: portErr }, 'Failed to release port from registry');
     }

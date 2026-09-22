@@ -658,23 +658,57 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
         expect(probe('1.1.1.1', 443)).toBe('open'); // the internet
 
         // No domain (and no wildcard certificate for an auto subdomain): <server-ip>:<port> is the
-        // app's only URL, so it stays public — binding it to loopback took such apps offline.
-        const c = await createProject('iso-c', repo, `unused-${run}.127.0.0.1.nip.io`);
-        await db.delete(schema.domains).where(eqOp(schema.domains.projectId, c.id));
-        await deploy(c.id);
-        const containerC = container(c.slug);
-        const bindingC = Object.values(
-          JSON.parse(execSync(`docker inspect -f '{{json .HostConfig.PortBindings}}' ${containerC}`, { encoding: 'utf8' })) as Record<
-            string,
-            Array<{ HostIp: string; HostPort: string }>
-          >
-        )[0][0];
-        expect(['', '0.0.0.0']).toContain(bindingC.HostIp);
+        // app's only URL. nginx holds that port and forwards to whichever container is current,
+        // so the URL survives deploys (it used to flip with every blue-green switch) and the
+        // container itself stays on loopback.
         const boxIp = execSync(`hostname -I | awk '{print $1}'`, { encoding: 'utf8' }).trim();
-        expect(execSync(`curl -s --max-time 10 http://${boxIp}:${bindingC.HostPort}/`, { encoding: 'utf8' })).toBe('E2E-ISO');
-        // …and its container is still out of other apps' reach (its public port is public anyway)
-        const ipC = execSync(`docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ${containerC}`, { encoding: 'utf8' }).trim();
+        const get = (port: number) => tryExec(`curl -s --max-time 10 http://${boxIp}:${port}/`);
+        const registry = () =>
+          JSON.parse(readFileSync('/opt/pushify/port-registry.json', 'utf8')).assignments as Array<{ port: number; projectSlug: string }>;
+        const publicPortOf = (slug: string) => registry().find((a) => a.projectSlug === `${slug}:public`)?.port;
+        const hostIpOf = (name: string) =>
+          Object.values(
+            JSON.parse(execSync(`docker inspect -f '{{json .HostConfig.PortBindings}}' ${name}`, { encoding: 'utf8' })) as Record<
+              string,
+              Array<{ HostIp: string; HostPort: string }>
+            >
+          )[0][0].HostIp;
+        const domainless = async (name: string) => {
+          const project = await createProject(name, repo, `unused-${name}-${run}.127.0.0.1.nip.io`);
+          await db.delete(schema.domains).where(eqOp(schema.domains.projectId, project.id));
+          return project;
+        };
+
+        const c = await domainless('iso-c');
+        await deploy(c.id);
+        const portC = publicPortOf(c.slug)!;
+        expect(portC).toBeGreaterThan(0);
+        expect(get(portC)).toBe('E2E-ISO');
+        expect(hostIpOf(container(c.slug))).toBe('127.0.0.1');
+        await deploy(c.id);
+        expect(publicPortOf(c.slug)).toBe(portC);
+        expect(get(portC)).toBe('E2E-ISO');
+        const ipC = execSync(`docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ${container(c.slug)}`, { encoding: 'utf8' }).trim();
         expect(probe(ipC, 3000)).toBe('closed');
+
+        // Deployed before the proxy existed — its container publishes the port itself: that port
+        // (the URL people use) becomes the public port, and the container moves to loopback.
+        const d = await domainless('iso-d');
+        await deploy(d.id);
+        execSync(
+          `rm -f /etc/nginx/sites-enabled/pushify-${d.slug}.port /etc/nginx/sites-available/pushify-${d.slug}.port && nginx -s reload && ` +
+            `docker rm -f $(docker ps -aq --filter name=pushify-${d.slug}-) && ` +
+            `docker run -d --name pushify-${d.slug}-green --network pushify-apps -p 0.0.0.0:3990:3000 -e PORT=3000 pushify-${d.slug}:latest`
+        );
+        const legacy = registry()
+          .filter((a) => !a.projectSlug.startsWith(d.slug))
+          .concat([{ port: 3990, projectSlug: d.slug, assignedAt: new Date().toISOString() } as never]);
+        await fs.writeFile('/opt/pushify/port-registry.json', JSON.stringify({ assignments: legacy }));
+        await waitFor('the legacy container', async () => (get(3990) === 'E2E-ISO' ? true : undefined), 30_000);
+        await deploy(d.id);
+        expect(publicPortOf(d.slug)).toBe(3990);
+        expect(get(3990)).toBe('E2E-ISO');
+        expect(hostIpOf(container(d.slug))).toBe('127.0.0.1');
       } finally {
         env.PUSHIFY_RUNNER_SERVER_IDS = previousRunners;
       }
