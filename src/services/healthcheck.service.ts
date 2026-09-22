@@ -1,9 +1,13 @@
 import { HTTPException } from 'hono/http-exception';
+import { eq } from 'drizzle-orm';
+import { db } from '../db';
+import { projectHealthState } from '../db/schema/healthchecks';
 import { healthCheckRepository } from '../repositories/healthcheck.repository';
 import { projectRepository } from '../repositories/project.repository';
 import { organizationRepository } from '../repositories/organization.repository';
 import { notificationService } from './notification.service';
 import { restartPushifyContainer } from '../lib/container-resolve';
+import { env } from '../config/env';
 import { assertPublicUrl } from '../lib/ssrf-guard';
 import { logger } from '../lib/logger';
 import { t, type SupportedLocale } from '../i18n';
@@ -150,7 +154,8 @@ export const healthCheckService = {
   async performHealthCheck(
     projectId: string,
     healthCheckUrl: string,
-    timeoutSeconds: number
+    timeoutSeconds: number,
+    options: { healthyWhen?: 'ok' | 'answered'; allowPrivate?: boolean } = {}
   ): Promise<{
     healthy: boolean;
     responseTimeMs: number;
@@ -160,8 +165,11 @@ export const healthCheckService = {
     const startTime = Date.now();
 
     try {
-      // SSRF guard: reject health-check URLs that resolve to private/internal addresses.
-      await assertPublicUrl(healthCheckUrl);
+      // SSRF guard: reject health-check URLs that resolve to private/internal addresses —
+      // unless this install runs its apps on a private network and says so.
+      if (!(options.allowPrivate ?? env.PUSHIFY_ALLOW_PRIVATE_APP_URLS)) {
+        await assertPublicUrl(healthCheckUrl);
+      }
 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
@@ -180,7 +188,12 @@ export const healthCheckService = {
 
       // With redirect:'manual', a 3xx surfaces as an opaque redirect (status 0) — treat it
       // as "up" so SSRF protection doesn't flip legitimately-redirecting endpoints unhealthy.
-      const healthy = response.ok || response.type === 'opaqueredirect';
+      // 'answered' (monitoring without a configured endpoint): anything short of a server error
+      // means the app is running — a 404 on / is a route, not an outage.
+      const healthy =
+        response.ok ||
+        response.type === 'opaqueredirect' ||
+        (options.healthyWhen === 'answered' && response.status > 0 && response.status < 500);
 
       return {
         healthy,
@@ -205,6 +218,36 @@ export const healthCheckService = {
         error: errorMessage,
       };
     }
+  },
+
+  /** What monitoring last saw for this project (services/app-health.service.ts keeps it). */
+  async getStatus(projectId: string, organizationId: string, userId: string, locale: SupportedLocale = 'en') {
+    const membership = await organizationRepository.findMember(organizationId, userId);
+    if (!membership) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
+    }
+    const project = await projectRepository.findById(projectId);
+    if (!project || project.organizationId !== organizationId) {
+      throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });
+    }
+    const [state] = await db
+      .select()
+      .from(projectHealthState)
+      .where(eq(projectHealthState.projectId, projectId));
+    return (
+      state ?? {
+        projectId,
+        url: null,
+        status: 'unknown',
+        statusCode: null,
+        responseTimeMs: null,
+        failCount: 0,
+        error: null,
+        downSince: null,
+        notifiedAt: null,
+        lastCheckedAt: null,
+      }
+    );
   },
 
   /**

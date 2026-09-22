@@ -130,6 +130,15 @@ const envSchema = z.object({
     .optional()
     .transform((v) => (v === undefined || v.trim() === '' ? undefined : /^(true|1|yes|on)$/i.test(v.trim()))),
 
+  /**
+   * Self-hosted installs whose apps live on a private network: let monitoring call those
+   * addresses (the SSRF guard blocks them otherwise). Only status codes and timings are kept.
+   */
+  PUSHIFY_ALLOW_PRIVATE_APP_URLS: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v.trim() === '' ? undefined : /^(true|1|yes|on)$/i.test(v.trim()))),
+
   // Rate Limiting (see middleware/rate-limit.ts)
   // Not z.coerce.boolean(): Boolean('false') is true, so RATE_LIMIT_ENABLED=false never disabled it.
   RATE_LIMIT_ENABLED: z

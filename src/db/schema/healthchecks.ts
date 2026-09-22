@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, timestamp, boolean, integer, pgEnum } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, boolean, integer, pgEnum, text } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 import { projects } from './projects';
 import { deployments } from './deployments';
@@ -64,3 +64,27 @@ export type HealthCheck = typeof healthChecks.$inferSelect;
 export type NewHealthCheck = typeof healthChecks.$inferInsert;
 export type HealthCheckLog = typeof healthCheckLogs.$inferSelect;
 export type NewHealthCheckLog = typeof healthCheckLogs.$inferInsert;
+
+/**
+ * Where each project's monitoring stands right now: every active project with a URL is checked,
+ * with or without a `health_checks` row (services/app-health.service.ts). One row per project,
+ * so an outage is noticed once and reported once.
+ */
+export const projectHealthState = pgTable('project_health_state', {
+  projectId: uuid('project_id')
+    .primaryKey()
+    .references(() => projects.id, { onDelete: 'cascade' }),
+  url: text('url'),
+  /** up | down | unknown */
+  status: varchar('status', { length: 10 }).default('unknown').notNull(),
+  statusCode: integer('status_code'),
+  responseTimeMs: integer('response_time_ms'),
+  failCount: integer('fail_count').default(0).notNull(),
+  error: text('error'),
+  downSince: timestamp('down_since', { withTimezone: true }),
+  notifiedAt: timestamp('notified_at', { withTimezone: true }),
+  lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+export type ProjectHealthState = typeof projectHealthState.$inferSelect;

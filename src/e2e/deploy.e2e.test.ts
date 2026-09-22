@@ -317,6 +317,33 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
       await deploy(project.id);
       expect(request(`https://${domain}/`).body).toContain('E2E-NODE v2');
 
+      // Monitoring: three failed checks make it "down" (and mail), answering again clears it
+      const { appHealthService } = await import('../services/app-health.service');
+      const health = async (times = 1) => {
+        let status: string = 'unknown';
+        for (let i = 0; i < times; i++) {
+          const [candidate] = (await appHealthService.candidates()).filter((c) => c.projectId === project.id);
+          expect(candidate, 'project should be monitored').toBeTruthy();
+          status = await appHealthService.checkProject(candidate, new Date(Date.now() + i * 60_000));
+        }
+        return status;
+      };
+      expect(await health()).toBe('up');
+
+      const appContainer = execSync(`docker ps --filter name=pushify-${project.slug} --format '{{.Names}}'`, { encoding: 'utf8' }).trim();
+      execSync(`docker stop ${appContainer}`);
+      expect(await health(2)).toBe('up'); // one or two failures are not an outage
+      expect(await health()).toBe('down');
+      const downState = await db.query.projectHealthState.findFirst({ where: (h, { eq }) => eq(h.projectId, project.id) });
+      expect(downState?.downSince).toBeInstanceOf(Date);
+      expect(downState?.notifiedAt).toBeInstanceOf(Date);
+
+      execSync(`docker start ${appContainer}`);
+      await waitFor('the app to answer again', async () => ((await health()) === 'up' ? true : undefined), 60_000);
+      const upState = await db.query.projectHealthState.findFirst({ where: (h, { eq }) => eq(h.projectId, project.id) });
+      expect(upState?.status).toBe('up');
+      expect(upState?.downSince).toBeNull();
+
       // Blue-green retired the old slot: one app container left
       const running = execSync(`docker ps --filter name=pushify-${project.slug} --format '{{.Names}}'`, { encoding: 'utf8' })
         .split('\n')

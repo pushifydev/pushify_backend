@@ -784,6 +784,84 @@ export async function sendBackupVerificationFailedEmail(
   }
 }
 
+export async function sendAppDownEmail(
+  to: string,
+  details: { orgName: string; projectName: string; projectId: string; url: string; statusCode?: number; error?: string },
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping app down email');
+    return;
+  }
+
+  const { orgName, projectName, projectId, url, statusCode, error } = details;
+  const projectUrl = `${env.FRONTEND_URL}/dashboard/projects/${projectId}`;
+  const reason = statusCode ? `HTTP ${statusCode}` : error || 'no answer';
+  const subjects = {
+    en: `${projectName} is not answering (${orgName})`,
+    tr: `${projectName} cevap vermiyor (${orgName})`,
+  };
+  const copy = {
+    en: {
+      lead: `<strong>${projectName}</strong> stopped answering at ${url} — three checks in a row failed (${reason}).`,
+      why: 'The app may have crashed, run out of memory or be stuck starting. Its logs in Pushify usually say which. You get one more email when it answers again.',
+      cta: 'Open the project',
+    },
+    tr: {
+      lead: `<strong>${projectName}</strong> ${url} adresinde cevap vermiyor — üst üste üç kontrol başarısız oldu (${reason}).`,
+      why: 'Uygulama çökmüş, belleği dolmuş ya da başlangıçta takılmış olabilir. Pushify’daki logları genelde sebebini gösterir. Tekrar cevap verdiğinde bir e-posta daha göndereceğiz.',
+      cta: 'Projeyi aç',
+    },
+  }[locale];
+
+  const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#f9fafb;font-family:ui-sans-serif,system-ui,sans-serif">
+<div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:24px">
+  <p style="margin:0 0 12px;font-size:15px;color:#111827">${copy.lead}</p>
+  <p style="margin:0 0 20px;font-size:14px;color:#4b5563">${copy.why}</p>
+  <a href="${projectUrl}" style="display:inline-block;padding:10px 16px;background:#111827;color:#ffffff;border-radius:8px;font-size:14px;text-decoration:none">${copy.cta}</a>
+</div></body></html>`;
+
+  try {
+    await transporter.sendMail({ from: FROM_ADDRESS, to, subject: subjects[locale] ?? subjects.en, html });
+  } catch (err) {
+    logger.error({ err, to }, 'Failed to send app down email');
+  }
+}
+
+export async function sendAppRecoveredEmail(
+  to: string,
+  details: { orgName: string; projectName: string; projectId: string; url: string; downFor: string },
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping app recovered email');
+    return;
+  }
+
+  const { orgName, projectName, projectId, url, downFor } = details;
+  const projectUrl = `${env.FRONTEND_URL}/dashboard/projects/${projectId}`;
+  const subjects = {
+    en: `${projectName} is answering again (${orgName})`,
+    tr: `${projectName} tekrar cevap veriyor (${orgName})`,
+  };
+  const copy = {
+    en: `<strong>${projectName}</strong> answers again at ${url}. It was unreachable for about ${downFor}.`,
+    tr: `<strong>${projectName}</strong> ${url} adresinde tekrar cevap veriyor. Yaklaşık ${downFor} boyunca erişilemedi.`,
+  }[locale];
+
+  const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#f9fafb;font-family:ui-sans-serif,system-ui,sans-serif">
+<div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:24px">
+  <p style="margin:0 0 20px;font-size:15px;color:#111827">${copy}</p>
+  <a href="${projectUrl}" style="display:inline-block;padding:10px 16px;background:#111827;color:#ffffff;border-radius:8px;font-size:14px;text-decoration:none">${locale === 'tr' ? 'Projeyi aç' : 'Open the project'}</a>
+</div></body></html>`;
+
+  try {
+    await transporter.sendMail({ from: FROM_ADDRESS, to, subject: subjects[locale] ?? subjects.en, html });
+  } catch (err) {
+    logger.error({ err, to }, 'Failed to send app recovered email');
+  }
+}
+
 export async function sendCertificateExpiryEmail(
   to: string,
   details: { orgName: string; domain: string; projectName: string; projectId: string; expiresAt: Date; daysLeft: number; final: boolean },

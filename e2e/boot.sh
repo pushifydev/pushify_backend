@@ -71,4 +71,8 @@ npx tsx src/migrate.ts
 log "running e2e tests"
 # Fixture repos are local (file://), which production refuses (lib/repo-settings-validate.ts)
 export PUSHIFY_ALLOW_LOCAL_REPOS=1
+# Apps here answer on 127.0.0.1 (nip.io): monitoring may call them, and their certificates come
+# from Pebble, whose CA nothing here trusts.
+export PUSHIFY_ALLOW_PRIVATE_APP_URLS=1
+export NODE_TLS_REJECT_UNAUTHORIZED=0
 PUSHIFY_E2E=1 npx vitest run --no-file-parallelism src/e2e "$@"
