@@ -69,6 +69,18 @@ settings → *Docker image* (`ghcr.io/acme/api:1.4`) and every deploy pulls that
 moving the tag and redeploying ships the new image. Such a project needs a server; the no-server
 fallback cannot do it.
 
+### Single sign-on
+
+**Settings → Single sign-on** connects the organization's own identity provider over OpenID
+Connect (Okta, Entra ID, Google Workspace, Auth0, Keycloak). Enter the issuer, the client id and
+secret, and the email domains the provider signs in; the page shows the redirect URI to paste at
+the provider. Turning on *Require single sign-on* stops passwords, GitHub and Google from working
+for those domains, so disabling someone at the provider is enough to lock them out. Two-factor
+authentication still applies on top.
+
+The redirect URI is derived from `API_BASE_URL` (falling back to `FRONTEND_URL`), so set that to
+the address the dashboard actually reaches before configuring a connection.
+
 ## Configuration
 
 Everything lives in `pushify/.env`. Required values are generated for you; optional integrations

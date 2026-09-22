@@ -126,4 +126,47 @@ activityRouter.openapi(listActivityLogsRoute, async (c) => {
   return c.json({ data: logs, total });
 });
 
+/**
+ * The same log as a CSV file. Compliance reviews ask for the audit trail as evidence, and
+ * scrolling a dashboard is not evidence. Outside the OpenAPI document because it answers with a
+ * file rather than JSON.
+ */
+activityRouter.get('/export', async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const actions = c.req.query('actions')?.split(',').filter(Boolean) as ActivityAction[] | undefined;
+
+  const { logs } = await activityService.getByOrganization(organizationId, {
+    projectId: c.req.query('projectId'),
+    userId: c.req.query('userId'),
+    actions,
+    limit: 10_000,
+    offset: 0,
+  });
+
+  const { toCsvRows } = await import('../lib/csv');
+  const body = toCsvRows(
+    ['time', 'action', 'description', 'user', 'user_email', 'project', 'ip_address', 'metadata'],
+    logs
+      .slice()
+      .reverse()
+      .map((log) => [
+        log.createdAt.toISOString(),
+        log.action,
+        log.description,
+        log.user?.name ?? '',
+        log.user?.email ?? '',
+        log.project?.name ?? '',
+        log.ipAddress ?? '',
+        log.metadata,
+      ])
+  );
+
+  c.header('Content-Type', 'text/csv; charset=utf-8');
+  c.header(
+    'Content-Disposition',
+    `attachment; filename="activity-${new Date().toISOString().slice(0, 10)}.csv"`
+  );
+  return c.body(body);
+});
+
 export { activityRouter as activityRoutes };

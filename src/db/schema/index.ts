@@ -10,6 +10,9 @@ export * from './projects';
 // Private container registries
 export * from './registry-credentials';
 
+// Single sign-on
+export * from './sso';
+
 // Deployments
 export * from './deployments';
 
