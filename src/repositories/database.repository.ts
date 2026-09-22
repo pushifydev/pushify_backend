@@ -38,7 +38,8 @@ export const databaseRepository = {
         },
         connections: {
           with: {
-            project: true,
+            // Only what the database page shows — the full row carries the webhook secret.
+            project: { columns: { id: true, name: true, slug: true, serverId: true } },
           },
         },
       },
@@ -175,7 +176,7 @@ export const databaseRepository = {
   },
 
   // Find connections by project
-  async findConnectionsByProject(projectId: string): Promise<DatabaseConnection[]> {
+  async findConnectionsByProject(projectId: string): Promise<Array<DatabaseConnection & { database: Database }>> {
     return db.query.databaseConnections.findMany({
       where: eq(databaseConnections.projectId, projectId),
       with: {

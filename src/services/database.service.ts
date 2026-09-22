@@ -13,6 +13,18 @@ import { planLimitsService } from './plan-limits.service';
 import { assertOrganizationCanMutateResources } from './organization-billing.service';
 import crypto from 'crypto';
 import { adminNotify } from './admin-notify.service';
+import { logger } from '../lib/logger';
+import {
+  DATABASE_DEFAULTS,
+  DATABASE_NETWORK,
+  buildConnectionString,
+  buildDatabaseRunCommand,
+  databaseDataDir,
+  internalConnectionString,
+  isDatabaseType,
+  validateDatabaseVersion,
+  validateEnvVarName,
+} from '../lib/managed-database';
 
 // ============ Types ============
 
@@ -38,14 +50,6 @@ export interface ConnectDatabaseInput {
   permissions?: 'readonly' | 'readwrite';
 }
 
-// Database default versions and ports
-const DATABASE_DEFAULTS: Record<DatabaseType, { version: string; port: number; image: string }> = {
-  postgresql: { version: '16', port: 5432, image: 'postgres' },
-  mysql: { version: '8.0', port: 3306, image: 'mysql' },
-  redis: { version: '7', port: 6379, image: 'redis' },
-  mongodb: { version: '7', port: 27017, image: 'mongo' },
-};
-
 // ============ Helper Functions ============
 
 function generatePassword(): string {
@@ -58,32 +62,6 @@ function generateDatabaseName(name: string): string {
 
 function generateUsername(name: string): string {
   return `user_${name.toLowerCase().replace(/[^a-z0-9]/g, '').substring(0, 16)}`;
-}
-
-function buildConnectionString(
-  type: DatabaseType,
-  host: string,
-  port: number,
-  username: string,
-  password: string,
-  databaseName: string
-): string {
-  // URL encode username and password to handle special characters
-  const encodedUser = encodeURIComponent(username);
-  const encodedPass = encodeURIComponent(password);
-
-  switch (type) {
-    case 'postgresql':
-      return `postgresql://${encodedUser}:${encodedPass}@${host}:${port}/${databaseName}`;
-    case 'mysql':
-      return `mysql://${encodedUser}:${encodedPass}@${host}:${port}/${databaseName}`;
-    case 'mongodb':
-      return `mongodb://${encodedUser}:${encodedPass}@${host}:${port}/${databaseName}`;
-    case 'redis':
-      return `redis://:${encodedPass}@${host}:${port}`;
-    default:
-      return '';
-  }
 }
 
 // ============ Service ============
@@ -163,6 +141,20 @@ export const databaseService = {
       username: database.username,
       password,
       connectionString,
+      // What apps on the same server use (Pushify injects it into linked projects at deploy).
+      internalHost: database.containerName,
+      internalPort: DATABASE_DEFAULTS[database.type].port,
+      internalConnectionString: database.containerName
+        ? internalConnectionString(
+            {
+              type: database.type,
+              containerName: database.containerName,
+              username: database.username,
+              databaseName: database.databaseName,
+            },
+            password
+          )
+        : null,
     };
   },
 
@@ -176,6 +168,18 @@ export const databaseService = {
     const membership = await organizationRepository.findMember(organizationId, userId);
     if (!membership || !['owner', 'admin'].includes(membership.role)) {
       throw new HTTPException(403, { message: t(locale, 'errors', 'forbidden') });
+    }
+
+    // The route passes the raw body; type and version end up in a root shell on the server.
+    const hasVersion = input.version !== undefined && input.version !== null && input.version !== '';
+    const inputError = [
+      typeof input.name !== 'string' || !input.name.trim() || input.name.length > 64 ? 'Name must be 1–64 characters' : null,
+      !isDatabaseType(input.type) ? 'Unknown database type' : null,
+      hasVersion ? (typeof input.version === 'string' ? validateDatabaseVersion(input.version) : 'Version must be a string') : null,
+      typeof input.serverId !== 'string' || !input.serverId ? 'Server is required' : null,
+    ].find((error) => error !== null);
+    if (inputError) {
+      throw new HTTPException(400, { message: inputError });
     }
 
     await assertOrganizationCanMutateResources(organizationId, locale);
@@ -212,6 +216,10 @@ export const databaseService = {
 
     // Find available port (starting from default + offset based on existing DBs)
     const existingDbs = await databaseRepository.findByServer(input.serverId);
+    // "My DB" and "my_db" become the same container and data directory on the server.
+    if (existingDbs.some((existingDb) => existingDb.databaseName === databaseName)) {
+      throw new HTTPException(400, { message: t(locale, 'databases', 'nameExists') });
+    }
     const usedPorts = existingDbs.map((db) => db.containerPort).filter(Boolean) as number[];
     let containerPort = defaults.port + 1000; // Start from port + 1000 to avoid conflicts
     while (usedPorts.includes(containerPort)) {
@@ -285,61 +293,32 @@ export const databaseService = {
     });
 
     try {
-      const defaults = DATABASE_DEFAULTS[type];
       const containerName = `pushify-db-${databaseName}`;
-      const dataDir = `/opt/pushify/databases/${databaseName}`;
 
-      // Create data directory
+      // A database deleted earlier under the same name left its data directory behind; the image
+      // would reuse it with the OLD credentials and the new ones would never work. Keep it aside.
+      const dataDir = databaseDataDir(databaseName);
+      await ssh.exec(
+        `if [ -d ${dataDir} ] && [ -n "$(ls -A ${dataDir} 2>/dev/null)" ]; then mkdir -p /opt/pushify/databases/.old && mv ${dataDir} /opt/pushify/databases/.old/${databaseName}-$(date +%s); fi`
+      );
       await ssh.exec(`mkdir -p ${dataDir}`);
+      await ssh.exec(`docker network create ${DATABASE_NETWORK} 2>/dev/null || true`);
 
-      // Build docker run command based on database type
-      let dockerCmd = '';
-      switch (type) {
-        case 'postgresql':
-          dockerCmd = `docker run -d --name ${containerName} \
-            -p 127.0.0.1:${containerPort}:5432 \
-            -e POSTGRES_USER=${username} \
-            -e POSTGRES_PASSWORD=${password} \
-            -e POSTGRES_DB=${databaseName} \
-            -v ${dataDir}:/var/lib/postgresql/data \
-            --restart unless-stopped \
-            ${defaults.image}:${version}`;
-          break;
-
-        case 'mysql':
-          dockerCmd = `docker run -d --name ${containerName} \
-            -p 127.0.0.1:${containerPort}:3306 \
-            -e MYSQL_ROOT_PASSWORD=${password} \
-            -e MYSQL_USER=${username} \
-            -e MYSQL_PASSWORD=${password} \
-            -e MYSQL_DATABASE=${databaseName} \
-            -v ${dataDir}:/var/lib/mysql \
-            --restart unless-stopped \
-            ${defaults.image}:${version}`;
-          break;
-
-        case 'redis':
-          dockerCmd = `docker run -d --name ${containerName} \
-            -p 127.0.0.1:${containerPort}:6379 \
-            -v ${dataDir}:/data \
-            --restart unless-stopped \
-            ${defaults.image}:${version} redis-server --requirepass ${password}`;
-          break;
-
-        case 'mongodb':
-          dockerCmd = `docker run -d --name ${containerName} \
-            -p 127.0.0.1:${containerPort}:27017 \
-            -e MONGO_INITDB_ROOT_USERNAME=${username} \
-            -e MONGO_INITDB_ROOT_PASSWORD=${password} \
-            -e MONGO_INITDB_DATABASE=${databaseName} \
-            -v ${dataDir}:/data/db \
-            --restart unless-stopped \
-            ${defaults.image}:${version}`;
-          break;
+      const runResult = await ssh.exec(
+        buildDatabaseRunCommand({
+          type,
+          version,
+          containerName,
+          hostPort: containerPort,
+          externalAccess: false,
+          databaseName,
+          username,
+          password,
+        })
+      );
+      if (runResult.code !== 0) {
+        throw new Error(`Could not start the database container: ${(runResult.stderr || runResult.stdout).trim().slice(0, 300)}`);
       }
-
-      // Run the container
-      await ssh.exec(dockerCmd);
 
       // Wait for container to be healthy
       await new Promise((resolve) => setTimeout(resolve, 5000));
@@ -496,6 +475,12 @@ export const databaseService = {
       throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });
     }
 
+    // Becomes a variable name in the app container at deploy.
+    const envVarError = input.envVarName ? validateEnvVarName(input.envVarName) : null;
+    if (envVarError) {
+      throw new HTTPException(400, { message: envVarError });
+    }
+
     // Check if connection already exists
     const exists = await databaseRepository.connectionExists(databaseId, input.projectId);
     if (exists) {
@@ -631,62 +616,26 @@ export const databaseService = {
     try {
       const containerName = database.containerName!;
       const containerPort = database.containerPort!;
-      const defaults = DATABASE_DEFAULTS[database.type];
-      const dataDir = `/opt/pushify/databases/${database.databaseName}`;
       const password = decrypt(database.password);
-      const bindAddress = externalAccess ? '0.0.0.0' : '127.0.0.1';
 
       // Stop and remove existing container
       await ssh.exec(`docker stop ${containerName} || true`);
       await ssh.exec(`docker rm ${containerName} || true`);
 
-      // Recreate with new port binding
-      let dockerCmd = '';
-      switch (database.type) {
-        case 'postgresql':
-          dockerCmd = `docker run -d --name ${containerName} \
-            -p ${bindAddress}:${containerPort}:5432 \
-            -e POSTGRES_USER=${database.username} \
-            -e POSTGRES_PASSWORD=${password} \
-            -e POSTGRES_DB=${database.databaseName} \
-            -v ${dataDir}:/var/lib/postgresql/data \
-            --restart unless-stopped \
-            ${defaults.image}:${database.version}`;
-          break;
-
-        case 'mysql':
-          dockerCmd = `docker run -d --name ${containerName} \
-            -p ${bindAddress}:${containerPort}:3306 \
-            -e MYSQL_ROOT_PASSWORD=${password} \
-            -e MYSQL_USER=${database.username} \
-            -e MYSQL_PASSWORD=${password} \
-            -e MYSQL_DATABASE=${database.databaseName} \
-            -v ${dataDir}:/var/lib/mysql \
-            --restart unless-stopped \
-            ${defaults.image}:${database.version}`;
-          break;
-
-        case 'redis':
-          dockerCmd = `docker run -d --name ${containerName} \
-            -p ${bindAddress}:${containerPort}:6379 \
-            -v ${dataDir}:/data \
-            --restart unless-stopped \
-            ${defaults.image}:${database.version} redis-server --requirepass ${password}`;
-          break;
-
-        case 'mongodb':
-          dockerCmd = `docker run -d --name ${containerName} \
-            -p ${bindAddress}:${containerPort}:27017 \
-            -e MONGO_INITDB_ROOT_USERNAME=${database.username} \
-            -e MONGO_INITDB_ROOT_PASSWORD=${password} \
-            -e MONGO_INITDB_DATABASE=${database.databaseName} \
-            -v ${dataDir}:/data/db \
-            --restart unless-stopped \
-            ${defaults.image}:${database.version}`;
-          break;
-      }
-
-      await ssh.exec(dockerCmd);
+      // Recreate with the new port binding (same data directory, same network)
+      await ssh.exec(`docker network create ${DATABASE_NETWORK} 2>/dev/null || true`);
+      await ssh.exec(
+        buildDatabaseRunCommand({
+          type: database.type,
+          version: database.version,
+          containerName,
+          hostPort: containerPort,
+          externalAccess,
+          databaseName: database.databaseName,
+          username: database.username,
+          password,
+        })
+      );
 
       // Wait for container to start
       await new Promise((resolve) => setTimeout(resolve, 5000));
@@ -830,7 +779,7 @@ export const databaseService = {
       throw new HTTPException(400, { message: t(locale, 'databases', 'mustBeRunning') });
     }
 
-    if (!database.serverId) {
+    if (!database.serverId || !database.containerName || !database.containerPort) {
       throw new HTTPException(400, { message: t(locale, 'databases', 'invalidContainer') });
     }
 
@@ -854,26 +803,58 @@ export const databaseService = {
     });
 
     try {
-      const containerName = database.containerName;
+      const containerName = database.containerName!;
+      const oldPassword = decrypt(database.password);
+      const user = database.username;
 
+      let result: { code: number; stdout: string; stderr: string };
       switch (database.type) {
         case 'postgresql':
-          await ssh.exec(`docker exec ${containerName} psql -U ${database.username} -c "ALTER USER ${database.username} PASSWORD '${newPassword}';"`);
+          // -d: psql otherwise connects to a database named after the user, which doesn't exist.
+          result = await ssh.exec(
+            `docker exec ${containerName} psql -v ON_ERROR_STOP=1 -U ${user} -d ${database.databaseName} -c "ALTER USER \\"${user}\\" PASSWORD '${newPassword}';"`
+          );
           break;
 
-        case 'mysql': {
-          const oldPassword = decrypt(database.password);
-          await ssh.exec(`docker exec ${containerName} mysql -u root -p'${oldPassword}' -e "ALTER USER '${database.username}'@'%' IDENTIFIED BY '${newPassword}'; FLUSH PRIVILEGES;"`);
+        case 'mysql':
+          // root was created with the same password; keep them in step so later admin calls work.
+          result = await ssh.exec(
+            `docker exec -e MYSQL_PWD='${oldPassword}' ${containerName} mysql -u root -e "ALTER USER '${user}'@'%' IDENTIFIED BY '${newPassword}'; ALTER USER 'root'@'%' IDENTIFIED BY '${newPassword}'; ALTER USER 'root'@'localhost' IDENTIFIED BY '${newPassword}'; FLUSH PRIVILEGES;"`
+          );
           break;
-        }
 
         case 'redis':
-          await ssh.exec(`docker exec ${containerName} redis-cli CONFIG SET requirepass "${newPassword}"`);
+          // The password lives on the container's command line (--requirepass): CONFIG SET would be
+          // undone by the next restart. Recreate the container; stopping it saves the dataset first.
+          await ssh.exec(`docker stop ${containerName} 2>/dev/null; docker rm ${containerName} 2>/dev/null; true`);
+          await ssh.exec(`docker network create ${DATABASE_NETWORK} 2>/dev/null || true`);
+          result = await ssh.exec(
+            buildDatabaseRunCommand({
+              type: 'redis',
+              version: database.version,
+              containerName,
+              hostPort: database.containerPort!,
+              externalAccess: database.externalAccess,
+              databaseName: database.databaseName,
+              username: user,
+              password: newPassword,
+            })
+          );
           break;
 
         case 'mongodb':
-          await ssh.exec(`docker exec ${containerName} mongosh admin --eval "db.changeUserPassword('${database.username}', '${newPassword}')"`);
+          result = await ssh.exec(
+            `docker exec ${containerName} mongosh --quiet -u ${user} -p '${oldPassword}' --authenticationDatabase admin admin --eval "db.changeUserPassword('${user}', '${newPassword}')"`
+          );
           break;
+      }
+
+      // Storing a password the database never accepted would lock Pushify (backups, studio) out.
+      if (result.code !== 0) {
+        logger.error({ databaseId, stderr: result.stderr }, 'Database password reset failed');
+        throw new HTTPException(500, {
+          message: `Password could not be changed: ${(result.stderr || result.stdout).trim().slice(0, 200)}`,
+        });
       }
     } finally {
       ssh.disconnect();

@@ -812,6 +812,8 @@ export interface BlueGreenDeployOptions {
   envVars?: Record<string, string>;
   volumes?: string[];
   networkMode?: string;
+  /** Host address the port is published on: 0.0.0.0 (default) or 127.0.0.1 behind nginx only */
+  bindAddress?: string;
   restart?: 'no' | 'always' | 'unless-stopped' | 'on-failure';
   healthCheckPath?: string; // Optional HTTP health check path (e.g., "/health")
   healthCheckTimeout?: number; // Timeout in seconds (default: 60)
@@ -846,6 +848,7 @@ export async function blueGreenDeploy(
     envVars,
     volumes,
     networkMode,
+    bindAddress = '0.0.0.0',
     restart = 'unless-stopped',
     healthCheckPath,
     healthCheckTimeout = 60,
@@ -920,7 +923,7 @@ export async function blueGreenDeploy(
   runCmd += APP_CONTAINER_HARDENING;
 
   // Port mapping - use temporary port initially
-  runCmd += ` -p 0.0.0.0:${tempPort}:${containerPort}`;
+  runCmd += ` -p ${bindAddress}:${tempPort}:${containerPort}`;
 
   // Environment variables — single-quote NAME=value to block shell expansion/injection.
   if (envVars) {

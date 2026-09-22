@@ -11,6 +11,9 @@ import { addAutoSubdomainSite, reloadNginx } from './nginx-manager';
 import { shSingleQuote } from './shell';
 import { syncProjectSites, describeSyncedDomains } from '../lib/project-sites';
 import { isSharedRunnerServer } from '../lib/runner-routing';
+import { DATABASE_NETWORK } from '../lib/managed-database';
+import { applyRunnerIsolationCommand, RUNNER_APP_NETWORK } from '../lib/runner-isolation';
+import { logger } from '../lib/logger';
 import {
   applyCalcomEnvDefaults,
   buildComposeEnvOverride,
@@ -245,30 +248,46 @@ async function configureProjectDomains(
 }
 
 /**
- * Put the deployed app and any Pushify-managed databases on a shared `pushify` Docker
- * network so the app can reach its database by container name (e.g. `pushify-db-myapp`)
- * — no host-IP guessing, no public exposure required. Only acts when the server actually
- * has Pushify databases (a user's own server); on the shared host there are none, so apps
- * are never needlessly co-networked. Best-effort: never fails a deploy over network wiring.
+ * The Docker network the app should run on so it reaches Pushify databases by container name
+ * (`pushify-db-<name>`), or undefined when there is nothing to reach. Never on the shared
+ * runner: one network there would put every customer's containers next to each other.
+ * Existing database containers (created before they started on this network) are joined here.
  */
-async function connectAppToDatabaseNetwork(
+async function prepareDatabaseNetwork(
   ssh: SSHClient,
-  appContainerName: string,
+  serverId: string,
   onProgress: (msg: string) => void,
-): Promise<void> {
+): Promise<string | undefined> {
+  if (isSharedRunnerServer(serverId)) return undefined;
   try {
     const dbList = await ssh.exec(`docker ps -a --format '{{.Names}}' | grep '^pushify-db-' || true`);
     const dbs = (dbList.stdout || '').trim().split('\n').map((s) => s.trim()).filter(Boolean);
-    if (dbs.length === 0) return; // no Pushify databases on this host → nothing to wire
+    if (dbs.length === 0) return undefined;
 
-    await ssh.exec(`docker network create pushify 2>/dev/null || true`);
+    await ssh.exec(`docker network create ${DATABASE_NETWORK} 2>/dev/null || true`);
     for (const db of dbs) {
-      await ssh.exec(`docker network connect pushify ${db} 2>/dev/null || true`);
+      await ssh.exec(`docker network connect ${DATABASE_NETWORK} ${shSingleQuote(db)} 2>/dev/null || true`);
     }
-    await ssh.exec(`docker network connect pushify ${appContainerName} 2>/dev/null || true`);
-    onProgress(`🔗 Joined shared 'pushify' network — databases reachable by name (e.g. ${dbs[0]})`);
+    onProgress(`🔗 Running on the '${DATABASE_NETWORK}' network — databases reachable by name (e.g. ${dbs[0]})`);
+    return DATABASE_NETWORK;
   } catch {
     // best-effort — never break a deploy over network wiring
+    return undefined;
+  }
+}
+
+/**
+ * Shared runner only: (re)apply the firewall rules that keep customers' containers away from each
+ * other, from the host and from private networks (lib/runner-isolation.ts). Runs on every deploy,
+ * so a rebooted or rebuilt runner is covered by its next deploy even without the boot unit.
+ */
+async function applyRunnerIsolation(ssh: SSHClient, onProgress: (msg: string) => void): Promise<void> {
+  const result = await ssh.exec(applyRunnerIsolationCommand());
+  if (result.stdout.includes('PUSHIFY_ISOLATION_OK')) {
+    onProgress('🛡️ Shared-runner network isolation in place');
+  } else {
+    onProgress(`⚠️ Could not apply shared-runner network isolation: ${(result.stderr || result.stdout).trim().slice(0, 300)}`);
+    logger.warn({ stdout: result.stdout, stderr: result.stderr }, 'Shared-runner network isolation failed');
   }
 }
 
@@ -413,6 +432,11 @@ export async function deployToRemoteServer(
       throw new Error(`Docker is not available on server: ${dockerStatus.error}`);
     }
     onProgress(`✅ Docker ${dockerStatus.version} is available`);
+
+    // One host for many customers: apps are published on loopback only (nginx is the way in)
+    // and the isolation rules are re-applied before anything of this deploy runs.
+    const sharedHost = isSharedRunnerServer(serverId);
+    if (sharedHost) await applyRunnerIsolation(ssh, onProgress);
 
     // Create project directory
     const projectDir = `/opt/pushify/apps/${projectSlug}`;
@@ -578,7 +602,7 @@ export async function deployToRemoteServer(
       }
 
       // Open firewall port (best-effort; ufw / firewalld / iptables, root-first for BYOS)
-      await openFirewallPort(ssh, publicHostPort, onProgress);
+      if (!sharedHost) await openFirewallPort(ssh, publicHostPort, onProgress);
 
       // Start the stack (--env-file required for ${VAR} substitution in compose YAML)
       onProgress(`🚀 Starting stack...`);
@@ -868,8 +892,12 @@ export async function deployToRemoteServer(
 
       // Run container
       const cmdOverride = dockerCommand ? ` ${dockerCommand}` : '';
-      const networkFlag = requiresDb ? `--network ${networkName}` : '';
-      const runCmd = `docker run -d --name ${containerName} --restart unless-stopped${APP_CONTAINER_HARDENING} ${networkFlag} -p ${hostPort}:${containerPort} ${envFlags} ${volFlags} ${imageName}:latest${cmdOverride}`;
+      const networkFlag = requiresDb
+        ? `--network ${networkName}`
+        : sharedHost
+          ? `--network ${RUNNER_APP_NETWORK}`
+          : '';
+      const runCmd = `docker run -d --name ${containerName} --restart unless-stopped${APP_CONTAINER_HARDENING} ${networkFlag} -p ${sharedHost ? '127.0.0.1:' : ''}${hostPort}:${containerPort} ${envFlags} ${volFlags} ${imageName}:latest${cmdOverride}`;
 
       onProgress(`🚀 Starting container: ${containerName}`);
       const runResult = await ssh.exec(runCmd);
@@ -878,8 +906,11 @@ export async function deployToRemoteServer(
       }
       onProgress('✅ Container started');
 
-      // Wire the app to the shared `pushify` network so it can reach databases by name.
-      await connectAppToDatabaseNetwork(ssh, containerName, onProgress);
+      // Also join the Pushify database network (the app keeps its own network for its bundled db).
+      const databaseNetwork = await prepareDatabaseNetwork(ssh, serverId, onProgress);
+      if (databaseNetwork) {
+        await ssh.exec(`docker network connect ${databaseNetwork} ${containerName} 2>/dev/null || true`);
+      }
 
       // ── Post-deploy shell command (e.g. create initial admin user) ──
       const postDeployShell = (config.marketplace as any).postDeployShell as string | undefined;
@@ -1118,6 +1149,9 @@ export async function deployToRemoteServer(
     onProgress('🔵🟢 Starting blue-green deployment...');
     const previousHostPort = hostPort;
     const switchPort = await pickSwitchPort(ssh, hostPort);
+    // Started on its network, not joined to it afterwards: an app that connects (or migrates)
+    // at boot would otherwise race the join. On a runner that is the isolated apps network.
+    const appNetwork = sharedHost ? RUNNER_APP_NETWORK : await prepareDatabaseNetwork(ssh, serverId, onProgress);
 
     const blueGreenResult = await blueGreenDeploy(ssh, {
       imageName: `${imageName}:${imageTag}`,
@@ -1127,6 +1161,8 @@ export async function deployToRemoteServer(
       containerPort,
       envVars,
       volumes: config.volumes,
+      networkMode: appNetwork,
+      bindAddress: sharedHost ? '127.0.0.1' : undefined,
       restart: 'unless-stopped',
       healthCheckTimeout: 60, // 60 seconds to become healthy
       framework: resolvedFramework,
@@ -1154,11 +1190,9 @@ export async function deployToRemoteServer(
     }
     onProgress(`✅ New container healthy on port ${hostPort}`);
 
-    // Open firewall port for external access (root-first; works on BYOS without sudo/ufw)
-    await openFirewallPort(ssh, hostPort, onProgress);
-
-    // Wire the app to the shared `pushify` network so it can reach databases by name.
-    await connectAppToDatabaseNetwork(ssh, `pushify-${deploySlug}`, onProgress);
+    // Open firewall port for external access (root-first; works on BYOS without sudo/ufw).
+    // Not on the shared runner: the port is on loopback there, reachable through nginx only.
+    if (!sharedHost) await openFirewallPort(ssh, hostPort, onProgress);
 
     // Worker processes run from the same image — production deploys only, never previews.
     if (!deploySuffix) {
@@ -1168,6 +1202,7 @@ export async function deployToRemoteServer(
         imageRef: `${imageName}:${imageTag}`,
         envVars,
         volumes: config.volumes,
+        networkMode: appNetwork,
         framework: resolvedFramework,
         buildpackId: resolvedBuildpackId,
         onProgress,
@@ -1394,6 +1429,8 @@ export async function quickRollbackToDeployment(
     if (!dockerStatus.available) {
       throw new Error(`Docker is not available on server: ${dockerStatus.error}`);
     }
+    const sharedHost = isSharedRunnerServer(serverId);
+    if (sharedHost) await applyRunnerIsolation(ssh, onProgress);
 
     const imageName = `pushify-${projectSlug}`;
     const deploymentTag = `deploy-${targetDeploymentId.substring(0, 8)}`;
@@ -1433,6 +1470,7 @@ export async function quickRollbackToDeployment(
     onProgress(`🔵🟢 Rolling back to ${fullImageName} (blue-green)...`);
     const previousHostPort = hostPort;
     const switchPort = await pickSwitchPort(ssh, hostPort);
+    const appNetwork = sharedHost ? RUNNER_APP_NETWORK : await prepareDatabaseNetwork(ssh, serverId, onProgress);
     const blueGreenResult = await blueGreenDeploy(ssh, {
       imageName: fullImageName,
       containerName: `pushify-${projectSlug}`,
@@ -1441,6 +1479,8 @@ export async function quickRollbackToDeployment(
       containerPort,
       envVars,
       volumes: config.volumes,
+      networkMode: appNetwork,
+      bindAddress: sharedHost ? '127.0.0.1' : undefined,
       restart: 'unless-stopped',
       healthCheckTimeout: 60,
       onProgress,
@@ -1451,10 +1491,7 @@ export async function quickRollbackToDeployment(
     hostPort = blueGreenResult.tempPort ?? switchPort;
     await recordPortAssignment(ssh, projectSlug, hostPort);
     onProgress(`✅ Rollback container healthy on port ${hostPort}`);
-    await openFirewallPort(ssh, hostPort, onProgress);
-
-    // Wire the app to the shared `pushify` network so it can reach databases by name.
-    await connectAppToDatabaseNetwork(ssh, `pushify-${projectSlug}`, onProgress);
+    if (!sharedHost) await openFirewallPort(ssh, hostPort, onProgress);
 
     // Restart worker processes from the rollback image so app + workers stay in sync
     await syncWorkerContainersOnDeploy(ssh, {
@@ -1463,6 +1500,7 @@ export async function quickRollbackToDeployment(
       imageRef: fullImageName,
       envVars,
       volumes: config.volumes,
+      networkMode: appNetwork,
       onProgress,
     });
 

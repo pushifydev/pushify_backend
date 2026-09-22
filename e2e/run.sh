@@ -7,6 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 docker build -q -t pushify-e2e e2e >/dev/null
 exec docker run --rm --privileged \
+  -e PUSHIFY_E2E_DB_ENGINES \
   -v "$PWD":/work:ro \
   -v pushify-e2e-node-modules:/app/node_modules \
   -v pushify-e2e-docker:/var/lib/docker \
