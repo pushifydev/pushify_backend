@@ -1,4 +1,4 @@
-import { eq, and, desc, ilike, lt } from 'drizzle-orm';
+import { eq, and, desc, gte, ilike, inArray, lte, lt } from 'drizzle-orm';
 import { db } from '../db';
 import { containerLogs } from '../db/schema/container-logs';
 import { deployments } from '../db/schema/deployments';
@@ -11,10 +11,12 @@ import { createLogMasker, type LogMasker } from '../lib/log-masking';
 import { logger } from '../lib/logger';
 import { getContainerLogs as getRemoteContainerLogs, isContainerRunning as isRemoteContainerRunning } from './remote-docker';
 import { getContainerLogs as getLocalContainerLogs, isContainerRunning as isLocalContainerRunning } from './docker';
+import { execCommand } from './shell';
 
 const COLLECTION_INTERVAL = 60000; // 1 minute
 const MAX_LINES_PER_CHUNK = 1000;
-const LOG_RETENTION_DAYS = 7;
+/** Only for logs whose organization is gone; per-plan retention does the rest. */
+const LOG_RETENTION_BACKSTOP_DAYS = 120;
 const CLEANUP_INTERVAL = 60 * 60 * 1000; // prune once an hour, not every collection cycle
 let lastCleanupAt = 0;
 
@@ -63,9 +65,10 @@ async function collectLogs(): Promise<void> {
 }
 
 /**
- * Collect logs from all running deployments
+ * Collect logs from all running deployments. Exported so one cycle can be run on demand
+ * (the e2e does this instead of waiting for the interval).
  */
-async function collectAllDeploymentLogs(): Promise<void> {
+export async function collectAllDeploymentLogs(): Promise<void> {
   // Get all running deployments
   const runningDeployments = await db
     .select({
@@ -91,116 +94,142 @@ async function collectAllDeploymentLogs(): Promise<void> {
 }
 
 /**
- * Collect logs for a single deployment
+ * Collect logs for a single deployment — from every container the project runs: the app, its
+ * replicas, its workers and its staging copy. Only the first container's logs used to be
+ * collected, so a replica's or a worker's output was simply lost.
  */
 async function collectDeploymentLogs(
   deployment: typeof deployments.$inferSelect,
   project: typeof projects.$inferSelect,
   server: typeof servers.$inferSelect | null
 ): Promise<void> {
-  // Determine container name based on blue-green deployment
-  const baseContainerName = `pushify-${project.slug}`;
+  // A stopped/errored server can't answer SSH — skip instead of burning a
+  // handshake timeout and logging an error on every collection tick.
+  if (server && server.status !== 'running') return;
 
-  // Get the last chunk index for this deployment
   const lastChunk = await db
     .select({ chunkIndex: containerLogs.chunkIndex })
     .from(containerLogs)
     .where(eq(containerLogs.deploymentId, deployment.id))
     .orderBy(desc(containerLogs.chunkIndex))
     .limit(1);
+  let chunkIndex = lastChunk.length > 0 ? lastChunk[0].chunkIndex + 1 : 0;
 
-  const nextChunkIndex = lastChunk.length > 0 ? lastChunk[0].chunkIndex + 1 : 0;
+  const collected: Array<{ containerName: string; logs: string }> = [];
+  const remote = !!(server && server.ipv4 && server.sshPrivateKey);
+  let ssh: SSHClient | null = null;
 
-  let logs: string | null = null;
-
-  // A stopped/errored server can't answer SSH — skip instead of burning a
-  // handshake timeout and logging an error on every collection tick.
-  if (server && server.status !== 'running') return;
-
-  if (server && server.ipv4 && server.sshPrivateKey) {
-    // Remote deployment
-    let ssh: SSHClient | null = null;
-    try {
+  try {
+    if (remote) {
       ssh = await getSSHConnection({
-        host: server.ipv4,
+        host: server!.ipv4!,
         port: 22,
         username: 'root',
-        privateKey: decrypt(server.sshPrivateKey),
+        privateKey: decrypt(server!.sshPrivateKey!),
       });
+    }
 
-      // Try blue and green containers
-      for (const suffix of ['-blue', '-green', '']) {
-        const containerName = `${baseContainerName}${suffix}`;
-        const running = await isRemoteContainerRunning(ssh, containerName);
-        if (running) {
-          // Get logs since last collection (using --since to avoid duplicates)
-          logs = await getRemoteContainerLogs(ssh, containerName, {
-            tail: MAX_LINES_PER_CHUNK,
-            since: '1m', // Logs from last 1 minute
-          });
-          break;
-        }
-      }
-    } finally {
-      if (ssh) {
-        ssh.disconnect();
-      }
+    for (const containerName of await projectContainers(ssh, project.slug)) {
+      const running = ssh
+        ? await isRemoteContainerRunning(ssh, containerName)
+        : await isLocalContainerRunning(containerName);
+      if (!running) continue;
+      const logs = ssh
+        ? await getRemoteContainerLogs(ssh, containerName, { tail: MAX_LINES_PER_CHUNK, since: '1m' })
+        : await getLocalContainerLogs(containerName, { tail: MAX_LINES_PER_CHUNK, since: '1m' });
+      if (logs && logs.trim().length > 0) collected.push({ containerName, logs });
     }
-  } else {
-    // Local deployment
-    for (const suffix of ['-blue', '-green', '']) {
-      const containerName = `${baseContainerName}${suffix}`;
-      const running = await isLocalContainerRunning(containerName);
-      if (running) {
-        logs = await getLocalContainerLogs(containerName, {
-          tail: MAX_LINES_PER_CHUNK,
-          since: '1m',
-        });
-        break;
-      }
-    }
+  } finally {
+    if (ssh) ssh.disconnect();
   }
 
-  // Store logs if we got any
-  if (logs && logs.trim().length > 0) {
-    // Apps routinely print env values — mask the project's secrets before persisting.
-    const masker = await getProjectLogMasker(project.id);
-    logs = masker.mask(logs);
-    const lineCount = logs.split('\n').filter(line => line.trim()).length;
+  if (collected.length === 0) return;
 
+  // Apps routinely print env values — mask the project's secrets before persisting.
+  const masker = await getProjectLogMasker(project.id);
+  for (const entry of collected) {
+    const content = masker.mask(entry.logs);
+    const lineCount = content.split('\n').filter((line) => line.trim()).length;
     await db.insert(containerLogs).values({
       deploymentId: deployment.id,
       projectId: project.id,
-      logContent: logs,
+      logContent: content,
       logType: 'stdout',
+      containerName: entry.containerName,
       lineCount,
-      chunkIndex: nextChunkIndex,
+      chunkIndex: chunkIndex++,
       startTimestamp: new Date(Date.now() - 60000), // 1 minute ago
       endTimestamp: new Date(),
     });
-
-    logger.debug(
-      { deploymentId: deployment.id, lineCount, chunkIndex: nextChunkIndex },
-      'Collected container logs'
-    );
   }
+
+  logger.debug(
+    { deploymentId: deployment.id, containers: collected.map((entry) => entry.containerName) },
+    'Collected container logs'
+  );
 }
 
 /**
- * Clean up old logs based on retention policy
+ * The project's containers on that host: the app in whichever blue/green slot it holds, its
+ * replicas (`-blue-2`, …), its workers (`-worker-<name>`) and its staging copy.
+ */
+export async function projectContainers(ssh: SSHClient | null, slug: string): Promise<string[]> {
+  const command = `docker ps --format '{{.Names}}' 2>/dev/null | grep -E '^pushify-${slug}(-|$)' || true`;
+  const output = ssh ? (await ssh.exec(command)).stdout : (await execCommand(command)).stdout;
+  const names: string[] = output
+    .split('\n')
+    .map((name) => name.trim())
+    .filter(Boolean)
+    // `pushify-app` must not pick up `pushify-app-2`'s containers, and never a database
+    .filter((name) => name === `pushify-${slug}` || name.startsWith(`pushify-${slug}-`))
+    .filter((name) => !name.startsWith('pushify-db-'));
+  return names.length > 0 ? names : [`pushify-${slug}`];
+}
+
+/**
+ * Drop logs past each organization's retention (lib/plans.ts `logRetentionDays`): the free tier
+ * keeps a few days, paid plans keep more. Anything whose project or organization has gone is
+ * cleaned up by the longest retention as a backstop.
  */
 async function cleanupOldLogs(): Promise<void> {
-  const cutoffDate = new Date();
-  cutoffDate.setDate(cutoffDate.getDate() - LOG_RETENTION_DAYS);
+  const { getEffectivePlanLimits } = await import('../lib/effective-plan-limits');
+  const { organizations } = await import('../db/schema/organizations');
 
-  // An empty and() is undefined, and .where(undefined) is no WHERE at all — this used to wipe
-  // the whole table every minute, which is why deployment log history was always empty.
-  const deleted = await db
+  const orgs = await db
+    .select({ id: organizations.id, plan: organizations.plan, grandfatheredUntil: organizations.grandfatheredUntil, overrides: organizations.planLimitsOverride })
+    .from(organizations);
+
+  let deleted = 0;
+  for (const org of orgs) {
+    const limits = getEffectivePlanLimits({
+      plan: org.plan ?? 'free',
+      grandfatheredUntil: org.grandfatheredUntil,
+      planLimitsOverride: org.overrides as Partial<Record<string, number | boolean>> | null,
+    });
+    const cutoff = new Date(Date.now() - Math.max(1, limits.logRetentionDays) * 24 * 60 * 60 * 1000);
+    const rows = await db
+      .delete(containerLogs)
+      .where(
+        and(
+          lt(containerLogs.createdAt, cutoff),
+          inArray(
+            containerLogs.projectId,
+            db.select({ id: projects.id }).from(projects).where(eq(projects.organizationId, org.id))
+          )
+        )
+      )
+      .returning({ id: containerLogs.id });
+    deleted += rows.length;
+  }
+
+  // Backstop for logs whose organization no longer exists
+  const backstop = new Date(Date.now() - LOG_RETENTION_BACKSTOP_DAYS * 24 * 60 * 60 * 1000);
+  const orphans = await db
     .delete(containerLogs)
-    .where(lt(containerLogs.createdAt, cutoffDate))
+    .where(lt(containerLogs.createdAt, backstop))
     .returning({ id: containerLogs.id });
 
-  logger.debug({ deleted: deleted.length, cutoffDate }, 'Log cleanup cycle completed');
+  logger.debug({ deleted: deleted + orphans.length }, 'Log cleanup cycle completed');
 }
 
 /**
@@ -264,6 +293,10 @@ export async function searchProjectLogs(
   options: {
     query?: string;
     logType?: 'stdout' | 'stderr';
+    /** One container of the project: the app, a replica, a worker, staging */
+    containerName?: string;
+    from?: Date;
+    to?: Date;
     maxLines?: number;
   }
 ): Promise<{
@@ -272,14 +305,18 @@ export async function searchProjectLogs(
     timestamp: Date;
     logType: string;
     deploymentId: string;
+    containerName: string | null;
   }>;
   scannedChunks: number;
 }> {
-  const { query, logType, maxLines = 500 } = options;
+  const { query, logType, containerName, from, to, maxLines = 500 } = options;
   const MAX_CHUNKS = 100;
 
   const conditions = [eq(containerLogs.projectId, projectId)];
   if (logType) conditions.push(eq(containerLogs.logType, logType));
+  if (containerName) conditions.push(eq(containerLogs.containerName, containerName));
+  if (from) conditions.push(gte(containerLogs.createdAt, from));
+  if (to) conditions.push(lte(containerLogs.createdAt, to));
   if (query?.trim()) {
     // Escape LIKE wildcards so user input is a literal substring match
     const escaped = query.trim().replace(/[\\%_]/g, (ch) => `\\${ch}`);
@@ -292,6 +329,7 @@ export async function searchProjectLogs(
       logType: containerLogs.logType,
       startTimestamp: containerLogs.startTimestamp,
       deploymentId: containerLogs.deploymentId,
+      containerName: containerLogs.containerName,
     })
     .from(containerLogs)
     .where(and(...conditions))
@@ -299,7 +337,7 @@ export async function searchProjectLogs(
     .limit(MAX_CHUNKS);
 
   const needle = query?.trim().toLowerCase();
-  const lines: Array<{ content: string; timestamp: Date; logType: string; deploymentId: string }> = [];
+  const lines: Array<{ content: string; timestamp: Date; logType: string; deploymentId: string; containerName: string | null }> = [];
 
   for (const chunk of chunks) {
     if (lines.length >= maxLines) break;
@@ -311,12 +349,28 @@ export async function searchProjectLogs(
         timestamp: chunk.startTimestamp || new Date(),
         logType: chunk.logType,
         deploymentId: chunk.deploymentId,
+        containerName: chunk.containerName,
       });
       if (lines.length >= maxLines) break;
     }
   }
 
   return { lines, scannedChunks: chunks.length };
+}
+
+/**
+ * The containers this project has logs for — app, replicas, staging, workers — so the logs
+ * explorer can offer them as a filter instead of mixing every container into one stream.
+ */
+export async function projectLogContainers(projectId: string): Promise<string[]> {
+  const rows = await db
+    .selectDistinct({ containerName: containerLogs.containerName })
+    .from(containerLogs)
+    .where(eq(containerLogs.projectId, projectId));
+  return rows
+    .map((row) => row.containerName)
+    .filter((name): name is string => !!name)
+    .sort();
 }
 
 /**

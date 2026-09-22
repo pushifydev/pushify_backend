@@ -302,7 +302,10 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
       const server = (version: string) =>
         [
           "const http = require('http');",
-          `http.createServer((req, res) => res.end('E2E-NODE ${version}')).listen(process.env.PORT || 3000);`,
+          'http.createServer((req, res) => {',
+          "  console.log('request ' + req.url);",
+          `  res.end('E2E-NODE ${version}');`,
+          '}).listen(process.env.PORT || 3000);',
           '',
         ].join('\n');
       const repo = await fixtureRepo({
@@ -348,6 +351,28 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
       const upState = await db.query.projectHealthState.findFirst({ where: (h, { eq }) => eq(h.projectId, project.id) });
       expect(upState?.status).toBe('up');
       expect(upState?.downSince).toBeNull();
+
+      // Logs: one collection cycle stores the app's output, searchable by term and time
+      const { collectAllDeploymentLogs, searchProjectLogs, projectLogContainers } = await import('../workers/log-collector');
+      request(`https://${domain}/log-probe-${run}`);
+      const logProbe = await waitFor(
+        'the request to show up in the stored logs',
+        async () => {
+          await collectAllDeploymentLogs();
+          const found = await searchProjectLogs(project.id, { query: `log-probe-${run}`, from: new Date(Date.now() - 600_000) });
+          return found.lines.length > 0 ? found : undefined;
+        },
+        120_000
+      );
+      // Every line is tagged with the container it came from — that is what the filter uses
+      expect(logProbe.lines[0].containerName).toMatch(new RegExp(`^pushify-${project.slug}`));
+      expect(await projectLogContainers(project.id)).toContain(logProbe.lines[0].containerName);
+      // A window that ends before the deploy holds nothing
+      const beforeDeploy = await searchProjectLogs(project.id, {
+        query: `log-probe-${run}`,
+        to: new Date(Date.now() - 24 * 3600_000),
+      });
+      expect(beforeDeploy.lines).toHaveLength(0);
 
       // Blue-green retired the old slot: one app container left
       const running = execSync(`docker ps --filter name=pushify-${project.slug} --format '{{.Names}}'`, { encoding: 'utf8' })
