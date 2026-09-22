@@ -38,6 +38,17 @@ export const projects = pgTable('projects', {
    */
   dockerImage: varchar('docker_image', { length: 400 }),
 
+  /**
+   * Deploy the repository as a Docker Compose stack instead of building it: the path of the
+   * compose file, relative to the root directory. Opt-in — most repositories carry a compose
+   * file meant for local development, so picking one up on its own would change how an existing
+   * project deploys. `compose_service` names the service nginx serves when several publish a
+   * port, and `compose_port` its container port when it is not the first one listed.
+   */
+  composePath: varchar('compose_path', { length: 255 }),
+  composeService: varchar('compose_service', { length: 100 }),
+  composePort: integer('compose_port'),
+
   // Runtime configuration
   port: integer('port').default(3000),
   autoDeploy: boolean('auto_deploy').default(true).notNull(),

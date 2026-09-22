@@ -39,6 +39,10 @@ const ProjectSchema = z
     dockerfilePath: z.string().nullable(),
     /** Set when the project deploys a ready image instead of building a repository */
     dockerImage: z.string().nullable(),
+    /** Set when the project deploys its repository as a Docker Compose stack */
+    composePath: z.string().nullable(),
+    composeService: z.string().nullable(),
+    composePort: z.number().nullable(),
     port: z.number().nullable(),
     autoDeploy: z.boolean(),
     status: z.enum(['active', 'paused', 'deleted']),
@@ -114,6 +118,9 @@ const UpdateProjectSchema = z
     rootDirectory: z.string().max(255).optional(),
     dockerfilePath: z.string().max(255).optional(),
     dockerImage: z.string().max(400).nullable().optional(),
+    composePath: z.string().max(255).nullable().optional(),
+    composeService: z.string().max(100).nullable().optional(),
+    composePort: z.number().int().min(1).max(65535).nullable().optional(),
     port: z.number().int().min(1).max(65535).optional(),
     replicas: z.number().int().min(1).max(10).optional(),
     autoDeploy: z.boolean().optional(),

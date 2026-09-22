@@ -46,6 +46,7 @@ import { normalizeRootDirectory } from '../lib/normalize-root-directory';
 import { checkServerDiskSpace } from '../lib/server-disk-check';
 import { domainService } from '../services/domain.service';
 import { checkComposeFile, checkVolumes } from '../lib/host-access-guard';
+import { deployComposeFromRepo, findComposeFile } from './compose-deploy';
 import {
   buildLoginCommand,
   buildLogoutCommand,
@@ -100,6 +101,16 @@ export interface RemoteDeploymentConfig {
    * then needs no git repository; each deploy pulls the reference again.
    */
   dockerImage?: string;
+  /**
+   * Deploy the repository as a Docker Compose stack instead of building it: the path of the
+   * compose file, relative to the project's root directory. Opt-in — most repositories carry a
+   * compose file meant for local development.
+   */
+  composePath?: string | null;
+  /** Which service nginx proxies to, when the file publishes more than one */
+  composeService?: string | null;
+  /** The container port of that service, when it is not the first one it publishes */
+  composePort?: number | null;
   // Marketplace fields
   marketplace?: {
     id?: string;
@@ -438,7 +449,7 @@ async function applyRunnerIsolation(ssh: SSHClient, onProgress: (msg: string) =>
 /**
  * Setup Nginx and domain for a deployed project
  */
-async function setupNginxAndDomain(
+export async function setupNginxAndDomain(
   ssh: SSHClient,
   server: typeof servers.$inferSelect,
   projectId: string,
@@ -1179,8 +1190,39 @@ export async function deployToRemoteServer(
 
     }
 
-    // Check if Dockerfile exists
     const workDir = rootDirectory === '.' ? repoDir : path.posix.join(repoDir, rootDirectory);
+
+    // ── The customer's own docker-compose.yml: deploy the repository as a stack ──
+    // Only when the project asks for it. Most repositories carry a compose file for local
+    // development — one that mounts the source and runs a dev server — so picking it up on its
+    // own would quietly change how an existing project deploys.
+    if (!deployImage && config.composePath) {
+      const composeFile = await findComposeFile(ssh, workDir, config.composePath);
+      if (!composeFile) {
+        throw new Error(
+          `Refusing to deploy: no compose file at ${config.composePath} (looked in ${workDir}). Clear the setting to build the repository instead.`
+        );
+      }
+      {
+        return await deployComposeFromRepo(ssh, {
+          server,
+          projectId,
+          projectSlug,
+          deploySlug,
+          projectDir,
+          workDir,
+          composeFile,
+          service: config.composeService ?? null,
+          port: config.composePort ?? null,
+          envVars,
+          sharedHost,
+          dockerConfig,
+          onProgress,
+        });
+      }
+    }
+
+    // Check if Dockerfile exists
     const dockerfileCheckPath = dockerfilePath
       ? path.posix.join(repoDir, dockerfilePath)
       : path.posix.join(workDir, 'Dockerfile');

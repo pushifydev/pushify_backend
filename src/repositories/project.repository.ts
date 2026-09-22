@@ -40,6 +40,10 @@ export type UpdateProjectInput = {
   dockerfilePath?: string;
   /** Deploy a ready image instead of building the repository; null goes back to the repository */
   dockerImage?: string | null;
+  /** Deploy the repository as a compose stack: the compose file's path; null builds it instead */
+  composePath?: string | null;
+  composeService?: string | null;
+  composePort?: number | null;
   port?: number;
   autoDeploy?: boolean;
   serverId?: string | null; // Allow null to clear server assignment

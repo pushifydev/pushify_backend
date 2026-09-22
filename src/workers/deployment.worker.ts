@@ -882,6 +882,10 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         onProgress: onRemoteProgress,
         marketplace: marketplaceConfig,
         dockerImage: deployImage,
+        // Deploy the repository as a compose stack, when the project asks for it
+        composePath: project.composePath,
+        composeService: project.composeService,
+        composePort: project.composePort,
         // The organization's private-registry logins: for a private `FROM` base image and for
         // image projects on a private registry. Empty for everyone who has none.
         registryCredentials: deployRegistries,

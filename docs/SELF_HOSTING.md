@@ -57,6 +57,13 @@ each build and pull the deploy signs in on the server with them, into a director
 afterwards, so a Dockerfile can `FROM` a private base image. The token is write-only: it can be
 replaced but never read back.
 
+A project can also deploy its repository as a **Docker Compose stack**: put the compose file's
+path in project settings → *Docker Compose file*. The stack comes up from the checkout, so
+`build:` contexts work as they do locally. Only the served service is published on the host (nginx
+proxies it); the other services keep talking to each other by name inside the stack, and their own
+`ports:` are not published — a compose file that maps `5432:5432` would otherwise put the database
+on the internet. The field is empty by default and a compose file is never picked up on its own.
+
 A project can also deploy a **ready image** instead of a repository: put the reference in project
 settings → *Docker image* (`ghcr.io/acme/api:1.4`) and every deploy pulls that reference again —
 moving the tag and redeploying ships the new image. Such a project needs a server; the no-server

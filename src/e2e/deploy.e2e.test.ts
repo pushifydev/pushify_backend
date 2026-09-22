@@ -1150,4 +1150,79 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
     },
     900_000
   );
+
+  it(
+    "compose: the project's own stack is served, and its other ports stay off the host",
+    async () => {
+      onTestFailed(() => console.error(serverState()));
+      const domain = `compose-${run}.127.0.0.1.nip.io`;
+      // web talks to api over the stack's network; api also asks for a host port, which must not
+      // be published — that is how a compose file puts its database on the internet.
+      const repo = await fixtureRepo({
+        'docker-compose.yml': [
+          'services:',
+          '  web:',
+          '    build: ./web',
+          '    ports:',
+          '      - "8080:3000"',
+          '    environment:',
+          '      API: http://api:4000',
+          '    depends_on:',
+          '      - api',
+          '  api:',
+          '    build: ./api',
+          '    ports:',
+          '      - "4000:4000"',
+          '',
+        ].join('\n'),
+        'web/Dockerfile': ['FROM node:20-alpine', 'COPY server.js /server.js', 'CMD ["node", "/server.js"]', ''].join('\n'),
+        'web/server.js': [
+          "const http = require('http');",
+          'http.createServer(async (req, res) => {',
+          "  const upstream = await fetch(process.env.API + '/who').then((r) => r.text()).catch((e) => 'ERR ' + e.message);",
+          "  res.end('E2E-COMPOSE web+' + upstream);",
+          '}).listen(3000);',
+          '',
+        ].join('\n'),
+        'api/Dockerfile': ['FROM node:20-alpine', 'COPY server.js /server.js', 'CMD ["node", "/server.js"]', ''].join('\n'),
+        'api/server.js': [
+          "const http = require('http');",
+          "http.createServer((req, res) => res.end('api')).listen(4000);",
+          '',
+        ].join('\n'),
+      });
+
+      const project = await createProject('compose', repo, domain);
+      await db
+        .update(schema.projects)
+        .set({ composePath: 'docker-compose.yml', composeService: 'web' })
+        .where(eqOp(schema.projects.id, project.id));
+
+      await deploy(project.id);
+
+      // Served through nginx, and the two services found each other by name
+      expect(request(`https://${domain}/`).body).toBe('E2E-COMPOSE web+api');
+
+      // Both containers are up, under this project's stack name
+      const containers = execSync(`docker ps --filter name=pushify-${project.slug} --format '{{.Names}}'`, { encoding: 'utf8' })
+        .split('\n')
+        .filter(Boolean);
+      expect(containers.length).toBeGreaterThanOrEqual(2);
+
+      // The api's own "4000:4000" was dropped: nothing of it is published on the host
+      const apiContainer = containers.find((name) => name.includes('-api-'))!;
+      expect(apiContainer, 'the api service should be running').toBeTruthy();
+      const apiPorts = execSync(`docker port ${apiContainer} 2>/dev/null || true`, { encoding: 'utf8' }).trim();
+      expect(apiPorts).toBe('');
+
+      // A second deploy replaces the stack rather than piling a new one beside it
+      await deploy(project.id);
+      expect(request(`https://${domain}/`).body).toBe('E2E-COMPOSE web+api');
+      const afterRedeploy = execSync(`docker ps --filter name=pushify-${project.slug} --format '{{.Names}}'`, { encoding: 'utf8' })
+        .split('\n')
+        .filter(Boolean);
+      expect(afterRedeploy.length).toBe(containers.length);
+    },
+    900_000
+  );
 });
