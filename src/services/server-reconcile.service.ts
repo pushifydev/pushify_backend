@@ -387,7 +387,7 @@ export async function gcOrphanedLocalDeployments(): Promise<{ candidates: number
 
   // Projects that must NOT have a local deployment: moved to a server, or deleted.
   const candidates = await db
-    .select({ slug: projects.slug, settings: projects.settings, status: projects.status })
+    .select({ slug: projects.slug, settings: projects.settings, status: projects.status, composePath: projects.composePath })
     .from(projects)
     .where(or(isNotNull(projects.serverId), eq(projects.status, 'deleted')));
 
@@ -405,7 +405,8 @@ export async function gcOrphanedLocalDeployments(): Promise<{ candidates: number
     result.candidates++;
     try {
       const isCompose =
-        (p.settings as Record<string, unknown> | null)?.deploymentType === 'docker-compose';
+        (p.settings as Record<string, unknown> | null)?.deploymentType === 'docker-compose' ||
+        !!p.composePath;
       // buildRemoteTeardownScript removes containers + images + nginx vhost + project dir.
       await execAsync(buildRemoteTeardownScript(p.slug, !!isCompose)).catch(() => {});
       result.removed++;

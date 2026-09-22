@@ -9,6 +9,17 @@ const healthCheckRouter = new Hono<AppEnv>();
 // All routes require authentication
 healthCheckRouter.use('*', authMiddleware);
 
+// What monitoring last saw (status badge on the project page)
+healthCheckRouter.get('/:projectId/health-status', async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const projectId = c.req.param('projectId');
+
+  const status = await healthCheckService.getStatus(projectId, organizationId, userId, locale);
+  return c.json({ data: status });
+});
+
 // Get health check config for a project
 healthCheckRouter.get('/:projectId/health-check', async (c) => {
   const userId = c.get('userId')!;

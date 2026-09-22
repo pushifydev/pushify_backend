@@ -34,7 +34,11 @@ export function buildRemoteTeardownScript(slug: string, isCompose: boolean): str
   const composeDown = isCompose
     ? [
         `cd ${projectDir} 2>/dev/null && docker compose -p ${base} down -v 2>/dev/null || true`,
+        // A customer's own compose file lives in their checkout, not in the project directory
+        `cd ${projectDir}/repo 2>/dev/null && docker compose -p ${base} down -v --remove-orphans 2>/dev/null || true`,
         `docker rm -f $(docker ps -aq --filter "name=${base}-" 2>/dev/null) 2>/dev/null || true`,
+        // Compose names its own network <project>_default and leaves it behind
+        `docker network rm ${base}_default 2>/dev/null || true`,
       ].join('; ')
     : '';
 
@@ -252,7 +256,8 @@ export async function teardownProjectOnRemoteServer(
   }
 
   const settings = (project.settings || {}) as Record<string, unknown>;
-  const isCompose = settings.deploymentType === 'docker-compose';
+  // A marketplace stack, or a project deploying its own compose file
+  const isCompose = settings.deploymentType === 'docker-compose' || !!project.composePath;
   const script = buildRemoteTeardownScript(project.slug, isCompose);
 
   const ssh = await getSSHConnection({

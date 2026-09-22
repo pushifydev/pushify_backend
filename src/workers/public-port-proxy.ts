@@ -20,15 +20,27 @@ const ENABLED_DIR = '/etc/nginx/sites-enabled';
 const siteName = (slug: string) => `pushify-${slug}.port`;
 const registryKey = (slug: string) => `${slug}:public`;
 
-export function publicPortSiteConfig(slug: string, publicPort: number, containerPort: number): string {
+export function publicPortSiteConfig(slug: string, publicPort: number, containerPorts: number | number[]): string {
+  const ports = Array.isArray(containerPorts) ? containerPorts : [containerPorts];
+  const upstream = ports.length > 1 ? `pushify_${slug.replace(/[^a-zA-Z0-9]/g, '_')}_port` : null;
+  const target = upstream ? `http://${upstream}` : `http://127.0.0.1:${ports[0]}`;
+  const upstreamBlock = upstream
+    ? `upstream ${upstream} {
+    least_conn;
+${ports.map((port) => `    server 127.0.0.1:${port} max_fails=2 fail_timeout=10s;`).join('\n')}
+    keepalive 16;
+}
+
+`
+    : '';
   return `# Pushify: ${slug} on its public port (no domain) — generated, rewritten on every deploy
-server {
+${upstreamBlock}server {
     listen ${publicPort};
     server_name _;
     client_max_body_size 100m;
 
     location / {
-        proxy_pass http://127.0.0.1:${containerPort};
+        proxy_pass ${target};
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $http_connection;
@@ -96,13 +108,13 @@ export async function writePublicPortProxy(
   ssh: SSHClient,
   slug: string,
   publicPort: number,
-  containerPort: number
+  containerPorts: number | number[]
 ): Promise<{ success: boolean; message: string }> {
   const path = `${SITES_DIR}/${siteName(slug)}`;
   const backup = `${path}.prev`;
   const hadPrevious = (await ssh.exec(`test -f ${path} && cp -f ${path} ${backup} && echo yes || true`)).stdout.trim() === 'yes';
 
-  await ssh.uploadFile(publicPortSiteConfig(slug, publicPort, containerPort), path);
+  await ssh.uploadFile(publicPortSiteConfig(slug, publicPort, containerPorts), path);
   await ssh.exec(`ln -sf ${path} ${ENABLED_DIR}/${siteName(slug)}`);
 
   const test = await ssh.exec('nginx -t 2>&1');
@@ -112,7 +124,8 @@ export async function writePublicPortProxy(
     return { success: false, message: `Nginx configuration test failed: ${test.stderr || test.stdout}` };
   }
   await ssh.exec(`rm -f ${backup}`);
-  return { success: true, message: `Public port ${publicPort} → 127.0.0.1:${containerPort}` };
+  const ports = Array.isArray(containerPorts) ? containerPorts : [containerPorts];
+  return { success: true, message: `Public port ${publicPort} → 127.0.0.1:${ports.join(', ')}` };
 }
 
 /** The app got a domain, or is being deleted: its public port goes away. Returns the port it had. */

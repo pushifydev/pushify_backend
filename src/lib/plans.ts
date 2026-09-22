@@ -15,6 +15,8 @@ export interface PlanLimits {
   buildMinutesPerMonth: number;
   /** Max Hetzner snapshots retained per managed server (-1 = unlimited) */
   snapshotsPerServer: number;
+  /** How many days of container logs are kept and searchable */
+  logRetentionDays: number;
   previewDeployments: boolean;
   healthChecks: boolean;
   prioritySupport: boolean;
@@ -59,6 +61,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
       bandwidthGb: 5,
       buildMinutesPerMonth: 30,
       snapshotsPerServer: 0,
+      logRetentionDays: 3,
       previewDeployments: false,
       healthChecks: false,
       prioritySupport: false,
@@ -80,6 +83,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
       bandwidthGb: 50,
       buildMinutesPerMonth: 200,
       snapshotsPerServer: 2,
+      logRetentionDays: 7,
       previewDeployments: true,
       healthChecks: true,
       prioritySupport: false,
@@ -101,6 +105,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
       bandwidthGb: 250,
       buildMinutesPerMonth: 750,
       snapshotsPerServer: 5,
+      logRetentionDays: 14,
       previewDeployments: true,
       healthChecks: true,
       prioritySupport: true,
@@ -122,6 +127,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
       bandwidthGb: 1000,
       buildMinutesPerMonth: 3000,
       snapshotsPerServer: 10,
+      logRetentionDays: 30,
       previewDeployments: true,
       healthChecks: true,
       prioritySupport: true,
@@ -143,6 +149,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
       bandwidthGb: -1,
       buildMinutesPerMonth: -1,
       snapshotsPerServer: -1,
+      logRetentionDays: 90,
       previewDeployments: true,
       healthChecks: true,
       prioritySupport: true,

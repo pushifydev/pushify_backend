@@ -187,6 +187,50 @@ export class SSHClient {
   /**
    * Download a file from the remote server
    */
+  /**
+   * A readable stream of a remote file, for something too big to hold in memory — a database
+   * dump on its way to off-site storage. `downloadFile` buffers the whole file; this does not.
+   */
+  async openReadStream(remotePath: string): Promise<NodeJS.ReadableStream> {
+    if (!this.connected) {
+      throw new Error('SSH client is not connected');
+    }
+
+    return new Promise((resolve, reject) => {
+      this.client.sftp((err, sftp) => {
+        if (err) {
+          reject(new Error(`SFTP error: ${err.message}`));
+          return;
+        }
+        const stream = sftp.createReadStream(remotePath);
+        stream.once('error', (streamErr: Error) => reject(new Error(`SFTP read error: ${streamErr.message}`)));
+        // `readable` fires once the file is open and has data; `error` before it means no file
+        stream.once('readable', () => resolve(stream));
+      });
+    });
+  }
+
+  /** A writable stream to a remote file — the other direction, for a restore from off-site. */
+  async openWriteStream(remotePath: string): Promise<NodeJS.WritableStream> {
+    if (!this.connected) {
+      throw new Error('SSH client is not connected');
+    }
+
+    return new Promise((resolve, reject) => {
+      this.client.sftp((err, sftp) => {
+        if (err) {
+          reject(new Error(`SFTP error: ${err.message}`));
+          return;
+        }
+        const stream = sftp.createWriteStream(remotePath);
+        stream.once('error', (streamErr: Error) => reject(new Error(`SFTP write error: ${streamErr.message}`)));
+        stream.once('ready', () => resolve(stream));
+        // Some servers do not emit `ready`; the stream is usable as soon as it exists
+        setImmediate(() => resolve(stream));
+      });
+    });
+  }
+
   async downloadFile(remotePath: string): Promise<Buffer> {
     if (!this.connected) {
       throw new Error('SSH client is not connected');

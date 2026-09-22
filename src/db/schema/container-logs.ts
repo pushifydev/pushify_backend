@@ -32,6 +32,8 @@ export const containerLogs = pgTable(
 
     // Chunk index for ordering
     chunkIndex: integer('chunk_index').default(0).notNull(),
+    /** Which container it came from: the app, a replica, a worker, the staging copy */
+    containerName: varchar('container_name', { length: 255 }),
 
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },

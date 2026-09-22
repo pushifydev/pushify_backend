@@ -15,6 +15,8 @@ Pushify.
 - Linux server (2 GB RAM minimum, 4 GB recommended), or macOS for local evaluation
 - Docker Engine 24+ with the Compose v2 plugin
 - `git`, `curl`, `openssl` (present on virtually every distro)
+- `rclone`, only for keeping backups off the machine — the control-plane backup script and
+  `DB_BACKUP_RCLONE_REMOTE` both use it
 
 ## What the installer does
 
@@ -48,6 +50,56 @@ works:
 
 This keeps untrusted app builds isolated from the platform itself — one server or many, same
 model.
+
+### Private registries and image deploys
+
+**Settings → Private registries** stores a login per registry for the organization (`ghcr.io`,
+`registry.gitlab.com`, a self-hosted `registry.example.com:5000` — host only, no scheme). Before
+each build and pull the deploy signs in on the server with them, into a directory it deletes
+afterwards, so a Dockerfile can `FROM` a private base image. The token is write-only: it can be
+replaced but never read back.
+
+A project can also deploy its repository as a **Docker Compose stack**: put the compose file's
+path in project settings → *Docker Compose file*. The stack comes up from the checkout, so
+`build:` contexts work as they do locally. Only the served service is published on the host (nginx
+proxies it); the other services keep talking to each other by name inside the stack, and their own
+`ports:` are not published — a compose file that maps `5432:5432` would otherwise put the database
+on the internet. The field is empty by default and a compose file is never picked up on its own.
+
+A project can also deploy a **ready image** instead of a repository: put the reference in project
+settings → *Docker image* (`ghcr.io/acme/api:1.4`) and every deploy pulls that reference again —
+moving the tag and redeploying ships the new image. Such a project needs a server; the no-server
+fallback cannot do it.
+
+### Database backups off the server
+
+A database backup is written to `/opt/pushify/backups` on the server the database runs on. That
+copy survives a dropped table and nothing else: lose the disk, the server or the provider account
+and the backups go with it, which is the case people keep backups for.
+
+Set `DB_BACKUP_RCLONE_REMOTE` (an rclone remote — S3, R2, B2, a Hetzner Storage Box over sftp, or
+an rclone `crypt` remote over any of them, which encrypts the dumps before they leave) and every
+dump is streamed off the server after it is written. The stream goes through the control plane,
+which is where the storage credentials stay — putting them on customer servers would mean one
+compromised box could read, or delete, every other customer's backups.
+
+A restore looks for the dump on the server first and falls back to the off-site copy, so a
+database can be restored onto a server that has never seen the file. `DB_BACKUP_REMOTE_KEEP_DAYS`
+(30 by default) prunes the remote copies; deleting a database removes its off-site copies too.
+rclone must be installed on the control plane — the same binary the control-plane backup script
+uses.
+
+### Single sign-on
+
+**Settings → Single sign-on** connects the organization's own identity provider over OpenID
+Connect (Okta, Entra ID, Google Workspace, Auth0, Keycloak). Enter the issuer, the client id and
+secret, and the email domains the provider signs in; the page shows the redirect URI to paste at
+the provider. Turning on *Require single sign-on* stops passwords, GitHub and Google from working
+for those domains, so disabling someone at the provider is enough to lock them out. Two-factor
+authentication still applies on top.
+
+The redirect URI is derived from `API_BASE_URL` (falling back to `FRONTEND_URL`), so set that to
+the address the dashboard actually reaches before configuring a connection.
 
 ## Configuration
 

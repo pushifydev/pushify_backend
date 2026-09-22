@@ -58,6 +58,20 @@ export const authService = {
   /**
    * Register a new user with a default organization
    */
+  /**
+   * An address whose domain is under an enforced SSO connection may only arrive through that
+   * provider. Without this, "sign up with a password" or "sign in with GitHub" using a company
+   * address would walk straight around the identity provider the organization pays for.
+   */
+  async assertSsoNotEnforced(email: string): Promise<void> {
+    const { ssoService } = await import('./sso.service');
+    if (await ssoService.isPasswordLoginBlocked(email)) {
+      throw new HTTPException(403, {
+        message: 'Your organization signs in through its identity provider — use "Sign in with SSO".',
+      });
+    }
+  },
+
   async register(
     input: RegisterInput,
     locale: SupportedLocale = 'en',
@@ -65,6 +79,9 @@ export const authService = {
     userAgent?: string
   ): Promise<AuthResult> {
     const { email, password, name } = input;
+
+    // A company that enforces SSO owns its domain: nobody signs up around it with a password
+    await this.assertSsoNotEnforced(email);
 
     // Check if user already exists
     const existingUser = await userRepository.findByEmail(email);
@@ -143,6 +160,11 @@ export const authService = {
     userAgent?: string
   ): Promise<LoginResult> {
     const { email, password } = input;
+
+    // An organization that turned on enforced SSO means it: a password is no longer a way in for
+    // its domains. Checked before the password is even looked at, and before "is there such a
+    // user", so it reads the same for a member and for an address that does not exist yet.
+    await this.assertSsoNotEnforced(email);
 
     // Find user
     const user = await userRepository.findByEmail(email);
@@ -615,6 +637,9 @@ export const authService = {
       throw new HTTPException(400, { message: 'GitHub account has no public email. Please add a public email to your GitHub profile.' });
     }
 
+    // …and not around it with GitHub either
+    await this.assertSsoNotEnforced(email);
+
     const githubId = String(githubUser.id);
     const displayName = githubUser.name ?? githubUser.login;
 
@@ -736,6 +761,9 @@ export const authService = {
     if (!googleUser.email) {
       throw new HTTPException(400, { message: 'Google account has no email address.' });
     }
+
+    // …nor around it with Google
+    await this.assertSsoNotEnforced(googleUser.email);
 
     const googleId = googleUser.id;
     const displayName = googleUser.name || googleUser.email.split('@')[0];

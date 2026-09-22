@@ -14,7 +14,13 @@ import { assertMemberProjectScope, getMemberAllowedProjectIds } from '../lib/mem
 import { assertOrganizationCanMutateResources } from './organization-billing.service';
 import { getApiBaseUrl } from '../lib/api-base-url';
 import { planLimitsService } from './plan-limits.service';
-import { firstRepoSettingsError, firstProjectSettingsError } from '../lib/repo-settings-validate';
+import {
+  firstRepoSettingsError,
+  firstProjectSettingsError,
+  validateGitBranch,
+  validateRepoRelativePath,
+} from '../lib/repo-settings-validate';
+import { validateImageReference } from '../lib/registry';
 
 // Types
 interface CreateProjectInput {
@@ -30,6 +36,8 @@ interface CreateProjectInput {
   port?: number;
   autoDeploy?: boolean;
   serverId?: string; // Server to deploy to (optional)
+  /** Deploy a ready image instead of a repository (`ghcr.io/acme/api:1.4`) */
+  dockerImage?: string;
 }
 
 interface UpdateProjectInput {
@@ -37,6 +45,10 @@ interface UpdateProjectInput {
   description?: string;
   gitRepoUrl?: string;
   gitBranch?: string;
+  /** Pushes here deploy the staging copy; null turns staging off */
+  stagingBranch?: string | null;
+  /** How many containers of the app run behind nginx */
+  replicas?: number;
   gitProvider?: string;
   buildCommand?: string;
   startCommand?: string;
@@ -44,6 +56,12 @@ interface UpdateProjectInput {
   dockerfilePath?: string;
   port?: number;
   autoDeploy?: boolean;
+  /** Deploy a ready image instead of a repository; null goes back to the repository */
+  dockerImage?: string | null;
+  /** Deploy the repository as a compose stack: the compose file's path; null builds it instead */
+  composePath?: string | null;
+  composeService?: string | null;
+  composePort?: number | null;
   serverId?: string | null; // Server to deploy to (optional, null to remove)
   sleepEnabled?: boolean;
   sleepAfterMinutes?: number;
@@ -68,6 +86,11 @@ export const projectService = {
     await assertOrganizationCanMutateResources(organizationId, locale);
 
     // Repo URL, branch, paths and commands reach a root shell on the deploy server.
+    if (input.dockerImage) {
+      const imageProblem = validateImageReference(input.dockerImage);
+      if (imageProblem) throw new HTTPException(400, { message: imageProblem });
+    }
+
     const repoProblem = firstRepoSettingsError(input);
     if (repoProblem) {
       throw new HTTPException(400, { message: repoProblem });
@@ -120,6 +143,7 @@ export const projectService = {
       startCommand: input.startCommand,
       rootDirectory: input.rootDirectory || '/',
       dockerfilePath: input.dockerfilePath,
+      dockerImage: input.dockerImage?.trim() || null,
       port: input.port || 3000,
       autoDeploy: input.autoDeploy ?? true,
       serverId: validatedServerId,
@@ -216,6 +240,45 @@ export const projectService = {
     const repoProblem = firstRepoSettingsError(input);
     if (repoProblem) {
       throw new HTTPException(400, { message: repoProblem });
+    }
+
+    if (input.replicas !== undefined && (!Number.isInteger(input.replicas) || input.replicas < 1 || input.replicas > 10)) {
+      throw new HTTPException(400, { message: 'Replicas must be between 1 and 10' });
+    }
+
+    // The image reference ends up in a Dockerfile on the deploy server
+    if (input.dockerImage) {
+      const imageProblem = validateImageReference(input.dockerImage);
+      if (imageProblem) throw new HTTPException(400, { message: imageProblem });
+    }
+
+    // The compose path is joined onto the checkout's path on the deploy server
+    if (input.composePath) {
+      const pathProblem = validateRepoRelativePath(input.composePath, 'Compose file');
+      if (pathProblem) throw new HTTPException(400, { message: pathProblem });
+    }
+    if (input.composeService && !/^[a-zA-Z0-9._-]{1,100}$/.test(input.composeService)) {
+      throw new HTTPException(400, { message: 'Compose service may only contain letters, digits and . _ -' });
+    }
+    if (
+      input.composePort !== undefined &&
+      input.composePort !== null &&
+      (!Number.isInteger(input.composePort) || input.composePort < 1 || input.composePort > 65535)
+    ) {
+      throw new HTTPException(400, { message: 'Compose port must be between 1 and 65535' });
+    }
+
+    // The staging branch reaches a shell on the deploy server, same as the production one.
+    if (input.stagingBranch) {
+      const branchProblem = validateGitBranch(input.stagingBranch);
+      if (branchProblem) {
+        throw new HTTPException(400, { message: branchProblem });
+      }
+      if (input.stagingBranch === (input.gitBranch ?? existing.gitBranch)) {
+        throw new HTTPException(400, {
+          message: 'The staging branch must differ from the production branch',
+        });
+      }
     }
 
     if (
@@ -382,7 +445,7 @@ export const projectService = {
     } = await import('../lib/project-remote-cleanup');
 
     const settings = (project.settings || {}) as Record<string, unknown>;
-    const isCompose = settings.deploymentType === 'docker-compose';
+    const isCompose = settings.deploymentType === 'docker-compose' || !!project.composePath;
 
     const remoteServer = await resolveDeployServerForCleanup(project);
     if (remoteServer) {

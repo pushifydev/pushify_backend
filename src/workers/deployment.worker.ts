@@ -69,6 +69,7 @@ import {
   getServerDeployActiveCount,
 } from '../lib/deploy-concurrency';
 import { isQueueAvailable } from '../lib/queue';
+import { registryCredentialService } from '../services/registry-credential.service';
 
 const POLL_INTERVAL = 5000; // 5 seconds
 
@@ -81,6 +82,11 @@ export interface DeploymentJob {
   branch: string | null;
   triggeredById: string | null;
   rollbackFromDeploymentId: string | null; // For quick rollback
+  /** production | staging — staging runs beside production with its own container and domains */
+  environment?: string | null;
+  /** A promotion builds this exact commit (the one staging proved), not the branch tip */
+  commitHash?: string | null;
+  promotedFromDeploymentId?: string | null;
   serverId: string | null; // Server ID for concurrency tracking
   isPreview: boolean;
   previewPrNumber: number | null;
@@ -185,6 +191,9 @@ const deploymentJobSelect = {
   branch: deployments.branch,
   triggeredById: deployments.triggeredById,
   rollbackFromDeploymentId: deployments.rollbackFromDeploymentId,
+  environment: deployments.environment,
+  commitHash: deployments.commitHash,
+  promotedFromDeploymentId: deployments.promotedFromDeploymentId,
   isPreview: deployments.isPreview,
   previewPrNumber: deployments.previewPrNumber,
   serverId: projects.serverId,
@@ -405,8 +414,12 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
     // runner (PUSHIFY_RUNNER_SERVER_ID) so free/unassigned deploys never run on the control
     // plane. Falls back to the local host only when no runner is configured.
     const deployTargetServerId = project.serverId || pickRunnerServerId(project.id);
-    // Persistent volume mounts — applied on every container start path below.
-    let volumeMounts = await getProjectVolumeMounts(project.id, project.slug);
+    // Staging: a second copy of the project beside production, with its own container, port,
+    // domains and `staging` environment variables (lib/deploy-env-vars.ts).
+    const environment = job.environment === 'staging' ? 'staging' : 'production';
+    const deploySlug = environment === 'staging' ? `${project.slug}-staging` : project.slug;
+    // Persistent volume mounts — staging keeps its own data, never production's.
+    let volumeMounts = await getProjectVolumeMounts(project.id, deploySlug);
 
     // A deploy starts a fresh container — clear any sleep state and give the idle
     // sweeper a fresh grace window.
@@ -568,11 +581,15 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
 
       // Production rows only; a preview deploy layers its `preview` rows on top (lib/deploy-env-vars.ts).
       const envVarsDecrypted: Record<string, string> = {};
-      for (const envVar of selectDeployEnvVars(envVars, { preview: !!previewCtx })) {
+      for (const envVar of selectDeployEnvVars(envVars, { target: previewCtx ? 'preview' : environment })) {
         envVarsDecrypted[envVar.key] = decrypt(envVar.valueEncrypted);
       }
       // Databases linked under Databases → Connect become variables (DATABASE_URL by default).
-      const linkedDatabases = await linkedDatabaseEnv(job.projectId, deployTargetServerId, envVarsDecrypted);
+      // Production only: a staging copy pointing at the production database would write to it.
+      const linkedDatabases =
+        environment === 'production'
+          ? await linkedDatabaseEnv(job.projectId, deployTargetServerId, envVarsDecrypted)
+          : { vars: {}, notes: ['Staging does not get the project\'s linked databases — give it its own DATABASE_URL under staging variables'] };
       Object.assign(envVarsDecrypted, linkedDatabases.vars);
       // Everything logged from here on has the project's secrets masked.
       logMasker.addEnvVars(envVarsDecrypted);
@@ -676,10 +693,15 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
 
       // Check if this is a marketplace project (skip git clone)
       const isMarketplace = !!(projectSettings?.marketplaceTemplateId);
+      // A project deployed from a ready image has no repository to clone
+      const deployImage = project.dockerImage?.trim() || undefined;
 
       let localClone: { workDir: string; branch: string; commitHash: string; commitMessage: string } | null = null;
 
-      if (isMarketplace) {
+      if (deployImage) {
+        addLog(`📦 Image project: ${deployImage}`);
+        addLog('⏭️ Skipping git clone — the image is deployed as it is');
+      } else if (isMarketplace) {
         addLog(`📦 Marketplace app: ${projectSettings.marketplaceTemplateId}`);
         addLog('⏭️ Skipping git clone — using Docker image directly');
       } else {
@@ -696,10 +718,16 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
           throw new Error('No repository URL configured');
         }
 
+        if (job.promotedFromDeploymentId && job.commitHash) {
+          addLog(`⬆️ Promoting the commit staging ran: ${job.commitHash.substring(0, 7)}`);
+        }
+
         // Clone locally just to get commit info
         localClone = await cloneRepository({
           repoUrl: project.gitRepoUrl,
           branch,
+          // A promotion builds the commit staging proved, not whatever the branch points at now
+          commit: job.promotedFromDeploymentId ? job.commitHash ?? undefined : undefined,
           accessToken,
           onProgress: addLog,
         });
@@ -811,7 +839,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
           if (!previewCtx) {
             const volumesChanged = await syncDeclaredResources(project.id, fileConfig, addLog);
             if (volumesChanged) {
-              volumeMounts = await getProjectVolumeMounts(project.id, project.slug);
+              volumeMounts = await getProjectVolumeMounts(project.id, deploySlug);
             }
           }
         }
@@ -828,6 +856,8 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         fileConfig?.output ?? ((projectSettings?.outputDirectory as string) || undefined);
       const effPort = fileConfig?.port ?? (project.port || 3000);
 
+      const deployRegistries = await registryCredentialService.forDeploy(project.organizationId);
+
       const remoteResult = await deployToRemoteServer({
         serverId: deployTargetServerId,
         projectId: project.id,
@@ -835,8 +865,8 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         volumes: volumeMounts,
         deploymentId: job.id,
         repoUrl: project.gitRepoUrl || '',
-        branch: localClone?.branch || job.branch || 'main',
-        commitHash: localClone?.commitHash || 'marketplace',
+        branch: localClone?.branch || job.branch || (environment === 'staging' ? project.stagingBranch : project.gitBranch) || 'main',
+        commitHash: localClone?.commitHash || (deployImage ? 'image' : 'marketplace'),
         port: effPort,
         envVars: envVarsDecrypted,
         buildCommand: effBuildCommand,
@@ -851,13 +881,29 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         accessToken,
         onProgress: onRemoteProgress,
         marketplace: marketplaceConfig,
-        deploySuffix: previewCtx?.deploySuffix,
+        dockerImage: deployImage,
+        // Deploy the repository as a compose stack, when the project asks for it
+        composePath: project.composePath,
+        composeService: project.composeService,
+        composePort: project.composePort,
+        // The organization's private-registry logins: for a private `FROM` base image and for
+        // image projects on a private registry. Empty for everyone who has none.
+        registryCredentials: deployRegistries,
+        deploySuffix: previewCtx?.deploySuffix ?? (environment === 'staging' ? '-staging' : undefined),
+        environment,
+        // Previews stay a single container whatever the project runs in production.
+        replicas: previewCtx ? 1 : project.replicas ?? 1,
         previewDomain: previewCtx ? previewHostname(previewCtx.previewUrl) ?? undefined : undefined,
       });
 
       if (!remoteResult.success) {
         throw new Error(remoteResult.error || 'Remote deployment failed');
       }
+
+      // The deploy got past the logins, so these credentials still work — say when last
+      registryCredentialService
+        .markUsed(project.organizationId, deployRegistries.map((credential) => credential.registry))
+        .catch(() => undefined);
 
       // Update deployment as successful (including image info for rollback)
       await db
@@ -890,7 +936,9 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         // Update project with production URL (+ refresh marketplace compose from latest template)
         const settingsUpdate: Record<string, unknown> = {
           ...(project.settings as Record<string, unknown>),
-          productionUrl: remoteResult.deploymentUrl,
+          ...(environment === 'staging'
+            ? { stagingUrl: remoteResult.deploymentUrl }
+            : { productionUrl: remoteResult.deploymentUrl }),
           lastDeploymentId: job.id,
         };
         if (marketplaceConfig && projectSettings?.marketplaceTemplateId) {
@@ -910,6 +958,11 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
           .where(eq(projects.id, job.projectId));
         addLog(`✅ Remote deployment successful! URL: ${remoteResult.deploymentUrl}`);
       }
+
+      // Empty the CDN's copy of this site. Cloudflare sits in front of every auto subdomain, and
+      // fingerprinted assets are now cached for a year, so without this a visitor could be served
+      // the previous deploy for a long time. Only this project's hostnames are purged.
+      await purgeProjectCache(job.projectId, remoteResult.deploymentUrl, addLog);
 
       // Publish running status via WebSocket
       wsManager.publish(`project:${job.projectId}`, {
@@ -945,7 +998,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         await notificationService.sendNotifications(job.projectId, 'deployment.success', {
           deploymentId: job.id,
           branch: localClone?.branch || 'main',
-          commitHash: localClone?.commitHash || 'marketplace',
+          commitHash: localClone?.commitHash || (deployImage ? 'image' : 'marketplace'),
           status: 'running',
           message: 'Deployment completed successfully',
           url: remoteResult.deploymentUrl,
@@ -965,6 +1018,15 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       );
     }
 
+    // The local fallback builds from a checkout; an image project has none. It is a dev-only
+    // path anyway (customer code on the control plane), so say what to do instead of failing
+    // three steps later on a clone of an empty URL.
+    if (project.dockerImage?.trim()) {
+      throw new Error(
+        'Deploying from an image needs a server. Assign one in the project settings.'
+      );
+    }
+
     // Get environment variables early (needed for Dockerfile generation + build args)
     const localEnvVars = await db
       .select()
@@ -972,7 +1034,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       .where(eq(environmentVariables.projectId, job.projectId));
 
     const envVarsDecrypted: Record<string, string> = {};
-    for (const ev of selectDeployEnvVars(localEnvVars, { preview: !!previewCtx })) {
+    for (const ev of selectDeployEnvVars(localEnvVars, { target: previewCtx ? 'preview' : environment })) {
       envVarsDecrypted[ev.key] = decrypt(ev.valueEncrypted);
     }
 
@@ -1683,4 +1745,35 @@ async function syncDeclaredResources(
   }
 
   return volumesChanged;
+}
+
+/**
+ * The hostnames this project answers on, emptied from Cloudflare's cache after a deploy.
+ * Never fails a deploy: a cache that was not emptied is a stale page, not a broken release.
+ */
+async function purgeProjectCache(
+  projectId: string,
+  deploymentUrl: string | undefined,
+  addLog: (message: string) => void
+): Promise<void> {
+  try {
+    const { cloudflareDnsConfigured, hostnameOf, purgeCachedHostnames } = await import('../lib/cloudflare-dns');
+    if (!cloudflareDnsConfigured()) return;
+    const { domains } = await import('../db/schema/projects');
+
+    const rows = await db
+      .select({ domain: domains.domain })
+      .from(domains)
+      .where(eq(domains.projectId, projectId));
+    const hosts = [...rows.map((row) => row.domain), hostnameOf(deploymentUrl)].filter(
+      (host): host is string => !!host
+    );
+    if (hosts.length === 0) return;
+
+    const result = await purgeCachedHostnames(hosts);
+    if (result === 'purged') addLog(`🧹 Emptied the CDN cache for ${hosts.join(', ')}`);
+    else if (result === 'failed') addLog('⚠️ Could not empty the CDN cache — visitors may see the previous version for a while');
+  } catch {
+    // Not worth a word in the log, let alone a failed deploy
+  }
 }

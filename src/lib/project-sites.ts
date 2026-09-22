@@ -38,8 +38,13 @@ async function resolvesTo(host: string, ip: string | null): Promise<boolean> {
 
 export interface SyncProjectSitesOptions {
   projectId: string;
+  /** The site file's name (`pushify-<slug>`); a staging deploy passes `<slug>-staging`. */
   projectSlug: string;
+  /** Only this environment's domains go in that file — production and staging never mix. */
+  environment?: 'production' | 'staging';
   containerPort: number;
+  /** Every replica's port when the project runs more than one container. */
+  containerPorts?: number[];
   /** The server's public IPv4: DNS is checked against it before Let's Encrypt is asked. */
   serverIp: string | null;
   /** Ask Let's Encrypt for missing certificates (deploy, verify) — settings edits don't. */
@@ -103,7 +108,9 @@ export async function syncProjectSites(
   options: SyncProjectSitesOptions
 ): Promise<{ success: boolean; message: string; domains: SyncedDomain[] }> {
   const progress = options.onProgress ?? (() => {});
-  const rows = await domainRepository.findByProject(options.projectId);
+  const environment = options.environment ?? 'production';
+  const all = await domainRepository.findByProject(options.projectId);
+  const rows = all.filter((row) => (row.environment ?? 'production') === environment);
   const ordered = [...rows].sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary));
 
   // Auto subdomains live on the wildcard certificate, which only Pushify's shared host has.
@@ -151,6 +158,7 @@ export async function syncProjectSites(
   const write = async () => {
     const result = await writeProjectSites(ssh, {
       projectSlug: options.projectSlug,
+      containerPorts: options.containerPorts,
       containerPort: options.containerPort,
       domains: plan.map(toSite),
     });

@@ -14,6 +14,8 @@ interface CreateDeploymentInput {
   commitMessage?: string;
   branch?: string;
   trigger?: DeploymentTrigger;
+  /** 'staging' deploys the project's staging copy (its own container, domains and variables) */
+  environment?: 'production' | 'staging';
   rollbackFromDeploymentId?: string; // For quick rollback
 }
 
@@ -105,14 +107,72 @@ export const deploymentService = {
     // Create deployment record with 'pending' status
     // The deployment worker will pick it up and process it
     // Branch priority: explicit input > project settings > null (worker will use git default)
+    const environment = input.environment === 'staging' ? 'staging' : 'production';
+    if (environment === 'staging' && !project.stagingBranch) {
+      throw new HTTPException(400, {
+        message: 'Set a staging branch on the project before deploying to staging',
+      });
+    }
+
     const deployment = await deploymentRepository.create({
       projectId,
       trigger: input.trigger ?? 'manual',
       commitHash: input.commitHash,
       commitMessage: input.commitMessage,
-      branch: input.branch || project.gitBranch || undefined,
+      branch:
+        input.branch ||
+        (environment === 'staging' ? project.stagingBranch : project.gitBranch) ||
+        undefined,
       triggeredById: userId,
+      environment,
       rollbackFromDeploymentId: input.rollbackFromDeploymentId,
+    });
+
+    const { scheduleDeploymentProcessing } = await import('../lib/deployment-scheduler');
+    await scheduleDeploymentProcessing(deployment.id, projectId);
+
+    return deployment;
+  },
+
+  /**
+   * Promote staging to production: the same commit that is live on staging is built again with
+   * production's variables (they differ, and public values are baked into the build) and put
+   * through the normal blue-green switch.
+   */
+  async promote(
+    projectId: string,
+    organizationId: string,
+    userId: string,
+    input: { deploymentId?: string },
+    locale: SupportedLocale
+  ) {
+    const project = await this.checkProjectAccess(projectId, organizationId, userId, locale);
+    await assertOrganizationCanMutateResources(organizationId, locale);
+    await planLimitsService.assertDeploymentsQuota(organizationId, locale);
+
+    const source = input.deploymentId
+      ? await deploymentRepository.findById(input.deploymentId)
+      : await deploymentRepository.findLatestByEnvironment(projectId, 'staging', 'running');
+
+    if (!source || source.projectId !== projectId || source.environment !== 'staging') {
+      throw new HTTPException(404, { message: 'No staging deployment to promote' });
+    }
+    if (source.status !== 'running') {
+      throw new HTTPException(400, { message: 'That staging deployment did not finish successfully' });
+    }
+    if (!source.commitHash) {
+      throw new HTTPException(400, { message: 'That staging deployment has no commit to promote' });
+    }
+
+    const deployment = await deploymentRepository.create({
+      projectId,
+      trigger: 'manual',
+      commitHash: source.commitHash,
+      commitMessage: source.commitMessage ?? undefined,
+      branch: source.branch ?? project.stagingBranch ?? undefined,
+      triggeredById: userId,
+      environment: 'production',
+      promotedFromDeploymentId: source.id,
     });
 
     const { scheduleDeploymentProcessing } = await import('../lib/deployment-scheduler');

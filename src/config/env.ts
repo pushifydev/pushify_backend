@@ -130,6 +130,25 @@ const envSchema = z.object({
     .optional()
     .transform((v) => (v === undefined || v.trim() === '' ? undefined : /^(true|1|yes|on)$/i.test(v.trim()))),
 
+  /**
+   * Self-hosted installs whose apps live on a private network: let monitoring call those
+   * addresses (the SSRF guard blocks them otherwise). Only status codes and timings are kept.
+   */
+  /**
+   * Where customer database backups are copied after each dump — an rclone remote, e.g.
+   * `backups:pushify/databases`. Off until set: a dump then lives only on the server the
+   * database runs on, which is no help when that server is what was lost.
+   */
+  DB_BACKUP_RCLONE_REMOTE: z.string().optional(),
+  /** How long an off-site copy is kept. The on-server copy keeps its own retention. */
+  DB_BACKUP_REMOTE_KEEP_DAYS: z.coerce.number().int().min(1).max(3650).default(30),
+  /** Path to the rclone binary, when it is not on PATH */
+  RCLONE_BIN: z.string().optional(),
+  PUSHIFY_ALLOW_PRIVATE_APP_URLS: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v.trim() === '' ? undefined : /^(true|1|yes|on)$/i.test(v.trim()))),
+
   // Rate Limiting (see middleware/rate-limit.ts)
   // Not z.coerce.boolean(): Boolean('false') is true, so RATE_LIMIT_ENABLED=false never disabled it.
   RATE_LIMIT_ENABLED: z

@@ -26,6 +26,7 @@ type Db = typeof import('../db')['db'];
 type Schema = typeof import('../db/schema');
 let db: Db;
 let schema: Schema;
+let encryptValue: typeof import('../lib/encryption')['encrypt'];
 let executeDeploymentJob: typeof import('../workers/deployment.worker')['executeDeploymentJob'];
 let loadDeploymentJobById: typeof import('../workers/deployment.worker')['loadDeploymentJobById'];
 let userId: string;
@@ -34,15 +35,17 @@ let serverId: string;
 const tmpDirs: string[] = [];
 
 /** A git repo with these files, committed on main. Returns a file:// URL the worker can clone. */
-async function fixtureRepo(files: Record<string, string>, existing?: string): Promise<string> {
+async function fixtureRepo(files: Record<string, string>, existing?: string, branch?: string): Promise<string> {
   const dir = existing ?? (await fs.mkdtemp(path.join(os.tmpdir(), 'pushify-e2e-repo-')));
   if (!existing) tmpDirs.push(dir);
+  if (branch) execSync(`git checkout -q ${branch}`, { cwd: dir });
   for (const [name, content] of Object.entries(files)) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
     await fs.writeFile(path.join(dir, name), content);
   }
   if (!existing) execSync('git init -q -b main', { cwd: dir });
   execSync('git add -A && git commit -qm "e2e"', { cwd: dir });
+  if (branch) execSync('git checkout -q main', { cwd: dir });
   return dir;
 }
 
@@ -108,14 +111,15 @@ async function createProject(name: string, repoDir: string, domain: string) {
 }
 
 /** Queue a deployment the way the API does, then run it the way the worker does. */
-async function deploy(projectId: string, options: { rollbackFrom?: string } = {}) {
+async function deploy(projectId: string, options: { rollbackFrom?: string; environment?: 'production' | 'staging' } = {}) {
   const [row] = await db
     .insert(schema.deployments)
     .values({
       projectId,
       status: 'pending',
       trigger: options.rollbackFrom ? 'rollback' : 'manual',
-      branch: 'main',
+      branch: options.environment === 'staging' ? 'develop' : 'main',
+      environment: options.environment ?? 'production',
       triggeredById: userId,
       rollbackFromDeploymentId: options.rollbackFrom,
     })
@@ -159,6 +163,7 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
     schema = await import('../db/schema');
     ({ executeDeploymentJob, loadDeploymentJobById } = await import('../workers/deployment.worker'));
     const { encrypt } = await import('../lib/encryption');
+    encryptValue = encrypt;
 
     // Every fixture domain (and its www twin) points at this box.
     const realResolve4 = dns.resolve4.bind(dns);
@@ -297,7 +302,10 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
       const server = (version: string) =>
         [
           "const http = require('http');",
-          `http.createServer((req, res) => res.end('E2E-NODE ${version}')).listen(process.env.PORT || 3000);`,
+          'http.createServer((req, res) => {',
+          "  console.log('request ' + req.url);",
+          `  res.end('E2E-NODE ${version}');`,
+          '}).listen(process.env.PORT || 3000);',
           '',
         ].join('\n');
       const repo = await fixtureRepo({
@@ -316,6 +324,55 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
       await fixtureRepo({ 'server.js': server('v2') }, repo);
       await deploy(project.id);
       expect(request(`https://${domain}/`).body).toContain('E2E-NODE v2');
+
+      // Monitoring: three failed checks make it "down" (and mail), answering again clears it
+      const { appHealthService } = await import('../services/app-health.service');
+      const health = async (times = 1) => {
+        let status: string = 'unknown';
+        for (let i = 0; i < times; i++) {
+          const [candidate] = (await appHealthService.candidates()).filter((c) => c.projectId === project.id);
+          expect(candidate, 'project should be monitored').toBeTruthy();
+          status = await appHealthService.checkProject(candidate, new Date(Date.now() + i * 60_000));
+        }
+        return status;
+      };
+      expect(await health()).toBe('up');
+
+      const appContainer = execSync(`docker ps --filter name=pushify-${project.slug} --format '{{.Names}}'`, { encoding: 'utf8' }).trim();
+      execSync(`docker stop ${appContainer}`);
+      expect(await health(2)).toBe('up'); // one or two failures are not an outage
+      expect(await health()).toBe('down');
+      const downState = await db.query.projectHealthState.findFirst({ where: (h, { eq }) => eq(h.projectId, project.id) });
+      expect(downState?.downSince).toBeInstanceOf(Date);
+      expect(downState?.notifiedAt).toBeInstanceOf(Date);
+
+      execSync(`docker start ${appContainer}`);
+      await waitFor('the app to answer again', async () => ((await health()) === 'up' ? true : undefined), 60_000);
+      const upState = await db.query.projectHealthState.findFirst({ where: (h, { eq }) => eq(h.projectId, project.id) });
+      expect(upState?.status).toBe('up');
+      expect(upState?.downSince).toBeNull();
+
+      // Logs: one collection cycle stores the app's output, searchable by term and time
+      const { collectAllDeploymentLogs, searchProjectLogs, projectLogContainers } = await import('../workers/log-collector');
+      request(`https://${domain}/log-probe-${run}`);
+      const logProbe = await waitFor(
+        'the request to show up in the stored logs',
+        async () => {
+          await collectAllDeploymentLogs();
+          const found = await searchProjectLogs(project.id, { query: `log-probe-${run}`, from: new Date(Date.now() - 600_000) });
+          return found.lines.length > 0 ? found : undefined;
+        },
+        120_000
+      );
+      // Every line is tagged with the container it came from — that is what the filter uses
+      expect(logProbe.lines[0].containerName).toMatch(new RegExp(`^pushify-${project.slug}`));
+      expect(await projectLogContainers(project.id)).toContain(logProbe.lines[0].containerName);
+      // A window that ends before the deploy holds nothing
+      const beforeDeploy = await searchProjectLogs(project.id, {
+        query: `log-probe-${run}`,
+        to: new Date(Date.now() - 24 * 3600_000),
+      });
+      expect(beforeDeploy.lines).toHaveLength(0);
 
       // Blue-green retired the old slot: one app container left
       const running = execSync(`docker ps --filter name=pushify-${project.slug} --format '{{.Names}}'`, { encoding: 'utf8' })
@@ -633,6 +690,124 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
   }
 
   it(
+    'replicas: several containers share the traffic, and scaling back down removes them',
+    async () => {
+      onTestFailed(() => console.error(serverState()));
+      const repo = await fixtureRepo({
+        'package.json': JSON.stringify(
+          { name: 'e2e-rep', version: '1.0.0', private: true, scripts: { build: 'echo built', start: 'node server.js' } },
+          null,
+          2
+        ),
+        // Each replica answers with its own container id, so the spread is visible
+        'server.js': [
+          "const http = require('http');",
+          "const os = require('os');",
+          "http.createServer((req, res) => res.end('E2E-REP ' + os.hostname())).listen(process.env.PORT || 3000);",
+          '',
+        ].join('\n'),
+      });
+      const domain = `rep-${run}.127.0.0.1.nip.io`;
+      const project = await createProject('rep', repo, domain);
+      await db.update(schema.projects).set({ replicas: 3 }).where(eqOp(schema.projects.id, project.id));
+
+      await deploy(project.id);
+      const containers = () =>
+        execSync(`docker ps --filter name=pushify-${project.slug} --format '{{.Names}}'`, { encoding: 'utf8' })
+          .split('\n')
+          .filter(Boolean);
+      expect(containers()).toHaveLength(3);
+      expect(execSync('nginx -T 2>/dev/null | grep -c "least_conn" || true', { encoding: 'utf8' }).trim()).not.toBe('0');
+
+      const answers = new Set<string>();
+      for (let i = 0; i < 12; i++) {
+        const body = request(`https://${domain}/`).body;
+        expect(body).toMatch(/^E2E-REP /);
+        answers.add(body);
+      }
+      expect(answers.size, `replicas answering: ${[...answers].join(', ')}`).toBeGreaterThan(1);
+
+      // A redeploy replaces all three and leaves nothing of the old slot behind
+      await deploy(project.id);
+      expect(containers()).toHaveLength(3);
+      expect(request(`https://${domain}/`).body).toMatch(/^E2E-REP /);
+
+      // Back to one: the extra containers go
+      await db.update(schema.projects).set({ replicas: 1 }).where(eqOp(schema.projects.id, project.id));
+      await deploy(project.id);
+      expect(containers()).toHaveLength(1);
+      expect(request(`https://${domain}/`).body).toMatch(/^E2E-REP /);
+    },
+    900_000
+  );
+
+  it(
+    'staging: its own container, domain and variables beside production, then promoted to it',
+    async () => {
+      onTestFailed(() => console.error(serverState()));
+      const server = (version: string) =>
+        [
+          "const http = require('http');",
+          `http.createServer((req, res) => res.end('E2E-ENV ${version} ' + (process.env.GREETING || 'none'))).listen(process.env.PORT || 3000);`,
+          '',
+        ].join('\n');
+      const repo = await fixtureRepo({
+        'package.json': JSON.stringify(
+          { name: 'e2e-env', version: '1.0.0', private: true, scripts: { build: 'echo built', start: 'node server.js' } },
+          null,
+          2
+        ),
+        'server.js': server('v1'),
+      });
+      const domain = `env-${run}.127.0.0.1.nip.io`;
+      const project = await createProject('env', repo, domain);
+      // Production runs `main`; staging runs `develop`
+      execSync('git branch -f develop main', { cwd: repo });
+      await db.update(schema.projects).set({ stagingBranch: 'develop' }).where(eqOp(schema.projects.id, project.id));
+      await db.insert(schema.environmentVariables).values([
+        { projectId: project.id, environment: 'production', key: 'GREETING', valueEncrypted: encryptValue('prod') },
+        { projectId: project.id, environment: 'staging', key: 'GREETING', valueEncrypted: encryptValue('staging') },
+      ]);
+
+      await deploy(project.id);
+      expect(request(`https://${domain}/`).body).toBe('E2E-ENV v1 prod');
+
+      // Staging deploys the staging branch, with the staging variables
+      await fixtureRepo({ 'server.js': server('v2') }, repo, 'develop');
+      const stagingDomain = `env-${run}-staging.127.0.0.1.nip.io`;
+      const [stagingDomainRow] = await db
+        .insert(schema.domains)
+        .values({ projectId: project.id, domain: stagingDomain, isPrimary: true, environment: 'staging' })
+        .returning();
+      expect(stagingDomainRow.environment).toBe('staging');
+      await deploy(project.id, { environment: 'staging' });
+
+      expect(request(`https://${stagingDomain}/`).body).toBe('E2E-ENV v2 staging');
+      // …and production is untouched
+      expect(request(`https://${domain}/`).body).toBe('E2E-ENV v1 prod');
+
+      const containers = execSync(`docker ps --filter name=pushify-${project.slug} --format '{{.Names}}'`, { encoding: 'utf8' })
+        .split('\n')
+        .filter(Boolean)
+        .sort();
+      expect(containers.some((name) => name.startsWith(`pushify-${project.slug}-staging-`))).toBe(true);
+      expect(containers.some((name) => /-(blue|green)$/.test(name) && !name.includes('-staging-'))).toBe(true);
+
+      // Promote: the commit staging ran, built again with production's variables
+      const { deploymentService } = await import('../services/deployment.service');
+      const promoted = await deploymentService.promote(project.id, organizationId, userId, {}, 'en');
+      const job = await loadDeploymentJobById(promoted.id);
+      await executeDeploymentJob(job!);
+      const done = await db.query.deployments.findFirst({ where: (d, { eq }) => eq(d.id, promoted.id) });
+      expect(done?.status).toBe('running');
+      expect(done?.environment).toBe('production');
+      expect(request(`https://${domain}/`).body).toBe('E2E-ENV v2 prod');
+      expect(request(`https://${stagingDomain}/`).body).toBe('E2E-ENV v2 staging');
+    },
+    900_000
+  );
+
+  it(
     "own server: an app without a domain keeps its <server-ip>:<port> URL across deploys",
     async () => {
       onTestFailed(() => console.error(serverState()));
@@ -888,5 +1063,173 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
       }
     },
     600_000
+  );
+
+  it.runIf(!!process.env.PUSHIFY_E2E_REGISTRY)(
+    'private registry: an image project deploys only with the organization\'s credentials',
+    async () => {
+      onTestFailed(() => console.error(serverState()));
+      const registry = process.env.PUSHIFY_E2E_REGISTRY!;
+      const username = process.env.PUSHIFY_E2E_REGISTRY_USER!;
+      const password = process.env.PUSHIFY_E2E_REGISTRY_PASS!;
+      const image = `${registry}/e2e/app-${run}:1`;
+
+      // Put an image in the registry: a small server, pushed as the customer would have
+      const context = await fs.mkdtemp(path.join(os.tmpdir(), 'pushify-e2e-image-'));
+      tmpDirs.push(context);
+      await fs.writeFile(
+        path.join(context, 'app.js'),
+        "const http = require('http');\nhttp.createServer((req, res) => res.end('E2E-IMAGE v1')).listen(process.env.PORT || 3000);\n"
+      );
+      await fs.writeFile(
+        path.join(context, 'Dockerfile'),
+        ['FROM node:20-alpine', 'COPY app.js /app.js', 'EXPOSE 3000', 'CMD ["node", "/app.js"]', ''].join('\n')
+      );
+      execSync(`docker build -q -t ${image} ${context}`, { stdio: 'pipe' });
+      execSync(`echo '${password}' | docker login ${registry} -u ${username} --password-stdin`, { stdio: 'pipe', shell: '/bin/bash' });
+      execSync(`docker push -q ${image}`, { stdio: 'pipe' });
+      // Forget the push login and the local copy, so only Pushify's own login can get it back
+      execSync(`docker logout ${registry}`, { stdio: 'pipe' });
+      execSync(`docker rmi -f ${image}`, { stdio: 'pipe' });
+
+      const domain = `image-${run}.127.0.0.1.nip.io`;
+      const [project] = await db
+        .insert(schema.projects)
+        .values({
+          organizationId,
+          name: `e2e-image-${run}`,
+          slug: `e2e-image-${run}`,
+          serverId,
+          dockerImage: image,
+          port: 3000,
+          autoDeploy: false,
+        })
+        .returning();
+      await db.insert(schema.domains).values({ projectId: project.id, domain, isPrimary: true });
+
+      const { registryCredentialService } = await import('../services/registry-credential.service');
+
+      // Without credentials the image is simply not readable — the deploy must say so
+      const [failed] = await db
+        .insert(schema.deployments)
+        .values({ projectId: project.id, status: 'pending', trigger: 'manual', branch: 'main', triggeredById: userId })
+        .returning();
+      await executeDeploymentJob((await loadDeploymentJobById(failed.id))!);
+      const failedRow = await db.query.deployments.findFirst({ where: (d, { eq }) => eq(d.id, failed.id) });
+      expect(failedRow?.status).toBe('failed');
+
+      // With them, the same deploy pulls the image and serves it
+      await registryCredentialService.create(organizationId, userId, {
+        name: 'E2E registry',
+        registry,
+        username,
+        password,
+      });
+      await deploy(project.id);
+      expect(request(`https://${domain}/`).body).toBe('E2E-IMAGE v1');
+
+      // The image's own CMD runs it — no Dockerfile, no build commands were involved
+      const container = execSync(`docker ps --filter name=pushify-${project.slug} --format '{{.Names}}'`, { encoding: 'utf8' })
+        .split('\n')
+        .filter(Boolean);
+      expect(container).toHaveLength(1);
+
+      // A moved tag ships on redeploy: the pull is forced, not served from the server's cache
+      await fs.writeFile(
+        path.join(context, 'app.js'),
+        "const http = require('http');\nhttp.createServer((req, res) => res.end('E2E-IMAGE v2')).listen(process.env.PORT || 3000);\n"
+      );
+      execSync(`echo '${password}' | docker login ${registry} -u ${username} --password-stdin`, { stdio: 'pipe', shell: '/bin/bash' });
+      execSync(`docker build -q -t ${image} ${context} && docker push -q ${image}`, { stdio: 'pipe', shell: '/bin/bash' });
+      execSync(`docker logout ${registry}`, { stdio: 'pipe' });
+      await deploy(project.id);
+      expect(request(`https://${domain}/`).body).toBe('E2E-IMAGE v2');
+
+      // The token does not outlive the deploy: no config directory is left on the server
+      expect(tryExec('ls -d /tmp/pushify-registry-* 2>/dev/null || true')).toBe('');
+    },
+    900_000
+  );
+
+  it(
+    "compose: the project's own stack is served, and its other ports stay off the host",
+    async () => {
+      onTestFailed(() => console.error(serverState()));
+      const domain = `compose-${run}.127.0.0.1.nip.io`;
+      // web talks to api over the stack's network; api also asks for a host port, which must not
+      // be published — that is how a compose file puts its database on the internet.
+      const repo = await fixtureRepo({
+        'docker-compose.yml': [
+          'services:',
+          '  web:',
+          '    build: ./web',
+          '    ports:',
+          '      - "8080:3000"',
+          '    environment:',
+          '      API: http://api:4000',
+          '    depends_on:',
+          '      - api',
+          '  api:',
+          '    build: ./api',
+          '    ports:',
+          '      - "4000:4000"',
+          '',
+        ].join('\n'),
+        'web/Dockerfile': ['FROM node:20-alpine', 'COPY server.js /server.js', 'CMD ["node", "/server.js"]', ''].join('\n'),
+        'web/server.js': [
+          "const http = require('http');",
+          'http.createServer(async (req, res) => {',
+          "  const upstream = await fetch(process.env.API + '/who').then((r) => r.text()).catch((e) => 'ERR ' + e.message);",
+          "  res.end('E2E-COMPOSE web+' + upstream);",
+          '}).listen(3000);',
+          '',
+        ].join('\n'),
+        'api/Dockerfile': ['FROM node:20-alpine', 'COPY server.js /server.js', 'CMD ["node", "/server.js"]', ''].join('\n'),
+        'api/server.js': [
+          "const http = require('http');",
+          "http.createServer((req, res) => res.end('api')).listen(4000);",
+          '',
+        ].join('\n'),
+      });
+
+      const project = await createProject('compose', repo, domain);
+      await db
+        .update(schema.projects)
+        .set({ composePath: 'docker-compose.yml', composeService: 'web' })
+        .where(eqOp(schema.projects.id, project.id));
+
+      await deploy(project.id);
+
+      // Served through nginx, and the two services found each other by name
+      expect(request(`https://${domain}/`).body).toBe('E2E-COMPOSE web+api');
+
+      // Both containers are up, under this project's stack name
+      const containers = execSync(`docker ps --filter name=pushify-${project.slug} --format '{{.Names}}'`, { encoding: 'utf8' })
+        .split('\n')
+        .filter(Boolean);
+      expect(containers.length).toBeGreaterThanOrEqual(2);
+
+      // The api's own "4000:4000" was dropped: nothing of it is published on the host
+      const apiContainer = containers.find((name) => name.includes('-api-'))!;
+      expect(apiContainer, 'the api service should be running').toBeTruthy();
+      const apiPorts = execSync(`docker port ${apiContainer} 2>/dev/null || true`, { encoding: 'utf8' }).trim();
+      expect(apiPorts).toBe('');
+      expect(tryExec('ss -ltn 2>/dev/null || netstat -ltn')).not.toMatch(/:4000\b/);
+
+      // …and the web service is published only on the port Pushify chose, not its own 8080
+      const webContainer = containers.find((name) => name.includes('-web-'))!;
+      const webPorts = execSync(`docker port ${webContainer}`, { encoding: 'utf8' }).trim();
+      expect(webPorts).not.toMatch(/:8080\b/);
+      expect(webPorts).toMatch(/^3000\/tcp -> /m);
+
+      // A second deploy replaces the stack rather than piling a new one beside it
+      await deploy(project.id);
+      expect(request(`https://${domain}/`).body).toBe('E2E-COMPOSE web+api');
+      const afterRedeploy = execSync(`docker ps --filter name=pushify-${project.slug} --format '{{.Names}}'`, { encoding: 'utf8' })
+        .split('\n')
+        .filter(Boolean);
+      expect(afterRedeploy.length).toBe(containers.length);
+    },
+    900_000
   );
 });

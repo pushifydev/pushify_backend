@@ -57,6 +57,10 @@ export const deployments = pgTable('deployments', {
   deployFinishedAt: timestamp('deploy_finished_at', { withTimezone: true }),
 
   // Preview deployment info
+  /** production | staging (previews keep isPreview) */
+  environment: varchar('environment', { length: 20 }).default('production').notNull(),
+  /** Set when this production deploy is the staging deployment it names, built from its commit */
+  promotedFromDeploymentId: uuid('promoted_from_deployment_id'),
   isPreview: boolean('is_preview').default(false).notNull(),
   previewPrNumber: integer('preview_pr_number'),
 

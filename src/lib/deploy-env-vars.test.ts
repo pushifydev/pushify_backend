@@ -40,3 +40,33 @@ describe('selectDeployEnvVars', () => {
     expect(selectDeployEnvVars([], { preview: true })).toEqual([]);
   });
 });
+
+describe('staging deploys', () => {
+  const rows = [
+    { key: 'DATABASE_URL', environment: 'production' as const },
+    { key: 'DATABASE_URL', environment: 'staging' as const },
+    { key: 'API_KEY', environment: 'production' as const },
+    { key: 'ONLY_DEV', environment: 'development' as const },
+    { key: 'ONLY_PREVIEW', environment: 'preview' as const },
+  ];
+
+  it('takes production as the base and lets staging rows override it', () => {
+    const selected = selectDeployEnvVars(rows, { target: 'staging' });
+    expect(selected.find((r) => r.key === 'DATABASE_URL')?.environment).toBe('staging');
+    expect(selected.map((r) => r.key).sort()).toEqual(['API_KEY', 'DATABASE_URL']);
+  });
+
+  it('keeps production deploys on production rows only', () => {
+    const selected = selectDeployEnvVars(rows, { target: 'production' });
+    expect(selected.find((r) => r.key === 'DATABASE_URL')?.environment).toBe('production');
+    expect(selected.map((r) => r.key).sort()).toEqual(['API_KEY', 'DATABASE_URL']);
+  });
+
+  it('still understands the old { preview } form', () => {
+    expect(selectDeployEnvVars(rows, { preview: true }).map((r) => r.key).sort()).toEqual([
+      'API_KEY',
+      'DATABASE_URL',
+      'ONLY_PREVIEW',
+    ]);
+  });
+});

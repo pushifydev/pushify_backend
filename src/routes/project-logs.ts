@@ -1,19 +1,20 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { searchProjectLogs } from '../workers/log-collector';
+import { projectLogContainers, searchProjectLogs } from '../workers/log-collector';
 import { organizationRepository } from '../repositories/organization.repository';
 import { projectRepository } from '../repositories/project.repository';
 import { authMiddleware } from '../middleware/auth';
 import { t } from '../i18n';
 import { assertMemberProjectScope } from '../lib/member-project-scope';
+import { getEffectivePlanLimits } from '../lib/effective-plan-limits';
 import type { AppEnv } from '../types';
 
 const projectLogsRouter = new Hono<AppEnv>();
 
 projectLogsRouter.use('*', authMiddleware);
 
-// Search a project's persisted container logs (logs explorer history mode)
-projectLogsRouter.get('/:projectId/logs/search', async (c) => {
+/** Membership + project scope for every route here; returns the project. */
+async function authorize(c: Context<AppEnv>) {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -27,28 +28,88 @@ projectLogsRouter.get('/:projectId/logs/search', async (c) => {
   if (!project || project.organizationId !== organizationId) {
     throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });
   }
-
   await assertMemberProjectScope(membership, organizationId, userId, projectId, locale);
+  return { projectId, project, organizationId };
+}
 
-  const query = c.req.query('q') || undefined;
+/** How far back the history actually goes for this organization — the UI says so instead of "7 days". */
+async function retentionDays(organizationId: string): Promise<number> {
+  const org = await organizationRepository.findById(organizationId);
+  if (!org) return 7;
+  return getEffectivePlanLimits({
+    plan: org.plan ?? 'free',
+    grandfatheredUntil: org.grandfatheredUntil,
+    planLimitsOverride: org.planLimitsOverride,
+  }).logRetentionDays;
+}
+
+/** `?from=`/`?to=` as ISO strings or epoch millis; anything unparseable is simply ignored. */
+function parseDate(value: string | undefined): Date | undefined {
+  if (!value) return undefined;
+  const parsed = /^\d+$/.test(value) ? new Date(Number(value)) : new Date(value);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
+function searchOptions(c: Context<AppEnv>, maxCap: number) {
   const logTypeRaw = c.req.query('logType');
-  const logType = logTypeRaw === 'stdout' || logTypeRaw === 'stderr' ? logTypeRaw : undefined;
+  const logType: 'stdout' | 'stderr' | undefined =
+    logTypeRaw === 'stdout' || logTypeRaw === 'stderr' ? logTypeRaw : undefined;
   const rawLimit = parseInt(c.req.query('limit') || '500', 10);
-  const maxLines = Number.isFinite(rawLimit) ? Math.min(1000, Math.max(1, rawLimit)) : 500;
+  return {
+    query: c.req.query('q') || undefined,
+    logType,
+    containerName: c.req.query('container') || undefined,
+    from: parseDate(c.req.query('from')),
+    to: parseDate(c.req.query('to')),
+    maxLines: Number.isFinite(rawLimit) ? Math.min(maxCap, Math.max(1, rawLimit)) : Math.min(500, maxCap),
+  };
+}
 
-  const result = await searchProjectLogs(projectId, { query, logType, maxLines });
+// Search a project's persisted container logs (logs explorer history mode)
+projectLogsRouter.get('/:projectId/logs/search', async (c) => {
+  const { projectId, organizationId } = await authorize(c);
+  const [result, days] = await Promise.all([
+    searchProjectLogs(projectId, searchOptions(c, 1000)),
+    retentionDays(organizationId),
+  ]);
 
   return c.json({
     data: {
+      retentionDays: days,
       lines: result.lines.map((line) => ({
         content: line.content,
         timestamp: line.timestamp.toISOString(),
         logType: line.logType,
         deploymentId: line.deploymentId,
+        containerName: line.containerName,
       })),
       scannedChunks: result.scannedChunks,
     },
   });
+});
+
+// The containers that have logs — the filter list of the explorer
+projectLogsRouter.get('/:projectId/logs/containers', async (c) => {
+  const { projectId } = await authorize(c);
+  return c.json({ data: { containers: await projectLogContainers(projectId) } });
+});
+
+// The same search as a plain text file, for keeping or grepping offline
+projectLogsRouter.get('/:projectId/logs/export', async (c) => {
+  const { projectId, project } = await authorize(c);
+  const result = await searchProjectLogs(projectId, searchOptions(c, 50_000));
+
+  // Oldest first: a log file read top to bottom
+  const body = result.lines
+    .slice()
+    .reverse()
+    .map((line) => `${line.timestamp.toISOString()} ${line.containerName ?? project.slug} ${line.logType === 'stderr' ? 'E' : 'I'} ${line.content}`)
+    .join('\n');
+  const name = `${project.slug}-logs-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}.log`;
+
+  c.header('Content-Type', 'text/plain; charset=utf-8');
+  c.header('Content-Disposition', `attachment; filename="${name}"`);
+  return c.body(body ? `${body}\n` : '');
 });
 
 export { projectLogsRouter as projectLogsRoutes };

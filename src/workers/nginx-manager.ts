@@ -301,7 +301,26 @@ export interface ProjectSiteDomain {
 export interface ProjectSitesConfig {
   projectSlug: string;
   containerPort: number;
+  /** Every replica's host port; one entry means a single container (the usual case). */
+  containerPorts?: number[];
   domains: ProjectSiteDomain[];
+}
+
+/**
+ * Where a site sends requests. One replica: straight at its port, exactly as before. Several:
+ * an upstream nginx balances across, least busy first, so a slow request doesn't pile up on one.
+ */
+function proxyUpstream(projectSlug: string, ports: number[]): { name: string | null; block: string } {
+  if (ports.length < 2) return { name: null, block: '' };
+  const name = `pushify_${projectSlug.replace(/[^a-zA-Z0-9]/g, '_')}`;
+  return {
+    name,
+    block: `upstream ${name} {
+    least_conn;
+${ports.map((port) => `    server 127.0.0.1:${port} max_fails=2 fail_timeout=10s;`).join('\n')}
+    keepalive 16;
+}`,
+  };
 }
 
 const ACME_LOCATION = `
@@ -330,10 +349,13 @@ function appLocation(
   projectSlug: string,
   zoneKey: string,
   containerPort: number,
-  nginxSettings: NginxSettings | undefined
+  nginxSettings: NginxSettings | undefined,
+  upstreamName?: string | null
 ): { zone: string; body: string; forceHttps: boolean } {
   const settings = { ...DEFAULT_NGINX_SETTINGS, ...(nginxSettings || {}) };
   const targetPort = settings.proxyPort || containerPort;
+  // A per-domain proxy port override points at one container, so it wins over the replica set.
+  const target = upstreamName && !settings.proxyPort ? `http://${upstreamName}` : `http://127.0.0.1:${targetPort}`;
   const websocketHeaders = settings.enableWebsocket ? `
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
@@ -357,7 +379,7 @@ function appLocation(
 ${gzipConfig}
 
     location / {
-        proxy_pass http://127.0.0.1:${targetPort};
+        proxy_pass ${target};
         proxy_http_version 1.1;${websocketHeaders}
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -376,11 +398,17 @@ ${gzipConfig}
   };
 }
 
-function renderProjectDomain(site: ProjectSiteDomain, projectSlug: string, containerPort: number, index: number) {
+function renderProjectDomain(
+  site: ProjectSiteDomain,
+  projectSlug: string,
+  containerPort: number,
+  index: number,
+  upstreamName?: string | null
+) {
   // One rate-limit zone per domain: two domains of one project each with rate limiting on
   // would otherwise declare the same zone twice and fail `nginx -t`.
   const zoneKey = index === 0 ? projectSlug : `${projectSlug}_${index}`;
-  const app = appLocation(projectSlug, zoneKey, containerPort, site.nginxSettings);
+  const app = appLocation(projectSlug, zoneKey, containerPort, site.nginxSettings, upstreamName);
   const blocks: string[] = [];
   const aliases = site.aliases ?? [];
   const sslAliases = (site.sslAliases ?? []).filter((a) => aliases.includes(a));
@@ -469,10 +497,12 @@ ${TLS_SETTINGS}
  * which is what used to happen when each wrote only "its" domain into the shared file.
  */
 export function generateProjectSitesConfig(config: ProjectSitesConfig): string {
+  const ports = config.containerPorts?.length ? config.containerPorts : [config.containerPort];
+  const upstream = proxyUpstream(config.projectSlug, ports);
   const rendered = config.domains.map((site, i) =>
-    renderProjectDomain(site, config.projectSlug, config.containerPort, i)
+    renderProjectDomain(site, config.projectSlug, config.containerPort, i, upstream.name)
   );
-  const zones = rendered.map((r) => r.zone).filter(Boolean);
+  const zones = [upstream.block, ...rendered.map((r) => r.zone)].filter(Boolean);
   const names = config.domains
     .map((d) => [d.domain, ...(d.aliases ?? [])].join(' + '))
     .join(', ');

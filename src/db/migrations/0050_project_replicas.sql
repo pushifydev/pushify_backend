@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN IF NOT EXISTS "replicas" integer DEFAULT 1 NOT NULL;

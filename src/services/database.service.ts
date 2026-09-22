@@ -417,6 +417,12 @@ export const databaseService = {
       ).catch((error) => console.error(`Failed to delete container:`, error));
     }
 
+    // …and the copies kept off the server. Leaving them would keep a deleted customer's data
+    // in the operator's storage indefinitely, which is not what "delete" means.
+    import('./offsite-backup.service')
+      .then(({ offsiteBackupService }) => offsiteBackupService.purge(organizationId, databaseId))
+      .catch(() => undefined);
+
     // Delete database record
     await databaseRepository.delete(databaseId);
     adminNotify('database.deleted', { databaseId });

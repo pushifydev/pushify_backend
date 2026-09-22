@@ -31,6 +31,8 @@ export interface ActivityLogWithDetails {
   description: string;
   metadata: Record<string, unknown>;
   createdAt: Date;
+  /** Where the action came from — what a compliance review asks for */
+  ipAddress: string | null;
   user: {
     id: string;
     name: string | null;
@@ -108,6 +110,7 @@ class ActivityService {
         description: activityLogs.description,
         metadata: activityLogs.metadata,
         createdAt: activityLogs.createdAt,
+        ipAddress: activityLogs.ipAddress,
         userId: activityLogs.userId,
         projectId: activityLogs.projectId,
         userName: users.name,
@@ -131,6 +134,7 @@ class ActivityService {
         description: log.description,
         metadata: log.metadata as Record<string, unknown>,
         createdAt: log.createdAt,
+        ipAddress: log.ipAddress,
         user: log.userId
           ? {
               id: log.userId,

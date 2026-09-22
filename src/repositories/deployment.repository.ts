@@ -15,6 +15,10 @@ interface CreateDeploymentInput {
   triggeredById?: string;
   isPreview?: boolean;
   previewPrNumber?: number;
+  /** production (default) | staging */
+  environment?: string;
+  /** The staging deployment this production deploy promotes */
+  promotedFromDeploymentId?: string;
   rollbackFromDeploymentId?: string; // For quick rollback
 }
 
@@ -45,6 +49,25 @@ export const deploymentRepository = {
   /**
    * Find deployment by ID with project relation
    */
+  /** The newest deployment of one environment, optionally in one status. */
+  async findLatestByEnvironment(projectId: string, environment: string, status?: string) {
+    const [row] = await db
+      .select()
+      .from(deployments)
+      .where(
+        status
+          ? and(
+              eq(deployments.projectId, projectId),
+              eq(deployments.environment, environment),
+              eq(deployments.status, status as typeof deployments.$inferSelect['status'])
+            )
+          : and(eq(deployments.projectId, projectId), eq(deployments.environment, environment))
+      )
+      .orderBy(desc(deployments.createdAt))
+      .limit(1);
+    return row;
+  },
+
   async findByIdWithProject(id: string) {
     return db.query.deployments.findFirst({
       where: eq(deployments.id, id),
@@ -129,6 +152,8 @@ export const deploymentRepository = {
         status: 'pending',
         isPreview: input.isPreview ?? false,
         previewPrNumber: input.previewPrNumber,
+        environment: input.environment ?? 'production',
+        promotedFromDeploymentId: input.promotedFromDeploymentId,
         rollbackFromDeploymentId: input.rollbackFromDeploymentId,
       })
       .returning();

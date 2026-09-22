@@ -369,6 +369,25 @@ export async function pickSwitchPort(
   throw new Error(`No available ports in range ${r.min}-${r.max}`);
 }
 
+/** `count` free ports for an app's extra replicas, avoiding everything already in use. */
+export async function pickFreePorts(
+  ssh: SSHClient,
+  count: number,
+  avoid: number[] = [],
+  range?: PortRange
+): Promise<number[]> {
+  if (count <= 0) return [];
+  const r = range ?? { min: MIN_PORT, max: MAX_PORT };
+  const registry = await loadRegistry(ssh);
+  const taken = new Set<number>([...(await getUsedPorts(ssh)), ...registry.assignments.map((a) => a.port), ...avoid]);
+  const ports: number[] = [];
+  for (let p = r.min; p <= r.max && ports.length < count; p++) {
+    if (!taken.has(p)) ports.push(p);
+  }
+  if (ports.length < count) throw new Error(`No free ports for ${count} replicas in ${r.min}-${r.max}`);
+  return ports;
+}
+
 /** Record the port a project now serves on, replacing any earlier assignment for it. */
 export async function recordPortAssignment(
   ssh: SSHClient,

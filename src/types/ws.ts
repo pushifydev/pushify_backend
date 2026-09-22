@@ -54,6 +54,8 @@ export interface HealthCheckResultEvent {
   healthy: boolean;
   responseTimeMs?: number;
   consecutiveFailures: number;
+  /** up | down | unknown — what monitoring says right now (services/app-health.service.ts) */
+  status?: string;
 }
 
 export interface NotificationNewEvent {

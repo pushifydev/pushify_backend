@@ -16,6 +16,8 @@ export type CreateProjectInput = {
   startCommand?: string;
   rootDirectory?: string;
   dockerfilePath?: string;
+  /** Deploy a ready image instead of building the repository */
+  dockerImage?: string | null;
   port?: number;
   autoDeploy?: boolean;
   serverId?: string;
@@ -28,11 +30,20 @@ export type UpdateProjectInput = {
   description?: string;
   gitRepoUrl?: string;
   gitBranch?: string;
+  /** Pushes here deploy the staging copy; null turns staging off */
+  stagingBranch?: string | null;
+  replicas?: number;
   gitProvider?: string;
   buildCommand?: string;
   startCommand?: string;
   rootDirectory?: string;
   dockerfilePath?: string;
+  /** Deploy a ready image instead of building the repository; null goes back to the repository */
+  dockerImage?: string | null;
+  /** Deploy the repository as a compose stack: the compose file's path; null builds it instead */
+  composePath?: string | null;
+  composeService?: string | null;
+  composePort?: number | null;
   port?: number;
   autoDeploy?: boolean;
   serverId?: string | null; // Allow null to clear server assignment

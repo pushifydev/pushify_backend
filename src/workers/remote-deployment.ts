@@ -6,7 +6,17 @@ import { domains } from '../db/schema/projects';
 import { SSHClient } from '../utils/ssh';
 import { syncWorkerContainersOnDeploy } from './worker-process-sync';
 import { decrypt } from '../lib/encryption';
-import { buildImage, checkDocker, getImageId, tagImage, cleanupOldImages, imageExists, blueGreenDeploy, APP_CONTAINER_HARDENING } from './remote-docker';
+import {
+  buildImage,
+  checkDocker,
+  getImageId,
+  tagImage,
+  cleanupOldImages,
+  imageExists,
+  blueGreenDeploy,
+  startExtraReplicas,
+  APP_CONTAINER_HARDENING,
+} from './remote-docker';
 import { addAutoSubdomainSite, reloadNginx, CATCH_ALL_TLS_SCRIPT } from './nginx-manager';
 import { shSingleQuote } from './shell';
 import { syncProjectSites, describeSyncedDomains } from '../lib/project-sites';
@@ -30,11 +40,22 @@ import {
   getCalcomAllowedHostPlaceholder,
 } from '../marketplace/helpers';
 import { buildCalcomImageScript, calcomImageTag } from '../marketplace/calcom-image';
-import { getOrAssignPort, pickSwitchPort, recordPortAssignment } from './port-manager';
+import { getOrAssignPort, pickFreePorts, pickSwitchPort, recordPortAssignment } from './port-manager';
 import { generateDockerfile } from './dockerfile';
 import { normalizeRootDirectory } from '../lib/normalize-root-directory';
 import { checkServerDiskSpace } from '../lib/server-disk-check';
 import { domainService } from '../services/domain.service';
+import { checkComposeFile, checkVolumes } from '../lib/host-access-guard';
+import { deployComposeFromRepo, findComposeFile } from './compose-deploy';
+import {
+  buildLoginCommand,
+  buildLogoutCommand,
+  credentialsToApply,
+  dockerConfigDir,
+  dockerConfigPrefix,
+  validateImageReference,
+  type RegistryCredential,
+} from '../lib/registry';
 import path from 'path';
 
 export interface RemoteDeploymentConfig {
@@ -64,8 +85,32 @@ export interface RemoteDeploymentConfig {
   onProgress: (message: string) => void;
   /** e.g. `-pr-42` for preview deployments (separate container/image from production) */
   deploySuffix?: string;
+  /** Which copy of the project this is: staging gets its own container, port and domains */
+  environment?: 'production' | 'staging';
+  /** How many containers to run behind nginx (1 = a single container, as before) */
+  replicas?: number;
   /** Preview vhost to serve the PR container under (`pr-42-<slug>.<PREVIEW_BASE_URL>`) */
   previewDomain?: string;
+  /**
+   * The organization's private-registry logins, decrypted. Applied before the build and any
+   * pull, into a config directory removed when the deploy ends.
+   */
+  registryCredentials?: RegistryCredential[];
+  /**
+   * Deploy this image instead of building a repository (`ghcr.io/acme/api:1.4`). The project
+   * then needs no git repository; each deploy pulls the reference again.
+   */
+  dockerImage?: string;
+  /**
+   * Deploy the repository as a Docker Compose stack instead of building it: the path of the
+   * compose file, relative to the project's root directory. Opt-in — most repositories carry a
+   * compose file meant for local development.
+   */
+  composePath?: string | null;
+  /** Which service nginx proxies to, when the file publishes more than one */
+  composeService?: string | null;
+  /** The container port of that service, when it is not the first one it publishes */
+  composePort?: number | null;
   // Marketplace fields
   marketplace?: {
     id?: string;
@@ -213,9 +258,9 @@ async function getServerAndConnect(serverId: string): Promise<{
 /**
  * Get primary domain for a project
  */
-async function getPrimaryDomain(projectId: string): Promise<string | null> {
+async function getPrimaryDomain(projectId: string, environment: 'production' | 'staging' = 'production'): Promise<string | null> {
   const domain = await db.query.domains.findFirst({
-    where: eq(domains.projectId, projectId),
+    where: and(eq(domains.projectId, projectId), eq(domains.environment, environment)),
     orderBy: (domains, { desc }) => [desc(domains.isPrimary)],
   });
 
@@ -235,6 +280,9 @@ async function configureProjectDomains(
     serverIp: string | null;
     serverId: string;
     primaryDomain: string;
+    environment?: 'production' | 'staging';
+    /** Every replica's port; nginx balances across them when there is more than one */
+    containerPorts?: number[];
     onProgress: (msg: string) => void;
   },
 ): Promise<boolean> {
@@ -242,7 +290,9 @@ async function configureProjectDomains(
   const sync = await syncProjectSites(ssh, {
     projectId: input.projectId,
     projectSlug: input.projectSlug,
+    environment: input.environment ?? 'production',
     containerPort: input.hostPort,
+    containerPorts: input.containerPorts,
     serverIp: input.serverIp,
     requestCertificates: true,
     sharedHost: isSharedRunnerServer(input.serverId),
@@ -339,11 +389,11 @@ async function pointPublicPort(
   ssh: SSHClient,
   slug: string,
   publicPort: number,
-  containerPort: number,
+  containerPorts: number | number[],
   retireOldContainer: (() => Promise<void>) | null,
   onProgress: (msg: string) => void,
 ): Promise<boolean> {
-  const written = await writePublicPortProxy(ssh, slug, publicPort, containerPort);
+  const written = await writePublicPortProxy(ssh, slug, publicPort, containerPorts);
   if (!written.success) throw new Error(`Could not route public port ${publicPort}: ${written.message}`);
   let retired = false;
   const holder = await containerHoldingPort(ssh, publicPort);
@@ -358,7 +408,9 @@ async function pointPublicPort(
   if (!(await publicPortAnswers(ssh, publicPort))) {
     throw new Error(`nginx is not answering on public port ${publicPort} after the reload`);
   }
-  onProgress(`🔀 Public port ${publicPort} → new container (127.0.0.1:${containerPort})`);
+  onProgress(
+    `🔀 Public port ${publicPort} → new container${Array.isArray(containerPorts) && containerPorts.length > 1 ? 's' : ''} (127.0.0.1:${Array.isArray(containerPorts) ? containerPorts.join(', ') : containerPorts})`
+  );
   return retired;
 }
 
@@ -397,7 +449,7 @@ async function applyRunnerIsolation(ssh: SSHClient, onProgress: (msg: string) =>
 /**
  * Setup Nginx and domain for a deployed project
  */
-async function setupNginxAndDomain(
+export async function setupNginxAndDomain(
   ssh: SSHClient,
   server: typeof servers.$inferSelect,
   projectId: string,
@@ -505,7 +557,15 @@ export async function deployToRemoteServer(
     onProgress,
     deploySuffix = '',
     previewDomain,
+    environment = 'production',
+    replicas: requestedReplicas = 1,
+    registryCredentials = [],
   } = config;
+  // Previews stay single-container; production and staging can run several.
+  const replicas = Math.max(1, Math.min(10, Math.round(requestedReplicas)));
+  // A PR preview and a staging copy both run beside production; only a preview gets the
+  // PR treatment (no domains of its own, no auto subdomain for the project).
+  const isPreview = !!deploySuffix && environment !== 'staging';
 
   const rootDirectory = normalizeRootDirectory(rootDirectoryInput);
   const deploySlug = `${projectSlug}${deploySuffix}`;
@@ -521,6 +581,8 @@ export async function deployToRemoteServer(
   }
 
   let ssh: SSHClient | null = null;
+  /** Set once this deploy has logged in to a private registry; removed in `finally`. */
+  let dockerConfig: string | null = null;
 
   try {
     // Connect to server
@@ -535,6 +597,23 @@ export async function deployToRemoteServer(
       throw new Error(`Docker is not available on server: ${dockerStatus.error}`);
     }
     onProgress(`✅ Docker ${dockerStatus.version} is available`);
+
+    // Private registries: log in for this deploy only. The logins live in a directory of
+    // their own that is deleted in `finally`, so a shared runner never keeps one customer's
+    // token for the next deploy, and the server's own docker config is never touched.
+    const applied = credentialsToApply(registryCredentials);
+    if (applied.length > 0) {
+      dockerConfig = dockerConfigDir(deploymentId);
+      for (const credential of applied) {
+        const login = await ssh.exec(buildLoginCommand(dockerConfig, credential));
+        if (login.code !== 0) {
+          // A wrong token must say so here, not as "pull access denied" three minutes later
+          const reason = (login.stderr || login.stdout).trim().split('\n').pop() || 'docker login failed';
+          throw new Error(`Could not sign in to ${credential.registry} as "${credential.name}": ${reason}`);
+        }
+        onProgress(`🔑 Signed in to ${credential.registry} (${credential.name})`);
+      }
+    }
 
     // One host for many customers: apps are published on loopback only (nginx is the way in)
     // and the isolation rules are re-applied before anything of this deploy runs.
@@ -666,6 +745,11 @@ export async function deployToRemoteServer(
           );
         }
       }
+      // Many customers on one box: a stack may not take the host with it (the Docker socket,
+      // privileged, network_mode: host …). On the customer's own server this is their call.
+      const composeProblem = checkComposeFile(composeContent, { sharedHost, projectDir });
+      if (composeProblem) throw new Error(`Refusing to deploy: ${composeProblem}`);
+
       onProgress(`📝 Writing docker-compose.yml...`);
       await ssh.uploadFile(composeContent, composePath);
 
@@ -918,7 +1002,7 @@ export async function deployToRemoteServer(
       }
 
       onProgress(`📦 Pulling Docker image: ${dockerImage}`);
-      const pullResult = await ssh.exec(`docker pull ${dockerImage}`);
+      const pullResult = await ssh.exec(`${dockerConfigPrefix(dockerConfig)}docker pull ${dockerImage}`);
       if (pullResult.code !== 0) {
         throw new Error(`Failed to pull image: ${pullResult.stderr}`);
       }
@@ -950,6 +1034,11 @@ export async function deployToRemoteServer(
       const envFlags = Object.entries(envVars)
         .map(([k, v]) => `-e ${k}='${v.replace(/'/g, "'\\''")}'`)
         .join(' ');
+
+      // Same rule for a single container: on a shared runner it mounts its own directory only.
+      // Portainer's whole point is the server's Docker socket, so it lands here.
+      const mountProblem = checkVolumes(volumes, { sharedHost, projectDir });
+      if (mountProblem) throw new Error(`Refusing to deploy: ${mountProblem}`);
 
       // Build volume flags. Templates can specify volumes in two formats:
       //   '/path/in/container'        → host path auto-derived from project dir
@@ -1040,56 +1129,100 @@ export async function deployToRemoteServer(
       };
     }
 
-    // ── Standard git deploy flow ──
-    await ssh.exec(`rm -rf ${repoDir}`);
+    // ── Standard deploy flow: a repository to build, or a ready image to run ──
+    // An image project has no repository. Instead of a second deploy path (the marketplace one
+    // has no blue-green, no replicas, no staging), the image becomes a one-line build context:
+    // `FROM <image>` inherits its CMD, ENV and ports, and everything after this is unchanged.
+    const deployImage = config.dockerImage?.trim();
+    if (deployImage) {
+      const imageError = validateImageReference(deployImage);
+      if (imageError) throw new Error(`Refusing to deploy: ${imageError}`);
+      onProgress(`📦 Deploying image: ${deployImage}`);
+      await ssh.exec(`rm -rf ${repoDir} && mkdir -p ${repoDir}`);
+      await ssh.uploadFile(`FROM ${deployImage}\n`, path.posix.join(repoDir, 'Dockerfile'));
+    } else {
+      await ssh.exec(`rm -rf ${repoDir}`);
 
-    // Clone repository
-    onProgress(`📥 Cloning repository: ${repoUrl}`);
+      // Clone repository
+      onProgress(`📥 Cloning repository: ${repoUrl}`);
 
-    // Build clone URL with token if available
-    let cloneUrl = repoUrl;
-    if (accessToken && repoUrl.includes('github.com')) {
-      cloneUrl = repoUrl.replace('https://', `https://x-access-token:${accessToken}@`);
-    } else if (accessToken && repoUrl.includes('gitlab')) {
-      try {
-        const parsed = new URL(repoUrl);
-        cloneUrl = `${parsed.protocol}//oauth2:${accessToken}@${parsed.host}${parsed.pathname}`;
-      } catch {
-        cloneUrl = repoUrl.replace('https://', `https://oauth2:${accessToken}@`);
+      // Build clone URL with token if available
+      let cloneUrl = repoUrl;
+      if (accessToken && repoUrl.includes('github.com')) {
+        cloneUrl = repoUrl.replace('https://', `https://x-access-token:${accessToken}@`);
+      } else if (accessToken && repoUrl.includes('gitlab')) {
+        try {
+          const parsed = new URL(repoUrl);
+          cloneUrl = `${parsed.protocol}//oauth2:${accessToken}@${parsed.host}${parsed.pathname}`;
+        } catch {
+          cloneUrl = repoUrl.replace('https://', `https://oauth2:${accessToken}@`);
+        }
       }
-    }
 
-    // Every value single-quoted and `--` before the URL: these came from the customer and this
-    // runs as root (a branch like `x;curl …|sh` or a URL with `$(…)` used to execute).
-    const cloneCmd =
-      `git clone --depth 1 ${branch ? `--branch=${shSingleQuote(branch)} ` : ''}` +
-      `-- ${shSingleQuote(cloneUrl)} ${shSingleQuote(repoDir)}`;
+      // Every value single-quoted and `--` before the URL: these came from the customer and this
+      // runs as root (a branch like `x;curl …|sh` or a URL with `$(…)` used to execute).
+      const cloneCmd =
+        `git clone --depth 1 ${branch ? `--branch=${shSingleQuote(branch)} ` : ''}` +
+        `-- ${shSingleQuote(cloneUrl)} ${shSingleQuote(repoDir)}`;
 
-    const cloneResult = await ssh.exec(cloneCmd);
-    if (cloneResult.code !== 0) {
-      throw new Error(`Failed to clone repository: ${redactUrlCredentials(cloneResult.stderr)}`);
-    }
-    // git writes the clone URL — token included — into .git/config. Anything that later copies
-    // the checkout (a static site's web root did) would publish it; keep only the clean URL.
-    if (cloneUrl !== repoUrl) {
-      const scrub = await ssh.exec(`git -C ${shSingleQuote(repoDir)} remote set-url origin ${shSingleQuote(repoUrl)}`);
-      if (scrub.code !== 0) {
-        await ssh.exec(`rm -rf ${shSingleQuote(repoDir)}`);
-        throw new Error('Could not remove the access token from the cloned repository');
+      const cloneResult = await ssh.exec(cloneCmd);
+      if (cloneResult.code !== 0) {
+        throw new Error(`Failed to clone repository: ${redactUrlCredentials(cloneResult.stderr)}`);
       }
-    }
-    onProgress('✅ Repository cloned');
+      // git writes the clone URL — token included — into .git/config. Anything that later copies
+      // the checkout (a static site's web root did) would publish it; keep only the clean URL.
+      if (cloneUrl !== repoUrl) {
+        const scrub = await ssh.exec(`git -C ${shSingleQuote(repoDir)} remote set-url origin ${shSingleQuote(repoUrl)}`);
+        if (scrub.code !== 0) {
+          await ssh.exec(`rm -rf ${shSingleQuote(repoDir)}`);
+          throw new Error('Could not remove the access token from the cloned repository');
+        }
+      }
+      onProgress('✅ Repository cloned');
 
-    const disk = await checkServerDiskSpace(ssh);
-    onProgress(disk.message);
-    if (!disk.ok) {
-      throw new Error(
-        `Server disk is critically full (${disk.usedPercent}% used, ${disk.availGb} GB free). Free space on the server before deploying.`
-      );
+      const disk = await checkServerDiskSpace(ssh);
+      onProgress(disk.message);
+      if (!disk.ok) {
+        throw new Error(
+          `Server disk is critically full (${disk.usedPercent}% used, ${disk.availGb} GB free). Free space on the server before deploying.`
+        );
+      }
+
+    }
+
+    const workDir = rootDirectory === '.' ? repoDir : path.posix.join(repoDir, rootDirectory);
+
+    // ── The customer's own docker-compose.yml: deploy the repository as a stack ──
+    // Only when the project asks for it. Most repositories carry a compose file for local
+    // development — one that mounts the source and runs a dev server — so picking it up on its
+    // own would quietly change how an existing project deploys.
+    if (!deployImage && config.composePath) {
+      const composeFile = await findComposeFile(ssh, workDir, config.composePath);
+      if (!composeFile) {
+        throw new Error(
+          `Refusing to deploy: no compose file at ${config.composePath} (looked in ${workDir}). Clear the setting to build the repository instead.`
+        );
+      }
+      {
+        return await deployComposeFromRepo(ssh, {
+          server,
+          projectId,
+          projectSlug,
+          deploySlug,
+          projectDir,
+          workDir,
+          composeFile,
+          service: config.composeService ?? null,
+          port: config.composePort ?? null,
+          envVars,
+          sharedHost,
+          dockerConfig,
+          onProgress,
+        });
+      }
     }
 
     // Check if Dockerfile exists
-    const workDir = rootDirectory === '.' ? repoDir : path.posix.join(repoDir, rootDirectory);
     const dockerfileCheckPath = dockerfilePath
       ? path.posix.join(repoDir, dockerfilePath)
       : path.posix.join(workDir, 'Dockerfile');
@@ -1171,7 +1304,8 @@ export async function deployToRemoteServer(
 
     // Build Docker image
     const imageName = `pushify-${deploySlug}`;
-    const imageTag = commitHash.substring(0, 7);
+    // An image deploy has no commit; the deployment's own id keeps each one separate
+    const imageTag = (deployImage ? deploymentId : commitHash).substring(0, 7);
 
     onProgress(`🔨 Building Docker image: ${imageName}:${imageTag}`);
 
@@ -1190,6 +1324,8 @@ export async function deployToRemoteServer(
       buildArgs: Object.keys(buildArgs).length > 0 ? buildArgs : undefined,
       framework: resolvedFramework,
       buildpackId: resolvedBuildpackId,
+      dockerConfig,
+      pullBase: !!deployImage,
       onProgress,
     });
 
@@ -1290,24 +1426,67 @@ export async function deployToRemoteServer(
     // The health-checked container is the one that stays; it now owns the project's port.
     hostPort = blueGreenResult.tempPort ?? switchPort;
     await recordPortAssignment(ssh, deploySlug, hostPort);
+
+    // More than one replica: the rest start beside it, each on its own port, and nginx
+    // balances across all of them (nginx-manager's upstream).
+    const containerPorts = [hostPort];
+    if (replicas > 1 && blueGreenResult.newContainerName) {
+      const slot = blueGreenResult.newContainerName.endsWith('-blue') ? 'blue' : 'green';
+      const extraPorts = await pickFreePorts(ssh, replicas - 1, [hostPort, ...(publicPort ? [publicPort] : [])]);
+      onProgress(`👥 Starting ${replicas - 1} more replica(s)...`);
+      const extra = await startExtraReplicas(ssh, {
+        imageName: `${imageName}:${imageTag}`,
+        containerName: `pushify-${deploySlug}`,
+        hostPort,
+        containerPort,
+        envVars,
+        volumes: config.volumes,
+        networkMode: appNetwork,
+        bindAddress: loopbackOnly || publicPort ? '127.0.0.1' : undefined,
+        framework: resolvedFramework,
+        buildpackId: resolvedBuildpackId,
+        replicaPorts: extraPorts,
+        slot,
+        onProgress,
+      });
+      if (!extra.success) {
+        await ssh.exec(`docker rm -f ${blueGreenResult.newContainerName} 2>/dev/null || true`);
+        throw new Error(`Replicas failed to start:\n${extra.logs}`);
+      }
+      containerPorts.push(...extraPorts);
+      for (const [index, port] of extraPorts.entries()) {
+        await recordPortAssignment(ssh, `${deploySlug}#${index + 2}`, port);
+        if (!loopbackOnly && !publicPort) await openFirewallPort(ssh, port, onProgress);
+      }
+    }
+
     if (blueGreenResult.oldContainerName) {
       const oldContainerName = blueGreenResult.oldContainerName;
+      const oldSlot = oldContainerName.endsWith('-blue') ? 'blue' : 'green';
       const retireSsh = ssh; // narrowed here; the closure runs before the connection is released
       retireOldContainer = async () => {
         onProgress(`🗑️ Retiring old container: ${oldContainerName}`);
         await retireSsh.exec(`docker rm -f ${oldContainerName} 2>/dev/null || true`);
+        // …and the replicas of that slot, however many it had (the count may have changed)
+        await retireSsh.exec(
+          `docker ps -aq --filter name='^pushify-${deploySlug}-${oldSlot}-[0-9]+$' | xargs -r docker rm -f 2>/dev/null || true`
+        );
         if (previousHostPort !== hostPort && previousHostPort !== publicPort) {
           await closeFirewallPort(retireSsh, previousHostPort, onProgress);
         }
       };
     }
-    onProgress(`✅ New container healthy on port ${hostPort}`);
+    onProgress(
+      replicas > 1
+        ? `✅ ${replicas} replicas healthy on ports ${containerPorts.join(', ')}`
+        : `✅ New container healthy on port ${hostPort}`
+    );
 
     // Open firewall port for external access (root-first; works on BYOS without sudo/ufw).
     // Not when the port is on loopback: then nginx is the only way in.
     if (publicPort) {
       await openFirewallPort(ssh, publicPort, onProgress);
-      if (await pointPublicPort(ssh, deploySlug, publicPort, hostPort, retireOldContainer, onProgress)) {
+      if (await pointPublicPort(ssh, deploySlug, publicPort, containerPorts, retireOldContainer, onProgress)) {
         retireOldContainer = null;
       }
     } else {
@@ -1346,7 +1525,7 @@ export async function deployToRemoteServer(
     // A preview deploy (deploySuffix) must never touch the project's domains: this block would
     // repoint the primary domain's vhost at the PR container's port, and a project without a
     // domain would get its production auto-subdomain created for the preview.
-    let primaryDomain = deploySuffix ? null : await getPrimaryDomain(projectId);
+    let primaryDomain = isPreview ? null : await getPrimaryDomain(projectId, environment);
 
     const { env: envConfig } = await import('../config/env');
     const previewBaseUrl = envConfig.PREVIEW_BASE_URL;
@@ -1377,11 +1556,11 @@ export async function deployToRemoteServer(
       primaryDomain = null;
     }
 
-    if (!primaryDomain && !deploySuffix) {
+    if (!primaryDomain && !isPreview) {
       if (previewBaseUrl && hasWildcardSSL) {
         onProgress('🌐 No domain configured, creating auto subdomain...');
         try {
-          const autoDomain = await domainService.createAutoSubdomain(projectId, projectSlug, serverId);
+          const autoDomain = await domainService.createAutoSubdomain(projectId, deploySlug, serverId, environment);
           if (autoDomain) {
             primaryDomain = autoDomain.domain;
             onProgress(`✅ Auto subdomain created: ${primaryDomain}`);
@@ -1398,19 +1577,27 @@ export async function deployToRemoteServer(
     if (primaryDomain) {
       await configureProjectDomains(ssh, {
         projectId,
-        projectSlug,
+        projectSlug: deploySlug,
+        environment,
         hostPort,
+        containerPorts,
         serverIp: server.ipv4,
         serverId: server.id,
         primaryDomain,
         onProgress,
       });
     }
-    if (hasWildcardSSL && !deploySuffix && server.ipv4) {
+    if (hasWildcardSSL && !isPreview && server.ipv4) {
       const autoDomains = await db
         .select({ domain: domains.domain })
         .from(domains)
-        .where(and(eq(domains.projectId, projectId), eq(domains.isAutoGenerated, true)));
+        .where(
+          and(
+            eq(domains.projectId, projectId),
+            eq(domains.isAutoGenerated, true),
+            eq(domains.environment, environment)
+          )
+        );
       await ensureAutoSubdomainDns(autoDomains.map((d) => d.domain), server.ipv4, onProgress);
     }
 
@@ -1418,7 +1605,7 @@ export async function deployToRemoteServer(
     // posted to the PR actually resolves. Never touches the project's own domains. Without the
     // wildcard cert (a person's own server) the preview stays on its IP:port.
     let previewVhostUrl: string | null = null;
-    if (deploySuffix && previewDomain) {
+    if (isPreview && previewDomain) {
       if (isPushifyAutoSubdomain(previewDomain) && hasWildcardSSL) {
         onProgress(`🌐 Configuring Nginx for preview: ${previewDomain}`);
         const addResult = await addAutoSubdomainSite(ssh, {
@@ -1476,6 +1663,10 @@ export async function deployToRemoteServer(
       error: errorMessage,
     };
   } finally {
+    // The registry tokens do not outlive the deploy
+    if (ssh && dockerConfig) {
+      await ssh.exec(buildLogoutCommand(dockerConfig)).catch(() => undefined);
+    }
     // Disconnect SSH
     if (ssh) {
       ssh.disconnect();
