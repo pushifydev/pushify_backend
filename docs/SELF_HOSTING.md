@@ -69,6 +69,24 @@ settings → *Docker image* (`ghcr.io/acme/api:1.4`) and every deploy pulls that
 moving the tag and redeploying ships the new image. Such a project needs a server; the no-server
 fallback cannot do it.
 
+### Database backups off the server
+
+A database backup is written to `/opt/pushify/backups` on the server the database runs on. That
+copy survives a dropped table and nothing else: lose the disk, the server or the provider account
+and the backups go with it, which is the case people keep backups for.
+
+Set `DB_BACKUP_RCLONE_REMOTE` (an rclone remote — S3, R2, B2, a Hetzner Storage Box over sftp, or
+an rclone `crypt` remote over any of them, which encrypts the dumps before they leave) and every
+dump is streamed off the server after it is written. The stream goes through the control plane,
+which is where the storage credentials stay — putting them on customer servers would mean one
+compromised box could read, or delete, every other customer's backups.
+
+A restore looks for the dump on the server first and falls back to the off-site copy, so a
+database can be restored onto a server that has never seen the file. `DB_BACKUP_REMOTE_KEEP_DAYS`
+(30 by default) prunes the remote copies; deleting a database removes its off-site copies too.
+rclone must be installed on the control plane — the same binary the control-plane backup script
+uses.
+
 ### Single sign-on
 
 **Settings → Single sign-on** connects the organization's own identity provider over OpenID

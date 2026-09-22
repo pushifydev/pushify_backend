@@ -6,6 +6,7 @@ import { decrypt } from '../lib/encryption';
 import { SSHClient } from '../utils/ssh';
 import { wsManager } from '../lib/ws';
 import { logger } from '../lib/logger';
+import { env } from '../config/env';
 import { db } from '../db';
 import { eq } from 'drizzle-orm';
 import { servers } from '../db/schema/servers';
@@ -46,6 +47,22 @@ function backupDir(databaseName: string): string {
 
 // ============ Service ============
 
+/**
+ * What a customer sees of a backup. `offsitePath` is the operator's storage layout, so it is
+ * reported as a yes/no rather than handed out; `restored` is an internal step of a restore and
+ * reads as `completed` once it is over.
+ */
+function toPublicBackup<T extends { status: string; offsitePath?: string | null; offsiteStatus?: string | null }>(
+  backup: T
+): Omit<T, 'offsitePath'> & { offsiteCopy: boolean } {
+  const { offsitePath, ...rest } = backup;
+  return {
+    ...(rest as Omit<T, 'offsitePath'>),
+    status: backup.status === 'restored' ? 'completed' : backup.status,
+    offsiteCopy: !!offsitePath,
+  };
+}
+
 export const databaseBackupService = {
   // List backups for a database
   async listBackups(
@@ -65,7 +82,7 @@ export const databaseBackupService = {
     }
 
     const backups = await databaseRepository.findBackupsByDatabase(databaseId);
-    return backups.map((backup) => (backup.status === 'restored' ? { ...backup, status: 'completed' } : backup));
+    return backups.map(toPublicBackup);
   },
 
   // Get single backup
@@ -179,7 +196,8 @@ export const databaseBackupService = {
       database.databaseName,
       fileName,
       bkDir,
-      filePath
+      filePath,
+      { organizationId: database.organizationId, retentionDays }
     ).catch((error) => {
       logger.error({ error, databaseId, backupId: backup.id }, 'Backup execution failed');
     });
@@ -199,7 +217,8 @@ export const databaseBackupService = {
     databaseName: string,
     fileName: string,
     bkDir: string,
-    filePath: string
+    filePath: string,
+    offsite: { organizationId: string; retentionDays: number }
   ) {
     const ssh = new SSHClient();
     try {
@@ -225,12 +244,31 @@ export const databaseBackupService = {
       const sizeBytes = parseInt(sizeResult.stdout.trim(), 10);
       const sizeMb = Math.round(sizeBytes / (1024 * 1024) * 100) / 100;
 
+      // Copy it off this server. A dump next to the data survives a dropped table and nothing
+      // else; the copy that matters is the one somewhere else. Never fails the backup — a
+      // backup on the server is still a backup, and the outcome is recorded either way.
+      const { offsiteBackupService } = await import('./offsite-backup.service');
+      const copy = await offsiteBackupService.upload(ssh, filePath, {
+        organizationId: offsite.organizationId,
+        databaseId,
+        fileName,
+      });
+
       // Update backup record
       await databaseRepository.updateBackup(backupId, {
         status: 'completed',
         sizeMb: Math.max(1, Math.round(sizeMb)),
         completedAt: new Date(),
+        offsitePath: copy.path ?? null,
+        offsiteStatus: copy.status,
       });
+
+      if (copy.status === 'uploaded') {
+        // Retention for the off-site copies runs here, where the remote is reachable
+        offsiteBackupService
+          .prune(offsite.organizationId, databaseId, env.DB_BACKUP_REMOTE_KEEP_DAYS)
+          .catch(() => undefined);
+      }
 
       // Update last backup time on database
       await databaseRepository.update(databaseId, {
@@ -337,7 +375,8 @@ export const databaseBackupService = {
       database.username,
       decrypt(database.password),
       database.databaseName,
-      backup.filePath
+      backup.filePath,
+      backup.offsitePath
     ).catch((error) => {
       logger.error({ error, databaseId, backupId }, 'Restore execution failed');
     });
@@ -355,7 +394,8 @@ export const databaseBackupService = {
     username: string,
     password: string,
     databaseName: string,
-    filePath: string
+    filePath: string,
+    offsitePath?: string | null
   ) {
     const ssh = new SSHClient();
     try {
@@ -364,6 +404,22 @@ export const databaseBackupService = {
         username: 'root',
         privateKey: decrypt(server.sshPrivateKey!),
       });
+
+      // The dump may not be on this server: the database was moved, the server was rebuilt, or
+      // the disk is what was lost — the case the off-site copy exists for. Fetch it back first.
+      if (!(await ssh.fileExists(filePath))) {
+        if (!offsitePath) {
+          throw new Error(
+            'The backup file is not on the server and there is no off-site copy of it. ' +
+              'Set DB_BACKUP_RCLONE_REMOTE so future backups are kept elsewhere too.'
+          );
+        }
+        const { offsiteBackupService } = await import('./offsite-backup.service');
+        await ssh.exec(`mkdir -p ${filePath.replace(/\/[^/]+$/, '')}`);
+        const fetched = await offsiteBackupService.download(ssh, offsitePath, filePath);
+        if (!fetched) throw new Error('The off-site copy of this backup could not be read back');
+        logger.info({ backupId, offsitePath }, 'Restored the backup file from off-site storage');
+      }
 
       const restoreCmd = buildRestoreCommand(containerName, type, username, password, databaseName, filePath);
       const result = await ssh.exec(restoreCmd);

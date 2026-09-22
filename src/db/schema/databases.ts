@@ -101,6 +101,15 @@ export const databaseBackups = pgTable('database_backups', {
   sizeMb: integer('size_mb'),
   filePath: text('file_path'), // Path to backup file on server
 
+  /**
+   * The copy kept somewhere other than the server the database runs on. A dump beside the data
+   * survives a dropped table and nothing else — losing the disk or the server loses both.
+   * Null when off-site storage is not configured (`DB_BACKUP_RCLONE_REMOTE`).
+   */
+  offsitePath: text('offsite_path'),
+  /** uploaded | failed | skipped — what happened to that copy */
+  offsiteStatus: varchar('offsite_status', { length: 20 }),
+
   // Metadata
   metadata: jsonb('metadata').default({}).notNull(),
   errorMessage: text('error_message'),
