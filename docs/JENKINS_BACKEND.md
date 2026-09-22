@@ -35,6 +35,28 @@ Edit only non-secret overrides in `ecosystem.config.cjs` if needed; secrets stay
 
 ---
 
+## Deploys without an interruption
+
+`scripts/jenkins-deploy.sh` keeps the API answering while it deploys:
+
+- `npm ci` only runs when `package-lock.json` changed (it deletes `node_modules`, which the
+  running API still loads modules from).
+- The build goes to `dist.new` and is moved into place in one step, so the live process never
+  reads a half-written file.
+- `pm2 reload` restarts the API's cluster instances one after the other.
+
+That last part needs **two instances in cluster mode** — the default in
+`ecosystem.config.example.cjs`. An API still running as a single fork process is interrupted for a
+few seconds on every deploy (the script says so at the end). To switch, once:
+
+```bash
+# in ecosystem.config.cjs, for pushify-api: instances: 2, exec_mode: 'cluster'
+pm2 delete pushify-api && pm2 start ecosystem.config.cjs && pm2 save
+```
+
+`pushify-worker` stays a single fork process on purpose: deploys, backups and schedules must not
+run twice.
+
 ## Jenkins job (recommended shell)
 
 ### Standalone repo (`pushifydev/pushify_backend`) — your setup
