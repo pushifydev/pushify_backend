@@ -6,7 +6,7 @@ import { domains } from '../db/schema/projects';
 import { SSHClient } from '../utils/ssh';
 import { syncWorkerContainersOnDeploy } from './worker-process-sync';
 import { decrypt } from '../lib/encryption';
-import { buildImage, checkDocker, getImageId, tagImage, cleanupOldImages, runContainerFromImage, imageExists, blueGreenDeploy, APP_CONTAINER_HARDENING } from './remote-docker';
+import { buildImage, checkDocker, getImageId, tagImage, cleanupOldImages, imageExists, blueGreenDeploy, APP_CONTAINER_HARDENING } from './remote-docker';
 import { addAutoSubdomainSite, reloadNginx } from './nginx-manager';
 import { shSingleQuote } from './shell';
 import { syncProjectSites, describeSyncedDomains } from '../lib/project-sites';
@@ -1425,23 +1425,33 @@ export async function quickRollbackToDeployment(
       onProgress(`🔍 Using assigned port: ${hostPort}`);
     }
 
-    // Run container from existing image (this handles stopping the old container)
-    onProgress(`🐳 Starting container from image: ${fullImageName}`);
-    const runResult = await runContainerFromImage(ssh, {
+    // Same switch as a deploy: the rollback image starts in the other slot on its own port, is
+    // health-checked, nginx is re-pointed, then the current slot is retired. It used to start
+    // `pushify-<slug>` on the project's port — held by the active blue/green slot, so a rollback
+    // after any blue-green deploy failed with "port is already allocated", and nginx was never
+    // re-pointed anyway.
+    onProgress(`🔵🟢 Rolling back to ${fullImageName} (blue-green)...`);
+    const previousHostPort = hostPort;
+    const switchPort = await pickSwitchPort(ssh, hostPort);
+    const blueGreenResult = await blueGreenDeploy(ssh, {
       imageName: fullImageName,
       containerName: `pushify-${projectSlug}`,
       hostPort,
+      tempPort: switchPort,
       containerPort,
       envVars,
       volumes: config.volumes,
       restart: 'unless-stopped',
+      healthCheckTimeout: 60,
       onProgress,
     });
-
-    if (!runResult.success) {
-      throw new Error(`Failed to start container:\n${runResult.logs}`);
+    if (!blueGreenResult.success) {
+      throw new Error(`Rollback failed:\n${blueGreenResult.logs}`);
     }
-    onProgress('✅ Container started successfully');
+    hostPort = blueGreenResult.tempPort ?? switchPort;
+    await recordPortAssignment(ssh, projectSlug, hostPort);
+    onProgress(`✅ Rollback container healthy on port ${hostPort}`);
+    await openFirewallPort(ssh, hostPort, onProgress);
 
     // Wire the app to the shared `pushify` network so it can reach databases by name.
     await connectAppToDatabaseNetwork(ssh, `pushify-${projectSlug}`, onProgress);
@@ -1460,16 +1470,31 @@ export async function quickRollbackToDeployment(
     await tagImage(ssh, fullImageName, `${imageName}:latest`);
     onProgress(`🏷️ Updated latest tag to ${deploymentTag}`);
 
-    // Get primary domain for URL
+    // Point the project's domains at the rollback container, then retire the current slot
     const primaryDomain = await getPrimaryDomain(projectId);
-
-    // Determine deployment URL
-    let deploymentUrl: string;
+    let primaryOnHttps = true;
     if (primaryDomain) {
-      deploymentUrl = `https://${primaryDomain}`;
-    } else {
-      deploymentUrl = `http://${server.ipv4}:${hostPort}`;
+      primaryOnHttps = await configureProjectDomains(ssh, {
+        projectId,
+        projectSlug,
+        hostPort,
+        serverIp: server.ipv4,
+        serverId: server.id,
+        primaryDomain,
+        onProgress,
+      });
     }
+    if (blueGreenResult.oldContainerName) {
+      onProgress(`🗑️ Retiring old container: ${blueGreenResult.oldContainerName}`);
+      await ssh.exec(`docker rm -f ${blueGreenResult.oldContainerName} 2>/dev/null || true`);
+      if (previousHostPort !== hostPort) {
+        await closeFirewallPort(ssh, previousHostPort, onProgress);
+      }
+    }
+
+    const deploymentUrl = primaryDomain
+      ? `${primaryOnHttps ? 'https' : 'http'}://${primaryDomain}`
+      : `http://${server.ipv4}:${hostPort}`;
 
     onProgress(`✅ Rollback successful! URL: ${deploymentUrl}`);
 

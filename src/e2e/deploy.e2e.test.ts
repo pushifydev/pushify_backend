@@ -107,10 +107,17 @@ async function createProject(name: string, repoDir: string, domain: string) {
 }
 
 /** Queue a deployment the way the API does, then run it the way the worker does. */
-async function deploy(projectId: string) {
+async function deploy(projectId: string, options: { rollbackFrom?: string } = {}) {
   const [row] = await db
     .insert(schema.deployments)
-    .values({ projectId, status: 'pending', trigger: 'manual', branch: 'main', triggeredById: userId })
+    .values({
+      projectId,
+      status: 'pending',
+      trigger: options.rollbackFrom ? 'rollback' : 'manual',
+      branch: 'main',
+      triggeredById: userId,
+      rollbackFromDeploymentId: options.rollbackFrom,
+    })
     .returning();
   const job = await loadDeploymentJobById(row.id);
   expect(job).not.toBeNull();
@@ -286,6 +293,80 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
       expect(hostConfig.CapDrop.map((c: string) => c.replace(/^CAP_/, ''))).toContain('NET_RAW');
       expect(hostConfig.SecurityOpt).toContain('no-new-privileges');
       expect(hostConfig.LogConfig).toEqual({ Type: 'json-file', Config: { 'max-file': '3', 'max-size': '10m' } });
+    },
+    900_000
+  );
+  it(
+    'pushify.yaml app: volume survives redeploy and rollback, worker and cron exist, a domain added later works',
+    async () => {
+      onTestFailed(() => console.error(serverState()));
+      const domain = `vol-${run}.127.0.0.1.nip.io`;
+      // Counts requests in a file on the volume, so a lost volume shows up as a reset count.
+      const server = (version: string) =>
+        [
+          "const http = require('http');",
+          "const fs = require('fs');",
+          "http.createServer((req, res) => {",
+          "  let hits = 0;",
+          "  try { hits = Number(fs.readFileSync('/data/hits', 'utf8')) || 0; } catch {}",
+          "  hits += 1;",
+          "  fs.writeFileSync('/data/hits', String(hits));",
+          `  res.end('E2E-VOL ${version} hits=' + hits);`,
+          '}).listen(process.env.PORT || 3000);',
+          '',
+        ].join('\n');
+      const repo = await fixtureRepo({
+        'package.json': JSON.stringify(
+          { name: 'e2e-vol', version: '1.0.0', private: true, scripts: { build: 'echo built', start: 'node server.js' } },
+          null,
+          2
+        ),
+        'server.js': server('v1'),
+        'worker.js': "console.log('worker up'); setInterval(() => {}, 60000);\n",
+        'pushify.yaml': [
+          'volumes:',
+          '  - name: data',
+          '    path: /data',
+          'workers:',
+          '  - name: queue',
+          '    command: node worker.js',
+          'cron:',
+          '  - name: tick',
+          '    schedule: "*/5 * * * *"',
+          '    command: node -e "console.log(1)"',
+          '',
+        ].join('\n'),
+      });
+      const project = await createProject('vol', repo, domain);
+
+      const first = await deploy(project.id);
+      expect(request(`https://${domain}/`).body).toBe('E2E-VOL v1 hits=1');
+      expect(request(`https://${domain}/`).body).toBe('E2E-VOL v1 hits=2');
+
+      // Declared in pushify.yaml, created by the deploy
+      const workers = execSync(`docker ps --filter name=pushify-${project.slug}-worker- --format '{{.Names}}'`, { encoding: 'utf8' });
+      expect(workers).toContain(`pushify-${project.slug}-worker-queue`);
+      const cron = await db.query.scheduledTasks.findFirst({ where: (t, { eq }) => eq(t.projectId, project.id) });
+      expect(cron?.name).toBe('tick');
+
+      // New code, same data
+      await fixtureRepo({ 'server.js': server('v2') }, repo);
+      await deploy(project.id);
+      expect(request(`https://${domain}/`).body).toBe('E2E-VOL v2 hits=3');
+
+      // Back to v1's image — still the same data
+      await deploy(project.id, { rollbackFrom: first.id });
+      expect(request(`https://${domain}/`).body).toBe('E2E-VOL v1 hits=4');
+
+      // A domain added after the fact: verify wires nginx + certificate without a redeploy
+      const late = `late-${run}.127.0.0.1.nip.io`;
+      const [lateRow] = await db.insert(schema.domains).values({ projectId: project.id, domain: late }).returning();
+      const { domainService } = await import('../services/domain.service');
+      await domainService.verify(lateRow.id, project.id, organizationId, userId, 'en');
+      expect(request(`https://${late}/`).body).toBe('E2E-VOL v1 hits=5');
+      expect(request(`https://${domain}/`).body).toBe('E2E-VOL v1 hits=6');
+      const lateStatus = await db.query.domains.findFirst({ where: (d, { eq }) => eq(d.id, lateRow.id) });
+      expect(lateStatus?.sslStatus).toBe('active');
     },
     900_000
   );
