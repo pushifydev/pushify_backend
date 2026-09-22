@@ -12,6 +12,8 @@ export interface SyncWorkerContainersOptions {
   imageRef: string;
   envVars?: Record<string, string>;
   volumes?: string[];
+  /** The app's network (the database network when it has one) */
+  networkMode?: string;
   framework?: string;
   buildpackId?: string;
   onProgress: (message: string) => void;
@@ -27,7 +29,7 @@ export async function syncWorkerContainersOnDeploy(
   ssh: SSHClient,
   options: SyncWorkerContainersOptions
 ): Promise<void> {
-  const { projectId, slug, imageRef, envVars, volumes, framework, buildpackId, onProgress } =
+  const { projectId, slug, imageRef, envVars, volumes, networkMode, framework, buildpackId, onProgress } =
     options;
 
   try {
@@ -69,14 +71,13 @@ export async function syncWorkerContainersOnDeploy(
           command: worker.command,
           envVars,
           volumes,
+          networkMode,
           framework,
           buildpackId,
           onProgress,
         });
 
         if (result.success) {
-          // Join the shared network so workers reach Pushify databases by name
-          await ssh.exec(`docker network connect pushify ${containerName} 2>/dev/null || true`);
           onProgress(`✅ Worker running: ${worker.name}`);
         } else {
           onProgress(`⚠️ Worker "${worker.name}" failed to start: ${result.logs.slice(0, 300)}`);

@@ -11,6 +11,7 @@ import { addAutoSubdomainSite, reloadNginx } from './nginx-manager';
 import { shSingleQuote } from './shell';
 import { syncProjectSites, describeSyncedDomains } from '../lib/project-sites';
 import { isSharedRunnerServer } from '../lib/runner-routing';
+import { DATABASE_NETWORK } from '../lib/managed-database';
 import {
   applyCalcomEnvDefaults,
   buildComposeEnvOverride,
@@ -245,30 +246,31 @@ async function configureProjectDomains(
 }
 
 /**
- * Put the deployed app and any Pushify-managed databases on a shared `pushify` Docker
- * network so the app can reach its database by container name (e.g. `pushify-db-myapp`)
- * — no host-IP guessing, no public exposure required. Only acts when the server actually
- * has Pushify databases (a user's own server); on the shared host there are none, so apps
- * are never needlessly co-networked. Best-effort: never fails a deploy over network wiring.
+ * The Docker network the app should run on so it reaches Pushify databases by container name
+ * (`pushify-db-<name>`), or undefined when there is nothing to reach. Never on the shared
+ * runner: one network there would put every customer's containers next to each other.
+ * Existing database containers (created before they started on this network) are joined here.
  */
-async function connectAppToDatabaseNetwork(
+async function prepareDatabaseNetwork(
   ssh: SSHClient,
-  appContainerName: string,
+  serverId: string,
   onProgress: (msg: string) => void,
-): Promise<void> {
+): Promise<string | undefined> {
+  if (isSharedRunnerServer(serverId)) return undefined;
   try {
     const dbList = await ssh.exec(`docker ps -a --format '{{.Names}}' | grep '^pushify-db-' || true`);
     const dbs = (dbList.stdout || '').trim().split('\n').map((s) => s.trim()).filter(Boolean);
-    if (dbs.length === 0) return; // no Pushify databases on this host → nothing to wire
+    if (dbs.length === 0) return undefined;
 
-    await ssh.exec(`docker network create pushify 2>/dev/null || true`);
+    await ssh.exec(`docker network create ${DATABASE_NETWORK} 2>/dev/null || true`);
     for (const db of dbs) {
-      await ssh.exec(`docker network connect pushify ${db} 2>/dev/null || true`);
+      await ssh.exec(`docker network connect ${DATABASE_NETWORK} ${shSingleQuote(db)} 2>/dev/null || true`);
     }
-    await ssh.exec(`docker network connect pushify ${appContainerName} 2>/dev/null || true`);
-    onProgress(`🔗 Joined shared 'pushify' network — databases reachable by name (e.g. ${dbs[0]})`);
+    onProgress(`🔗 Running on the '${DATABASE_NETWORK}' network — databases reachable by name (e.g. ${dbs[0]})`);
+    return DATABASE_NETWORK;
   } catch {
     // best-effort — never break a deploy over network wiring
+    return undefined;
   }
 }
 
@@ -878,8 +880,11 @@ export async function deployToRemoteServer(
       }
       onProgress('✅ Container started');
 
-      // Wire the app to the shared `pushify` network so it can reach databases by name.
-      await connectAppToDatabaseNetwork(ssh, containerName, onProgress);
+      // Also join the Pushify database network (the app keeps its own network for its bundled db).
+      const databaseNetwork = await prepareDatabaseNetwork(ssh, serverId, onProgress);
+      if (databaseNetwork) {
+        await ssh.exec(`docker network connect ${databaseNetwork} ${containerName} 2>/dev/null || true`);
+      }
 
       // ── Post-deploy shell command (e.g. create initial admin user) ──
       const postDeployShell = (config.marketplace as any).postDeployShell as string | undefined;
@@ -1118,6 +1123,9 @@ export async function deployToRemoteServer(
     onProgress('🔵🟢 Starting blue-green deployment...');
     const previousHostPort = hostPort;
     const switchPort = await pickSwitchPort(ssh, hostPort);
+    // Started on the database network, not joined to it afterwards: an app that connects (or
+    // migrates) at boot would otherwise race the join.
+    const databaseNetwork = await prepareDatabaseNetwork(ssh, serverId, onProgress);
 
     const blueGreenResult = await blueGreenDeploy(ssh, {
       imageName: `${imageName}:${imageTag}`,
@@ -1127,6 +1135,7 @@ export async function deployToRemoteServer(
       containerPort,
       envVars,
       volumes: config.volumes,
+      networkMode: databaseNetwork,
       restart: 'unless-stopped',
       healthCheckTimeout: 60, // 60 seconds to become healthy
       framework: resolvedFramework,
@@ -1157,9 +1166,6 @@ export async function deployToRemoteServer(
     // Open firewall port for external access (root-first; works on BYOS without sudo/ufw)
     await openFirewallPort(ssh, hostPort, onProgress);
 
-    // Wire the app to the shared `pushify` network so it can reach databases by name.
-    await connectAppToDatabaseNetwork(ssh, `pushify-${deploySlug}`, onProgress);
-
     // Worker processes run from the same image — production deploys only, never previews.
     if (!deploySuffix) {
       await syncWorkerContainersOnDeploy(ssh, {
@@ -1168,6 +1174,7 @@ export async function deployToRemoteServer(
         imageRef: `${imageName}:${imageTag}`,
         envVars,
         volumes: config.volumes,
+        networkMode: databaseNetwork,
         framework: resolvedFramework,
         buildpackId: resolvedBuildpackId,
         onProgress,
@@ -1433,6 +1440,7 @@ export async function quickRollbackToDeployment(
     onProgress(`🔵🟢 Rolling back to ${fullImageName} (blue-green)...`);
     const previousHostPort = hostPort;
     const switchPort = await pickSwitchPort(ssh, hostPort);
+    const databaseNetwork = await prepareDatabaseNetwork(ssh, serverId, onProgress);
     const blueGreenResult = await blueGreenDeploy(ssh, {
       imageName: fullImageName,
       containerName: `pushify-${projectSlug}`,
@@ -1441,6 +1449,7 @@ export async function quickRollbackToDeployment(
       containerPort,
       envVars,
       volumes: config.volumes,
+      networkMode: databaseNetwork,
       restart: 'unless-stopped',
       healthCheckTimeout: 60,
       onProgress,
@@ -1453,9 +1462,6 @@ export async function quickRollbackToDeployment(
     onProgress(`✅ Rollback container healthy on port ${hostPort}`);
     await openFirewallPort(ssh, hostPort, onProgress);
 
-    // Wire the app to the shared `pushify` network so it can reach databases by name.
-    await connectAppToDatabaseNetwork(ssh, `pushify-${projectSlug}`, onProgress);
-
     // Restart worker processes from the rollback image so app + workers stay in sync
     await syncWorkerContainersOnDeploy(ssh, {
       projectId,
@@ -1463,6 +1469,7 @@ export async function quickRollbackToDeployment(
       imageRef: fullImageName,
       envVars,
       volumes: config.volumes,
+      networkMode: databaseNetwork,
       onProgress,
     });
 

@@ -40,6 +40,8 @@ import { previewService } from '../services/preview.service';
 import { previewRepository } from '../repositories/preview.repository';
 import { resolveProjectGitAccess, noRepoAccessMessage } from '../services/git-provider-access.service';
 import { firstRepoSettingsError, firstProjectSettingsError } from '../lib/repo-settings-validate';
+import { buildConnectionString, planLinkedDatabaseEnv, type LinkedDatabase } from '../lib/managed-database';
+import { databaseRepository } from '../repositories/database.repository';
 import { env } from '../config/env';
 import { normalizeRootDirectory } from '../lib/normalize-root-directory';
 import {
@@ -83,6 +85,43 @@ export interface DeploymentJob {
   isPreview: boolean;
   previewPrNumber: number | null;
   status?: string;
+}
+
+/**
+ * The project's linked managed databases as env vars for a deploy to `targetServerId`
+ * (see lib/managed-database.ts). Never fails the deploy — a problem is reported as a note.
+ */
+async function linkedDatabaseEnv(
+  projectId: string,
+  targetServerId: string,
+  explicitEnv: Record<string, string>
+): Promise<{ vars: Record<string, string>; notes: string[] }> {
+  try {
+    const connections = await databaseRepository.findConnectionsByProject(projectId);
+    const links: LinkedDatabase[] = connections.map(({ envVarName, database }) => {
+      const password = decrypt(database.password);
+      return {
+        envVarName,
+        name: database.name,
+        type: database.type,
+        serverId: database.serverId,
+        containerName: database.containerName,
+        username: database.username,
+        databaseName: database.databaseName,
+        externalAccess: database.externalAccess,
+        password,
+        connectionString: database.host
+          ? buildConnectionString(database.type, database.host, database.port, database.username, password, database.databaseName)
+          : null,
+      };
+    });
+    return planLinkedDatabaseEnv(links, targetServerId, new Set(Object.keys(explicitEnv)));
+  } catch (err) {
+    return {
+      vars: {},
+      notes: [`Linked databases could not be loaded: ${err instanceof Error ? err.message : String(err)}`],
+    };
+  }
 }
 
 interface PreviewDeployContext {
@@ -509,8 +548,12 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       for (const envVar of selectDeployEnvVars(envVars, { preview: !!previewCtx })) {
         envVarsDecrypted[envVar.key] = decrypt(envVar.valueEncrypted);
       }
+      // Databases linked under Databases → Connect become variables (DATABASE_URL by default).
+      const linkedDatabases = await linkedDatabaseEnv(job.projectId, deployTargetServerId, envVarsDecrypted);
+      Object.assign(envVarsDecrypted, linkedDatabases.vars);
       // Everything logged from here on has the project's secrets masked.
       logMasker.addEnvVars(envVarsDecrypted);
+      for (const note of linkedDatabases.notes) addLog(`🗄️ ${note}`);
 
       // Check for quick rollback (uses existing Docker image, no rebuild)
       if (job.rollbackFromDeploymentId) {

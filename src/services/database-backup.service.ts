@@ -22,11 +22,16 @@ import {
 import { sendBackupVerificationFailedEmail } from '../lib/email';
 import { resolveBillingNotifyEmail } from '../lib/billing-notify';
 import { adminNotify } from './admin-notify.service';
+import { buildDumpCommand, buildRestoreCommand } from '../lib/database-backup-commands';
 
 // ============ Helpers ============
 
-function shellEscape(str: string): string {
-  return `'${str.replace(/'/g, "'\\''")}'`;
+/**
+ * A finished backup. Restores used to leave the row at 'restored', which hid the restore and
+ * download buttons and took it out of verification for good — those rows count as finished.
+ */
+function isFinishedBackup(status: string): boolean {
+  return status === 'completed' || status === 'restored';
 }
 
 function backupFileName(databaseName: string, type: DatabaseType): string {
@@ -37,69 +42,6 @@ function backupFileName(databaseName: string, type: DatabaseType): string {
 
 function backupDir(databaseName: string): string {
   return `/opt/pushify/databases/${databaseName}/backups`;
-}
-
-function buildDumpCommand(
-  containerName: string,
-  type: DatabaseType,
-  username: string,
-  password: string,
-  databaseName: string,
-  fileName: string,
-  backupPath: string
-): string {
-  const eCont = shellEscape(containerName);
-  const eUser = shellEscape(username);
-  const ePass = shellEscape(password);
-  const eDb = shellEscape(databaseName);
-  const eFile = shellEscape(fileName);
-  const ePath = shellEscape(backupPath);
-
-  switch (type) {
-    case 'postgresql':
-      return `docker exec ${eCont} bash -c "pg_dump -U ${eUser} -d ${eDb} | gzip > /tmp/${eFile}" && docker cp ${eCont}:/tmp/${eFile} ${ePath}/`;
-
-    case 'mysql':
-      return `docker exec -e MYSQL_PWD=${ePass} ${eCont} bash -c "mysqldump -u ${eUser} ${eDb} | gzip > /tmp/${eFile}" && docker cp ${eCont}:/tmp/${eFile} ${ePath}/`;
-
-    case 'mongodb':
-      return `docker exec ${eCont} mongodump --username ${eUser} --password ${ePass} --authenticationDatabase admin --db ${eDb} --archive=/tmp/${eFile} --gzip && docker cp ${eCont}:/tmp/${eFile} ${ePath}/`;
-
-    case 'redis':
-      return `docker exec ${eCont} redis-cli -a ${ePass} BGSAVE && sleep 2 && docker cp ${eCont}:/data/dump.rdb ${ePath}/${eFile}`;
-  }
-}
-
-function buildRestoreCommand(
-  containerName: string,
-  type: DatabaseType,
-  username: string,
-  password: string,
-  databaseName: string,
-  filePath: string
-): string {
-  const fileName = filePath.split('/').pop()!;
-
-  const eCont = shellEscape(containerName);
-  const eUser = shellEscape(username);
-  const ePass = shellEscape(password);
-  const eDb = shellEscape(databaseName);
-  const eFile = shellEscape(fileName);
-  const ePath = shellEscape(filePath);
-
-  switch (type) {
-    case 'postgresql':
-      return `docker cp ${ePath} ${eCont}:/tmp/${eFile} && docker exec ${eCont} bash -c "gunzip -c /tmp/${eFile} | psql -U ${eUser} -d ${eDb}"`;
-
-    case 'mysql':
-      return `docker cp ${ePath} ${eCont}:/tmp/${eFile} && docker exec -e MYSQL_PWD=${ePass} ${eCont} bash -c "gunzip -c /tmp/${eFile} | mysql -u ${eUser} ${eDb}"`;
-
-    case 'mongodb':
-      return `docker cp ${ePath} ${eCont}:/tmp/${eFile} && docker exec ${eCont} mongorestore --username ${eUser} --password ${ePass} --authenticationDatabase admin --db ${eDb} --archive=/tmp/${eFile} --gzip --drop`;
-
-    case 'redis':
-      return `docker exec ${eCont} redis-cli -a ${ePass} SHUTDOWN NOSAVE || true && docker cp ${ePath} ${eCont}:/data/dump.rdb && docker start ${eCont}`;
-  }
 }
 
 // ============ Service ============
@@ -122,7 +64,8 @@ export const databaseBackupService = {
       throw new HTTPException(404, { message: t(locale, 'databases', 'notFound') });
     }
 
-    return databaseRepository.findBackupsByDatabase(databaseId);
+    const backups = await databaseRepository.findBackupsByDatabase(databaseId);
+    return backups.map((backup) => (backup.status === 'restored' ? { ...backup, status: 'completed' } : backup));
   },
 
   // Get single backup
@@ -355,7 +298,7 @@ export const databaseBackupService = {
     }
 
     const backup = await databaseRepository.findBackupById(backupId);
-    if (!backup || backup.databaseId !== databaseId || backup.status !== 'completed') {
+    if (!backup || backup.databaseId !== databaseId || !isFinishedBackup(backup.status)) {
       throw new HTTPException(404, { message: t(locale, 'databases', 'backupNotFound') });
     }
 
@@ -429,7 +372,8 @@ export const databaseBackupService = {
         throw new Error(result.stderr || 'Restore command failed');
       }
 
-      await databaseRepository.updateBackup(backupId, { status: 'restored' as string });
+      // Back to 'completed' so the same backup can be restored or downloaded again.
+      await databaseRepository.updateBackup(backupId, { status: 'completed', errorMessage: null });
 
       wsManager.publish(`database:${databaseId}`, {
         type: 'backup:status',
@@ -533,7 +477,7 @@ export const databaseBackupService = {
     }
 
     const backup = await databaseRepository.findBackupById(backupId);
-    if (!backup || backup.databaseId !== databaseId || backup.status !== 'completed') {
+    if (!backup || backup.databaseId !== databaseId || !isFinishedBackup(backup.status)) {
       throw new HTTPException(404, { message: t(locale, 'databases', 'backupNotFound') });
     }
 
@@ -586,7 +530,7 @@ export const databaseBackupService = {
     }
 
     const backup = await databaseRepository.findBackupById(backupId);
-    if (!backup || backup.databaseId !== databaseId || backup.status !== 'completed') {
+    if (!backup || backup.databaseId !== databaseId || !isFinishedBackup(backup.status)) {
       throw new HTTPException(404, { message: t(locale, 'databases', 'backupNotFound') });
     }
 
@@ -616,7 +560,7 @@ export const databaseBackupService = {
       if (database.status !== 'running') continue;
 
       const backups = await databaseRepository.findBackupsByDatabase(database.id, 5);
-      const latest = backups.find((b) => b.status === 'completed');
+      const latest = backups.find((b) => isFinishedBackup(b.status));
       if (!latest) continue;
 
       const verification = (latest.metadata as { verification?: BackupVerification }).verification;
@@ -641,7 +585,7 @@ export const databaseBackupService = {
   // Internal: boot a throwaway container from the same image, restore, count, remove.
   async executeVerify(backupId: string): Promise<void> {
     const backup = await databaseRepository.findBackupById(backupId);
-    if (!backup || backup.status !== 'completed' || !backup.filePath) return;
+    if (!backup || !isFinishedBackup(backup.status) || !backup.filePath) return;
 
     const database = await databaseRepository.findById(backup.databaseId);
     if (!database?.serverId || !database.containerName) return;
