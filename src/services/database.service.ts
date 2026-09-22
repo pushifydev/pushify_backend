@@ -19,6 +19,7 @@ import {
   DATABASE_NETWORK,
   buildConnectionString,
   buildDatabaseRunCommand,
+  buildReadonlyUserCommand,
   databaseDataDir,
   internalConnectionString,
   isDatabaseType,
@@ -85,6 +86,7 @@ export const databaseService = {
     return databases.map((db) => ({
       ...db,
       password: '••••••••', // Never expose actual password in list
+      readonlyPassword: undefined,
       connectionString: db.connectionString ? '••••••••' : null,
     }));
   },
@@ -109,6 +111,7 @@ export const databaseService = {
     return {
       ...database,
       password: '••••••••',
+      readonlyPassword: undefined,
       connectionString: database.connectionString ? '••••••••' : null,
     };
   },
@@ -266,6 +269,7 @@ export const databaseService = {
     return {
       ...database,
       password: '••••••••',
+      readonlyPassword: undefined,
       connectionString: '••••••••',
     };
   },
@@ -378,6 +382,7 @@ export const databaseService = {
     return {
       ...updated,
       password: '••••••••',
+      readonlyPassword: undefined,
       connectionString: '••••••••',
     };
   },
@@ -480,6 +485,15 @@ export const databaseService = {
     if (envVarError) {
       throw new HTTPException(400, { message: envVarError });
     }
+    const permissions = input.permissions || 'readwrite';
+    if (permissions !== 'readonly' && permissions !== 'readwrite') {
+      throw new HTTPException(400, { message: 'Permissions must be readonly or readwrite' });
+    }
+    // Read-only means a database user that can only read — set it up now, so a problem shows
+    // here and not at the project's next deploy.
+    if (permissions === 'readonly') {
+      await this.ensureReadonlyUser(databaseId);
+    }
 
     // Check if connection already exists
     const exists = await databaseRepository.connectionExists(databaseId, input.projectId);
@@ -491,10 +505,63 @@ export const databaseService = {
       databaseId,
       projectId: input.projectId,
       envVarName: input.envVarName || 'DATABASE_URL',
-      permissions: input.permissions || 'readwrite',
+      permissions,
     });
 
     return connection;
+  },
+
+  /**
+   * The read-only user that projects connected with permissions 'readonly' get (lib/managed-
+   * database.ts buildReadonlyUserCommand): created the first time, grants re-applied every time.
+   * Redis has none.
+   */
+  async ensureReadonlyUser(databaseId: string): Promise<{ username: string; password: string }> {
+    const database = await databaseRepository.findById(databaseId);
+    if (!database) {
+      throw new HTTPException(404, { message: 'Database not found' });
+    }
+    if (database.type === 'redis') {
+      throw new HTTPException(400, { message: 'Redis has no read-only mode — connect it with read & write access' });
+    }
+    if (database.status !== 'running' || !database.serverId || !database.containerName) {
+      throw new HTTPException(400, { message: 'The database must be running to set up read-only access' });
+    }
+    const server = await db.query.servers.findFirst({ where: eq(servers.id, database.serverId) });
+    if (!server?.ipv4 || !server.sshPrivateKey) {
+      throw new HTTPException(400, { message: 'The database server is not reachable over SSH' });
+    }
+
+    const username = database.readonlyUsername || `${database.username}_ro`;
+    const password = database.readonlyPassword ? decrypt(database.readonlyPassword) : generatePassword();
+    const ssh = new SSHClient();
+    await ssh.connect({ host: server.ipv4, username: 'root', privateKey: decrypt(server.sshPrivateKey) });
+    try {
+      const result = await ssh.exec(
+        buildReadonlyUserCommand({
+          type: database.type,
+          containerName: database.containerName,
+          username: database.username,
+          password: decrypt(database.password),
+          databaseName: database.databaseName,
+          readonlyUsername: username,
+          readonlyPassword: password,
+        })
+      );
+      const ok = result.code === 0 && (database.type !== 'mongodb' || result.stdout.includes('PUSHIFY_RO_OK'));
+      if (!ok) {
+        logger.error({ databaseId, stderr: result.stderr, stdout: result.stdout }, 'Read-only user setup failed');
+        throw new HTTPException(500, {
+          message: `Read-only access could not be set up: ${(result.stderr || result.stdout).trim().slice(0, 200)}`,
+        });
+      }
+    } finally {
+      ssh.disconnect();
+    }
+    if (!database.readonlyUsername || !database.readonlyPassword) {
+      await databaseRepository.update(databaseId, { readonlyUsername: username, readonlyPassword: encrypt(password) });
+    }
+    return { username, password };
   },
 
   // Disconnect database from project
@@ -584,6 +651,7 @@ export const databaseService = {
     return {
       ...updated,
       password: '••••••••',
+      readonlyPassword: undefined,
       connectionString: '••••••••',
     };
   },

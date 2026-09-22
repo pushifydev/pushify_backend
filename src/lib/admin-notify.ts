@@ -28,7 +28,8 @@ export type AdminEvent =
   | 'domain.transfer_failed'
   | 'domain.authcode_viewed'
   | 'feedback.cancellation'
-  | 'backup.verify_failed';
+  | 'backup.verify_failed'
+  | 'certificate.expiring';
 
 export const ADMIN_EVENT_TITLES: Record<AdminEvent, string> = {
   'user.registered': 'New user registered',
@@ -53,6 +54,7 @@ export const ADMIN_EVENT_TITLES: Record<AdminEvent, string> = {
   'domain.authcode_viewed': 'Domain auth code viewed (transfer-out)',
   'feedback.cancellation': 'Cancellation feedback received',
   'backup.verify_failed': 'Backup restore test failed',
+  'certificate.expiring': 'HTTPS certificate expiring soon',
 };
 
 /** Parse ADMIN_NOTIFY_EMAILS into a clean recipient list. */

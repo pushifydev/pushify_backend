@@ -7,9 +7,10 @@
  * the cloud metadata address — and every app port was also published on the public interface.
  *
  * Apps on a runner run on a network of their own, `pushify-apps` (bridge `pushify-apps0`,
- * inter-container traffic off). The rules below match that bridge — and Docker's default bridge,
- * where builds run, as long as nothing but Pushify is attached to it — so nothing else on the
- * host is touched. They live in two chains of our own, rebuilt on every run:
+ * inter-container traffic off). The rules below match that bridge, Docker's default bridge (where
+ * builds run) and the networks marketplace apps bring along (br-*; traffic inside one of them
+ * stays allowed) — the last two only as long as nothing but Pushify is attached to them, so
+ * nothing else on the host is touched. They live in two chains of our own, rebuilt on every run:
  *  - PUSHIFY-FWD (jumped to from DOCKER-USER, i.e. forwarded traffic):
  *      replies to existing connections pass; app → app and app → private / link-local / CGNAT
  *      ranges (other Docker networks included) are dropped. Apps served under a domain are
@@ -61,6 +62,23 @@ else
   echo "PUSHIFY_ISOLATION_BUILDS_SKIPPED: $(echo $FOREIGN)"
 fi
 
+# Marketplace apps with a bundled database, and compose stacks, run on networks of their own
+# (bridges br-<id>). Inside one such network traffic stays allowed (the app and its database);
+# Docker itself drops traffic between networks. Same rule as above: any container on them that
+# isn't Pushify's (by name or compose project) leaves them alone.
+FOREIGN_NETS=$(docker ps --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Networks}}' 2>/dev/null | awk -F'|' '
+  $1 !~ /^pushify-/ && $2 !~ /^pushify-/ {
+    n = split($3, nets, ",")
+    for (i = 1; i <= n; i++) if (nets[i] != "bridge" && nets[i] != "host" && nets[i] != "none" && nets[i] != "${RUNNER_APP_NETWORK}") { print $1; break }
+  }' | sort -u)
+if [ -z "$FOREIGN_NETS" ]; then
+  APP_NETS=yes
+else
+  APP_NETS=no
+  ipt -D INPUT -i br-+ -j PUSHIFY-IN 2>/dev/null || true
+  echo "PUSHIFY_ISOLATION_APPNETS_SKIPPED: $(echo $FOREIGN_NETS)"
+fi
+
 # Name lookups go to the host's resolvers, which may sit in a private range.
 NAMESERVERS=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf /run/systemd/resolve/resolv.conf 2>/dev/null | grep -v ':' | grep -v '^127\.' | sort -u)
 
@@ -78,6 +96,16 @@ for b in $BRIDGES; do
     ipt -A PUSHIFY-FWD -i "$b" -d "$range" -j DROP
   done
 done
+if [ "$APP_NETS" = yes ]; then
+  ipt -A PUSHIFY-FWD -i br-+ -o br-+ -j RETURN
+  for ns in $NAMESERVERS; do
+    ipt -A PUSHIFY-FWD -i br-+ -d "$ns" -p udp --dport 53 -j RETURN
+    ipt -A PUSHIFY-FWD -i br-+ -d "$ns" -p tcp --dport 53 -j RETURN
+  done
+  for range in ${BLOCKED_RANGES.join(' ')}; do
+    ipt -A PUSHIFY-FWD -i br-+ -d "$range" -j DROP
+  done
+fi
 ipt -A PUSHIFY-FWD -j RETURN
 ipt -C DOCKER-USER -j PUSHIFY-FWD 2>/dev/null || ipt -I DOCKER-USER 1 -j PUSHIFY-FWD
 
@@ -89,6 +117,9 @@ ipt -A PUSHIFY-IN -j DROP
 for b in $BRIDGES; do
   ipt -C INPUT -i "$b" -j PUSHIFY-IN 2>/dev/null || ipt -I INPUT 1 -i "$b" -j PUSHIFY-IN
 done
+if [ "$APP_NETS" = yes ]; then
+  ipt -C INPUT -i br-+ -j PUSHIFY-IN 2>/dev/null || ipt -I INPUT 1 -i br-+ -j PUSHIFY-IN
+fi
 echo PUSHIFY_ISOLATION_OK
 `;
 }

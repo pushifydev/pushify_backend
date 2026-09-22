@@ -127,8 +127,62 @@ export function buildDatabaseRunCommand(options: {
   }
 }
 
+/**
+ * Create (or re-point) the read-only user projects connected as "readonly" get. Idempotent, so it
+ * also repairs grants. The SQL / JS goes through a quoted here-doc: nothing in it is expanded by
+ * the shell. Identifiers are generated ([a-z0-9_]) and passwords base64url. Redis has no
+ * practical read-only mode (its ACLs don't survive a restart here) — callers refuse it.
+ */
+export function buildReadonlyUserCommand(options: {
+  type: Exclude<DatabaseType, 'redis'>;
+  containerName: string;
+  /** The database's own user (owner; root in MySQL is created with the same password) */
+  username: string;
+  password: string;
+  databaseName: string;
+  readonlyUsername: string;
+  readonlyPassword: string;
+}): string {
+  const { type, containerName, username, password, databaseName, readonlyUsername: ro, readonlyPassword: roPw } = options;
+  const c = shSingleQuote(containerName);
+  switch (type) {
+    case 'postgresql':
+      return `docker exec -i ${c} psql -q -v ON_ERROR_STOP=1 -U ${shSingleQuote(username)} -d ${shSingleQuote(databaseName)} <<'PUSHIFY_SQL'
+DO $$ BEGIN
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = '${ro}') THEN
+    ALTER ROLE "${ro}" LOGIN PASSWORD '${roPw}';
+  ELSE
+    CREATE ROLE "${ro}" LOGIN PASSWORD '${roPw}';
+  END IF;
+END $$;
+ALTER ROLE "${ro}" SET default_transaction_read_only = on;
+GRANT CONNECT ON DATABASE "${databaseName}" TO "${ro}";
+GRANT USAGE ON SCHEMA public TO "${ro}";
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO "${ro}";
+GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO "${ro}";
+ALTER DEFAULT PRIVILEGES FOR ROLE "${username}" GRANT SELECT ON TABLES TO "${ro}";
+ALTER DEFAULT PRIVILEGES FOR ROLE "${username}" GRANT SELECT ON SEQUENCES TO "${ro}";
+PUSHIFY_SQL`;
+    case 'mysql':
+      return `docker exec -i -e MYSQL_PWD=${shSingleQuote(password)} ${c} mysql -u root <<'PUSHIFY_SQL'
+CREATE USER IF NOT EXISTS '${ro}'@'%' IDENTIFIED BY '${roPw}';
+ALTER USER '${ro}'@'%' IDENTIFIED BY '${roPw}';
+GRANT SELECT, SHOW VIEW ON \`${databaseName}\`.* TO '${ro}'@'%';
+FLUSH PRIVILEGES;
+PUSHIFY_SQL`;
+    case 'mongodb':
+      return `docker exec -i ${c} mongosh --quiet -u ${shSingleQuote(username)} -p ${shSingleQuote(password)} --authenticationDatabase admin admin <<'PUSHIFY_JS'
+const roles = [{ role: 'read', db: '${databaseName}' }];
+if (db.getUser('${ro}')) { db.updateUser('${ro}', { pwd: '${roPw}', roles: roles }); } else { db.createUser({ user: '${ro}', pwd: '${roPw}', roles: roles }); }
+print('PUSHIFY_RO_OK');
+PUSHIFY_JS`;
+  }
+}
+
 export interface LinkedDatabase {
   envVarName: string;
+  /** Connected read-only: username / password below are the read-only user's */
+  readonly?: boolean;
   name: string;
   type: DatabaseType;
   serverId: string | null;
@@ -169,10 +223,10 @@ export function planLinkedDatabaseEnv(
         { type: link.type, containerName: link.containerName, username: link.username, databaseName: link.databaseName },
         link.password
       );
-      notes.push(`${link.envVarName} → database "${link.name}" (${link.containerName}, private network)`);
+      notes.push(`${link.envVarName} → database "${link.name}" (${link.containerName}, private network${link.readonly ? ', read-only' : ''})`);
     } else if (link.externalAccess && link.connectionString) {
       vars[link.envVarName] = link.connectionString;
-      notes.push(`${link.envVarName} → database "${link.name}" (another server, over its public address)`);
+      notes.push(`${link.envVarName} → database "${link.name}" (another server, over its public address${link.readonly ? ', read-only' : ''})`);
     } else {
       notes.push(
         `Database "${link.name}" is on another server without external access — ${link.envVarName} not set. Deploy the project to that server or enable external access.`

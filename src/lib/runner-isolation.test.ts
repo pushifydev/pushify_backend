@@ -33,6 +33,16 @@ describe('runnerIsolationScript', () => {
     }
   });
 
+  it("covers marketplace apps' own networks — traffic inside one stays allowed — unless something foreign is on them", () => {
+    expect(script).toContain('ipt -A PUSHIFY-FWD -i br-+ -o br-+ -j RETURN');
+    expect(script).toContain('ipt -A PUSHIFY-FWD -i br-+ -d "$range" -j DROP');
+    expect(script).toContain('ipt -C INPUT -i br-+ -j PUSHIFY-IN 2>/dev/null || ipt -I INPUT 1 -i br-+ -j PUSHIFY-IN');
+    expect(script).toContain('ipt -D INPUT -i br-+ -j PUSHIFY-IN');
+    expect(script).toContain('PUSHIFY_ISOLATION_APPNETS_SKIPPED');
+    // inside-the-network RETURN comes before the private-range drops (the app's database is in 172.16/12)
+    expect(script.indexOf('-i br-+ -o br-+ -j RETURN')).toBeLessThan(script.indexOf('-i br-+ -d "$range" -j DROP'));
+  });
+
   it('rebuilds its own chains instead of appending duplicates', () => {
     expect(script).toContain('ipt -F PUSHIFY-FWD');
     expect(script).toContain('ipt -F PUSHIFY-IN');

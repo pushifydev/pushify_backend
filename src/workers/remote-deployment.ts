@@ -375,6 +375,10 @@ async function applyRunnerIsolation(ssh: SSHClient, onProgress: (msg: string) =>
     if (skipped) {
       onProgress(`⚠️ Builds are not isolated: containers that aren't Pushify's use Docker's default bridge (${skipped[1].trim()})`);
     }
+    const appNetsSkipped = result.stdout.match(/PUSHIFY_ISOLATION_APPNETS_SKIPPED: (.*)/);
+    if (appNetsSkipped) {
+      onProgress(`⚠️ Marketplace app networks are not isolated: containers that aren't Pushify's use them (${appNetsSkipped[1].trim()})`);
+    }
   } else {
     onProgress(`⚠️ Could not apply shared-runner network isolation: ${(result.stderr || result.stdout).trim().slice(0, 300)}`);
     logger.warn({ stdout: result.stdout, stderr: result.stderr }, 'Shared-runner network isolation failed');
