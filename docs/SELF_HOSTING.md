@@ -115,12 +115,44 @@ docker compose exec postgres pg_dump -U pushify pushify > backup.sql   # DB back
 ```
 
 **Automate it.** `scripts/backup-control-plane.sh` dumps the control-plane database nightly,
-keeps 14 days locally and — with `BACKUP_RCLONE_REMOTE=b2:my-bucket` (any rclone remote) —
-copies every dump off the machine. A backup on the same disk is not a backup.
+checks the dump (size, gzip integrity, pg_dump's completion marker), keeps 14 days locally
+and — with `BACKUP_RCLONE_REMOTE` (any rclone remote) — copies every dump off the machine,
+lists it back, and prunes copies older than `BACKUP_REMOTE_KEEP_DAYS` (60) there. Any failure
+exits non-zero; `BACKUP_HEARTBEAT_URL` is pinged on success and at `<url>/fail` on failure
+(healthchecks.io, Uptime Kuma push monitors), so a backup that stops running gets noticed.
+A backup on the same disk is not a backup.
+
+Off-site to a Hetzner Storage Box, encrypted before it leaves the machine (the dump holds
+user emails and password hashes):
 
 ```bash
-15 3 * * * BACKUP_RCLONE_REMOTE=b2:pushify-backups /opt/pushify/pushify_backend/scripts/backup-control-plane.sh >> /var/log/pushify-backup.log 2>&1
+# 1. rclone, and an SSH key for the Storage Box (enable SSH in its settings; port 23)
+curl -fsSL https://rclone.org/install.sh | sudo bash
+ssh-keygen -t ed25519 -N '' -f /root/.ssh/storagebox
+cat /root/.ssh/storagebox.pub | ssh -p 23 uXXXXXX@uXXXXXX.your-storagebox.de install-ssh-key
+
+# 2. the Storage Box, and an encrypting remote on top of it
+rclone config create storagebox sftp host=uXXXXXX.your-storagebox.de user=uXXXXXX port=23 key_file=/root/.ssh/storagebox
+rclone mkdir storagebox:pushify-backups
+openssl rand -base64 32 > /root/offsite-crypt-password.txt
+rclone config create offsite crypt remote=storagebox:pushify-backups \
+  password="$(cat /root/offsite-crypt-password.txt)" --obscure
+# → store /root/offsite-crypt-password.txt in your password manager, then delete it:
+#   without it the off-site copies cannot be read.
+
+# 3. try it, then schedule it
+BACKUP_RCLONE_REMOTE=offsite: /opt/pushify/pushify_backend/scripts/backup-control-plane.sh
+rclone ls offsite:
 ```
+
+```bash
+15 3 * * * BACKUP_RCLONE_REMOTE=offsite: BACKUP_HEARTBEAT_URL=https://hc-ping.com/<uuid> /opt/pushify/pushify_backend/scripts/backup-control-plane.sh >> /var/log/pushify-backup.log 2>&1
+```
+
+Restore: `rclone copy offsite:pushify-control-plane-<stamp>.sql.gz .` then
+`gunzip -c pushify-control-plane-<stamp>.sql.gz | psql "$DATABASE_URL"` into an empty database.
+Secrets in it are encrypted with the backend's `ENCRYPTION_KEY` — keep the backend `.env` in
+your password manager too, or the restored platform can't read them.
 
 **Update:** re-run the installer, or `git -C pushify_backend pull && git -C pushify_frontend pull
 && docker compose up -d --build`. Migrations run automatically on start.

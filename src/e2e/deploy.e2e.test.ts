@@ -588,4 +588,77 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
       600_000
     );
   }
+
+  // Last on purpose: it turns the box into a shared runner, and its firewall rules stay for the run.
+  it(
+    'shared runner: apps are reachable through nginx only, not from each other, the host or the public port',
+    async () => {
+      onTestFailed(() => console.error(serverState(), '\n--- iptables\n', tryExec('iptables -S PUSHIFY-FWD; iptables -S PUSHIFY-IN; iptables -S DOCKER-USER')));
+      const { env } = await import('../config/env');
+      const previousRunners = env.PUSHIFY_RUNNER_SERVER_IDS;
+      env.PUSHIFY_RUNNER_SERVER_IDS = serverId;
+      try {
+        // Answers /probe?host=&port= with open/closed — what a hostile tenant would try
+        const repo = await fixtureRepo({
+          'package.json': JSON.stringify(
+            { name: 'e2e-iso', version: '1.0.0', private: true, scripts: { build: 'echo built', start: 'node server.js' } },
+            null,
+            2
+          ),
+          'server.js': [
+            "const http = require('http');",
+            "const net = require('net');",
+            'const probe = (host, port) => new Promise((resolve) => {',
+            '  const socket = net.connect({ host, port: Number(port), timeout: 3000 });',
+            "  socket.on('connect', () => { socket.destroy(); resolve('open'); });",
+            "  socket.on('timeout', () => { socket.destroy(); resolve('closed'); });",
+            "  socket.on('error', () => resolve('closed'));",
+            '});',
+            'http.createServer(async (req, res) => {',
+            "  const url = new URL(req.url, 'http://x');",
+            "  if (url.pathname === '/probe') return res.end(await probe(url.searchParams.get('host'), url.searchParams.get('port')));",
+            "  res.end('E2E-ISO');",
+            '}).listen(process.env.PORT || 3000);',
+            '',
+          ].join('\n'),
+        });
+        const domainA = `iso-a-${run}.127.0.0.1.nip.io`;
+        const domainB = `iso-b-${run}.127.0.0.1.nip.io`;
+        const a = await createProject('iso-a', repo, domainA);
+        const b = await createProject('iso-b', repo, domainB);
+        await deploy(a.id);
+        await deploy(b.id);
+
+        // Visitors still get in, through nginx
+        expect(request(`https://${domainA}/`).body).toBe('E2E-ISO');
+        expect(request(`https://${domainB}/`).body).toBe('E2E-ISO');
+
+        const container = (slug: string) =>
+          execSync(`docker ps --filter name=pushify-${slug} --format '{{.Names}}'`, { encoding: 'utf8' }).trim();
+        const containerA = container(a.slug);
+        const containerB = container(b.slug);
+        const hostConfigB = JSON.parse(execSync(`docker inspect -f '{{json .HostConfig}}' ${containerB}`, { encoding: 'utf8' }));
+        const bindingB = Object.values(hostConfigB.PortBindings as Record<string, Array<{ HostIp: string; HostPort: string }>>)[0][0];
+        // Published on loopback: no raw <server-ip>:<port> way around nginx
+        expect(bindingB.HostIp).toBe('127.0.0.1');
+        expect(containerA).not.toBe('');
+
+        const ipB = execSync(`docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ${containerB}`, { encoding: 'utf8' }).trim();
+        // Apps on a runner run on their own network; its gateway is the host
+        const networks = execSync(`docker inspect -f '{{json .NetworkSettings.Networks}}' ${containerB}`, { encoding: 'utf8' });
+        expect(Object.keys(JSON.parse(networks))).toEqual(['pushify-apps']);
+        const gateway = execSync(`docker network inspect pushify-apps -f '{{(index .IPAM.Config 0).Gateway}}'`, { encoding: 'utf8' }).trim();
+        const probe = (host: string, port: number | string) => request(`https://${domainA}/probe?host=${host}&port=${port}`).body;
+
+        expect(probe(ipB, 3000)).toBe('closed'); // another tenant's container
+        expect(probe(gateway, 22)).toBe('closed'); // the host's sshd
+        expect(probe(gateway, bindingB.HostPort)).toBe('closed'); // another app's host port
+        expect(probe(gateway, 443)).toBe('open'); // the host's nginx (an app calling its own URL)
+        expect(probe('1.1.1.1', 443)).toBe('open'); // the internet
+      } finally {
+        env.PUSHIFY_RUNNER_SERVER_IDS = previousRunners;
+      }
+    },
+    600_000
+  );
 });
