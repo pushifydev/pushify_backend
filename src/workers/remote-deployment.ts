@@ -6,7 +6,7 @@ import { domains } from '../db/schema/projects';
 import { SSHClient } from '../utils/ssh';
 import { syncWorkerContainersOnDeploy } from './worker-process-sync';
 import { decrypt } from '../lib/encryption';
-import { buildImage, checkDocker, getImageId, tagImage, cleanupOldImages, runContainerFromImage, imageExists, blueGreenDeploy } from './remote-docker';
+import { buildImage, checkDocker, getImageId, tagImage, cleanupOldImages, runContainerFromImage, imageExists, blueGreenDeploy, APP_CONTAINER_HARDENING } from './remote-docker';
 import { addAutoSubdomainSite, reloadNginx } from './nginx-manager';
 import { shSingleQuote } from './shell';
 import { syncProjectSites, describeSyncedDomains } from '../lib/project-sites';
@@ -869,7 +869,7 @@ export async function deployToRemoteServer(
       // Run container
       const cmdOverride = dockerCommand ? ` ${dockerCommand}` : '';
       const networkFlag = requiresDb ? `--network ${networkName}` : '';
-      const runCmd = `docker run -d --name ${containerName} --restart unless-stopped ${networkFlag} -p ${hostPort}:${containerPort} ${envFlags} ${volFlags} ${imageName}:latest${cmdOverride}`;
+      const runCmd = `docker run -d --name ${containerName} --restart unless-stopped${APP_CONTAINER_HARDENING} ${networkFlag} -p ${hostPort}:${containerPort} ${envFlags} ${volFlags} ${imageName}:latest${cmdOverride}`;
 
       onProgress(`🚀 Starting container: ${containerName}`);
       const runResult = await ssh.exec(runCmd);

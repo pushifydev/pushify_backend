@@ -280,6 +280,12 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
         .split('\n')
         .filter(Boolean);
       expect(running).toHaveLength(1);
+
+      // Hardened for a shared host: no raw sockets (ARP spoofing), no setuid escalation, capped logs
+      const hostConfig = JSON.parse(execSync(`docker inspect -f '{{json .HostConfig}}' ${running[0]}`, { encoding: 'utf8' }));
+      expect(hostConfig.CapDrop.map((c: string) => c.replace(/^CAP_/, ''))).toContain('NET_RAW');
+      expect(hostConfig.SecurityOpt).toContain('no-new-privileges');
+      expect(hostConfig.LogConfig).toEqual({ Type: 'json-file', Config: { 'max-file': '3', 'max-size': '10m' } });
     },
     900_000
   );
