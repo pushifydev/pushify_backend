@@ -49,6 +49,10 @@ interface UpdateProjectInput {
   stagingBranch?: string | null;
   /** How many containers of the app run behind nginx */
   replicas?: number;
+  /** Adjust that number on load instead of by hand */
+  autoscaleEnabled?: boolean;
+  autoscaleMin?: number;
+  autoscaleMax?: number;
   gitProvider?: string;
   buildCommand?: string;
   startCommand?: string;
@@ -244,6 +248,24 @@ export const projectService = {
 
     if (input.replicas !== undefined && (!Number.isInteger(input.replicas) || input.replicas < 1 || input.replicas > 10)) {
       throw new HTTPException(400, { message: 'Replicas must be between 1 and 10' });
+    }
+
+    if (input.autoscaleEnabled || input.autoscaleMin !== undefined || input.autoscaleMax !== undefined) {
+      const { getEffectivePlanLimits } = await import('../lib/effective-plan-limits');
+      const { validateAutoscaleRange } = await import('../lib/autoscale');
+      const org = await organizationRepository.findById(organizationId);
+      const limits = getEffectivePlanLimits({
+        plan: org?.plan ?? 'free',
+        grandfatheredUntil: org?.grandfatheredUntil,
+        planLimitsOverride: org?.planLimitsOverride,
+      });
+      if (input.autoscaleEnabled && !limits.autoscaling) {
+        throw new HTTPException(400, { message: 'Autoscaling is available on the Pro plan and above.' });
+      }
+      const min = input.autoscaleMin ?? existing.autoscaleMin;
+      const max = input.autoscaleMax ?? existing.autoscaleMax;
+      const problem = validateAutoscaleRange(min, max, 10);
+      if (problem) throw new HTTPException(400, { message: problem });
     }
 
     // The image reference ends up in a Dockerfile on the deploy server

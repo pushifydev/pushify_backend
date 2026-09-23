@@ -49,6 +49,9 @@ const METRICS_CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // once an hour
 /** Resource thresholds are measured in minutes, so checking every poll would be wasted work. */
 const RESOURCE_CHECK_INTERVAL = 60 * 1000;
 let lastResourceCheck = 0;
+/** Autoscaling reads the same samples; its cooldowns are minutes, so once a minute is plenty. */
+const AUTOSCALE_CHECK_INTERVAL = 60 * 1000;
+let lastAutoscaleCheck = 0;
 let lastCleanupAt = 0;
 
 export async function startMetricsWorker(): Promise<void> {
@@ -236,6 +239,18 @@ async function pollForMetrics(): Promise<void> {
           }
         } catch (error) {
           logger.error({ err: error }, 'Resource alert check failed');
+        }
+      }
+
+      // Same samples, different question: is this app big enough for the traffic it has?
+      if (Date.now() - lastAutoscaleCheck >= AUTOSCALE_CHECK_INTERVAL) {
+        lastAutoscaleCheck = Date.now();
+        try {
+          const { autoscaleService } = await import('../services/autoscale.service');
+          const result = await autoscaleService.check();
+          if (result.scaled > 0) logger.info(result, 'Autoscaled');
+        } catch (error) {
+          logger.error({ err: error }, 'Autoscale check failed');
         }
       }
 

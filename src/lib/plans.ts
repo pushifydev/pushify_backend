@@ -23,6 +23,8 @@ export interface PlanLimits {
    * for because it is the difference between losing a day of data and losing an hour.
    */
   minBackupIntervalHours: number;
+  /** Scale containers on load instead of by hand */
+  autoscaling: boolean;
   previewDeployments: boolean;
   healthChecks: boolean;
   prioritySupport: boolean;
@@ -69,6 +71,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
       snapshotsPerServer: 0,
       logRetentionDays: 3,
       minBackupIntervalHours: 24,
+      autoscaling: false,
       previewDeployments: false,
       healthChecks: false,
       prioritySupport: false,
@@ -92,6 +95,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
       snapshotsPerServer: 2,
       logRetentionDays: 7,
       minBackupIntervalHours: 12,
+      autoscaling: false,
       previewDeployments: true,
       healthChecks: true,
       prioritySupport: false,
@@ -115,6 +119,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
       snapshotsPerServer: 5,
       logRetentionDays: 14,
       minBackupIntervalHours: 6,
+      autoscaling: true,
       previewDeployments: true,
       healthChecks: true,
       prioritySupport: true,
@@ -138,6 +143,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
       snapshotsPerServer: 10,
       logRetentionDays: 30,
       minBackupIntervalHours: 1,
+      autoscaling: true,
       previewDeployments: true,
       healthChecks: true,
       prioritySupport: true,
@@ -161,6 +167,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
       snapshotsPerServer: -1,
       logRetentionDays: 90,
       minBackupIntervalHours: 1,
+      autoscaling: true,
       previewDeployments: true,
       healthChecks: true,
       prioritySupport: true,

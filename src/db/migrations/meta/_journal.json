@@ -400,6 +400,13 @@
       "when": 1787270400016,
       "tag": "0057_backup_interval",
       "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1787270400017,
+      "tag": "0058_autoscale",
+      "breakpoints": true
     }
   ]
 }
