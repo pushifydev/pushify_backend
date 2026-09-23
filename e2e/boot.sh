@@ -76,6 +76,14 @@ else
   log "WARNING: no private registry — the private-registry test will be skipped"
 fi
 
+log "configuring an rclone remote for the off-site backup test"
+# A plain local remote standing in for S3 / a Storage Box: the code only knows "an rclone remote",
+# so a directory on disk exercises the same upload, download and prune paths without a network.
+mkdir -p /opt/e2e-offsite /root/.config/rclone
+printf '[e2eoffsite]\ntype = local\n' > /root/.config/rclone/rclone.conf
+export DB_BACKUP_RCLONE_REMOTE=e2eoffsite:/opt/e2e-offsite
+export RCLONE_BIN=/usr/bin/rclone
+
 # Fixture repos are created by the test process; git refuses repos owned by "someone else"
 git config --system --add safe.directory '*'
 git config --system user.email e2e@pushify.test

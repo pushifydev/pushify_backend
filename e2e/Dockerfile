@@ -8,6 +8,7 @@ FROM node:20-bookworm
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       nginx certbot python3-certbot-nginx openssh-server postgresql git curl openssl ca-certificates iptables \
+      rclone \
  && curl -fsSL https://get.docker.com | sh \
  && rm -rf /var/lib/apt/lists/*
 

@@ -27,6 +27,27 @@ RUN npm run postinstall --if-present
 RUN npm rebuild 2>/dev/null || true`;
 }
 
+/**
+ * Bundler keeps downloaded .gem files in `$BUNDLE_PATH/cache` before unpacking them. Mounting
+ * only that directory means gems are not re-downloaded on every deploy while the *installed*
+ * gems still land in the image — mounting the whole bundle path would leave the image without
+ * them.
+ */
+export function bundleInstallRun(command: string): string {
+  return `RUN --mount=type=cache,target=/usr/local/bundle/cache \\
+    ${command}`;
+}
+
+/**
+ * Composer's download cache. Pinned with COMPOSER_HOME so the path is the one we mount rather
+ * than whatever the image's HOME happens to be.
+ */
+export function composerInstallRun(command: string): string {
+  return `ENV COMPOSER_HOME=/root/.composer
+RUN --mount=type=cache,target=/root/.composer/cache \\
+    ${command}`;
+}
+
 /** Best-effort: optional lightningcss gnu binding on glibc builders. */
 export function nodeLightningcssGlibcFixLines(): string {
   return `RUN if [ -d node_modules/lightningcss ]; then \\
@@ -64,6 +85,11 @@ export function dockerBuildKitPrefix(): string {
   return 'DOCKER_BUILDKIT=1';
 }
 
+/**
+ * pip's downloads live in /root/.cache/pip, which is mounted rather than baked into the image —
+ * so wheels survive between deploys without adding a byte to what ships. Commands passed here
+ * must not carry `--no-cache-dir`, which would switch the cache off and make the mount useless.
+ */
 export function pipInstallRun(command: string): string {
   return `RUN --mount=type=cache,target=/root/.cache/pip \\
     ${command}`;

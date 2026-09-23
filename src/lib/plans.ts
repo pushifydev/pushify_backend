@@ -17,6 +17,12 @@ export interface PlanLimits {
   snapshotsPerServer: number;
   /** How many days of container logs are kept and searchable */
   logRetentionDays: number;
+  /**
+   * The shortest gap allowed between automatic database backups. It is a floor, not a schedule:
+   * the customer picks the interval, this is how often they are allowed to pick. Worth charging
+   * for because it is the difference between losing a day of data and losing an hour.
+   */
+  minBackupIntervalHours: number;
   previewDeployments: boolean;
   healthChecks: boolean;
   prioritySupport: boolean;
@@ -62,6 +68,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
       buildMinutesPerMonth: 30,
       snapshotsPerServer: 0,
       logRetentionDays: 3,
+      minBackupIntervalHours: 24,
       previewDeployments: false,
       healthChecks: false,
       prioritySupport: false,
@@ -84,6 +91,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
       buildMinutesPerMonth: 200,
       snapshotsPerServer: 2,
       logRetentionDays: 7,
+      minBackupIntervalHours: 12,
       previewDeployments: true,
       healthChecks: true,
       prioritySupport: false,
@@ -106,6 +114,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
       buildMinutesPerMonth: 750,
       snapshotsPerServer: 5,
       logRetentionDays: 14,
+      minBackupIntervalHours: 6,
       previewDeployments: true,
       healthChecks: true,
       prioritySupport: true,
@@ -128,6 +137,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
       buildMinutesPerMonth: 3000,
       snapshotsPerServer: 10,
       logRetentionDays: 30,
+      minBackupIntervalHours: 1,
       previewDeployments: true,
       healthChecks: true,
       prioritySupport: true,
@@ -150,6 +160,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
       buildMinutesPerMonth: -1,
       snapshotsPerServer: -1,
       logRetentionDays: 90,
+      minBackupIntervalHours: 1,
       previewDeployments: true,
       healthChecks: true,
       prioritySupport: true,

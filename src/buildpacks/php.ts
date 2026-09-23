@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import type { Buildpack, BuildpackDetectResult, BuildpackConfig } from './types';
+import { composerInstallRun } from '../lib/platform-docker';
 
 type PhpCommands = { install?: string | null; build?: string | null; start?: string | null };
 
@@ -71,7 +72,7 @@ RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local
 WORKDIR /var/www/html
 
 COPY ${copyPrefix}composer.json ${copyPrefix}composer.lock* ./
-RUN ${install}
+${composerInstallRun(install)}
 
 COPY ${rootDir === '.' ? '.' : rootDir} .
 
