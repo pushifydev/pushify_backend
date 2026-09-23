@@ -20,9 +20,13 @@ ${pipInstallRun(install)}`;
   }
   return `COPY ${copyPrefix}requirements.txt* ${copyPrefix}Pipfile* ${copyPrefix}Pipfile.lock* ${copyPrefix}pyproject.toml* ${copyPrefix}poetry.lock* ./
 ${pipInstallRun(
-  `if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; \\
+  // No --no-cache-dir: that flag stops pip reading *or* writing its cache, which made the
+  // BuildKit cache mount below it pointless — every deploy re-downloaded every wheel from
+  // PyPI. The usual reason to pass it is image size, and a cache mount does not end up in the
+  // image at all, so there is nothing to save here.
+  `if [ -f requirements.txt ]; then pip install -r requirements.txt; \\
     elif [ -f Pipfile ]; then pip install pipenv && pipenv install --deploy --system; \\
-    elif [ -f pyproject.toml ]; then pip install --no-cache-dir .; fi`
+    elif [ -f pyproject.toml ]; then pip install .; fi`
 )}`;
 }
 
@@ -115,7 +119,8 @@ export const pythonBuildpack: Buildpack = {
   },
 
   getDefaultInstallCommand(): string {
-    return 'pip install --no-cache-dir -r requirements.txt';
+    // Cached by the mount in `pipInstallRun`; see the note there about --no-cache-dir
+    return 'pip install -r requirements.txt';
   },
 
   getHealthCheckPath(): string {

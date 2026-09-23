@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import type { Buildpack, BuildpackDetectResult, BuildpackConfig } from './types';
+import { bundleInstallRun } from '../lib/platform-docker';
 
 type RubyCommands = { install?: string | null; build?: string | null; start?: string | null };
 
@@ -64,7 +65,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \\
 WORKDIR /app
 
 COPY ${copyPrefix}Gemfile ${copyPrefix}Gemfile.lock* ./
-RUN ${install}
+${bundleInstallRun(install)}
 
 COPY ${rootDir === '.' ? '.' : rootDir} .
 
@@ -91,7 +92,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \\
 WORKDIR /app
 
 COPY ${copyPrefix}Gemfile ${copyPrefix}Gemfile.lock* ./
-RUN ${install}
+${bundleInstallRun(install)}
 
 COPY ${rootDir === '.' ? '.' : rootDir} .
 ${build}

@@ -85,7 +85,9 @@ describe('php buildpack', () => {
       buildCommand: 'php artisan optimize',
       startCommand: 'php artisan octane:start --host=0.0.0.0 --port=8080',
     });
-    expect(df).toContain('RUN composer install --no-dev\n');
+    // Under a cache mount: composer re-downloaded every package on every deploy before
+    expect(df).toContain('--mount=type=cache,target=/root/.composer/cache');
+    expect(df).toContain('composer install --no-dev\n');
     expect(df).not.toContain('--no-scripts');
     expect(df).toContain('RUN php artisan optimize');
     expect(df).not.toContain('route:cache');
@@ -116,7 +118,9 @@ describe('ruby buildpack', () => {
       buildCommand: 'bundle exec rake assets:precompile',
       startCommand: 'bundle exec puma -C config/puma.rb',
     });
-    expect(df).toContain('RUN bundle install --jobs 8\n');
+    // Under a cache mount — only bundler's download cache, so installed gems still ship
+    expect(df).toContain('--mount=type=cache,target=/usr/local/bundle/cache');
+    expect(df).toContain('bundle install --jobs 8\n');
     expect(df).toContain('RUN bundle exec rake assets:precompile');
     expect(df).not.toContain('db:migrate');
     expect(df).toContain('CMD ["sh", "-c", "bundle exec puma -C config/puma.rb"]');
@@ -149,5 +153,25 @@ describe('go, rust and java buildpacks', () => {
     const gradle = gen('java', { framework: 'gradle', buildCommand: 'gradle bootJar --no-daemon' });
     expect(gradle).toContain('RUN gradle bootJar --no-daemon');
     expect(gradle).toContain('java $JAVA_OPTS -jar app.jar');
+  });
+});
+
+/**
+ * Dependency downloads are the slowest part of most builds and the easiest to get wrong: a cache
+ * mount that the package manager has been told to ignore looks correct and does nothing.
+ */
+describe('dependency caching', () => {
+  it('lets pip use the cache that is mounted for it', async () => {
+    const { pythonBuildpack } = await import('./python');
+    const df = pythonBuildpack.generateDockerfile({ framework: 'python', port: 8000, rootDirectory: '.' } as never);
+    expect(df).toContain('--mount=type=cache,target=/root/.cache/pip');
+    // --no-cache-dir would switch pip's cache off and make the mount above it pointless
+    expect(df).not.toContain('--no-cache-dir');
+  });
+
+  it('keeps the node package-manager caches', async () => {
+    const { nodejsBuildpack } = await import('./nodejs');
+    const df = nodejsBuildpack.generateDockerfile({ framework: 'nodejs', port: 3000, rootDirectory: '.' } as never);
+    expect(df).toContain('--mount=type=cache,target=/root/.npm');
   });
 });
