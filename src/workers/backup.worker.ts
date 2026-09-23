@@ -89,6 +89,16 @@ async function pollForBackups(): Promise<void> {
       }
 
       // Cleanup expired backups periodically
+      // Disk was only ever looked at during a deploy, so a server filling up in between was
+      // found when the next deploy failed — with every container on it already starved.
+      try {
+        const { serverDiskService } = await import('../services/server-disk.service');
+        const disks = await serverDiskService.checkAll();
+        if (disks.warned > 0) logger.warn(disks, 'Server disk warnings sent');
+      } catch (error) {
+        logger.error({ err: error }, 'Server disk check failed');
+      }
+
       if (now - lastCleanup >= CLEANUP_INTERVAL) {
         try {
           await databaseBackupService.cleanupExpiredBackups();

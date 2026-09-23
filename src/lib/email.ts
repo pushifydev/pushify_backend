@@ -828,6 +828,175 @@ export async function sendAppDownEmail(
   }
 }
 
+/**
+ * An app is close to the edge but has not fallen over yet — the whole point is that this arrives
+ * before the "not answering" mail does. It says what to do, because "95% memory" on its own
+ * leaves the reader with a number and no next step.
+ */
+export async function sendResourcePressureEmail(
+  to: string,
+  details: {
+    orgName: string;
+    projectName: string;
+    projectId: string;
+    resource: 'memory' | 'cpu';
+    percent: number;
+    containerName: string;
+  },
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping resource pressure email');
+    return;
+  }
+
+  const { orgName, projectName, projectId, resource, percent, containerName } = details;
+  const projectUrl = `${env.FRONTEND_URL}/dashboard/projects/${projectId}?tab=overview`;
+  const rounded = Math.round(percent);
+  const isMemory = resource === 'memory';
+
+  const subjects = {
+    en: isMemory
+      ? `${projectName} is running out of memory (${orgName})`
+      : `${projectName} is using all its CPU (${orgName})`,
+    tr: isMemory
+      ? `${projectName} belleğini tüketmek üzere (${orgName})`
+      : `${projectName} CPU'sunu tamamen kullanıyor (${orgName})`,
+  };
+  const copy = {
+    en: {
+      lead: isMemory
+        ? `<strong>${projectName}</strong> has been using ${rounded}% of the memory it is allowed for several minutes (container <code>${containerName}</code>).`
+        : `<strong>${projectName}</strong> has been running at ${rounded}% CPU for a while (container <code>${containerName}</code>).`,
+      why: isMemory
+        ? 'When it reaches the limit the kernel kills the process and the container restarts — usually as a loop, and usually at the worst time. Either give it more memory, or find what is holding on to it.'
+        : 'The app is not down, but requests are queuing behind a saturated CPU. If this is not a build or a batch job, it is worth looking at what is spinning.',
+      cta: 'Open the project',
+    },
+    tr: {
+      lead: isMemory
+        ? `<strong>${projectName}</strong> birkaç dakikadır izin verilen belleğin %${rounded} kadarını kullanıyor (container <code>${containerName}</code>).`
+        : `<strong>${projectName}</strong> bir süredir %${rounded} CPU ile çalışıyor (container <code>${containerName}</code>).`,
+      why: isMemory
+        ? 'Sınıra ulaştığında çekirdek süreci öldürür ve container yeniden başlar — genelde döngüye girer, genelde en kötü anda. Ya belleği artırın ya da belleği tutan şeyi bulun.'
+        : 'Uygulama ayakta ama istekler doymuş bir CPU\'nun arkasında sıraya giriyor. Bu bir build ya da toplu iş değilse, neyin döndüğüne bakmakta fayda var.',
+      cta: 'Projeyi aç',
+    },
+  }[locale];
+
+  const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#f9fafb;font-family:ui-sans-serif,system-ui,sans-serif">
+<div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:24px">
+  <p style="margin:0 0 12px;font-size:15px;color:#111827">${copy.lead}</p>
+  <p style="margin:0 0 20px;font-size:14px;color:#4b5563">${copy.why}</p>
+  <a href="${projectUrl}" style="display:inline-block;padding:10px 16px;background:#111827;color:#ffffff;border-radius:8px;font-size:14px;text-decoration:none">${copy.cta}</a>
+</div></body></html>`;
+
+  try {
+    await transporter.sendMail({ from: FROM_ADDRESS, to, subject: subjects[locale] ?? subjects.en, html });
+  } catch (err) {
+    logger.error({ err, to }, 'Failed to send resource pressure email');
+  }
+}
+
+/**
+ * A server filling up takes every container on it down together — apps and managed databases
+ * alike — so this goes out while there is still room to act.
+ */
+export async function sendServerDiskEmail(
+  to: string,
+  details: {
+    orgName: string;
+    serverName: string;
+    serverId: string;
+    usedPercent: number;
+    availGb: number;
+    critical: boolean;
+  },
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping server disk email');
+    return;
+  }
+
+  const { orgName, serverName, serverId, usedPercent, availGb, critical } = details;
+  const serverUrl = `${env.FRONTEND_URL}/dashboard/servers/${serverId}`;
+
+  const subjects = {
+    en: critical
+      ? `${serverName} is almost out of disk (${orgName})`
+      : `${serverName} disk is ${usedPercent}% full (${orgName})`,
+    tr: critical
+      ? `${serverName} sunucusunun diski dolmak üzere (${orgName})`
+      : `${serverName} sunucusunun diski %${usedPercent} dolu (${orgName})`,
+  };
+  const copy = {
+    en: {
+      lead: `<strong>${serverName}</strong> is ${usedPercent}% full — ${availGb} GB left.`,
+      why: critical
+        ? 'At this level deploys fail and containers start losing writes. Everything on this server is affected, databases included.'
+        : 'Old Docker images are usually most of it. Running <code>docker system prune -af</code> on the server reclaims the space that unused builds are holding.',
+      cta: 'Open the server',
+    },
+    tr: {
+      lead: `<strong>${serverName}</strong> diskinin %${usedPercent} kadarı dolu — ${availGb} GB kaldı.`,
+      why: critical
+        ? 'Bu seviyede deploy\'lar başarısız olur ve container\'lar yazma kaybetmeye başlar. Bu sunucudaki her şey etkilenir, veritabanları dahil.'
+        : 'Genelde suçlu eski Docker imajlarıdır. Sunucuda <code>docker system prune -af</code> çalıştırmak, kullanılmayan build\'lerin tuttuğu yeri geri kazandırır.',
+      cta: 'Sunucuyu aç',
+    },
+  }[locale];
+
+  const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#f9fafb;font-family:ui-sans-serif,system-ui,sans-serif">
+<div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:24px">
+  <p style="margin:0 0 12px;font-size:15px;color:#111827">${copy.lead}</p>
+  <p style="margin:0 0 20px;font-size:14px;color:#4b5563">${copy.why}</p>
+  <a href="${serverUrl}" style="display:inline-block;padding:10px 16px;background:#111827;color:#ffffff;border-radius:8px;font-size:14px;text-decoration:none">${copy.cta}</a>
+</div></body></html>`;
+
+  try {
+    await transporter.sendMail({ from: FROM_ADDRESS, to, subject: subjects[locale] ?? subjects.en, html });
+  } catch (err) {
+    logger.error({ err, to }, 'Failed to send server disk email');
+  }
+}
+
+export async function sendResourceRecoveredEmail(
+  to: string,
+  details: { orgName: string; projectName: string; projectId: string; resource: 'memory' | 'cpu'; lastedFor: string },
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping resource recovered email');
+    return;
+  }
+
+  const { orgName, projectName, projectId, resource, lastedFor } = details;
+  const projectUrl = `${env.FRONTEND_URL}/dashboard/projects/${projectId}?tab=overview`;
+  const what = resource === 'memory' ? { en: 'Memory', tr: 'Bellek' } : { en: 'CPU', tr: 'CPU' };
+
+  const subjects = {
+    en: `${projectName}: ${what.en.toLowerCase()} is back to normal (${orgName})`,
+    tr: `${projectName}: ${what.tr.toLowerCase()} normale döndü (${orgName})`,
+  };
+  const copy = {
+    en: `<strong>${projectName}</strong> is back under its ${what.en.toLowerCase()} threshold. It was over for about ${lastedFor}.`,
+    tr: `<strong>${projectName}</strong> ${what.tr.toLowerCase()} eşiğinin altına döndü. Yaklaşık ${lastedFor} boyunca eşiğin üzerindeydi.`,
+  }[locale];
+
+  const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#f9fafb;font-family:ui-sans-serif,system-ui,sans-serif">
+<div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:24px">
+  <p style="margin:0 0 20px;font-size:15px;color:#111827">${copy}</p>
+  <a href="${projectUrl}" style="display:inline-block;padding:10px 16px;background:#111827;color:#ffffff;border-radius:8px;font-size:14px;text-decoration:none">${locale === 'tr' ? 'Projeyi aç' : 'Open the project'}</a>
+</div></body></html>`;
+
+  try {
+    await transporter.sendMail({ from: FROM_ADDRESS, to, subject: subjects[locale] ?? subjects.en, html });
+  } catch (err) {
+    logger.error({ err, to }, 'Failed to send resource recovered email');
+  }
+}
+
 export async function sendAppRecoveredEmail(
   to: string,
   details: { orgName: string; projectName: string; projectId: string; url: string; downFor: string },

@@ -29,7 +29,9 @@ export type AdminEvent =
   | 'domain.authcode_viewed'
   | 'feedback.cancellation'
   | 'backup.verify_failed'
-  | 'certificate.expiring';
+  | 'certificate.expiring'
+  | 'resource.pressure'
+  | 'server.disk_full';
 
 export const ADMIN_EVENT_TITLES: Record<AdminEvent, string> = {
   'user.registered': 'New user registered',
@@ -55,6 +57,8 @@ export const ADMIN_EVENT_TITLES: Record<AdminEvent, string> = {
   'feedback.cancellation': 'Cancellation feedback received',
   'backup.verify_failed': 'Backup restore test failed',
   'certificate.expiring': 'HTTPS certificate expiring soon',
+  'resource.pressure': 'An app is running out of memory or CPU',
+  'server.disk_full': 'A server is running out of disk',
 };
 
 /** Parse ADMIN_NOTIFY_EMAILS into a clean recipient list. */
