@@ -913,6 +913,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
           buildLogs: logBuffer.join('\n'),
           deployFinishedAt: new Date(),
           dockerImageId: remoteResult.dockerImageId || null,
+          runSpecEncrypted: remoteResult.runSpec ?? null,
           containerPort: remoteResult.containerPort || null,
         })
         .where(eq(deployments.id, job.id));

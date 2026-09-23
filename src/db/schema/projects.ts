@@ -63,6 +63,16 @@ export const projects = pgTable('projects', {
   replicas: integer('replicas').default(1).notNull(),
 
   /**
+   * Adjust that count on load instead of by hand. The bounds are an instruction — a lowered
+   * maximum takes effect on the next pass, without waiting for a threshold or a cooldown.
+   * `autoscaled_at` is the cooldown clock: scaling up is quick, scaling down deliberately slow.
+   */
+  autoscaleEnabled: boolean('autoscale_enabled').default(false).notNull(),
+  autoscaleMin: integer('autoscale_min').default(1).notNull(),
+  autoscaleMax: integer('autoscale_max').default(3).notNull(),
+  autoscaledAt: timestamp('autoscaled_at', { withTimezone: true }),
+
+  /**
    * Staging: pushes to this branch deploy a second copy of the project — its own container,
    * port, domain and `staging` environment variables — which can then be promoted to production.
    * Null means the project has production only.

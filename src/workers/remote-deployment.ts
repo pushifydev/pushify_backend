@@ -46,6 +46,7 @@ import { normalizeRootDirectory } from '../lib/normalize-root-directory';
 import { checkServerDiskSpace } from '../lib/server-disk-check';
 import { domainService } from '../services/domain.service';
 import { checkComposeFile, checkVolumes } from '../lib/host-access-guard';
+import { encodeRunSpec } from '../lib/run-spec';
 import { deployComposeFromRepo, findComposeFile } from './compose-deploy';
 import {
   buildLoginCommand,
@@ -135,6 +136,11 @@ export interface RemoteDeploymentResult {
   deploymentUrl?: string;
   containerPort?: number;
   dockerImageId?: string; // Docker image ID for rollback
+  /**
+   * How the container was started, encrypted — what autoscaling needs to start an identical
+   * one later without rebuilding the arguments from settings that may since have changed.
+   */
+  runSpec?: string;
   error?: string;
 }
 
@@ -583,6 +589,8 @@ export async function deployToRemoteServer(
   let ssh: SSHClient | null = null;
   /** Set once this deploy has logged in to a private registry; removed in `finally`. */
   let dockerConfig: string | null = null;
+  /** How the app container was started, for autoscaling later (encrypted) */
+  let runSpec: string | undefined;
 
   try {
     // Connect to server
@@ -1427,6 +1435,22 @@ export async function deployToRemoteServer(
     hostPort = blueGreenResult.tempPort ?? switchPort;
     await recordPortAssignment(ssh, deploySlug, hostPort);
 
+    // Record exactly how that container was started. Autoscaling starts identical ones between
+    // deploys, and reconstructing these arguments later would drift from what is actually running.
+    const liveSlot = blueGreenResult.newContainerName?.endsWith('-green') ? 'green' : 'blue';
+    runSpec = encodeRunSpec({
+      imageName: `${imageName}:${imageTag}`,
+      containerName: `pushify-${deploySlug}`,
+      containerPort,
+      slot: liveSlot,
+      bindAddress: loopbackOnly || publicPort ? '127.0.0.1' : undefined,
+      envVars,
+      volumes: config.volumes,
+      networkMode: appNetwork,
+      framework: resolvedFramework,
+      buildpackId: resolvedBuildpackId,
+    });
+
     // More than one replica: the rest start beside it, each on its own port, and nginx
     // balances across all of them (nginx-manager's upstream).
     const containerPorts = [hostPort];
@@ -1655,6 +1679,7 @@ export async function deployToRemoteServer(
       deploymentUrl,
       containerPort: hostPort,
       dockerImageId: dockerImageId || undefined,
+      runSpec,
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);

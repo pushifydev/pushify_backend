@@ -43,6 +43,10 @@ const ProjectSchema = z
     composePath: z.string().nullable(),
     composeService: z.string().nullable(),
     composePort: z.number().nullable(),
+    /** Scale containers on load instead of by hand */
+    autoscaleEnabled: z.boolean().optional(),
+    autoscaleMin: z.number().optional(),
+    autoscaleMax: z.number().optional(),
     port: z.number().nullable(),
     autoDeploy: z.boolean(),
     status: z.enum(['active', 'paused', 'deleted']),
@@ -123,6 +127,9 @@ const UpdateProjectSchema = z
     composePort: z.number().int().min(1).max(65535).nullable().optional(),
     port: z.number().int().min(1).max(65535).optional(),
     replicas: z.number().int().min(1).max(10).optional(),
+    autoscaleEnabled: z.boolean().optional(),
+    autoscaleMin: z.number().int().min(1).max(10).optional(),
+    autoscaleMax: z.number().int().min(1).max(10).optional(),
     autoDeploy: z.boolean().optional(),
     serverId: z.string().uuid().nullable().optional(),
   })

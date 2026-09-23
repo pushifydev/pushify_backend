@@ -38,6 +38,17 @@ export const deployments = pgTable('deployments', {
 
   // Docker image info (for quick rollback without rebuild)
   dockerImageId: varchar('docker_image_id', { length: 100 }), // Docker image digest/ID
+
+  /**
+   * How this deployment's container was started — image, port, env, volumes, network, limits.
+   * Encrypted, because the environment variables are in it.
+   *
+   * Autoscaling needs to start a container identical to the ones the deploy started, between
+   * deploys. Rebuilding those arguments from project settings afterwards would drift: a variable
+   * added since, a volume removed, and the new replica quietly differs from its siblings. The
+   * deploy records what it actually used instead.
+   */
+  runSpecEncrypted: text('run_spec_encrypted'),
   containerPort: integer('container_port'), // Port the container is running on
 
   // Rollback reference - stores the deployment ID we're rolling back to

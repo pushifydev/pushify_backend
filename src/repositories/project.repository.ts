@@ -33,6 +33,9 @@ export type UpdateProjectInput = {
   /** Pushes here deploy the staging copy; null turns staging off */
   stagingBranch?: string | null;
   replicas?: number;
+  autoscaleEnabled?: boolean;
+  autoscaleMin?: number;
+  autoscaleMax?: number;
   gitProvider?: string;
   buildCommand?: string;
   startCommand?: string;
