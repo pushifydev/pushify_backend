@@ -73,6 +73,12 @@ export const databases = pgTable('databases', {
   // Backup settings
   backupEnabled: boolean('backup_enabled').default(true).notNull(),
   backupRetentionDays: integer('backup_retention_days').default(7),
+  /**
+   * How often an automatic backup is taken. This is the customer's worst-case data loss: at 24
+   * hours — the old hardcoded interval and still the default — a disk failure costs a day of
+   * writes. The plan sets the shortest interval allowed (`minBackupIntervalHours`).
+   */
+  backupIntervalHours: integer('backup_interval_hours').default(24).notNull(),
   lastBackupAt: timestamp('last_backup_at', { withTimezone: true }),
 
   // Container info (for Docker-based databases)

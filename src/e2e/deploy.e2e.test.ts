@@ -584,6 +584,25 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
       await restore();
       expect(await read()).toBe('E2E-DB one,two');
 
+      // ── The off-site copy is the one that matters ──
+      // A dump next to the data survives a dropped table and nothing else. The case it exists
+      // for is the server being gone, so the only honest test is restoring without the local
+      // file: delete it, and the restore has to fetch the copy back or fail loudly.
+      const stored = await db.query.databaseBackups.findFirst({ where: (b, { eq }) => eq(b.id, backup.id) });
+      expect(stored?.offsiteStatus, 'the backup should have been copied off the server').toBe('uploaded');
+      expect(stored?.offsitePath).toBeTruthy();
+      // …and it is really there, under the organization and database it belongs to
+      expect(tryExec(`rclone ls ${stored!.offsitePath}`)).toMatch(/\d+\s/);
+
+      execSync(`rm -f ${stored!.filePath}`);
+      expect(tryExec(`test -f ${stored!.filePath} && echo yes || echo no`)).toBe('no');
+
+      expect(await read('/add?body=five')).toBe('E2E-DB one,two,five');
+      await restore();
+      expect(await read()).toBe('E2E-DB one,two');
+      // The restore pulled it back down, so the file is on the server again
+      expect(tryExec(`test -f ${stored!.filePath} && echo yes || echo no`)).toBe('yes');
+
       // A new password takes effect in the database and reaches the app on the next deploy
       const { password } = await databaseService.resetPassword(database.id, organizationId, userId, 'en');
       expect(
@@ -593,6 +612,16 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
       expect(await read()).toBe('E2E-DB one,two');
       // The read-only user has a password of its own: untouched by the reset
       expect(await roRead()).toBe('E2E-DB one,two');
+
+      // Last, because it ends the database: deleting it takes the off-site copies with it. A
+      // deleted customer's data must not sit in the operator's storage for ever.
+      const offsitePrefix = stored!.offsitePath!.replace(/\/[^/]+$/, '');
+      await databaseService.delete(database.id, organizationId, userId, 'en');
+      await waitFor(
+        'the off-site copies to be purged',
+        async () => (tryExec(`rclone ls ${offsitePrefix} 2>/dev/null || echo GONE`) === 'GONE' ? true : undefined),
+        60_000
+      );
     },
     900_000
   );

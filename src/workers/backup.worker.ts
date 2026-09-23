@@ -1,12 +1,18 @@
 import { databaseRepository } from '../repositories/database.repository';
 import { databaseBackupService } from '../services/database-backup.service';
 import { certExpiryService } from '../services/cert-expiry.service';
+import { isBackupDue } from '../lib/backup-schedule';
 import { logger } from '../lib/logger';
 
-const POLL_INTERVAL = 60 * 60 * 1000; // 1 hour
+// Every 15 minutes, not hourly: a database set to back up every hour would otherwise wait up to
+// two. The pass itself is one query unless something is actually due.
+const POLL_INTERVAL = 15 * 60 * 1000;
+/** Disk is checked hourly whatever the poll interval — it opens an SSH connection per server. */
+const DISK_CHECK_INTERVAL = 60 * 60 * 1000;
+let lastDiskCheck = 0;
 const CLEANUP_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
 const VERIFY_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours — each pass verifies a few due backups
-const BACKUP_THRESHOLD = 24 * 60 * 60 * 1000; // 24 hours
+
 const CERT_CHECK_INTERVAL = 24 * 60 * 60 * 1000; // daily — certificate expiry warnings
 
 let isRunning = false;
@@ -47,11 +53,8 @@ async function pollForBackups(): Promise<void> {
       const databases = await databaseRepository.findDatabasesWithBackupEnabled();
 
       for (const database of databases) {
-        const now = Date.now();
-        const lastBackup = database.lastBackupAt ? new Date(database.lastBackupAt).getTime() : 0;
-
-        // Skip if backed up within threshold
-        if (now - lastBackup < BACKUP_THRESHOLD) {
+        // Each database decides how much data it is willing to lose
+        if (!isBackupDue(database.lastBackupAt, database.backupIntervalHours)) {
           continue;
         }
 
@@ -91,12 +94,15 @@ async function pollForBackups(): Promise<void> {
       // Cleanup expired backups periodically
       // Disk was only ever looked at during a deploy, so a server filling up in between was
       // found when the next deploy failed — with every container on it already starved.
-      try {
-        const { serverDiskService } = await import('../services/server-disk.service');
-        const disks = await serverDiskService.checkAll();
-        if (disks.warned > 0) logger.warn(disks, 'Server disk warnings sent');
-      } catch (error) {
-        logger.error({ err: error }, 'Server disk check failed');
+      if (now - lastDiskCheck >= DISK_CHECK_INTERVAL) {
+        lastDiskCheck = now;
+        try {
+          const { serverDiskService } = await import('../services/server-disk.service');
+          const disks = await serverDiskService.checkAll();
+          if (disks.warned > 0) logger.warn(disks, 'Server disk warnings sent');
+        } catch (error) {
+          logger.error({ err: error }, 'Server disk check failed');
+        }
       }
 
       if (now - lastCleanup >= CLEANUP_INTERVAL) {

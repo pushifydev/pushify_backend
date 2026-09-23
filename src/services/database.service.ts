@@ -42,6 +42,8 @@ export interface UpdateDatabaseInput {
   description?: string;
   backupEnabled?: boolean;
   backupRetentionDays?: number;
+  /** How often an automatic backup runs — the customer's worst-case data loss */
+  backupIntervalHours?: number;
   externalAccess?: boolean;
 }
 
@@ -368,6 +370,21 @@ export const databaseService = {
     if (typeof input.description === 'string') safeInput.description = input.description;
     if (typeof input.backupEnabled === 'boolean') safeInput.backupEnabled = input.backupEnabled;
     if (typeof input.backupRetentionDays === 'number') safeInput.backupRetentionDays = input.backupRetentionDays;
+    if (typeof input.backupIntervalHours === 'number') {
+      // The plan sets the floor: backing up every hour costs storage and load on the database
+      // itself, so it is what a paid plan buys. Above the floor it is the customer's call.
+      const { getEffectivePlanLimits } = await import('../lib/effective-plan-limits');
+      const { resolveBackupInterval } = await import('../lib/backup-schedule');
+      const org = await organizationRepository.findById(organizationId);
+      const limits = getEffectivePlanLimits({
+        plan: org?.plan ?? 'free',
+        grandfatheredUntil: org?.grandfatheredUntil,
+        planLimitsOverride: org?.planLimitsOverride,
+      });
+      const resolved = resolveBackupInterval(input.backupIntervalHours, limits);
+      if ('error' in resolved) throw new HTTPException(400, { message: resolved.error });
+      safeInput.backupIntervalHours = resolved.hours;
+    }
     if (typeof input.externalAccess === 'boolean') safeInput.externalAccess = input.externalAccess;
 
     // Check name uniqueness if changing

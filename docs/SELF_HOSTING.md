@@ -84,7 +84,9 @@ which is where the storage credentials stay — putting them on customer servers
 compromised box could read, or delete, every other customer's backups.
 
 A restore looks for the dump on the server first and falls back to the off-site copy, so a
-database can be restored onto a server that has never seen the file. `DB_BACKUP_REMOTE_KEEP_DAYS`
+database can be restored onto a server that has never seen the file — exercised by the e2e, which
+deletes the local dump before restoring. How often a backup is taken is per database (project
+settings → the database's backup panel), from hourly to weekly. `DB_BACKUP_REMOTE_KEEP_DAYS`
 (30 by default) prunes the remote copies; deleting a database removes its off-site copies too.
 rclone must be installed on the control plane — the same binary the control-plane backup script
 uses.
