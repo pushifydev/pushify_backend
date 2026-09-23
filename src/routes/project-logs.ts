@@ -112,4 +112,32 @@ projectLogsRouter.get('/:projectId/logs/export', async (c) => {
   return c.body(body ? `${body}\n` : '');
 });
 
+// What autoscaling decided, and whether it acted — the record someone reads for a few days
+// before trusting the thresholds with their own traffic.
+projectLogsRouter.get('/:projectId/scale-events', async (c) => {
+  const { projectId } = await authorize(c);
+  const { db } = await import('../db');
+  const { projectScaleEvents } = await import('../db/schema/scale-events');
+  const { desc, eq } = await import('drizzle-orm');
+
+  const rows = await db
+    .select()
+    .from(projectScaleEvents)
+    .where(eq(projectScaleEvents.projectId, projectId))
+    .orderBy(desc(projectScaleEvents.createdAt))
+    .limit(50);
+
+  return c.json({
+    data: rows.map((row) => ({
+      id: row.id,
+      from: row.fromCount,
+      to: row.toCount,
+      averageCpu: row.averageCpu,
+      reason: row.reason,
+      applied: row.applied,
+      createdAt: row.createdAt.toISOString(),
+    })),
+  });
+});
+
 export { projectLogsRouter as projectLogsRoutes };

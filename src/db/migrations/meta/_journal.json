@@ -407,6 +407,13 @@
       "when": 1787270400017,
       "tag": "0058_autoscale",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1787270400018,
+      "tag": "0059_scale_events",
+      "breakpoints": true
     }
   ]
 }

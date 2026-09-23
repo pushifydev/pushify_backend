@@ -47,6 +47,7 @@ const ProjectSchema = z
     autoscaleEnabled: z.boolean().optional(),
     autoscaleMin: z.number().optional(),
     autoscaleMax: z.number().optional(),
+    autoscaleObserveOnly: z.boolean().optional(),
     port: z.number().nullable(),
     autoDeploy: z.boolean(),
     status: z.enum(['active', 'paused', 'deleted']),
@@ -130,6 +131,7 @@ const UpdateProjectSchema = z
     autoscaleEnabled: z.boolean().optional(),
     autoscaleMin: z.number().int().min(1).max(10).optional(),
     autoscaleMax: z.number().int().min(1).max(10).optional(),
+    autoscaleObserveOnly: z.boolean().optional(),
     autoDeploy: z.boolean().optional(),
     serverId: z.string().uuid().nullable().optional(),
   })

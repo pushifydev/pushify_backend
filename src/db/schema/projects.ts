@@ -71,6 +71,12 @@ export const projects = pgTable('projects', {
   autoscaleMin: integer('autoscale_min').default(1).notNull(),
   autoscaleMax: integer('autoscale_max').default(3).notNull(),
   autoscaledAt: timestamp('autoscaled_at', { withTimezone: true }),
+  /**
+   * Work out what it would do and write it down, but change nothing. The thresholds are
+   * reasonable guesses until they meet a real workload, so this is how someone finds out
+   * whether autoscaling suits their traffic without letting it near production first.
+   */
+  autoscaleObserveOnly: boolean('autoscale_observe_only').default(false).notNull(),
 
   /**
    * Staging: pushes to this branch deploy a second copy of the project — its own container,

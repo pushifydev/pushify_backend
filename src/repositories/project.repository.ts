@@ -36,6 +36,7 @@ export type UpdateProjectInput = {
   autoscaleEnabled?: boolean;
   autoscaleMin?: number;
   autoscaleMax?: number;
+  autoscaleObserveOnly?: boolean;
   gitProvider?: string;
   buildCommand?: string;
   startCommand?: string;
