@@ -1,4 +1,4 @@
-import { pgTable, uuid, timestamp, real, bigint, varchar } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, timestamp, real, bigint, varchar, primaryKey } from 'drizzle-orm/pg-core';
 import { projects } from './projects';
 import { deployments } from './deployments';
 
@@ -38,3 +38,36 @@ export const containerMetrics = pgTable('container_metrics', {
 
 export type ContainerMetric = typeof containerMetrics.$inferSelect;
 export type NewContainerMetric = typeof containerMetrics.$inferInsert;
+
+/**
+ * How long a project's containers have been over a resource threshold, and whether anyone has
+ * been told. One row per project per resource, so a memory warning and a CPU warning can be
+ * live at the same time without overwriting each other.
+ *
+ * Readings themselves live in `container_metrics`; this is only the alerting state, because
+ * deciding "is this a problem" from raw samples on every poll would mean re-reading minutes of
+ * history fifteen seconds apart.
+ */
+export const projectResourceState = pgTable(
+  'project_resource_state',
+  {
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    /** memory | cpu */
+    resource: varchar('resource', { length: 16 }).notNull(),
+    /** When the reading first went over the line; null while it is under */
+    since: timestamp('since', { withTimezone: true }),
+    /** When someone was told; null if the pressure has not lasted long enough yet */
+    notifiedAt: timestamp('notified_at', { withTimezone: true }),
+    lastPercent: real('last_percent'),
+    /** The container the worst reading came from — a project can run several */
+    lastContainer: varchar('last_container', { length: 255 }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.projectId, table.resource], name: 'project_resource_state_pk' }),
+  })
+);
+
+export type ProjectResourceState = typeof projectResourceState.$inferSelect;

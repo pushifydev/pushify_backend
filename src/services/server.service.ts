@@ -263,6 +263,9 @@ export interface ServerWithDetails {
   vcpus: number;
   memoryMb: number;
   diskGb: number;
+  /** Root filesystem usage from the hourly check; null until the first one runs */
+  diskUsedPercent: number | null;
+  diskCheckedAt: Date | null;
   ipv4: string | null;
   ipv6: string | null;
   privateIp: string | null;
@@ -369,6 +372,9 @@ function mapServerRow(
     vcpus: s.vcpus,
     memoryMb: s.memoryMb,
     diskGb: s.diskGb,
+    /** From the hourly check — how full the root filesystem actually is */
+    diskUsedPercent: s.diskUsedPercent,
+    diskCheckedAt: s.diskCheckedAt,
     ipv4: s.ipv4,
     ipv6: s.ipv6,
     privateIp: s.privateIp,

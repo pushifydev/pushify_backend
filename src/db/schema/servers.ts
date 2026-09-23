@@ -103,6 +103,15 @@ export const servers = pgTable('servers', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+
+  /**
+   * Root filesystem usage, from the hourly check. Disk was only ever looked at during a deploy,
+   * so a server filling up between deploys was discovered when the next one failed — by which
+   * time every container on it, databases included, had already been starved.
+   */
+  diskUsedPercent: integer('disk_used_percent'),
+  diskCheckedAt: timestamp('disk_checked_at', { withTimezone: true }),
+  diskNotifiedAt: timestamp('disk_notified_at', { withTimezone: true }),
 });
 
 // Server Snapshots Table

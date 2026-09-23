@@ -386,6 +386,13 @@
       "when": 1787270400014,
       "tag": "0055_backup_offsite",
       "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1787270400015,
+      "tag": "0056_resource_alerts",
+      "breakpoints": true
     }
   ]
 }

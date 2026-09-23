@@ -46,6 +46,9 @@ interface DockerStatsOutput {
  */
 const METRICS_RETENTION_DAYS = 7;
 const METRICS_CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // once an hour
+/** Resource thresholds are measured in minutes, so checking every poll would be wasted work. */
+const RESOURCE_CHECK_INTERVAL = 60 * 1000;
+let lastResourceCheck = 0;
 let lastCleanupAt = 0;
 
 export async function startMetricsWorker(): Promise<void> {
@@ -217,6 +220,22 @@ async function pollForMetrics(): Promise<void> {
               },
             }).catch(() => {});
           }
+        }
+      }
+
+      // The samples just written are worth reading: an app sitting at its memory limit is minutes
+      // from an OOM kill, and until now nobody was told until it had already stopped answering.
+      // Checked once a minute rather than every poll — the thresholds are measured in minutes.
+      if (Date.now() - lastResourceCheck >= RESOURCE_CHECK_INTERVAL) {
+        lastResourceCheck = Date.now();
+        try {
+          const { resourceAlertService } = await import('../services/resource-alert.service');
+          const result = await resourceAlertService.check();
+          if (result.alerted > 0) {
+            logger.info(result, 'Resource alerts sent');
+          }
+        } catch (error) {
+          logger.error({ err: error }, 'Resource alert check failed');
         }
       }
 
