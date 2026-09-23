@@ -9,6 +9,8 @@ import { decrypt } from '../lib/encryption';
 import { runContainer } from '../workers/remote-docker';
 import { pickFreePorts } from '../workers/port-manager';
 import { syncProjectSites } from '../lib/project-sites';
+import { assignedPublicPort, writePublicPortProxy } from '../workers/public-port-proxy';
+import { reloadNginx } from '../workers/nginx-manager';
 import { isSharedRunnerServer, resolveProjectServerId } from '../lib/runner-routing';
 import { decodeRunSpec, replicaIndex, replicaName, type ContainerRunSpec } from '../lib/run-spec';
 import { decideScale, policyFor, MIN_SAMPLES } from '../lib/autoscale';
@@ -248,7 +250,14 @@ export const autoscaleService = {
     return true;
   },
 
-  /** Rewrite the vhost with this set of ports. Certificates are a deploy's job, not a scale's. */
+  /**
+   * Point nginx at this set of ports. Certificates are a deploy's job, not a scale's.
+   *
+   * An app without a domain is not served by the project vhost at all — it answers on
+   * `<server-ip>:<public-port>` through a site of its own (`workers/public-port-proxy.ts`).
+   * Updating only the vhost would leave a new replica receiving nothing, and worse, would let a
+   * scale-down stop a container the public-port site still routes to.
+   */
   async syncNginx(
     ssh: SSHClient,
     candidate: Candidate,
@@ -256,6 +265,21 @@ export const autoscaleService = {
     spec: ContainerRunSpec,
     serverIp: string
   ): Promise<boolean> {
+    const publicPort = await assignedPublicPort(ssh, candidate.slug);
+    if (publicPort) {
+      const written = await writePublicPortProxy(ssh, candidate.slug, publicPort, ports);
+      if (!written.success) {
+        logger.error({ projectId: candidate.projectId, message: written.message }, 'Autoscale public-port update failed');
+        return false;
+      }
+      const reload = await reloadNginx(ssh);
+      if (!reload.success) {
+        logger.error({ projectId: candidate.projectId, message: reload.message }, 'Autoscale nginx reload failed');
+        return false;
+      }
+      return true;
+    }
+
     const result = await syncProjectSites(ssh, {
       projectId: candidate.projectId,
       projectSlug: candidate.slug,
