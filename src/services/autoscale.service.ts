@@ -3,12 +3,15 @@ import { db } from '../db';
 import { projects } from '../db/schema/projects';
 import { deployments } from '../db/schema/deployments';
 import { containerMetrics } from '../db/schema/metrics';
+import { projectScaleEvents } from '../db/schema/scale-events';
 import { servers } from '../db/schema/servers';
 import { getSSHConnection, SSHClient } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
 import { runContainer } from '../workers/remote-docker';
 import { pickFreePorts } from '../workers/port-manager';
 import { syncProjectSites } from '../lib/project-sites';
+import { assignedPublicPort, writePublicPortProxy } from '../workers/public-port-proxy';
+import { reloadNginx } from '../workers/nginx-manager';
 import { isSharedRunnerServer, resolveProjectServerId } from '../lib/runner-routing';
 import { decodeRunSpec, replicaIndex, replicaName, type ContainerRunSpec } from '../lib/run-spec';
 import { decideScale, policyFor, MIN_SAMPLES } from '../lib/autoscale';
@@ -42,6 +45,8 @@ interface Candidate {
   autoscaleMin: number;
   autoscaleMax: number;
   autoscaledAt: Date | null;
+  /** Decide and record, but change nothing */
+  observeOnly: boolean;
 }
 
 export const autoscaleService = {
@@ -57,6 +62,7 @@ export const autoscaleService = {
         autoscaleMin: projects.autoscaleMin,
         autoscaleMax: projects.autoscaleMax,
         autoscaledAt: projects.autoscaledAt,
+        observeOnly: projects.autoscaleObserveOnly,
       })
       .from(projects)
       .where(
@@ -124,9 +130,39 @@ export const autoscaleService = {
     if (!decision) return false;
 
     logger.info(
-      { projectId: candidate.projectId, from: running.length, to: decision.desired, reason: decision.reason },
-      'Autoscaling'
+      {
+        projectId: candidate.projectId,
+        from: running.length,
+        to: decision.desired,
+        reason: decision.reason,
+        observeOnly: candidate.observeOnly,
+      },
+      candidate.observeOnly ? 'Autoscale would have scaled' : 'Autoscaling'
     );
+
+    const record = async (applied: boolean) => {
+      await db
+        .insert(projectScaleEvents)
+        .values({
+          projectId: candidate.projectId,
+          fromCount: running.length,
+          toCount: decision.desired,
+          averageCpu: Number.isFinite(averageCpu) ? averageCpu : null,
+          reason: decision.reason,
+          applied,
+          createdAt: now,
+        })
+        .catch((err) => logger.error({ err, projectId: candidate.projectId }, 'Could not record a scale event'));
+    };
+
+    // Watching only: write down what it would have done and stop there. The cooldown clock is
+    // still moved on, so the record reads like the real thing would — otherwise every pass would
+    // report the same pending decision again.
+    if (candidate.observeOnly) {
+      await record(false);
+      await db.update(projects).set({ autoscaledAt: now }).where(eq(projects.id, candidate.projectId));
+      return false;
+    }
 
     const ok =
       decision.direction === 'up'
@@ -134,6 +170,7 @@ export const autoscaleService = {
         : await this.scaleDown(ssh, candidate, spec, running, server.ipv4);
     if (!ok) return false;
 
+    await record(true);
     await db.update(projects).set({ autoscaledAt: now, replicas: decision.desired }).where(eq(projects.id, candidate.projectId));
 
     activityService
@@ -248,7 +285,14 @@ export const autoscaleService = {
     return true;
   },
 
-  /** Rewrite the vhost with this set of ports. Certificates are a deploy's job, not a scale's. */
+  /**
+   * Point nginx at this set of ports. Certificates are a deploy's job, not a scale's.
+   *
+   * An app without a domain is not served by the project vhost at all — it answers on
+   * `<server-ip>:<public-port>` through a site of its own (`workers/public-port-proxy.ts`).
+   * Updating only the vhost would leave a new replica receiving nothing, and worse, would let a
+   * scale-down stop a container the public-port site still routes to.
+   */
   async syncNginx(
     ssh: SSHClient,
     candidate: Candidate,
@@ -256,6 +300,21 @@ export const autoscaleService = {
     spec: ContainerRunSpec,
     serverIp: string
   ): Promise<boolean> {
+    const publicPort = await assignedPublicPort(ssh, candidate.slug);
+    if (publicPort) {
+      const written = await writePublicPortProxy(ssh, candidate.slug, publicPort, ports);
+      if (!written.success) {
+        logger.error({ projectId: candidate.projectId, message: written.message }, 'Autoscale public-port update failed');
+        return false;
+      }
+      const reload = await reloadNginx(ssh);
+      if (!reload.success) {
+        logger.error({ projectId: candidate.projectId, message: reload.message }, 'Autoscale nginx reload failed');
+        return false;
+      }
+      return true;
+    }
+
     const result = await syncProjectSites(ssh, {
       projectId: candidate.projectId,
       projectSlug: candidate.slug,

@@ -53,6 +53,8 @@ interface UpdateProjectInput {
   autoscaleEnabled?: boolean;
   autoscaleMin?: number;
   autoscaleMax?: number;
+  /** Decide and record, but change nothing — for judging the thresholds before trusting them */
+  autoscaleObserveOnly?: boolean;
   gitProvider?: string;
   buildCommand?: string;
   startCommand?: string;

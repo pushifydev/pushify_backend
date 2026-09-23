@@ -20,6 +20,11 @@ const ENABLED_DIR = '/etc/nginx/sites-enabled';
 const siteName = (slug: string) => `pushify-${slug}.port`;
 const registryKey = (slug: string) => `${slug}:public`;
 
+/** The public port this project is served on, or null when it is served by domain instead. */
+export async function assignedPublicPort(ssh: SSHClient, slug: string): Promise<number | null> {
+  return getAssignedPort(ssh, registryKey(slug));
+}
+
 export function publicPortSiteConfig(slug: string, publicPort: number, containerPorts: number | number[]): string {
   const ports = Array.isArray(containerPorts) ? containerPorts : [containerPorts];
   const upstream = ports.length > 1 ? `pushify_${slug.replace(/[^a-zA-Z0-9]/g, '_')}_port` : null;

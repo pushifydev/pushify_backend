@@ -13,6 +13,9 @@ export * from './registry-credentials';
 // Single sign-on
 export * from './sso';
 
+// Autoscaling decisions
+export * from './scale-events';
+
 // Deployments
 export * from './deployments';
 
