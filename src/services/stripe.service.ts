@@ -9,7 +9,7 @@ import {
   getSubscriptionCurrentPeriodEnd,
   getOrganizationIdFromSubscription,
 } from '../lib/stripe';
-import { claimStripeWebhookEvent } from '../lib/stripe-webhook-dedupe';
+import { claimStripeWebhookEvent, releaseStripeWebhookEvent } from '../lib/stripe-webhook-dedupe';
 import { sendBillingPlanActivatedEmail, sendInfraCreditTopUpEmail } from '../lib/email';
 import { resolveBillingNotifyEmail } from '../lib/billing-notify';
 import { organizationRepository } from '../repositories/organization.repository';
@@ -483,6 +483,18 @@ export const stripeService = {
       return;
     }
 
+    try {
+      await this.processWebhookEvent(event, stripe);
+    } catch (err) {
+      // Processing failed after the dedupe key was claimed. Release it so Stripe's retry
+      // re-processes the event instead of being skipped as a duplicate (payment would
+      // otherwise be captured without the plan/credit/domain being applied).
+      await releaseStripeWebhookEvent(event.id);
+      throw err;
+    }
+  },
+
+  async processWebhookEvent(event: Stripe.Event, stripe: ReturnType<typeof getStripe>): Promise<void> {
     switch (event.type) {
       case 'checkout.session.completed': {
         adminNotify('subscription.activated', {
