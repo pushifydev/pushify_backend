@@ -3,6 +3,7 @@ import { Hono, type Context, type Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { env } from '../config/env';
 import { opsSignalsService } from '../services/ops-signals.service';
+import { opsGrowthService } from '../services/ops-growth.service';
 import type { AppEnv } from '../types';
 
 /**
@@ -36,6 +37,12 @@ async function requireOpsToken(c: Context<AppEnv>, next: Next) {
 // Registered once for every route here; ops.test.ts walks the route table to prove it.
 opsRouter.use('*', requireOpsToken);
 
-opsRouter.get('/signals', async (c) => c.json({ data: await opsSignalsService.getSignals() }));
+opsRouter.get('/signals', async (c) => {
+  const raw = c.req.query('since');
+  const since = raw ? new Date(raw) : undefined;
+  return c.json({ data: await opsSignalsService.getSignals({ since: since && !Number.isNaN(since.getTime()) ? since : undefined }) });
+});
+
+opsRouter.get('/growth', async (c) => c.json({ data: await opsGrowthService.getGrowth() }));
 
 export { opsRouter as opsRoutes };
