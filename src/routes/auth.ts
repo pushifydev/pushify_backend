@@ -141,6 +141,10 @@ const ChangePasswordRequestSchema = z
       .string()
       .min(8, 'Password must be at least 8 characters')
       .openapi({ example: 'NewSecurePass123' }),
+    refreshToken: z.string().min(1).optional().openapi({
+      description:
+        'Current refresh token. If provided, this session stays signed in and all other sessions are revoked; otherwise every session is revoked.',
+    }),
   })
   .openapi('ChangePasswordRequest');
 

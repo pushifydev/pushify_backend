@@ -503,7 +503,7 @@ export const authService = {
    */
   async changePassword(
     userId: string,
-    input: { currentPassword?: string; newPassword: string },
+    input: { currentPassword?: string; newPassword: string; refreshToken?: string },
     locale: SupportedLocale = 'en'
   ) {
     const user = await userRepository.findById(userId);
@@ -532,6 +532,23 @@ export const authService = {
     // Hash and update password
     const newPasswordHash = await hashPassword(input.newPassword);
     await userRepository.update(userId, { passwordHash: newPasswordHash });
+
+    // Revoke other sessions so a stolen refresh token stops working. Keep the
+    // caller's own session only if they prove which one it is (and it is theirs).
+    let currentSessionId: string | undefined;
+    if (input.refreshToken) {
+      const currentSession = await userRepository.findSessionByTokenHash(
+        await hashToken(input.refreshToken)
+      );
+      if (currentSession && currentSession.userId === userId) {
+        currentSessionId = currentSession.id;
+      }
+    }
+    if (currentSessionId) {
+      await userRepository.deleteOtherSessions(userId, currentSessionId);
+    } else {
+      await userRepository.deleteAllSessions(userId);
+    }
 
     logger.info({ userId }, 'User password changed');
 
@@ -932,6 +949,10 @@ export const authService = {
     // Hash the new password and update the user
     const newPasswordHash = await hashPassword(newPassword);
     await userRepository.update(resetToken.userId, { passwordHash: newPasswordHash });
+
+    // Revoke every open session: a reset is the recovery path after a takeover,
+    // so any refresh token issued before it must stop working.
+    await userRepository.deleteAllSessions(resetToken.userId);
 
     // Delete all reset tokens for this user
     await userRepository.deletePasswordResetTokensByUserId(resetToken.userId);
