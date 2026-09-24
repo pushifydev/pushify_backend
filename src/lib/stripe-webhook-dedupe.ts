@@ -34,3 +34,25 @@ export async function claimStripeWebhookEvent(eventId: string | undefined): Prom
     throw err;
   }
 }
+
+/**
+ * Releases a previously claimed event so a Stripe retry will be processed again.
+ * Call this when processing fails after a successful claim. Never throws: the caller is
+ * already propagating the original processing error.
+ */
+export async function releaseStripeWebhookEvent(eventId: string | undefined): Promise<void> {
+  if (!eventId) {
+    return;
+  }
+
+  const redis = getOptionalRedis();
+  if (!redis) {
+    return;
+  }
+
+  try {
+    await redis.del(`${PREFIX}${eventId}`);
+  } catch (err) {
+    logger.error({ err, eventId }, 'Failed to release Stripe webhook dedupe key; retries may be skipped');
+  }
+}
