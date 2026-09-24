@@ -37,12 +37,15 @@ import { alertsRoutes } from './alerts';
 import { registrarDomainRoutes } from './registrar-domains';
 import { onboardingRoutes } from './onboarding';
 import { adminRoutes } from './admin';
+import { opsRoutes } from './ops';
 
 export function registerRoutes(app: OpenAPIHono<any>) {
   // API v1 routes
   app.route('/api/v1/health', healthRoutes);
   // Platform operators only (ADMIN_EMAILS + 2FA); everyone else sees 404
   app.route('/api/v1/admin', adminRoutes);
+  // Operations agent (pushify-hq): OPS_READ_TOKEN only, read-only, scrubbed; otherwise 404
+  app.route('/api/v1/ops', opsRoutes);
   app.route('/api/v1/auth', authRoutes);
   app.route('/api/v1/auth/2fa', twoFactorRoutes);
   app.route('/api/v1/api-keys', apiKeyRoutes);
