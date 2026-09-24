@@ -91,6 +91,9 @@ const envSchema = z.object({
   /** Comma-separated emails of platform operators who may open the admin panel
    *  (/api/v1/admin/*). Each must also have 2FA enabled. Unset = panel disabled. */
   ADMIN_EMAILS: z.string().optional(),
+  /** Bearer token for the read-only operational signals endpoint (/api/v1/ops/*) used by the
+   *  operations agent in pushify-hq. Unset = endpoint disabled (404). */
+  OPS_READ_TOKEN: z.string().min(32).optional(),
 
   // Domain sales (registrar reseller). Unset = feature hidden.
   REGISTRAR_PROVIDER: z.enum(['namecom']).optional(),
