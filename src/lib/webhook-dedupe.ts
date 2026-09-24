@@ -34,3 +34,43 @@ export async function claimGitHubWebhookDelivery(deliveryId: string | undefined)
     throw err;
   }
 }
+
+/**
+ * Drops a claim made by {@link claimGitHubWebhookDelivery} so a retry (GitHub/GitLab automatic
+ * redelivery or a manual "Redeliver") of the same delivery id is processed again. Used when
+ * processing fails after the claim. Never throws: a failed release is logged, the original
+ * processing error is what matters to the caller.
+ */
+export async function releaseGitHubWebhookDelivery(deliveryId: string | undefined): Promise<void> {
+  if (!deliveryId) {
+    return;
+  }
+
+  const redis = getOptionalRedis();
+  if (!redis) {
+    return;
+  }
+
+  try {
+    await redis.del(`${PREFIX}${deliveryId}`);
+  } catch (err) {
+    logger.error({ err, deliveryId }, 'Failed to release webhook delivery claim; retries may be ignored');
+  }
+}
+
+/**
+ * Runs the work for an already-claimed delivery. If it throws, the claim is released before the
+ * error is rethrown, so the non-2xx response leads to a retry that is actually processed instead
+ * of being skipped as a duplicate.
+ */
+export async function processClaimedWebhookDelivery<T>(
+  deliveryId: string | undefined,
+  work: () => Promise<T>
+): Promise<T> {
+  try {
+    return await work();
+  } catch (err) {
+    await releaseGitHubWebhookDelivery(deliveryId);
+    throw err;
+  }
+}

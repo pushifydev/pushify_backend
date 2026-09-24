@@ -6,7 +6,7 @@ import { projects } from '../db/schema/projects';
 import { env } from '../config/env';
 import { logger } from '../lib/logger';
 import { verifyGitHubSignature } from '../lib/github-webhook';
-import { claimGitHubWebhookDelivery } from '../lib/webhook-dedupe';
+import { claimGitHubWebhookDelivery, processClaimedWebhookDelivery } from '../lib/webhook-dedupe';
 import {
   handlePullRequestEvent,
   handlePushEvent,
@@ -82,101 +82,104 @@ appWebhookRouter.post('/github/app', async (c) => {
     return c.json({ message: 'Duplicate webhook delivery ignored' });
   }
 
-  let payload: unknown;
-  try {
-    payload = JSON.parse(rawBody);
-  } catch {
-    throw new HTTPException(400, { message: 'Invalid JSON payload' });
-  }
-
-  // ---- Installation lifecycle ----
-
-  if (event === 'installation' || event === 'installation_repositories') {
-    const body = payload as InstallationPayload;
-    const installation = body.installation;
-
-    if (!installation?.id) {
-      throw new HTTPException(400, { message: 'Missing installation in payload' });
+  // If anything below fails, release the claim so the retry is not dropped as a duplicate.
+  return processClaimedWebhookDelivery(deliveryId, async () => {
+    let payload: unknown;
+    try {
+      payload = JSON.parse(rawBody);
+    } catch {
+      throw new HTTPException(400, { message: 'Invalid JSON payload' });
     }
 
-    switch (body.action) {
-      case 'deleted':
-        await githubAppService.removeInstallation(installation.id);
-        logger.info({ installationId: installation.id }, 'GitHub App installation removed');
-        return c.json({ message: 'Installation removed' });
+    // ---- Installation lifecycle ----
 
-      case 'suspend':
-        await githubAppService.setSuspended(installation.id, true);
-        return c.json({ message: 'Installation suspended' });
+    if (event === 'installation' || event === 'installation_repositories') {
+      const body = payload as InstallationPayload;
+      const installation = body.installation;
 
-      case 'unsuspend':
-        await githubAppService.setSuspended(installation.id, false);
-        return c.json({ message: 'Installation resumed' });
+      if (!installation?.id) {
+        throw new HTTPException(400, { message: 'Missing installation in payload' });
+      }
 
-      default: {
-        // created, new_permissions_accepted, added, removed — all of them just resync.
-        await githubAppService.syncInstallation({
-          installationId: installation.id,
-          accountLogin: installation.account?.login ?? 'unknown',
-          accountId: installation.account?.id ?? null,
-          accountType: installation.account?.type ?? null,
-          repositorySelection: installation.repository_selection ?? null,
-          suspended: Boolean(installation.suspended_at),
-        });
-        logger.info(
-          { installationId: installation.id, action: body.action },
-          'GitHub App installation synced'
-        );
-        return c.json({ message: 'Installation synced' });
+      switch (body.action) {
+        case 'deleted':
+          await githubAppService.removeInstallation(installation.id);
+          logger.info({ installationId: installation.id }, 'GitHub App installation removed');
+          return c.json({ message: 'Installation removed' });
+
+        case 'suspend':
+          await githubAppService.setSuspended(installation.id, true);
+          return c.json({ message: 'Installation suspended' });
+
+        case 'unsuspend':
+          await githubAppService.setSuspended(installation.id, false);
+          return c.json({ message: 'Installation resumed' });
+
+        default: {
+          // created, new_permissions_accepted, added, removed — all of them just resync.
+          await githubAppService.syncInstallation({
+            installationId: installation.id,
+            accountLogin: installation.account?.login ?? 'unknown',
+            accountId: installation.account?.id ?? null,
+            accountType: installation.account?.type ?? null,
+            repositorySelection: installation.repository_selection ?? null,
+            suspended: Boolean(installation.suspended_at),
+          });
+          logger.info(
+            { installationId: installation.id, action: body.action },
+            'GitHub App installation synced'
+          );
+          return c.json({ message: 'Installation synced' });
+        }
       }
     }
-  }
 
-  // ---- Repository events ----
+    // ---- Repository events ----
 
-  if (event !== 'push' && event !== 'pull_request') {
-    return c.json({ message: `Event '${event}' ignored` });
-  }
-
-  const repositoryEvent = payload as (GitHubPushPayload | GitHubPullRequestPayload) & {
-    installation?: { id?: number };
-  };
-  const installationId = repositoryEvent.installation?.id;
-
-  if (!installationId) {
-    return c.json({ message: 'Event carries no installation, ignored' });
-  }
-
-  const targets = await projectsForRepository(installationId, repositoryEvent.repository?.full_name);
-  if (targets.length === 0) {
-    return c.json({ message: 'No project tracks this repository' });
-  }
-
-  const results: { projectId: string; message: string; deploymentId?: string }[] = [];
-
-  for (const project of targets) {
-    if (!(await canOrganizationDeploy(project.organizationId))) {
-      results.push({
-        projectId: project.id,
-        message: 'Deployments blocked: organization billing is past due or suspended',
-      });
-      continue;
+    if (event !== 'push' && event !== 'pull_request') {
+      return c.json({ message: `Event '${event}' ignored` });
     }
 
-    const outcome =
-      event === 'push'
-        ? await handlePushEvent(project, repositoryEvent as GitHubPushPayload)
-        : await handlePullRequestEvent(project, repositoryEvent as GitHubPullRequestPayload);
+    const repositoryEvent = payload as (GitHubPushPayload | GitHubPullRequestPayload) & {
+      installation?: { id?: number };
+    };
+    const installationId = repositoryEvent.installation?.id;
 
-    results.push({ projectId: project.id, ...outcome });
-  }
+    if (!installationId) {
+      return c.json({ message: 'Event carries no installation, ignored' });
+    }
 
-  logger.info(
-    { installationId, event, projects: results.length },
-    'GitHub App repository event processed'
-  );
+    const targets = await projectsForRepository(installationId, repositoryEvent.repository?.full_name);
+    if (targets.length === 0) {
+      return c.json({ message: 'No project tracks this repository' });
+    }
 
-  return c.json({ message: 'Processed', results });
+    const results: { projectId: string; message: string; deploymentId?: string }[] = [];
+
+    for (const project of targets) {
+      if (!(await canOrganizationDeploy(project.organizationId))) {
+        results.push({
+          projectId: project.id,
+          message: 'Deployments blocked: organization billing is past due or suspended',
+        });
+        continue;
+      }
+
+      const outcome =
+        event === 'push'
+          ? await handlePushEvent(project, repositoryEvent as GitHubPushPayload)
+          : await handlePullRequestEvent(project, repositoryEvent as GitHubPullRequestPayload);
+
+      results.push({ projectId: project.id, ...outcome });
+    }
+
+    logger.info(
+      { installationId, event, projects: results.length },
+      'GitHub App repository event processed'
+    );
+
+    return c.json({ message: 'Processed', results });
+  });
 });
 
 export { appWebhookRouter as githubAppWebhookRoutes };
