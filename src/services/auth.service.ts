@@ -381,11 +381,20 @@ export const authService = {
       throw new HTTPException(401, { message: t(locale, 'auth', 'sessionNotFound') });
     }
 
-    // Get user's organization
-    const membership = await organizationRepository.findUserFirstOrganization(userId);
+    // Keep the organization the user was working in (e.g. after switchOrganization), but only
+    // while they are still a member; otherwise fall back to their first organization.
+    let organizationId: string | undefined;
+    if (payload.org) {
+      const activeMembership = await organizationRepository.findMember(payload.org, userId);
+      if (activeMembership) organizationId = payload.org;
+    }
+    if (!organizationId) {
+      const membership = await organizationRepository.findUserFirstOrganization(userId);
+      organizationId = membership?.organizationId;
+    }
 
     // Generate new tokens (rotation)
-    const tokens = await generateTokenPair(userId, membership?.organizationId);
+    const tokens = await generateTokenPair(userId, organizationId);
 
     // Rotate session
     await userRepository.deleteSessionByTokenHash(tokenHash);

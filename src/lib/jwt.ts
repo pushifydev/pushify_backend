@@ -48,11 +48,16 @@ export async function generateAccessToken(userId: string, organizationId?: strin
   return token;
 }
 
-export async function generateRefreshToken(userId: string): Promise<string> {
+/**
+ * The optional `org` claim records the active organization so a refresh keeps it.
+ * It is only a hint: the caller must re-verify membership before trusting it.
+ */
+export async function generateRefreshToken(userId: string, organizationId?: string): Promise<string> {
   const expiresIn = parseDuration(env.REFRESH_TOKEN_EXPIRES_IN);
 
   const token = await new SignJWT({
     sub: userId,
+    org: organizationId,
     type: 'refresh',
   } satisfies TokenPayload)
     .setProtectedHeader({ alg: 'HS256' })
@@ -82,7 +87,7 @@ export async function generateTokenPair(
 ): Promise<{ accessToken: string; refreshToken: string }> {
   const [accessToken, refreshToken] = await Promise.all([
     generateAccessToken(userId, organizationId),
-    generateRefreshToken(userId),
+    generateRefreshToken(userId, organizationId),
   ]);
 
   return { accessToken, refreshToken };
