@@ -28,6 +28,59 @@ function isStripeResourceMissing(err: unknown): boolean {
   return e.code === 'resource_missing' || e.statusCode === 404;
 }
 
+/** Subscription statuses that still bill (or will bill) the customer. */
+const LIVE_SUBSCRIPTION_STATUSES: ReadonlySet<Stripe.Subscription.Status> = new Set([
+  'active',
+  'trialing',
+  'past_due',
+]);
+
+/**
+ * Resolve the organization a subscription webhook event belongs to.
+ *
+ * Our stored subscription→org link is authoritative. The Stripe metadata fallback is only
+ * used when the org has no subscription linked yet (or already has this one); if the org
+ * is linked to a *different* subscription, the event is for a stale/duplicate subscription
+ * and must not touch the org (otherwise cancelling an old subscription would downgrade and
+ * suspend an org whose current subscription is still active).
+ */
+async function resolveOrganizationForSubscriptionEvent(
+  sub: Stripe.Subscription,
+  eventType: string,
+): Promise<string | null> {
+  const [orgBySub] = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(eq(organizations.stripeSubscriptionId, sub.id))
+    .limit(1);
+  if (orgBySub) return orgBySub.id;
+
+  const metadataOrgId = getOrganizationIdFromSubscription(sub);
+  if (!metadataOrgId) return null;
+
+  const [org] = await db
+    .select({ stripeSubscriptionId: organizations.stripeSubscriptionId })
+    .from(organizations)
+    .where(eq(organizations.id, metadataOrgId))
+    .limit(1);
+  if (!org) return null;
+
+  if (org.stripeSubscriptionId && org.stripeSubscriptionId !== sub.id) {
+    logger.warn(
+      {
+        eventType,
+        organizationId: metadataOrgId,
+        subscriptionId: sub.id,
+        currentSubscriptionId: org.stripeSubscriptionId,
+      },
+      'Subscription event for a subscription that is not the org\'s current one — skipping',
+    );
+    return null;
+  }
+
+  return metadataOrgId;
+}
+
 /** Hosted invoice URL for a subscription checkout session (best-effort). */
 async function getSessionInvoiceUrl(session: Stripe.Checkout.Session): Promise<string | null> {
   try {
@@ -106,6 +159,25 @@ export const stripeService = {
     billingCycle: 'monthly' | 'yearly',
   ): Promise<string> {
     const stripe = getStripe();
+
+    // Refuse a second subscription while one is still live: Stripe would bill both, and the
+    // new one would overwrite stripeSubscriptionId. Plan changes go through the billing portal.
+    const [existing] = await db
+      .select({ stripeSubscriptionId: organizations.stripeSubscriptionId })
+      .from(organizations)
+      .where(eq(organizations.id, organizationId))
+      .limit(1);
+    if (existing?.stripeSubscriptionId) {
+      try {
+        const current = await stripe.subscriptions.retrieve(existing.stripeSubscriptionId);
+        if (LIVE_SUBSCRIPTION_STATUSES.has(current.status)) {
+          throw new Error('SUBSCRIPTION_EXISTS');
+        }
+      } catch (err) {
+        if (!isStripeResourceMissing(err)) throw err;
+      }
+    }
+
     const customerId = await this.getOrCreateCustomer(organizationId, email);
     const priceId = getPriceId(planType, billingCycle);
 
@@ -606,12 +678,7 @@ export const stripeService = {
         // Authoritative mapping is OUR stored subscription→org link, not the mutable Stripe
         // metadata (which an attacker could point at another tenant). Use the DB first and
         // fall back to metadata only when we have no stored link yet (first event). — H-5
-        const [orgBySub] = await db
-          .select({ id: organizations.id })
-          .from(organizations)
-          .where(eq(organizations.stripeSubscriptionId, sub.id))
-          .limit(1);
-        const organizationId = orgBySub?.id ?? getOrganizationIdFromSubscription(sub);
+        const organizationId = await resolveOrganizationForSubscriptionEvent(sub, event.type);
 
         if (!organizationId) {
           logger.warn({ subscriptionId: sub.id }, 'subscription.updated: organization not found');
@@ -660,12 +727,7 @@ export const stripeService = {
         // Authoritative mapping is OUR stored subscription→org link, not the mutable Stripe
         // metadata (which an attacker could point at another tenant). Use the DB first and
         // fall back to metadata only when we have no stored link yet (first event). — H-5
-        const [orgBySub] = await db
-          .select({ id: organizations.id })
-          .from(organizations)
-          .where(eq(organizations.stripeSubscriptionId, sub.id))
-          .limit(1);
-        const organizationId = orgBySub?.id ?? getOrganizationIdFromSubscription(sub);
+        const organizationId = await resolveOrganizationForSubscriptionEvent(sub, event.type);
 
         if (!organizationId) break;
 

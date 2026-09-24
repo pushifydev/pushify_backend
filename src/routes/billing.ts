@@ -73,9 +73,23 @@ billingRouter.post('/checkout', requireOrgRole('owner', 'admin'), async (c) => {
   const billingInfo = await billingService.getBillingInfo(organizationId, userId, locale);
   const email = billingInfo.billingEmail || '';
 
-  const url = await stripeService.createCheckoutSession(organizationId, userId, email, planType, billingCycle);
-
-  return c.json({ data: { url } });
+  try {
+    const url = await stripeService.createCheckoutSession(organizationId, userId, email, planType, billingCycle);
+    return c.json({ data: { url } });
+  } catch (err) {
+    if (err instanceof Error && err.message === 'SUBSCRIPTION_EXISTS') {
+      return c.json(
+        {
+          error: {
+            code: 'SUBSCRIPTION_EXISTS',
+            message: 'This organization already has an active subscription. Use the billing portal to change plans.',
+          },
+        },
+        409,
+      );
+    }
+    throw err;
+  }
 });
 
 // Create Stripe Customer Portal session
