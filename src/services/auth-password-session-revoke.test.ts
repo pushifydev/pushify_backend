@@ -50,6 +50,8 @@ vi.mock('../repositories/user.repository', () => ({
 vi.mock('../repositories/organization.repository', () => ({
   organizationRepository: {
     findUserFirstOrganization: async () => ({ organizationId: 'org-1' }),
+    findMember: async (orgId: string, userId: string) =>
+      orgId === 'org-1' ? { organizationId: orgId, userId } : undefined,
   },
 }));
 
@@ -67,7 +69,7 @@ vi.mock('../lib/email', () => ({
 }));
 
 import { authService } from './auth.service';
-import { generateTokenPair } from '../lib/jwt';
+import { generateTokenPair, verifyToken } from '../lib/jwt';
 import { hashToken } from '../lib/utils';
 
 const USER_ID = '00000000-0000-0000-0000-000000000001';
@@ -172,5 +174,25 @@ describe('changePassword', () => {
 
     expect(store.sessions).toHaveLength(1);
     expect((await refreshStatus(existing)).status).toBe(200);
+  });
+});
+
+describe('refreshAccessToken organization', () => {
+  it('keeps the token organization while the user is still a member', async () => {
+    const token = await signIn();
+
+    const { accessToken } = await authService.refreshAccessToken(token);
+
+    expect((await verifyToken(accessToken)).org).toBe('org-1');
+  });
+
+  it('falls back to the first organization when membership of the token organization ended', async () => {
+    vi.setSystemTime(Date.now() + 2_000);
+    const { refreshToken } = await generateTokenPair(USER_ID, 'org-gone');
+    await authService.createSession(USER_ID, refreshToken);
+
+    const { accessToken } = await authService.refreshAccessToken(refreshToken);
+
+    expect((await verifyToken(accessToken)).org).toBe('org-1');
   });
 });
