@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({ env: { OPS_READ_TOKEN: undefined as string | u
 
 vi.mock('../config/env', () => ({ env: mocks.env }));
 vi.mock('../services/ops-signals.service', () => ({ opsSignalsService: { getSignals: mocks.getSignals } }));
+vi.mock('../services/ops-growth.service', () => ({ opsGrowthService: { getGrowth: mocks.getSignals } }));
 
 import { opsRoutes, tokenMatches } from './ops';
 

@@ -23,6 +23,8 @@ const PATTERNS: Array<[RegExp, string]> = [
   ],
   // PEM blocks.
   [/-----BEGIN [A-Z ]+-----[\s\S]*?(-----END [A-Z ]+-----|$)/g, '[private key]'],
+  // E-mail addresses: customer-written text (cancellation comments) goes out too.
+  [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[email]'],
   // Long opaque strings (hex or base64) — keys, hashes of keys, session ids.
   [/\b[A-Fa-f0-9]{40,}\b/g, '[hex]'],
   [/\b[A-Za-z0-9+/_-]{48,}={0,2}/g, '[opaque]'],

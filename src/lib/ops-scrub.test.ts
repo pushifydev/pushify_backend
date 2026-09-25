@@ -12,6 +12,7 @@ describe('scrubSecrets', () => {
     ['aws AKIAIOSFODNN7EXAMPLE denied', 'AKIAIOSFODNN7EXAMPLE'],
     ['-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----', 'b3BlbnNzaC1'],
     ['session 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 expired', '9f86d081884c7d65'],
+    ['too pricey, contact me at jane.doe+pushify@example.co.uk', 'jane.doe'],
   ];
 
   for (const [input, secret] of cases) {

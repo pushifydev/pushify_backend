@@ -21,6 +21,11 @@ const LIST_LIMIT = 50;
 export interface OpsSignals {
   generatedAt: string;
   windowHours: number;
+  /**
+   * Deployments started after `since` (when asked): the operations agent's deploy watch compares
+   * the minutes after a Pushify release with the day before it.
+   */
+  since: { since: string; total: number; failed: number; pushifyFailed: number } | null;
   deployments: {
     total: number;
     failed: number;
@@ -51,8 +56,17 @@ async function rows<T>(query: ReturnType<typeof sql>): Promise<T[]> {
 const iso = (expr: string) => sql.raw(`to_char((${expr}) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`);
 
 export const opsSignalsService = {
-  async getSignals(): Promise<OpsSignals> {
+  async getSignals(opts: { since?: Date } = {}): Promise<OpsSignals> {
     const window = sql.raw(`interval '${WINDOW_HOURS} hours'`);
+    // A window can only look back as far as the main one.
+    const since = opts.since && Date.now() - opts.since.getTime() <= WINDOW_HOURS * 3600_000 ? opts.since : null;
+
+    const sinceRows = since
+      ? await rows<{ errorMessage: string | null; status: string }>(sql`
+          SELECT error_message AS "errorMessage", status::text AS "status"
+            FROM deployments WHERE created_at > ${since.toISOString()}::timestamptz
+           LIMIT 2000`)
+      : null;
 
     const [counts, failedRows, failing, down, servers, databases] = await Promise.all([
       rows<{ total: number; failed: number }>(sql`
@@ -102,9 +116,19 @@ export const opsSignalsService = {
          ORDER BY updated_at DESC LIMIT ${LIST_LIMIT}`),
     ]);
 
+    const sinceFailed = sinceRows?.filter((r) => r.status === 'failed') ?? [];
     return {
       generatedAt: new Date().toISOString(),
       windowHours: WINDOW_HOURS,
+      since:
+        since && sinceRows
+          ? {
+              since: since.toISOString(),
+              total: sinceRows.length,
+              failed: sinceFailed.length,
+              pushifyFailed: sinceFailed.filter((r) => classifyDeployFailure('', r.errorMessage ?? '').blame === 'pushify').length,
+            }
+          : null,
       deployments: {
         total: counts[0]?.total ?? 0,
         failed: counts[0]?.failed ?? 0,

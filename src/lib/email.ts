@@ -2,8 +2,11 @@ import nodemailer from 'nodemailer';
 import { env } from '../config/env';
 import { logger } from './logger';
 import {
+  escapeHtml,
+  EMAIL_CONTENT_END,
   renderTransactionalEmail,
   renderNotificationEmail,
+  type EmailDetailRow,
   getNotificationEventEmoji,
   getNotificationEventTitle,
 } from './email-templates';
@@ -64,6 +67,7 @@ function passwordResetTemplate(resetUrl: string, locale: 'en' | 'tr'): string {
   const t = texts[locale] ?? texts.en;
 
   return renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'Şifre sıfırlama' : 'Password reset',
     title: t.title,
     greeting: t.greeting,
     body: t.body,
@@ -98,6 +102,7 @@ function emailVerificationTemplate(verifyUrl: string, locale: 'en' | 'tr'): stri
   const t = texts[locale] ?? texts.en;
 
   return renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'E-posta doğrulama' : 'Verify email',
     title: t.title,
     greeting: t.greeting,
     body: t.body,
@@ -143,6 +148,7 @@ function orgInvitationTemplate(
       : `<strong style="color:#18181b;">${safeInviter}</strong> invited you to join <strong style="color:#18181b;">${safeOrg}</strong> as <strong style="color:#18181b;">${safeRole}</strong>.`;
 
   return renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'Davet' : 'Invitation',
     title: locale === 'tr' ? `${safeOrg} — Pushify daveti` : `Join ${safeOrg} on Pushify`,
     greeting: t.greeting,
     bodyHtml,
@@ -183,6 +189,8 @@ function infraCreditTopUpTemplate(
       : `<strong style="color:#18181b;">${formatUsd(amountCents)}</strong> in infrastructure credits was added to <strong style="color:#18181b;">${safeOrg}</strong>. New balance: <strong style="color:#18181b;">${formatUsd(balanceCents)}</strong>.`;
 
   return renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'Kredi eklendi' : 'Credits added',
+    tone: 'success',
     title: t.title,
     greeting: t.greeting,
     bodyHtml,
@@ -218,6 +226,8 @@ function infraCreditsLowTemplate(
       : `Infrastructure credit balance for <strong style="color:#18181b;">${safeOrg}</strong> is low (<strong style="color:#18181b;">${formatUsd(balanceCents)}</strong>). Add credits to avoid interruptions.`;
 
   return renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'Düşük kredi' : 'Low credits',
+    tone: 'warning',
     title: t.title,
     greeting: t.greeting,
     bodyHtml,
@@ -255,6 +265,8 @@ function infraServerSuspendedTemplate(
       : `Managed server <strong style="color:#18181b;">${safeServer}</strong> in <strong style="color:#18181b;">${safeOrg}</strong> was stopped because infrastructure credits ran out.`;
 
   return renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'Sunucu durduruldu' : 'Server stopped',
+    tone: 'danger',
     title: t.title,
     greeting: t.greeting,
     bodyHtml,
@@ -290,6 +302,8 @@ function billingPlanActivatedTemplate(
       : `Your platform plan for <strong style="color:#18181b;">${safeOrg}</strong> is now <strong style="color:#18181b;">${safePlan}</strong>.`;
 
   return renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'Faturalandırma' : 'Billing',
+    tone: 'success',
     title: t.title,
     greeting: t.greeting,
     bodyHtml,
@@ -330,6 +344,8 @@ function billingPaymentFailedTemplate(
       : `We couldn't process the latest payment for <strong style="color:#18181b;">${safeOrg}</strong>. Update your payment method to avoid service interruption.`;
 
   return renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'Ödeme başarısız' : 'Payment failed',
+    tone: 'danger',
     title: t.title,
     greeting: t.greeting,
     bodyHtml,
@@ -366,6 +382,8 @@ function billingSuspendedTemplate(
       : `Your platform subscription for <strong style="color:#18181b;">${safeOrg}</strong> has ended. Managed servers were stopped and active projects were paused.`;
 
   return renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'Hizmetler duraklatıldı' : 'Services paused',
+    tone: 'danger',
     title: t.title,
     greeting: t.greeting,
     bodyHtml,
@@ -397,6 +415,7 @@ function welcomeTemplate(name: string, dashboardUrl: string, locale: 'en' | 'tr'
       : `Welcome aboard, <strong style="color:#18181b;">${safeName}</strong>! Your account is ready. Pushify lets you deploy and manage your apps and servers from one place. Head to your dashboard to create your first project.`;
 
   return renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'Hoş geldiniz' : 'Welcome',
     title: t.title,
     greeting: t.greeting,
     bodyHtml,
@@ -431,6 +450,7 @@ function passwordChangedTemplate(
   const t = texts[locale] ?? texts.en;
 
   return renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'Güvenlik' : 'Security',
     title: t.title,
     greeting: t.greeting,
     body: t.body,
@@ -459,6 +479,8 @@ function twoFactorEnabledTemplate(name: string | undefined, locale: 'en' | 'tr')
   const t = texts[locale] ?? texts.en;
 
   return renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'Güvenlik' : 'Security',
+    tone: 'success',
     title: t.title,
     greeting: t.greeting,
     body: t.body,
@@ -484,6 +506,8 @@ function twoFactorDisabledTemplate(name: string | undefined, locale: 'en' | 'tr'
   const t = texts[locale] ?? texts.en;
 
   return renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'Güvenlik' : 'Security',
+    tone: 'warning',
     title: t.title,
     greeting: t.greeting,
     body: t.body,
@@ -514,6 +538,8 @@ function serverReadyTemplate(serverName: string, serverUrl: string, locale: 'en'
       : `Setup for <strong style="color:#18181b;">${safeServer}</strong> finished successfully and the server is ready to use.`;
 
   return renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'Sunucu hazır' : 'Server ready',
+    tone: 'success',
     title: t.title,
     greeting: t.greeting,
     bodyHtml,
@@ -554,22 +580,23 @@ function newLoginTemplate(
   };
   const t = texts[locale] ?? texts.en;
 
-  const detailLines: string[] = [
-    `${t.labelTime}: <strong style="color:#18181b;">${esc(details.time)}</strong>`,
-  ];
+  // Values are escaped by the details renderer.
+  const detailRows: EmailDetailRow[] = [{ label: t.labelTime, value: details.time }];
   if (details.ipAddress) {
-    detailLines.push(`${t.labelIp}: <strong style="color:#18181b;">${esc(details.ipAddress)}</strong>`);
+    detailRows.push({ label: t.labelIp, value: details.ipAddress });
   }
   if (details.userAgent) {
-    detailLines.push(`${t.labelDevice}: <strong style="color:#18181b;">${esc(details.userAgent)}</strong>`);
+    detailRows.push({ label: t.labelDevice, value: details.userAgent });
   }
 
   return renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'Yeni giriş' : 'New sign-in',
     title: t.title,
     greeting: t.greeting,
     body: t.body,
+    details: detailRows,
     button: { href: resetUrl, label: t.button },
-    notes: [...detailLines, t.note, t.warn],
+    notes: [t.note, t.warn],
   });
 }
 
@@ -753,24 +780,24 @@ export async function sendBackupVerificationFailedEmail(
   };
   const copy = {
     en: {
-      lead: `We tried to restore the latest backup of <strong>${databaseName}</strong> into a throwaway container and it did not come back cleanly.`,
+      lead: `We tried to restore the latest backup of <strong>${escapeHtml(String(databaseName))}</strong> into a throwaway container and it did not come back cleanly.`,
       why: 'Your live database was not touched. But this backup may not be recoverable — please check it before you need it.',
       cta: 'Open the database',
     },
     tr: {
-      lead: `<strong>${databaseName}</strong> veritabanının son yedeğini geçici bir container'a geri yüklemeyi denedik ve düzgün geri gelmedi.`,
+      lead: `<strong>${escapeHtml(String(databaseName))}</strong> veritabanının son yedeğini geçici bir container'a geri yüklemeyi denedik ve düzgün geri gelmedi.`,
       why: 'Canlı veritabanınıza dokunulmadı. Ancak bu yedek kurtarılamaz olabilir — ihtiyaç duymadan önce kontrol edin.',
       cta: 'Veritabanını aç',
     },
   }[locale] ?? { lead: '', why: '', cta: 'Open' };
 
-  const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#f9fafb;font-family:ui-sans-serif,system-ui,sans-serif">
-<div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:24px">
-  <p style="margin:0 0 12px;font-size:15px;color:#111827">${copy.lead}</p>
-  <p style="margin:0 0 16px;font-size:14px;color:#4b5563">${copy.why}</p>
-  <pre style="margin:0 0 20px;padding:12px;background:#f3f4f6;border-radius:8px;font-size:12px;color:#374151;white-space:pre-wrap">${error.replace(/</g, '&lt;')}</pre>
-  <a href="${dbUrl}" style="display:inline-block;padding:10px 16px;background:#111827;color:#ffffff;border-radius:8px;font-size:14px;text-decoration:none">${copy.cta}</a>
-</div></body></html>`;
+  const html = renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'Yedek testi başarısız' : 'Backup test failed',
+    tone: 'danger',
+    bodyHtml: [copy.lead, copy.why],
+    code: { text: error },
+    button: { href: dbUrl, label: copy.cta },
+  });
 
   try {
     await transporter.sendMail({
@@ -803,23 +830,23 @@ export async function sendAppDownEmail(
   };
   const copy = {
     en: {
-      lead: `<strong>${projectName}</strong> stopped answering at ${url} — three checks in a row failed (${reason}).`,
+      lead: `<strong>${escapeHtml(String(projectName))}</strong> stopped answering at ${escapeHtml(String(url))} — three checks in a row failed (${escapeHtml(String(reason))}).`,
       why: 'The app may have crashed, run out of memory or be stuck starting. Its logs in Pushify usually say which. You get one more email when it answers again.',
       cta: 'Open the project',
     },
     tr: {
-      lead: `<strong>${projectName}</strong> ${url} adresinde cevap vermiyor — üst üste üç kontrol başarısız oldu (${reason}).`,
+      lead: `<strong>${escapeHtml(String(projectName))}</strong> ${escapeHtml(String(url))} adresinde cevap vermiyor — üst üste üç kontrol başarısız oldu (${escapeHtml(String(reason))}).`,
       why: 'Uygulama çökmüş, belleği dolmuş ya da başlangıçta takılmış olabilir. Pushify’daki logları genelde sebebini gösterir. Tekrar cevap verdiğinde bir e-posta daha göndereceğiz.',
       cta: 'Projeyi aç',
     },
   }[locale];
 
-  const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#f9fafb;font-family:ui-sans-serif,system-ui,sans-serif">
-<div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:24px">
-  <p style="margin:0 0 12px;font-size:15px;color:#111827">${copy.lead}</p>
-  <p style="margin:0 0 20px;font-size:14px;color:#4b5563">${copy.why}</p>
-  <a href="${projectUrl}" style="display:inline-block;padding:10px 16px;background:#111827;color:#ffffff;border-radius:8px;font-size:14px;text-decoration:none">${copy.cta}</a>
-</div></body></html>`;
+  const html = renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'Uygulama cevap vermiyor' : 'App down',
+    tone: 'danger',
+    bodyHtml: [copy.lead, copy.why],
+    button: { href: projectUrl, label: copy.cta },
+  });
 
   try {
     await transporter.sendMail({ from: FROM_ADDRESS, to, subject: subjects[locale] ?? subjects.en, html });
@@ -866,8 +893,8 @@ export async function sendResourcePressureEmail(
   const copy = {
     en: {
       lead: isMemory
-        ? `<strong>${projectName}</strong> has been using ${rounded}% of the memory it is allowed for several minutes (container <code>${containerName}</code>).`
-        : `<strong>${projectName}</strong> has been running at ${rounded}% CPU for a while (container <code>${containerName}</code>).`,
+        ? `<strong>${escapeHtml(String(projectName))}</strong> has been using ${rounded}% of the memory it is allowed for several minutes (container <code>${escapeHtml(String(containerName))}</code>).`
+        : `<strong>${escapeHtml(String(projectName))}</strong> has been running at ${rounded}% CPU for a while (container <code>${escapeHtml(String(containerName))}</code>).`,
       why: isMemory
         ? 'When it reaches the limit the kernel kills the process and the container restarts — usually as a loop, and usually at the worst time. Either give it more memory, or find what is holding on to it.'
         : 'The app is not down, but requests are queuing behind a saturated CPU. If this is not a build or a batch job, it is worth looking at what is spinning.',
@@ -875,8 +902,8 @@ export async function sendResourcePressureEmail(
     },
     tr: {
       lead: isMemory
-        ? `<strong>${projectName}</strong> birkaç dakikadır izin verilen belleğin %${rounded} kadarını kullanıyor (container <code>${containerName}</code>).`
-        : `<strong>${projectName}</strong> bir süredir %${rounded} CPU ile çalışıyor (container <code>${containerName}</code>).`,
+        ? `<strong>${escapeHtml(String(projectName))}</strong> birkaç dakikadır izin verilen belleğin %${rounded} kadarını kullanıyor (container <code>${escapeHtml(String(containerName))}</code>).`
+        : `<strong>${escapeHtml(String(projectName))}</strong> bir süredir %${rounded} CPU ile çalışıyor (container <code>${escapeHtml(String(containerName))}</code>).`,
       why: isMemory
         ? 'Sınıra ulaştığında çekirdek süreci öldürür ve container yeniden başlar — genelde döngüye girer, genelde en kötü anda. Ya belleği artırın ya da belleği tutan şeyi bulun.'
         : 'Uygulama ayakta ama istekler doymuş bir CPU\'nun arkasında sıraya giriyor. Bu bir build ya da toplu iş değilse, neyin döndüğüne bakmakta fayda var.',
@@ -884,12 +911,14 @@ export async function sendResourcePressureEmail(
     },
   }[locale];
 
-  const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#f9fafb;font-family:ui-sans-serif,system-ui,sans-serif">
-<div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:24px">
-  <p style="margin:0 0 12px;font-size:15px;color:#111827">${copy.lead}</p>
-  <p style="margin:0 0 20px;font-size:14px;color:#4b5563">${copy.why}</p>
-  <a href="${projectUrl}" style="display:inline-block;padding:10px 16px;background:#111827;color:#ffffff;border-radius:8px;font-size:14px;text-decoration:none">${copy.cta}</a>
-</div></body></html>`;
+  const html = renderTransactionalEmail({
+    eyebrow: isMemory
+      ? locale === 'tr' ? 'Bellek baskısı' : 'Memory pressure'
+      : locale === 'tr' ? 'CPU baskısı' : 'CPU pressure',
+    tone: 'warning',
+    bodyHtml: [copy.lead, copy.why],
+    button: { href: projectUrl, label: copy.cta },
+  });
 
   try {
     await transporter.sendMail({ from: FROM_ADDRESS, to, subject: subjects[locale] ?? subjects.en, html });
@@ -932,14 +961,14 @@ export async function sendServerDiskEmail(
   };
   const copy = {
     en: {
-      lead: `<strong>${serverName}</strong> is ${usedPercent}% full — ${availGb} GB left.`,
+      lead: `<strong>${escapeHtml(String(serverName))}</strong> is ${usedPercent}% full — ${availGb} GB left.`,
       why: critical
         ? 'At this level deploys fail and containers start losing writes. Everything on this server is affected, databases included.'
         : 'Old Docker images are usually most of it. Running <code>docker system prune -af</code> on the server reclaims the space that unused builds are holding.',
       cta: 'Open the server',
     },
     tr: {
-      lead: `<strong>${serverName}</strong> diskinin %${usedPercent} kadarı dolu — ${availGb} GB kaldı.`,
+      lead: `<strong>${escapeHtml(String(serverName))}</strong> diskinin %${usedPercent} kadarı dolu — ${availGb} GB kaldı.`,
       why: critical
         ? 'Bu seviyede deploy\'lar başarısız olur ve container\'lar yazma kaybetmeye başlar. Bu sunucudaki her şey etkilenir, veritabanları dahil.'
         : 'Genelde suçlu eski Docker imajlarıdır. Sunucuda <code>docker system prune -af</code> çalıştırmak, kullanılmayan build\'lerin tuttuğu yeri geri kazandırır.',
@@ -947,12 +976,12 @@ export async function sendServerDiskEmail(
     },
   }[locale];
 
-  const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#f9fafb;font-family:ui-sans-serif,system-ui,sans-serif">
-<div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:24px">
-  <p style="margin:0 0 12px;font-size:15px;color:#111827">${copy.lead}</p>
-  <p style="margin:0 0 20px;font-size:14px;color:#4b5563">${copy.why}</p>
-  <a href="${serverUrl}" style="display:inline-block;padding:10px 16px;background:#111827;color:#ffffff;border-radius:8px;font-size:14px;text-decoration:none">${copy.cta}</a>
-</div></body></html>`;
+  const html = renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'Disk alanı' : 'Disk space',
+    tone: critical ? 'danger' : 'warning',
+    bodyHtml: [copy.lead, copy.why],
+    button: { href: serverUrl, label: copy.cta },
+  });
 
   try {
     await transporter.sendMail({ from: FROM_ADDRESS, to, subject: subjects[locale] ?? subjects.en, html });
@@ -980,15 +1009,16 @@ export async function sendResourceRecoveredEmail(
     tr: `${projectName}: ${what.tr.toLowerCase()} normale döndü (${orgName})`,
   };
   const copy = {
-    en: `<strong>${projectName}</strong> is back under its ${what.en.toLowerCase()} threshold. It was over for about ${lastedFor}.`,
-    tr: `<strong>${projectName}</strong> ${what.tr.toLowerCase()} eşiğinin altına döndü. Yaklaşık ${lastedFor} boyunca eşiğin üzerindeydi.`,
+    en: `<strong>${escapeHtml(String(projectName))}</strong> is back under its ${what.en.toLowerCase()} threshold. It was over for about ${escapeHtml(String(lastedFor))}.`,
+    tr: `<strong>${escapeHtml(String(projectName))}</strong> ${what.tr.toLowerCase()} eşiğinin altına döndü. Yaklaşık ${escapeHtml(String(lastedFor))} boyunca eşiğin üzerindeydi.`,
   }[locale];
 
-  const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#f9fafb;font-family:ui-sans-serif,system-ui,sans-serif">
-<div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:24px">
-  <p style="margin:0 0 20px;font-size:15px;color:#111827">${copy}</p>
-  <a href="${projectUrl}" style="display:inline-block;padding:10px 16px;background:#111827;color:#ffffff;border-radius:8px;font-size:14px;text-decoration:none">${locale === 'tr' ? 'Projeyi aç' : 'Open the project'}</a>
-</div></body></html>`;
+  const html = renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'Normale döndü' : 'Recovered',
+    tone: 'success',
+    bodyHtml: copy,
+    button: { href: projectUrl, label: locale === 'tr' ? 'Projeyi aç' : 'Open the project' },
+  });
 
   try {
     await transporter.sendMail({ from: FROM_ADDRESS, to, subject: subjects[locale] ?? subjects.en, html });
@@ -1014,15 +1044,16 @@ export async function sendAppRecoveredEmail(
     tr: `${projectName} tekrar cevap veriyor (${orgName})`,
   };
   const copy = {
-    en: `<strong>${projectName}</strong> answers again at ${url}. It was unreachable for about ${downFor}.`,
-    tr: `<strong>${projectName}</strong> ${url} adresinde tekrar cevap veriyor. Yaklaşık ${downFor} boyunca erişilemedi.`,
+    en: `<strong>${escapeHtml(String(projectName))}</strong> answers again at ${escapeHtml(String(url))}. It was unreachable for about ${escapeHtml(String(downFor))}.`,
+    tr: `<strong>${escapeHtml(String(projectName))}</strong> ${escapeHtml(String(url))} adresinde tekrar cevap veriyor. Yaklaşık ${escapeHtml(String(downFor))} boyunca erişilemedi.`,
   }[locale];
 
-  const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#f9fafb;font-family:ui-sans-serif,system-ui,sans-serif">
-<div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:24px">
-  <p style="margin:0 0 20px;font-size:15px;color:#111827">${copy}</p>
-  <a href="${projectUrl}" style="display:inline-block;padding:10px 16px;background:#111827;color:#ffffff;border-radius:8px;font-size:14px;text-decoration:none">${locale === 'tr' ? 'Projeyi aç' : 'Open the project'}</a>
-</div></body></html>`;
+  const html = renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'Tekrar ayakta' : 'Recovered',
+    tone: 'success',
+    bodyHtml: copy,
+    button: { href: projectUrl, label: locale === 'tr' ? 'Projeyi aç' : 'Open the project' },
+  });
 
   try {
     await transporter.sendMail({ from: FROM_ADDRESS, to, subject: subjects[locale] ?? subjects.en, html });
@@ -1056,26 +1087,28 @@ export async function sendCertificateExpiryEmail(
   const copy = {
     en: {
       lead: expired
-        ? `The HTTPS certificate of <strong>${domain}</strong> (${projectName}) expired on ${date}. Visitors now see a security warning.`
-        : `The HTTPS certificate of <strong>${domain}</strong> (${projectName}) expires on ${date}${final ? ' — this is the last reminder' : ''}.`,
+        ? `The HTTPS certificate of <strong>${escapeHtml(String(domain))}</strong> (${escapeHtml(String(projectName))}) expired on ${escapeHtml(String(date))}. Visitors now see a security warning.`
+        : `The HTTPS certificate of <strong>${escapeHtml(String(domain))}</strong> (${escapeHtml(String(projectName))}) expires on ${escapeHtml(String(date))}${final ? ' — this is the last reminder' : ''}.`,
       why: 'Pushify renews certificates automatically, so this one is failing to renew. The usual causes: the domain\'s DNS (A record) no longer points at the server, or port 80 is blocked by a firewall. Check the domain in Pushify and verify it again.',
       cta: 'Open the project',
     },
     tr: {
       lead: expired
-        ? `<strong>${domain}</strong> (${projectName}) alan adının HTTPS sertifikasının süresi ${date} tarihinde doldu. Ziyaretçiler artık güvenlik uyarısı görüyor.`
-        : `<strong>${domain}</strong> (${projectName}) alan adının HTTPS sertifikasının süresi ${date} tarihinde doluyor${final ? ' — bu son hatırlatma' : ''}.`,
+        ? `<strong>${escapeHtml(String(domain))}</strong> (${escapeHtml(String(projectName))}) alan adının HTTPS sertifikasının süresi ${escapeHtml(String(date))} tarihinde doldu. Ziyaretçiler artık güvenlik uyarısı görüyor.`
+        : `<strong>${escapeHtml(String(domain))}</strong> (${escapeHtml(String(projectName))}) alan adının HTTPS sertifikasının süresi ${escapeHtml(String(date))} tarihinde doluyor${final ? ' — bu son hatırlatma' : ''}.`,
       why: 'Pushify sertifikaları otomatik yeniler; bu sertifika yenilenemiyor. En sık sebepler: alan adının DNS kaydı (A kaydı) artık sunucuyu göstermiyor ya da 80 numaralı port bir güvenlik duvarında kapalı. Alan adını Pushify’da kontrol edip yeniden doğrulayın.',
       cta: 'Projeyi aç',
     },
   }[locale];
 
-  const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#f9fafb;font-family:ui-sans-serif,system-ui,sans-serif">
-<div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:24px">
-  <p style="margin:0 0 12px;font-size:15px;color:#111827">${copy.lead}</p>
-  <p style="margin:0 0 20px;font-size:14px;color:#4b5563">${copy.why}</p>
-  <a href="${projectUrl}" style="display:inline-block;padding:10px 16px;background:#111827;color:#ffffff;border-radius:8px;font-size:14px;text-decoration:none">${copy.cta}</a>
-</div></body></html>`;
+  const html = renderTransactionalEmail({
+    eyebrow: expired
+      ? locale === 'tr' ? 'Sertifika süresi doldu' : 'Certificate expired'
+      : locale === 'tr' ? 'Sertifika süresi doluyor' : 'Certificate expiring',
+    tone: expired ? 'danger' : 'warning',
+    bodyHtml: [copy.lead, copy.why],
+    button: { href: projectUrl, label: copy.cta },
+  });
 
   try {
     await transporter.sendMail({ from: FROM_ADDRESS, to, subject: subjects[locale] ?? subjects.en, html });
@@ -1392,7 +1425,8 @@ export async function verifyEmailConnection(): Promise<boolean> {
 function withInvoiceLink(html: string, url: string | null | undefined, locale: 'en' | 'tr'): string {
   if (!url) return html;
   const label = locale === 'tr' ? 'Faturayı / makbuzu görüntüle' : 'View invoice / receipt';
-  const block = `<p style="margin:16px 0 0;font-size:13px"><a href="${url}" style="color:#4f46e5;text-decoration:underline">${label}</a></p>`;
+  const block = `<p style="margin:20px 0 0;font-size:13px;line-height:1.5"><a href="${url}" style="color:#09090b;text-decoration:underline">${label}</a></p>`;
+  if (html.includes(EMAIL_CONTENT_END)) return html.replace(EMAIL_CONTENT_END, block + EMAIL_CONTENT_END);
   return html.includes('</body>') ? html.replace('</body>', block + '</body>') : html + block;
 }
 
@@ -1461,6 +1495,8 @@ export async function sendDomainPurchasedEmail(
       to,
       subject: subjects[locale] ?? subjects.en,
       html: renderTransactionalEmail({
+        eyebrow: locale === 'tr' ? 'Alan adı' : 'Domain',
+        tone: 'success',
         title: locale === 'tr' ? 'Alan adı kaydedildi' : 'Domain registered',
         greeting: locale === 'tr' ? 'Merhaba,' : 'Hi there,',
         bodyHtml,
@@ -1501,6 +1537,8 @@ export async function sendDomainRenewedEmail(
       to,
       subject: subjects[locale] ?? subjects.en,
       html: renderTransactionalEmail({
+        eyebrow: locale === 'tr' ? 'Alan adı' : 'Domain',
+        tone: 'success',
         title: locale === 'tr' ? 'Alan adı yenilendi' : 'Domain renewed',
         greeting: locale === 'tr' ? 'Merhaba,' : 'Hi there,',
         bodyHtml,
@@ -1559,6 +1597,8 @@ export async function sendDomainRenewalReminderEmail(
       to,
       subject: subjects[locale] ?? subjects.en,
       html: renderTransactionalEmail({
+        eyebrow: locale === 'tr' ? 'İşlem gerekli' : 'Action needed',
+        tone: 'warning',
         title: locale === 'tr' ? 'Alan adı yenileme hatırlatması' : 'Domain renewal reminder',
         greeting: locale === 'tr' ? 'Merhaba,' : 'Hi there,',
         bodyHtml,
@@ -1594,6 +1634,7 @@ export async function sendDomainTransferStartedEmail(
       to,
       subject: subjects[locale] ?? subjects.en,
       html: renderTransactionalEmail({
+        eyebrow: locale === 'tr' ? 'Alan adı transferi' : 'Domain transfer',
         title: locale === 'tr' ? 'Transfer başlatıldı' : 'Transfer started',
         greeting: locale === 'tr' ? 'Merhaba,' : 'Hi there,',
         bodyHtml,
@@ -1635,6 +1676,8 @@ export async function sendDomainTransferResultEmail(
       to,
       subject: subjects[locale] ?? subjects.en,
       html: renderTransactionalEmail({
+        eyebrow: locale === 'tr' ? 'Alan adı transferi' : 'Domain transfer',
+        tone: succeeded ? 'success' : 'danger',
         title: subjects[locale] ?? subjects.en,
         greeting: locale === 'tr' ? 'Merhaba,' : 'Hi there,',
         bodyHtml,
@@ -1668,6 +1711,8 @@ export async function sendDomainAuthCodeViewedEmail(
       to,
       subject: subjects[locale] ?? subjects.en,
       html: renderTransactionalEmail({
+        eyebrow: locale === 'tr' ? 'Güvenlik' : 'Security',
+        tone: 'warning',
         title: locale === 'tr' ? 'Güvenlik bildirimi' : 'Security notice',
         greeting: locale === 'tr' ? 'Merhaba,' : 'Hi there,',
         bodyHtml,
@@ -1726,14 +1771,13 @@ export async function sendOnboardingEmail(
   if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) return false;
   const c = ONBOARDING_CONTENT[key];
   const html = renderTransactionalEmail({
+    eyebrow: 'Getting started',
     title: c.title,
     greeting: 'Hi there,',
     body: c.body,
     button: { href: `${env.FRONTEND_URL}${c.href}`, label: c.button },
-  }).replace(
-    '</body>',
-    `<p style="text-align:center;font-size:11px;color:#9ca3af;margin:16px 0;">You get a few of these while settling in. <a href="${unsubscribeUrl}" style="color:#9ca3af;">Unsubscribe from onboarding emails</a>.</p></body>`
-  );
+    footerNote: `You get a few of these while settling in. <a href="${unsubscribeUrl}" style="color:#71717a;text-decoration:underline;">Unsubscribe from onboarding emails</a>.`,
+  });
   try {
     await transporter.sendMail({ from: FROM_ADDRESS, to, subject: c.subject, html });
     logger.info({ to, key }, 'Onboarding email sent');
@@ -1760,30 +1804,23 @@ export async function sendWeeklyDigestEmail(
   if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) return false;
   const dashboardUrl = `${env.FRONTEND_URL}/dashboard`;
   const settingsUrl = `${env.FRONTEND_URL}/dashboard/settings?tab=notifications`;
-  const rows = [
-    ['Deployments this week', String(stats.deployments)],
-    ['Failed deployments', String(stats.failedDeployments)],
-    ['Active projects', String(stats.activeProjects)],
-    ['Running servers', String(stats.runningServers)],
-    ['Infrastructure credits', formatUsd(stats.walletBalanceCents)],
-  ]
-    .map(
-      ([k, v]) =>
-        `<tr><td style="padding:6px 12px;color:#6b7280;font-size:13px;">${k}</td><td style="padding:6px 12px;color:#18181b;font-size:13px;font-weight:600;text-align:right;">${v}</td></tr>`
-    )
-    .join('');
-  const bodyHtml =
-    `Your week on <strong style="color:#18181b;">${esc(orgName)}</strong>:` +
-    `<table style="width:100%;border-collapse:collapse;background:#f9fafb;border-radius:8px;margin-top:12px;">${rows}</table>`;
+  const rows: EmailDetailRow[] = [
+    { label: 'Deployments this week', value: String(stats.deployments) },
+    { label: 'Failed deployments', value: String(stats.failedDeployments) },
+    { label: 'Active projects', value: String(stats.activeProjects) },
+    { label: 'Running servers', value: String(stats.runningServers) },
+    { label: 'Infrastructure credits', value: formatUsd(stats.walletBalanceCents) },
+  ];
+  const bodyHtml = `Your week on <strong style="color:#18181b;">${esc(orgName)}</strong>:`;
   const html = renderTransactionalEmail({
+    eyebrow: 'Weekly digest',
     title: 'Your Pushify week',
     greeting: 'Hi there,',
     bodyHtml,
+    details: rows,
     button: { href: dashboardUrl, label: 'Open dashboard' },
-  }).replace(
-    '</body>',
-    `<p style="text-align:center;font-size:11px;color:#9ca3af;margin:16px 0;">Weekly digest is on for your account — <a href="${settingsUrl}" style="color:#9ca3af;">manage notification settings</a>.</p></body>`
-  );
+    footerNote: `Weekly digest is on for your account — <a href="${settingsUrl}" style="color:#71717a;text-decoration:underline;">manage notification settings</a>.`,
+  });
   try {
     await transporter.sendMail({ from: FROM_ADDRESS, to, subject: `Your Pushify week — ${orgName}`, html });
     logger.info({ to, orgName }, 'Weekly digest sent');
@@ -1821,20 +1858,20 @@ function deploymentFailedTemplate(input: DeploymentAlertEmailInput, locale: 'en'
   const t = texts[locale] ?? texts.en;
   const safeProject = esc(input.projectName);
   const branch = input.branch ? ` <span style="color:#71717a;">(${esc(input.branch)})</span>` : '';
-  const error = input.error
-    ? `<br><br><code style="display:block;padding:10px 12px;background:#f4f4f5;border-radius:6px;color:#18181b;font-size:13px;white-space:pre-wrap;word-break:break-word;">${esc(input.error.slice(0, 600))}</code>`
-    : '';
   const bodyHtml =
     locale === 'tr'
-      ? `<strong style="color:#18181b;">${safeProject}</strong>${branch} projesinin son deploy'u başarısız oldu.${error}`
-      : `The latest deployment of <strong style="color:#18181b;">${safeProject}</strong>${branch} failed.${error}`;
+      ? `<strong style="color:#18181b;">${safeProject}</strong>${branch} projesinin son deploy'u başarısız oldu.`
+      : `The latest deployment of <strong style="color:#18181b;">${safeProject}</strong>${branch} failed.`;
 
   return renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'Deploy başarısız' : 'Deploy failed',
+    tone: 'danger',
     title: t.title,
     greeting: t.greeting,
     bodyHtml,
+    code: input.error ? { text: input.error.slice(0, 600) } : undefined,
     button: { href: input.url, label: t.button },
-    notes: [t.note],
+    footerNote: t.note,
   });
 }
 
@@ -1862,11 +1899,13 @@ function deploymentRecoveredTemplate(input: DeploymentAlertEmailInput, locale: '
       : `A new deployment of <strong style="color:#18181b;">${safeProject}</strong>${branch} succeeded after the previous one failed.`;
 
   return renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'Deploy düzeldi' : 'Deploy recovered',
+    tone: 'success',
     title: t.title,
     greeting: t.greeting,
     bodyHtml,
     button: { href: input.url, label: t.button },
-    notes: [t.note],
+    footerNote: t.note,
   });
 }
 
