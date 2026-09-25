@@ -1,4 +1,5 @@
 import { env } from '../config/env';
+import { renderTransactionalEmail } from './email-templates';
 
 /**
  * Admin notification catalog — operational events that email the operator(s) listed in
@@ -88,22 +89,16 @@ export function buildAdminEmailContent(
     ([, v]) => v !== undefined && v !== null && String(v).length > 0,
   );
 
-  const rowsHtml = entries
-    .map(
-      ([k, v]) =>
-        `<tr><td style="padding:6px 16px 6px 0;color:#6b7280;font-size:13px;white-space:nowrap;vertical-align:top">${escapeHtml(k)}</td><td style="padding:6px 0;color:#111827;font-size:13px">${escapeHtml(String(v))}</td></tr>`,
-    )
-    .join('');
-
-  const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#f9fafb;font-family:ui-sans-serif,system-ui,sans-serif">
-<div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:24px">
-<p style="margin:0 0 4px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#6b7280">Pushify Admin</p>
-<h1 style="margin:0 0 16px;font-size:18px;color:#111827">${escapeHtml(title)}</h1>
-<table style="border-collapse:collapse;width:100%">${rowsHtml}
-<tr><td style="padding:6px 16px 6px 0;color:#6b7280;font-size:13px">Time</td><td style="padding:6px 0;color:#111827;font-size:13px">${when}</td></tr>
-<tr><td style="padding:6px 16px 6px 0;color:#6b7280;font-size:13px">Event</td><td style="padding:6px 0;color:#6b7280;font-size:13px;font-family:ui-monospace,monospace">${event}</td></tr>
-</table>
-</div></body></html>`;
+  // Values are escaped by the details renderer.
+  const html = renderTransactionalEmail({
+    eyebrow: 'Pushify Admin',
+    title,
+    details: [
+      ...entries.map(([k, v]) => ({ label: k, value: String(v) })),
+      { label: 'Time', value: when },
+      { label: 'Event', value: event },
+    ],
+  });
 
   const text =
     `${title}\n` +
@@ -111,12 +106,4 @@ export function buildAdminEmailContent(
     `\nTime: ${when}\nEvent: ${event}`;
 
   return { subject: `[Pushify] ${title}`, html, text };
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }
