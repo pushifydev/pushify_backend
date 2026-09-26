@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.64] - 2026-09-26
+
+### Fixed
+- **Managed server sizes were priced for the wrong location and ignored stock.** The size list and the quote took Hetzner's first listed location (Falkenstein) whatever region was chosen, and offered types Hetzner has sold out of; creating and resizing then picked a type with a different rule. In Nuremberg or Helsinki an XS was shown and billed at cx23's €5.49 although cx23 can only be provisioned in Falkenstein — the create failed, or another, pricier type was started. Listing, quoting, creating and resizing now share one resolver (`resolveTier`) that uses the chosen location's price and only types in stock there (from `/datacenters`), the quote carries the exact type, and the server is created with it — what is shown is what is billed is what runs. Two tiers that resolve to the same type are listed once. Regions with nothing in stock are marked unavailable. The catalogue is cached for five minutes.
+- **Every OS image was listed twice** (its x86 and arm builds under the same name). Managed sizes are x86, so only x86 images are offered.
+
 ## [0.2.0-beta.63] - 2026-09-25
 
 ### Changed
