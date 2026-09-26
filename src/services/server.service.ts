@@ -621,7 +621,7 @@ export const serverService = {
       // Continue without SSH key - server will still be created with password auth
     }
 
-    const billingFields = infraBillingService.billingFieldsFromQuote(quote);
+    const billingFields = infraBillingService.billingFieldsFromQuote(quote, quote.serverType);
 
     adminNotify('server.created', {
       server: input.name,
@@ -663,6 +663,8 @@ export const serverService = {
         name: `${input.name}-${dbServer.id.slice(0, 8)}`,
         region: input.region,
         size: input.size,
+        // The exact type the customer was quoted and is billed for.
+        serverType: quote.serverType,
         image: input.image,
         sshKeyIds,
         userData: CLOUD_INIT_SCRIPT,

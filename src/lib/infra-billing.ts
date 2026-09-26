@@ -113,6 +113,8 @@ export interface InfraPriceQuote {
   customerPriceHourlyCents: number;
   marginPercent: number;
   specs: ServerSpecsQuote;
+  /** Provider type the quote was priced on; create with exactly this one. */
+  serverType?: string;
 }
 
 export function buildPriceQuote(

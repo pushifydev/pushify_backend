@@ -9,6 +9,9 @@ export interface ServerSpecs {
   memoryMb: number;
   diskGb: number;
   priceMonthly: number;
+  /** Provider type this size resolves to in the requested location (e.g. "cx23"). Creating
+   *  with it guarantees the server that is billed is the server that was quoted. */
+  serverType?: string;
 }
 
 export interface ServerConfig {
@@ -53,6 +56,7 @@ export interface Image {
   description: string;
   type: 'system' | 'app' | 'snapshot';
   status: string;
+  architecture?: 'x86' | 'arm';
 }
 
 export interface SSHKey {
@@ -124,7 +128,8 @@ export interface ICloudProvider {
   // Region & Image Operations
   listRegions(): Promise<Region[]>;
   listImages(): Promise<Image[]>;
-  listSizes(): Promise<{ size: ServerSize; specs: ServerSpecs }[]>;
+  /** Sizes priced and stocked for `location`; without one, the cheapest location in stock. */
+  listSizes(location?: string): Promise<{ size: ServerSize; specs: ServerSpecs }[]>;
   listServerTypes(location?: string): Promise<ProviderServerType[]>;
 
   // Validation

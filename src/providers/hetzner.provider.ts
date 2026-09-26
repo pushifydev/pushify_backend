@@ -154,6 +154,79 @@ function getServerSizeTier(cores: number, memoryGb: number): ServerSize {
   return 'custom';
 }
 
+interface HetznerDatacenter {
+  name: string;
+  location: { name: string };
+  server_types: { available: number[]; supported: number[] };
+}
+
+/**
+ * Size tiers, in vCPU and GB of memory. One definition for listing, quoting, creating and
+ * resizing — if they disagree, the server a customer is billed for is not the one that runs.
+ */
+const TIER_SPECS: Record<Exclude<ServerSize, 'custom'>, { minCores: number; minMem: number; maxCores: number; maxMem: number }> = {
+  xs: { minCores: 1, minMem: 2, maxCores: 2, maxMem: 4 },
+  sm: { minCores: 2, minMem: 4, maxCores: 2, maxMem: 8 },
+  md: { minCores: 4, minMem: 8, maxCores: 4, maxMem: 16 },
+  lg: { minCores: 8, minMem: 16, maxCores: 8, maxMem: 32 },
+  xl: { minCores: 16, minMem: 32, maxCores: 32, maxMem: 128 },
+};
+const TIERS = Object.keys(TIER_SPECS) as Exclude<ServerSize, 'custom'>[];
+
+export interface Catalogue {
+  types: HetznerServerType[];
+  /** location name → names of server types Hetzner can actually provision there right now */
+  inStock: Map<string, Set<string>>;
+}
+
+/** Hetzner's catalogue changes rarely; one fetch serves every size/quote/create for a few minutes. */
+const CATALOGUE_TTL_MS = 5 * 60 * 1000;
+const catalogueCache = new Map<string, { at: number; value: Catalogue }>();
+
+interface ResolvedType {
+  type: HetznerServerType;
+  location: string;
+  priceMonthly: number;
+  priceHourly: number;
+}
+
+function priceIn(t: HetznerServerType, location: string) {
+  const p = t.prices.find((x) => x.location === location);
+  return p
+    ? { monthly: parseFloat(p.price_monthly.gross), hourly: parseFloat(p.price_hourly.gross) }
+    : null;
+}
+
+/**
+ * The cheapest shared-CPU type for a tier that is in stock — in `location` if given, otherwise
+ * in whichever location is cheapest. Hetzner lists prices for types it has sold out of, so
+ * availability comes from /datacenters, not /server_types.
+ */
+export function resolveTier(
+  cat: Catalogue,
+  size: ServerSize,
+  location?: string,
+  architecture: string = 'x86',
+): ResolvedType | undefined {
+  const spec = TIER_SPECS[size as Exclude<ServerSize, 'custom'>] ?? TIER_SPECS.sm;
+  const locations = location ? [location] : [...cat.inStock.keys()];
+  let best: ResolvedType | undefined;
+  for (const t of cat.types) {
+    if (t.deprecated || t.cpu_type !== 'shared' || t.architecture !== architecture) continue;
+    if (t.cores < spec.minCores || t.memory < spec.minMem) continue;
+    if (t.cores > spec.maxCores || t.memory > spec.maxMem) continue;
+    for (const loc of locations) {
+      if (!cat.inStock.get(loc)?.has(t.name)) continue;
+      const price = priceIn(t, loc);
+      if (!price) continue;
+      if (!best || price.monthly < best.priceMonthly) {
+        best = { type: t, location: loc, priceMonthly: price.monthly, priceHourly: price.hourly };
+      }
+    }
+  }
+  return best;
+}
+
 export class HetznerProvider implements ICloudProvider {
   readonly name = 'Hetzner Cloud';
   readonly id = 'hetzner';
@@ -161,6 +234,29 @@ export class HetznerProvider implements ICloudProvider {
 
   constructor(apiToken: string) {
     this.apiToken = apiToken;
+  }
+
+  private async catalogue(): Promise<Catalogue> {
+    const hit = catalogueCache.get(this.apiToken);
+    if (hit && Date.now() - hit.at < CATALOGUE_TTL_MS) return hit.value;
+
+    const [typesRes, dcRes] = await Promise.all([
+      this.request<{ server_types: HetznerServerType[] }>('/server_types?per_page=50'),
+      this.request<{ datacenters: HetznerDatacenter[] }>('/datacenters?per_page=50'),
+    ]);
+    const byId = new Map(typesRes.server_types.map((t) => [t.id, t.name]));
+    const inStock = new Map<string, Set<string>>();
+    for (const dc of dcRes.datacenters) {
+      const set = inStock.get(dc.location.name) ?? new Set<string>();
+      for (const id of dc.server_types.available) {
+        const name = byId.get(id);
+        if (name) set.add(name);
+      }
+      inStock.set(dc.location.name, set);
+    }
+    const value = { types: typesRes.server_types, inStock };
+    catalogueCache.set(this.apiToken, { at: Date.now(), value });
+    return value;
   }
 
   private async request<T>(
@@ -282,22 +378,11 @@ export class HetznerProvider implements ICloudProvider {
         imageArchitecture = 'x86';
       }
 
-      // Get available server types and find one matching the size and architecture
-      const typesResponse = await this.request<{ server_types: HetznerServerType[] }>(
-        '/server_types'
-      );
-
-      // Find appropriate server type for the requested size, location, and architecture
-      const serverType = this.findServerTypeForSize(
-        config.size,
-        typesResponse.server_types,
-        config.region,
-        imageArchitecture
-      );
-
-      if (!serverType) {
-        throw new Error(`No server type available for size "${config.size}" in location "${config.region}" with architecture "${imageArchitecture}"`);
+      const resolved = resolveTier(await this.catalogue(), config.size, config.region, imageArchitecture);
+      if (!resolved) {
+        throw new Error(`No server type in stock for size "${config.size}" in location "${config.region}" with architecture "${imageArchitecture}"`);
       }
+      const serverType = resolved.type;
 
       serverTypeName = serverType.name;
     }
@@ -333,58 +418,6 @@ export class HetznerProvider implements ICloudProvider {
     });
 
     return this.mapServer(response.server);
-  }
-
-  private findServerTypeForSize(
-    size: ServerSize,
-    serverTypes: HetznerServerType[],
-    location: string,
-    architecture: string = 'x86'
-  ): HetznerServerType | undefined {
-    // Define minimum specs for each size tier
-    const sizeSpecs: Record<ServerSize, { minCores: number; minMem: number }> = {
-      xs: { minCores: 1, minMem: 2 },
-      sm: { minCores: 2, minMem: 4 },
-      md: { minCores: 4, minMem: 8 },
-      lg: { minCores: 8, minMem: 16 },
-      xl: { minCores: 16, minMem: 32 },
-      custom: { minCores: 2, minMem: 4 },
-    };
-
-    const specs = sizeSpecs[size];
-
-    // Filter and sort server types
-    const eligibleTypes = serverTypes
-      .filter(t => {
-        // Skip deprecated types
-        if (t.deprecated) return false;
-
-        // Must match the image architecture
-        if (t.architecture !== architecture) return false;
-
-        // Must have pricing for the location
-        const hasLocation = t.prices.some(p => p.location === location);
-        if (!hasLocation) return false;
-
-        // Must meet minimum specs
-        if (t.cores < specs.minCores || t.memory < specs.minMem) return false;
-
-        return true;
-      })
-      .sort((a, b) => {
-        // Sort by: 1) CPU type (shared first), 2) price
-        const cpuOrder = (type: string) => type === 'shared' ? 0 : 1;
-
-        const cpuDiff = cpuOrder(a.cpu_type) - cpuOrder(b.cpu_type);
-        if (cpuDiff !== 0) return cpuDiff;
-
-        // Then by price
-        const priceA = parseFloat(a.prices.find(p => p.location === location)?.price_monthly?.gross || '9999');
-        const priceB = parseFloat(b.prices.find(p => p.location === location)?.price_monthly?.gross || '9999');
-        return priceA - priceB;
-      });
-
-    return eligibleTypes[0];
   }
 
   async deleteServer(providerId: string): Promise<void> {
@@ -428,18 +461,7 @@ export class HetznerProvider implements ICloudProvider {
     const currentServer = await this.getServer(providerId);
     const currentArchitecture = (currentServer.providerData as { serverType?: { architecture?: string } })?.serverType?.architecture || 'x86';
 
-    // Get available server types
-    const typesResponse = await this.request<{ server_types: HetznerServerType[] }>(
-      '/server_types'
-    );
-
-    // Find appropriate server type for new size in current location with same architecture
-    const serverType = this.findServerTypeForSize(
-      size,
-      typesResponse.server_types,
-      currentServer.region,
-      currentArchitecture
-    );
+    const serverType = resolveTier(await this.catalogue(), size, currentServer.region, currentArchitecture)?.type;
 
     if (!serverType) {
       throw new Error(`No server type available for size "${size}" in location "${currentServer.region}" with architecture "${currentArchitecture}"`);
@@ -579,77 +601,58 @@ export class HetznerProvider implements ICloudProvider {
       '/locations'
     );
 
+    const cat = await this.catalogue();
     return response.locations.map((loc) => ({
       id: loc.name,
       name: `${loc.city} (${loc.name})`,
       country: loc.country,
       city: loc.city,
-      available: true,
+      // Only where at least one managed size can be provisioned right now.
+      available: TIERS.some((size) => resolveTier(cat, size, loc.name) !== undefined),
     }));
   }
 
   async listImages(): Promise<Image[]> {
     const response = await this.request<{ images: HetznerImage[] }>(
-      '/images?type=system&status=available'
+      '/images?type=system&status=available&architecture=x86&per_page=50'
     );
 
-    return response.images.map((img) => ({
-      id: img.id.toString(),
-      name: img.name,
-      description: img.description,
-      type: img.type === 'snapshot' ? 'snapshot' : 'system',
-      status: img.status,
-    }));
+    // Every system image exists once per architecture. Managed sizes are x86, so offer the x86
+    // build only — listing both showed each OS twice with nothing to tell them apart.
+    const seen = new Set<string>();
+    return response.images
+      .filter((img) => img.architecture === 'x86' && !seen.has(img.name) && seen.add(img.name))
+      .map((img) => ({
+        id: img.id.toString(),
+        name: img.name,
+        description: img.description,
+        type: img.type === 'snapshot' ? 'snapshot' : 'system',
+        status: img.status,
+        architecture: 'x86' as const,
+      }));
   }
 
-  async listSizes(): Promise<{ size: ServerSize; specs: ServerSpecs }[]> {
-    const response = await this.request<{ server_types: HetznerServerType[] }>(
-      '/server_types'
-    );
-
-    // Group server types by our size tiers and return the cheapest for each
-    const sizeTiers: ServerSize[] = ['xs', 'sm', 'md', 'lg', 'xl'];
-    const sizeSpecs: Record<ServerSize, { minCores: number; minMem: number; maxCores: number; maxMem: number }> = {
-      xs: { minCores: 1, minMem: 2, maxCores: 2, maxMem: 4 },
-      sm: { minCores: 2, minMem: 4, maxCores: 2, maxMem: 8 },
-      md: { minCores: 4, minMem: 8, maxCores: 4, maxMem: 16 },
-      lg: { minCores: 8, minMem: 16, maxCores: 8, maxMem: 32 },
-      xl: { minCores: 16, minMem: 32, maxCores: 32, maxMem: 128 },
-      custom: { minCores: 1, minMem: 1, maxCores: 999, maxMem: 9999 },
-    };
-
+  async listSizes(location?: string): Promise<{ size: ServerSize; specs: ServerSpecs }[]> {
+    const cat = await this.catalogue();
     const sizes: { size: ServerSize; specs: ServerSpecs }[] = [];
+    const used = new Set<string>();
 
-    for (const size of sizeTiers) {
-      const specs = sizeSpecs[size];
-
-      // Find the best (cheapest shared x86) server type for this tier
-      const serverType = response.server_types
-        .filter(t => {
-          if (t.deprecated) return false;
-          if (t.cores < specs.minCores || t.memory < specs.minMem) return false;
-          if (t.cores > specs.maxCores || t.memory > specs.maxMem) return false;
-          // Prefer shared x86 types
-          return t.cpu_type === 'shared' && t.architecture === 'x86';
-        })
-        .sort((a, b) => {
-          const priceA = parseFloat(a.prices[0]?.price_monthly?.gross || '9999');
-          const priceB = parseFloat(b.prices[0]?.price_monthly?.gross || '9999');
-          return priceA - priceB;
-        })[0];
-
-      if (serverType) {
-        const price = serverType.prices[0]?.price_monthly?.gross || '0';
-        sizes.push({
-          size,
-          specs: {
-            vcpus: serverType.cores,
-            memoryMb: serverType.memory * 1024,
-            diskGb: serverType.disk,
-            priceMonthly: parseFloat(price),
-          },
-        });
-      }
+    for (const size of TIERS) {
+      const resolved = resolveTier(cat, size, location);
+      // Two tiers can land on the same type (e.g. cx23 is both the smallest 2 GB+ and the
+      // smallest 4 GB box); list it once, under the smaller tier.
+      if (!resolved || used.has(resolved.type.name)) continue;
+      used.add(resolved.type.name);
+      sizes.push({
+        size,
+        specs: {
+          vcpus: resolved.type.cores,
+          memoryMb: resolved.type.memory * 1024,
+          diskGb: resolved.type.disk,
+          priceMonthly: resolved.priceMonthly,
+          serverType: resolved.type.name,
+        },
+      });
     }
 
     return sizes;

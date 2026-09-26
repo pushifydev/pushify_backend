@@ -206,7 +206,8 @@ export const infraBillingService = {
     }
 
     const providerInstance = createProvider(provider, apiToken);
-    const sizes = await providerInstance.listSizes();
+    // Priced and stocked for the region the customer picked, not for Hetzner's first location.
+    const sizes = await providerInstance.listSizes(region);
     const limits = getPlanInfraLimits(plan);
 
     return sizes.map((entry) => {
@@ -270,7 +271,7 @@ export const infraBillingService = {
     }
 
     const providerInstance = createProvider(provider, apiToken);
-    const sizes = await providerInstance.listSizes();
+    const sizes = await providerInstance.listSizes(region);
     const match = sizes.find((s) => s.size === size);
     if (!match) {
       throw new HTTPException(400, { message: t(locale, 'servers', 'createFailed') });
@@ -293,7 +294,7 @@ export const infraBillingService = {
       throw new HTTPException(403, { message: mapInfraError(code, locale) });
     }
 
-    return quote;
+    return { ...quote, serverType: match.specs.serverType };
   },
 
   async assertWalletCanProvision(
