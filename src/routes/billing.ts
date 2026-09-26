@@ -70,6 +70,14 @@ billingRouter.post('/checkout', requireOrgRole('owner', 'admin'), async (c) => {
     return c.json({ error: { code: 'INVALID_CYCLE', message: 'Invalid billing cycle' } }, 400);
   }
 
+  // An organisation that already pays must change its subscription, not start a second one.
+  if (await stripeService.hasLiveSubscription(organizationId)) {
+    return c.json(
+      { error: { code: 'ALREADY_SUBSCRIBED', message: 'Use /billing/change-plan to switch an existing subscription' } },
+      409,
+    );
+  }
+
   const billingInfo = await billingService.getBillingInfo(organizationId, userId, locale);
   const email = billingInfo.billingEmail || '';
 
@@ -90,6 +98,53 @@ billingRouter.post('/checkout', requireOrgRole('owner', 'admin'), async (c) => {
     }
     throw err;
   }
+});
+
+// Switch plan/cycle on the existing subscription (upgrade charged now, prorated).
+billingRouter.post('/change-plan', requireOrgRole('owner', 'admin'), async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+
+  if (!env.STRIPE_SECRET_KEY) {
+    return c.json({ error: { code: 'STRIPE_NOT_CONFIGURED', message: t(locale, 'billing', 'stripeNotConfigured') } }, 400);
+  }
+
+  const { planType, billingCycle } = await c.req.json<{ planType: PlanType; billingCycle: 'monthly' | 'yearly' }>();
+  if (!planType || !['hobby', 'pro', 'business'].includes(planType)) {
+    return c.json({ error: { code: 'INVALID_PLAN', message: 'Invalid plan type' } }, 400);
+  }
+  if (!billingCycle || !['monthly', 'yearly'].includes(billingCycle)) {
+    return c.json({ error: { code: 'INVALID_CYCLE', message: 'Invalid billing cycle' } }, 400);
+  }
+
+  const result = await stripeService.changePlan(organizationId, planType, billingCycle);
+  return c.json({ data: result });
+});
+
+// Retry open invoices on the saved card; otherwise return the invoice's payment page.
+billingRouter.post('/pay-outstanding', requireOrgRole('owner', 'admin'), async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+
+  if (!env.STRIPE_SECRET_KEY) {
+    return c.json({ error: { code: 'STRIPE_NOT_CONFIGURED', message: t(locale, 'billing', 'stripeNotConfigured') } }, 400);
+  }
+
+  const result = await stripeService.payOutstanding(organizationId);
+  return c.json({ data: result });
+});
+
+// Stripe's card-update screen, directly (no portal menu in between).
+billingRouter.post('/payment-method', requireOrgRole('owner', 'admin'), async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+
+  if (!env.STRIPE_SECRET_KEY) {
+    return c.json({ error: { code: 'STRIPE_NOT_CONFIGURED', message: t(locale, 'billing', 'stripeNotConfigured') } }, 400);
+  }
+
+  const url = await stripeService.createPaymentMethodUpdateSession(organizationId);
+  return c.json({ data: { url } });
 });
 
 // Create Stripe Customer Portal session
