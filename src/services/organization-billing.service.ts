@@ -117,7 +117,12 @@ export const organizationBillingService = {
       .where(eq(organizations.id, organizationId));
   },
 
-  async notifyPaymentFailedIfDue(organizationId: string, orgName: string): Promise<boolean> {
+  async notifyPaymentFailedIfDue(
+    organizationId: string,
+    orgName: string,
+    payUrl?: string | null,
+    reason: 'failed' | 'action_required' = 'failed',
+  ): Promise<boolean> {
     const [org] = await db
       .select({ billingPaymentFailedNotifiedAt: organizations.billingPaymentFailedNotifiedAt })
       .from(organizations)
@@ -133,7 +138,7 @@ export const organizationBillingService = {
     const notifyEmail = await resolveBillingNotifyEmail(organizationId);
     if (!notifyEmail) return false;
 
-    await sendBillingPaymentFailedEmail(notifyEmail, orgName);
+    await sendBillingPaymentFailedEmail(notifyEmail, orgName, 'en', payUrl, reason);
     await db
       .update(organizations)
       .set({ billingPaymentFailedNotifiedAt: new Date(), updatedAt: new Date() })

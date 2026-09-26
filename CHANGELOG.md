@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.65] - 2026-09-26
+
+### Fixed
+- **Plan upgrades never charged an existing subscriber.** Every upgrade opened a new Checkout session, which created a second subscription beside the first (or failed on the card). `POST /billing/change-plan` now changes the existing subscription in place: an upgrade is invoiced pro-rata and charged to the card on file at once (`always_invoice` + `payment_behavior: pending_if_incomplete`), so a declined card or a 3-D Secure challenge leaves the old plan untouched and returns Stripe's hosted invoice page as `payUrl`; paying it applies the upgrade automatically. Downgrades apply at once with a credit on the next invoice. `/billing/checkout` answers 409 `ALREADY_SUBSCRIBED` for an organisation that already has a live subscription.
+
+### Added
+- **Collecting past-due payments.** `POST /billing/pay-outstanding` retries every open invoice on the card on file and returns the hosted invoice page of the first one the bank refuses; the organisation is marked active when all are paid. `POST /billing/payment-method` opens a Stripe page that only replaces the card, and on `customer.updated` with a new default card the unpaid invoices are retried by themselves.
+- **The payment-failed email links straight to the invoice** ("Pay invoice") instead of the billing page, and `invoice.payment_action_required` (3-D Secure) now sends its own "confirm your payment" email without marking the organisation past due.
+
 ## [0.2.0-beta.64] - 2026-09-26
 
 ### Fixed

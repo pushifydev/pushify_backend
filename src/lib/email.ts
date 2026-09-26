@@ -319,37 +319,50 @@ function billingPlanActivatedTemplate(
 function billingPaymentFailedTemplate(
   orgName: string,
   billingUrl: string,
-  locale: 'en' | 'tr'
+  locale: 'en' | 'tr',
+  payUrl?: string | null,
+  reason: 'failed' | 'action_required' = 'failed',
 ): string {
   const texts = {
     en: {
-      title: 'Payment failed',
+      title: reason === 'action_required' ? 'Confirm your payment' : 'Payment failed',
       greeting: 'Hi there,',
-      button: 'Manage billing',
-      note: 'If you already updated your card, you can ignore this email.',
+      pay: reason === 'action_required' ? 'Confirm payment' : 'Pay invoice',
+      manage: 'Manage billing',
+      note: payUrl
+        ? 'The button opens Stripe’s secure payment page: pay with the saved card or another one. Already paid? You can ignore this email.'
+        : 'If you already updated your card, you can ignore this email.',
     },
     tr: {
-      title: 'Ödeme başarısız',
+      title: reason === 'action_required' ? 'Ödemenizi onaylayın' : 'Ödeme başarısız',
       greeting: 'Merhaba,',
-      button: 'Faturalamayı yönet',
-      note: 'Kartınızı zaten güncellediyseniz bu e-postayı yok sayabilirsiniz.',
+      pay: reason === 'action_required' ? 'Ödemeyi onayla' : 'Faturayı öde',
+      manage: 'Faturalamayı yönet',
+      note: payUrl
+        ? 'Düğme Stripe’ın güvenli ödeme sayfasını açar: kayıtlı kartla ya da başka bir kartla ödeyebilirsiniz. Zaten ödediyseniz bu e-postayı yok sayabilirsiniz.'
+        : 'Kartınızı zaten güncellediyseniz bu e-postayı yok sayabilirsiniz.',
     },
   };
 
   const t = texts[locale] ?? texts.en;
   const safeOrg = esc(orgName);
   const bodyHtml =
-    locale === 'tr'
-      ? `<strong style="color:#18181b;">${safeOrg}</strong> için son ödeme işlenemedi. Kesinti yaşamamak için ödeme yönteminizi güncelleyin.`
-      : `We couldn't process the latest payment for <strong style="color:#18181b;">${safeOrg}</strong>. Update your payment method to avoid service interruption.`;
+    reason === 'action_required'
+      ? locale === 'tr'
+        ? `Bankanız <strong style="color:#18181b;">${safeOrg}</strong> ödemesi için onay (3D Secure) istiyor. Onaylamazsanız ödeme tamamlanmaz.`
+        : `Your bank needs you to confirm the payment for <strong style="color:#18181b;">${safeOrg}</strong> (3D Secure). Until you do, it can't go through.`
+      : locale === 'tr'
+        ? `<strong style="color:#18181b;">${safeOrg}</strong> için son ödeme işlenemedi. Kesinti yaşamamak için faturayı şimdi ödeyin ya da kartınızı güncelleyin.`
+        : `We couldn't process the latest payment for <strong style="color:#18181b;">${safeOrg}</strong>. Pay the invoice now or update your card to avoid service interruption.`;
 
   return renderTransactionalEmail({
-    eyebrow: locale === 'tr' ? 'Ödeme başarısız' : 'Payment failed',
-    tone: 'danger',
+    eyebrow: reason === 'action_required' ? (locale === 'tr' ? 'Onay gerekli' : 'Action required') : locale === 'tr' ? 'Ödeme başarısız' : 'Payment failed',
+    tone: reason === 'action_required' ? 'warning' : 'danger',
     title: t.title,
     greeting: t.greeting,
     bodyHtml,
-    button: { href: billingUrl, label: t.button },
+    // One click to pay: Stripe's hosted invoice page (saved card, a new card, 3D Secure).
+    button: payUrl ? { href: payUrl, label: t.pay } : { href: billingUrl, label: t.manage },
     notes: [t.note],
   });
 }
@@ -1181,7 +1194,9 @@ export async function sendBillingPlanActivatedEmail(
 export async function sendBillingPaymentFailedEmail(
   to: string,
   orgName: string,
-  locale: 'en' | 'tr' = 'en'
+  locale: 'en' | 'tr' = 'en',
+  payUrl?: string | null,
+  reason: 'failed' | 'action_required' = 'failed',
 ): Promise<void> {
   if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
     logger.warn('Email not configured — skipping billing payment failed email');
@@ -1189,19 +1204,19 @@ export async function sendBillingPaymentFailedEmail(
   }
 
   const billingUrl = `${env.FRONTEND_URL}/dashboard/billing`;
-  const subjects = {
-    en: `Action required: payment failed for ${orgName}`,
-    tr: `İşlem gerekli: ${orgName} ödemesi başarısız`,
-  };
+  const subjects =
+    reason === 'action_required'
+      ? { en: `Confirm your payment for ${orgName}`, tr: `${orgName} ödemenizi onaylayın` }
+      : { en: `Action required: payment failed for ${orgName}`, tr: `İşlem gerekli: ${orgName} ödemesi başarısız` };
 
   try {
     await transporter.sendMail({
       from: FROM_ADDRESS,
       to,
       subject: subjects[locale] ?? subjects.en,
-      html: billingPaymentFailedTemplate(orgName, billingUrl, locale),
+      html: billingPaymentFailedTemplate(orgName, billingUrl, locale, payUrl, reason),
     });
-    logger.info({ to, orgName }, 'Billing payment failed email sent');
+    logger.info({ to, orgName, reason }, 'Billing payment failed email sent');
   } catch (error) {
     logger.error({ error, to, orgName }, 'Failed to send billing payment failed email');
   }

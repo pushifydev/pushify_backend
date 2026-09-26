@@ -56,6 +56,40 @@ async function getSessionReceiptUrl(session: Stripe.Checkout.Session): Promise<s
   }
 }
 
+
+/** Subscriptions that are still billing: a second checkout on top of one would double-charge. */
+const LIVE_SUBSCRIPTION_STATUSES: Stripe.Subscription.Status[] = ['active', 'trialing', 'past_due', 'unpaid'];
+
+/** Monthly-normalised amount of a recurring price, to tell an upgrade from a downgrade. */
+function monthlyCents(price: Stripe.Price): number {
+  const amount = price.unit_amount ?? 0;
+  const interval = price.recurring?.interval;
+  const count = price.recurring?.interval_count ?? 1;
+  if (interval === 'year') return amount / (12 * count);
+  if (interval === 'week') return (amount * 52) / (12 * count);
+  if (interval === 'day') return (amount * 365) / (12 * count);
+  return amount / count;
+}
+
+export type PlanChangeResult =
+  | { status: 'changed'; plan: PlanType }
+  /** The card was declined or needs 3D Secure: nothing changed yet; paying this URL applies it. */
+  | { status: 'payment_required'; payUrl: string | null }
+  /** No subscription to change: start one with Checkout. */
+  | { status: 'checkout_required' };
+
+export type PayOutstandingResult =
+  | { status: 'paid'; paidCount: number }
+  | { status: 'nothing_due' }
+  | { status: 'payment_required'; payUrl: string | null };
+
+async function openInvoicesFor(stripe: Stripe, customerId: string): Promise<Stripe.Invoice[]> {
+  const out: Stripe.Invoice[] = [];
+  for await (const inv of stripe.invoices.list({ customer: customerId, status: 'open', limit: 100 })) out.push(inv);
+  // Oldest first: pay what is most overdue first.
+  return out.sort((a, b) => a.created - b.created);
+}
+
 export const stripeService = {
   async getOrCreateCustomer(organizationId: string, email: string): Promise<string> {
     const stripe = getStripe();
@@ -263,6 +297,166 @@ export const stripeService = {
     });
 
     return session.url;
+  },
+
+  /**
+   * Switch an existing subscription to another plan or billing cycle, in place.
+   *
+   * Upgrades are charged right away with proration from the saved card
+   * (`always_invoice` + `pending_if_incomplete`): if the card is declined or needs 3D Secure,
+   * Stripe keeps the old plan and holds the change as a pending update, and we hand back the
+   * invoice's hosted page — paying it applies the change (then `customer.subscription.updated`
+   * moves the plan here). Downgrades take effect now and the unused time is credited to the next
+   * invoice. Before this, every change went through a new Checkout, which started a second
+   * subscription next to the first.
+   */
+  async changePlan(
+    organizationId: string,
+    planType: PlanType,
+    billingCycle: 'monthly' | 'yearly',
+  ): Promise<PlanChangeResult> {
+    const stripe = getStripe();
+    const [org] = await db
+      .select({ stripeSubscriptionId: organizations.stripeSubscriptionId, billingStatus: organizations.billingStatus })
+      .from(organizations)
+      .where(eq(organizations.id, organizationId))
+      .limit(1);
+    if (!org?.stripeSubscriptionId) return { status: 'checkout_required' };
+
+    let sub: Stripe.Subscription;
+    try {
+      sub = await stripe.subscriptions.retrieve(org.stripeSubscriptionId);
+    } catch (err) {
+      if (isStripeResourceMissing(err)) return { status: 'checkout_required' };
+      throw err;
+    }
+    if (!LIVE_SUBSCRIPTION_STATUSES.includes(sub.status)) return { status: 'checkout_required' };
+
+    // Money owed first: a plan change on top of an unpaid invoice would pile a second charge on it.
+    if (sub.status === 'past_due' || sub.status === 'unpaid' || org.billingStatus === 'past_due') {
+      const due = await this.payOutstanding(organizationId);
+      if (due.status === 'payment_required') return due;
+    }
+
+    const priceId = getPriceId(planType, billingCycle);
+    if (!priceId) throw new Error(`No Stripe price configured for plan: ${planType} (${billingCycle})`);
+    const item = sub.items.data[0];
+    if (!item) return { status: 'checkout_required' };
+    if (item.price.id === priceId) {
+      if (sub.cancel_at_period_end) await stripe.subscriptions.update(sub.id, { cancel_at_period_end: false });
+      return { status: 'changed', plan: planType };
+    }
+
+    const target = await stripe.prices.retrieve(priceId);
+    const isUpgrade = monthlyCents(target) > monthlyCents(item.price) || target.recurring?.interval !== item.price.recurring?.interval;
+
+    const updated = await stripe.subscriptions.update(sub.id, {
+      items: [{ id: item.id, price: priceId }],
+      cancel_at_period_end: false,
+      metadata: { ...sub.metadata, organizationId, planType },
+      ...(isUpgrade
+        ? { proration_behavior: 'always_invoice', payment_behavior: 'pending_if_incomplete' }
+        : { proration_behavior: 'create_prorations' }),
+      expand: ['latest_invoice'],
+    });
+
+    if (updated.pending_update) {
+      const invoice = updated.latest_invoice as Stripe.Invoice | null;
+      logger.info({ organizationId, subscriptionId: sub.id, planType }, 'plan change held: payment required');
+      return { status: 'payment_required', payUrl: invoice?.hosted_invoice_url ?? null };
+    }
+
+    const periodEnd = getSubscriptionCurrentPeriodEnd(updated);
+    await db
+      .update(organizations)
+      .set({
+        plan: planType,
+        billingStatus: 'active',
+        billingPaymentFailedNotifiedAt: null,
+        ...(periodEnd ? { stripeCurrentPeriodEnd: periodEnd } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(organizations.id, organizationId));
+    if (isUpgrade) await infraBillingService.grantIncludedInfraCredit(organizationId, planType);
+    logger.info({ organizationId, subscriptionId: sub.id, planType, isUpgrade }, 'plan changed in place');
+    return { status: 'changed', plan: planType };
+  },
+
+  /**
+   * Collect whatever is owed now: retry every open invoice against the saved card. What the
+   * card can't cover comes back as the oldest unpaid invoice's hosted page, where the customer
+   * can pay with another card or confirm 3D Secure.
+   */
+  async payOutstanding(organizationId: string): Promise<PayOutstandingResult> {
+    const stripe = getStripe();
+    const [org] = await db
+      .select({ stripeCustomerId: organizations.stripeCustomerId })
+      .from(organizations)
+      .where(eq(organizations.id, organizationId))
+      .limit(1);
+    if (!org?.stripeCustomerId) return { status: 'nothing_due' };
+
+    const open = await openInvoicesFor(stripe, org.stripeCustomerId);
+    if (open.length === 0) return { status: 'nothing_due' };
+
+    let paidCount = 0;
+    for (const invoice of open) {
+      try {
+        const paid = await stripe.invoices.pay(invoice.id!);
+        if (paid.status === 'paid') {
+          paidCount++;
+          continue;
+        }
+      } catch (err) {
+        logger.info({ organizationId, invoiceId: invoice.id, code: (err as { code?: string }).code }, 'invoice retry failed');
+      }
+      return { status: 'payment_required', payUrl: invoice.hosted_invoice_url ?? null };
+    }
+
+    // invoice.paid webhooks clear past_due too; doing it here means the page is right on return.
+    await organizationBillingService.markActive(organizationId);
+    return { status: 'paid', paidCount };
+  },
+
+  /** Stripe's own card-update screen for this customer, straight to the form. */
+  async createPaymentMethodUpdateSession(organizationId: string): Promise<string> {
+    const stripe = getStripe();
+    const [org] = await db
+      .select({ stripeCustomerId: organizations.stripeCustomerId })
+      .from(organizations)
+      .where(eq(organizations.id, organizationId))
+      .limit(1);
+    if (!org?.stripeCustomerId) throw new Error('No Stripe customer found for this organization');
+
+    const session = await stripe.billingPortal.sessions.create({
+      customer: org.stripeCustomerId,
+      return_url: `${env.FRONTEND_URL}/dashboard/billing?card=updated`,
+      flow_data: {
+        type: 'payment_method_update',
+        after_completion: {
+          type: 'redirect',
+          redirect: { return_url: `${env.FRONTEND_URL}/dashboard/billing?card=updated` },
+        },
+      },
+    });
+    return session.url;
+  },
+
+  /** True when the organisation already has a subscription that is still billing. */
+  async hasLiveSubscription(organizationId: string): Promise<boolean> {
+    const [org] = await db
+      .select({ stripeSubscriptionId: organizations.stripeSubscriptionId })
+      .from(organizations)
+      .where(eq(organizations.id, organizationId))
+      .limit(1);
+    if (!org?.stripeSubscriptionId) return false;
+    try {
+      const sub = await getStripe().subscriptions.retrieve(org.stripeSubscriptionId);
+      return LIVE_SUBSCRIPTION_STATUSES.includes(sub.status);
+    } catch (err) {
+      if (isStripeResourceMissing(err)) return false;
+      throw err;
+    }
   },
 
   async cancelSubscription(organizationId: string): Promise<void> {
@@ -694,8 +888,10 @@ export const stripeService = {
         break;
       }
 
-      case 'invoice.payment_failed': {
-        adminNotify('payment.failed', { stripeEvent: event.type });
+      case 'invoice.payment_failed':
+      case 'invoice.payment_action_required': {
+        const actionRequired = event.type === 'invoice.payment_action_required';
+        if (!actionRequired) adminNotify('payment.failed', { stripeEvent: event.type });
         const invoice = event.data.object as Stripe.Invoice;
         const customerId =
           typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
@@ -713,11 +909,38 @@ export const stripeService = {
 
         if (!org) break;
 
-        await organizationBillingService.markPastDue(org.id);
-        const emailed = await organizationBillingService.notifyPaymentFailedIfDue(org.id, org.name);
+        // 3D Secure is not a failure: the subscription is fine until the bank's window closes.
+        if (!actionRequired) await organizationBillingService.markPastDue(org.id);
+        // Straight to the invoice's own payment page: one click to pay, with any card.
+        const emailed = await organizationBillingService.notifyPaymentFailedIfDue(
+          org.id,
+          org.name,
+          invoice.hosted_invoice_url ?? null,
+          actionRequired ? 'action_required' : 'failed',
+        );
         if (!emailed) {
           logger.warn({ organizationId: org.id }, 'payment_failed: notification skipped or no billing email');
         }
+        break;
+      }
+
+      case 'customer.updated': {
+        // A new default card: retry what is owed right away instead of waiting for Stripe's next
+        // scheduled attempt (days away) — the customer just fixed their card to pay.
+        const customer = event.data.object as Stripe.Customer;
+        const previous = event.data.previous_attributes as { invoice_settings?: unknown } | undefined;
+        if (!previous?.invoice_settings) break;
+        const [org] = await db
+          .select({ id: organizations.id, billingStatus: organizations.billingStatus })
+          .from(organizations)
+          .where(eq(organizations.stripeCustomerId, customer.id))
+          .limit(1);
+        if (!org || org.billingStatus === 'active') break;
+        const result = await this.payOutstanding(org.id).catch((err) => {
+          logger.warn({ err, organizationId: org.id }, 'retry after card update failed');
+          return null;
+        });
+        logger.info({ organizationId: org.id, result: result?.status }, 'customer.updated: retried open invoices');
         break;
       }
     }
