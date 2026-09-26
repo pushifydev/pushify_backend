@@ -28,11 +28,15 @@ function isStripeResourceMissing(err: unknown): boolean {
   return e.code === 'resource_missing' || e.statusCode === 404;
 }
 
-/** Subscription statuses that still bill (or will bill) the customer. */
+/**
+ * Subscription statuses that still bill (or will bill) the customer: a second checkout on top of
+ * one would double-charge, so plan changes update it in place instead.
+ */
 const LIVE_SUBSCRIPTION_STATUSES: ReadonlySet<Stripe.Subscription.Status> = new Set([
   'active',
   'trialing',
   'past_due',
+  'unpaid',
 ]);
 
 /**
@@ -108,10 +112,6 @@ async function getSessionReceiptUrl(session: Stripe.Checkout.Session): Promise<s
     return null;
   }
 }
-
-
-/** Subscriptions that are still billing: a second checkout on top of one would double-charge. */
-const LIVE_SUBSCRIPTION_STATUSES: Stripe.Subscription.Status[] = ['active', 'trialing', 'past_due', 'unpaid'];
 
 /** Monthly-normalised amount of a recurring price, to tell an upgrade from a downgrade. */
 function monthlyCents(price: Stripe.Price): number {
@@ -402,7 +402,7 @@ export const stripeService = {
       if (isStripeResourceMissing(err)) return { status: 'checkout_required' };
       throw err;
     }
-    if (!LIVE_SUBSCRIPTION_STATUSES.includes(sub.status)) return { status: 'checkout_required' };
+    if (!LIVE_SUBSCRIPTION_STATUSES.has(sub.status)) return { status: 'checkout_required' };
 
     // Money owed first: a plan change on top of an unpaid invoice would pile a second charge on it.
     if (sub.status === 'past_due' || sub.status === 'unpaid' || org.billingStatus === 'past_due') {
@@ -524,7 +524,7 @@ export const stripeService = {
     if (!org?.stripeSubscriptionId) return false;
     try {
       const sub = await getStripe().subscriptions.retrieve(org.stripeSubscriptionId);
-      return LIVE_SUBSCRIPTION_STATUSES.includes(sub.status);
+      return LIVE_SUBSCRIPTION_STATUSES.has(sub.status);
     } catch (err) {
       if (isStripeResourceMissing(err)) return false;
       throw err;

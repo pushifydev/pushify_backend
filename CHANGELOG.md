@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.66] - 2026-09-26
+
+### Fixed
+- **Build failed after merging beta.65 into master.** #153 and beta.65 each declared `LIVE_SUBSCRIPTION_STATUSES` in `stripe.service.ts` (one a Set, one an array), which git merged without a conflict. One Set now serves both — the checkout guard and plan changes — and includes `unpaid`, so an organisation with an unpaid subscription pays or changes it instead of opening a second one.
+
 ## [0.2.0-beta.65] - 2026-09-26
 
 ### Fixed
