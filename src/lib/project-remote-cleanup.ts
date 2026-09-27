@@ -7,6 +7,7 @@ import { logger } from './logger';
 import { getSSHConnection, SSHClient } from '../utils/ssh';
 import { releasePort } from '../workers/port-manager';
 import { projectImageReferenceFilters } from './project-image-names';
+import { staticSiteKey } from './static-upload';
 
 type ProjectRow = typeof projects.$inferSelect;
 
@@ -18,6 +19,16 @@ function shellEscapeSlug(slug: string): string {
 }
 
 /** Build remote shell script that stops every Pushify container for this slug. */
+/** Remove a static site's files and Nginx vhost (Site Studio or uploaded). */
+export function buildStaticTeardownScript(siteKey: string): string {
+  const key = shellEscapeSlug(siteKey);
+  return [
+    `rm -rf /opt/pushify/site-studio/${key} /opt/pushify/site-studio/${key}.new /opt/pushify/site-studio/${key}.old`,
+    `rm -f /etc/nginx/conf.d/pushify-${key}.conf /opt/pushify/nginx/pushify-${key}.conf`,
+    'nginx -t >/dev/null 2>&1 && (systemctl reload nginx 2>/dev/null || nginx -s reload) || true',
+  ].join('; ');
+}
+
 export function buildRemoteTeardownScript(slug: string, isCompose: boolean): string {
   const safeSlug = shellEscapeSlug(slug);
   const base = `pushify-${safeSlug}`;
@@ -258,7 +269,11 @@ export async function teardownProjectOnRemoteServer(
   const settings = (project.settings || {}) as Record<string, unknown>;
   // A marketplace stack, or a project deploying its own compose file
   const isCompose = settings.deploymentType === 'docker-compose' || !!project.composePath;
-  const script = buildRemoteTeardownScript(project.slug, isCompose);
+  // A static site has no container: remove its files and vhost only. The container teardown
+  // matches by slug, which on a shared runner could hit another organisation's project.
+  const script = settings.static === true
+    ? buildStaticTeardownScript(staticSiteKey(project))
+    : buildRemoteTeardownScript(project.slug, isCompose);
 
   const ssh = await getSSHConnection({
     host: server.ipv4,
@@ -277,6 +292,7 @@ export async function teardownProjectOnRemoteServer(
     }
 
     try {
+      if (settings.static === true) await releasePort(ssh, staticSiteKey(project));
       await releasePort(ssh, project.slug);
       await releasePort(ssh, `${project.slug}:public`);
     } catch (portErr) {

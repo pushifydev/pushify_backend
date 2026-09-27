@@ -837,6 +837,12 @@ export const serverService = {
       const org = await organizationRepository.findById(organizationId);
       const plan = (org?.plan || 'free') as PlanType;
 
+      // Managed servers are a paid-plan feature: once a subscription has ended the org is on Free,
+      // and a server stopped at that point starts again only after re-subscribing.
+      if (!getPlanInfraLimits(plan).managedServersEnabled) {
+        throw new HTTPException(403, { message: t(locale, 'infraBilling', 'managedNotAllowed') });
+      }
+
       if (plan !== 'enterprise') {
         if (!server.customerPriceMonthlyCents) {
           await infraBillingService.backfillServerBillingIfMissing(serverId);

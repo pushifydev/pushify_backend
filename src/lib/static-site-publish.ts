@@ -10,6 +10,8 @@ import { addStaticSite, requestSSLCertificate } from '../workers/nginx-manager';
 import { getOrAssignPort } from '../workers/port-manager';
 import { openFirewallPort } from '../workers/remote-deployment';
 import { logger } from './logger';
+import { env } from '../config/env';
+import { shellQuote } from './static-upload';
 
 export interface StaticPublishResult {
   ok: boolean;
@@ -19,11 +21,32 @@ export interface StaticPublishResult {
   message: string;
 }
 
+/** A Site Studio design rendered to HTML files, or null when the editor was never set up. */
+async function renderEditorFiles(projectId: string): Promise<{ path: string; content: string }[] | null> {
+  const [row] = await db
+    .select()
+    .from(projectSiteEditor)
+    .where(eq(projectSiteEditor.projectId, projectId))
+    .limit(1);
+  if (!row) return null;
+
+  const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
+  const pages: SitePage[] =
+    Array.isArray(row.pages) && row.pages.length > 0
+      ? row.pages
+      : [{ id: 'home', title: 'Home', slug: '', blocks: row.blocks, seo: row.seo }];
+  return renderSiteFiles(pages, project?.name ?? 'Site', row.theme).map((f) => ({ path: f.path, content: f.html }));
+}
+
 /**
- * Render a Site Studio project's current block design to HTML, upload it to its server, and
- * configure how it's served:
- *   - with a domain → Nginx vhost on 80/443 (best-effort SSL via certbot);
- *   - without a domain → Nginx vhost on an assigned port (http://<ip>:<port>), firewall opened.
+ * Put a static site on its server and configure how it's served. The files are either the
+ * Site Studio design rendered to HTML, or `files` given by the caller (an uploaded site).
+ *   - with a custom domain → Nginx vhost on 80/443 (best-effort SSL via certbot);
+ *   - on Pushify's shared host (it carries the *.pushify.dev wildcard cert) → an auto subdomain
+ *     over HTTPS, no domain needed;
+ *   - otherwise → Nginx vhost on an assigned port (http://<ip>:<port>), firewall opened.
+ * The new files are written beside the live ones and swapped in, so visitors never hit a
+ * half-uploaded site.
  *
  * Shared by the deployment worker (so static publishes show up as deployments with logs) and
  * the Site Studio launch flow.
@@ -31,32 +54,30 @@ export interface StaticPublishResult {
 export async function publishStaticSite(opts: {
   projectId: string;
   slug: string;
+  /**
+   * Name of the site's folder and Nginx vhost on the server. Defaults to the slug, which is only
+   * unique within an organisation — sites on a shared runner pass something globally unique.
+   */
+  siteKey?: string;
   domain: string | null;
-  server: { ipv4: string | null; sshPrivateKey: string | null };
+  server: { id?: string; ipv4: string | null; sshPrivateKey: string | null };
+  files?: { path: string; content: string | Uint8Array }[];
   onLog?: (message: string) => void;
 }): Promise<StaticPublishResult> {
-  const { projectId, slug, domain, server } = opts;
+  const { projectId, slug: subdomainSlug, server } = opts;
+  const slug = opts.siteKey ?? subdomainSlug;
+  let domain = opts.domain;
   const log = opts.onLog ?? (() => {});
 
   if (!server.ipv4 || !server.sshPrivateKey) {
     return { ok: false, ssl: false, url: null, message: 'Server not reachable' };
   }
 
-  const [row] = await db
-    .select()
-    .from(projectSiteEditor)
-    .where(eq(projectSiteEditor.projectId, projectId))
-    .limit(1);
-  if (!row) {
+  const fromEditor = !opts.files;
+  const files = opts.files ?? (await renderEditorFiles(projectId));
+  if (!files) {
     return { ok: false, ssl: false, url: null, message: 'Site editor not initialized' };
   }
-
-  const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
-  const pages: SitePage[] =
-    Array.isArray(row.pages) && row.pages.length > 0
-      ? row.pages
-      : [{ id: 'home', title: 'Home', slug: '', blocks: row.blocks, seo: row.seo }];
-  const files = renderSiteFiles(pages, project?.name ?? 'Site', row.theme);
 
   const ssh = new SSHClient();
   try {
@@ -69,22 +90,51 @@ export async function publishStaticSite(opts: {
     });
 
     const dir = `/opt/pushify/site-studio/${slug}`;
-    // Replace any previously published pages, then write the current set.
-    await ssh.exec(`rm -rf ${dir} && mkdir -p ${dir}`);
-    for (const file of files) {
-      const target = `${dir}/${file.path}`;
-      const subdir = target.slice(0, target.lastIndexOf('/'));
-      if (subdir && subdir !== dir) await ssh.exec(`mkdir -p ${subdir}`);
-      await ssh.uploadFile(file.html, target);
+    const staging = `${dir}.new`;
+    // Write the new version beside the live one, then swap: the site is never half-uploaded.
+    await ssh.exec(`rm -rf ${staging} && mkdir -p ${staging}`);
+    const subdirs = [...new Set(files.map((f) => f.path.split('/').slice(0, -1).join('/')).filter(Boolean))];
+    if (subdirs.length > 0) {
+      await ssh.exec(`cd ${staging} && mkdir -p ${subdirs.map(shellQuote).join(' ')}`);
     }
-    log(`📝 Uploaded ${files.length} page(s)`);
+    await ssh.uploadFiles(files.map((f) => ({ remotePath: `${staging}/${f.path}`, content: f.content })));
+    await ssh.exec(`rm -rf ${dir}.old; if [ -d ${dir} ]; then mv ${dir} ${dir}.old; fi; mv ${staging} ${dir} && rm -rf ${dir}.old`);
+    log(`📝 Uploaded ${files.length} file(s)`);
+
+    // Pushify's shared host carries the *.pushify.dev wildcard cert: a site without a custom
+    // domain gets <slug>.pushify.dev there, over HTTPS, instead of http://ip:port.
+    const previewBase = env.PREVIEW_BASE_URL;
+    const wildcardDir = previewBase ? env.WILDCARD_SSL_PATH || `/etc/letsencrypt/live/${previewBase}` : null;
+    const hasWildcard =
+      !!wildcardDir &&
+      (await ssh.exec(`test -f ${wildcardDir}/fullchain.pem && echo yes || echo no`)).stdout.trim() === 'yes';
+    const isAutoDomain = (d: string | null) => !!d && !!previewBase && d.endsWith(`.${previewBase}`);
+    if (!domain && hasWildcard) {
+      const { domainService } = await import('../services/domain.service');
+      const auto = await domainService.createAutoSubdomain(projectId, subdomainSlug, server.id ?? '').catch(() => null);
+      if (auto) {
+        domain = auto.domain;
+        log(`✅ Subdomain: ${domain}`);
+      }
+    }
 
     let nginx: { success: boolean; message: string };
     let ssl = false;
     let url: string | null = null;
     let port: number | undefined;
 
-    if (domain) {
+    if (domain && isAutoDomain(domain) && hasWildcard) {
+      log(`🌐 Configuring Nginx for ${domain}...`);
+      const { cloudflareDnsConfigured, ensureAutoSubdomainRecord } = await import('./cloudflare-dns');
+      if (cloudflareDnsConfigured()) {
+        await ensureAutoSubdomainRecord(domain, server.ipv4).catch((err) =>
+          log(`⚠️ DNS record for ${domain} not updated: ${err instanceof Error ? err.message : 'unknown'}`),
+        );
+      }
+      nginx = await addStaticSite(ssh, { slug, domain, ssl: true, certDir: wildcardDir! });
+      ssl = nginx.success;
+      url = `https://${domain}`;
+    } else if (domain && !isAutoDomain(domain)) {
       log(`🌐 Configuring Nginx for ${domain}...`);
       nginx = await addStaticSite(ssh, { slug, domain, ssl: false });
       url = `http://${domain}`;
@@ -119,10 +169,17 @@ export async function publishStaticSite(opts: {
       url = `http://${server.ipv4}:${port}`;
     }
 
-    await db
-      .update(projectSiteEditor)
-      .set({ publishedHtml: files[0]?.html ?? '', publishedAt: new Date(), updatedAt: new Date() })
-      .where(eq(projectSiteEditor.projectId, projectId));
+    if (fromEditor) {
+      const first = files[0]?.content;
+      await db
+        .update(projectSiteEditor)
+        .set({
+          publishedHtml: typeof first === 'string' ? first : '',
+          publishedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(projectSiteEditor.projectId, projectId));
+    }
 
     if (nginx.success) {
       log(`✅ Static site published: ${url}`);
