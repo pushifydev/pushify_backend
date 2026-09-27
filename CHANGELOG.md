@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.69] - 2026-09-27
+
+### Fixed
+- **Paid organisations no longer stay "past due".** The past_due self-heal from beta.67 only asked Stripe about the linked subscription, so it could not help when no subscription was linked, when the linked one was an old unpaid duplicate while a newer one was active, or when a webhook never arrived. It now looks at the whole Stripe customer: a subscription in good standing (the linked one first, else the newest) clears the flag and becomes the linked subscription (plan taken from its price); nothing live and nothing owed also clears it; a past-due or unpaid subscription, or an open invoice, keeps it. An organisation that really owes is asked about at most once a minute.
+
+### Added
+- **Billing reconcile worker**: every 10 minutes every past_due organisation is re-checked against Stripe, so a customer who pays on Stripe's invoice page, through a Smart Retry or after a card update is unblocked within minutes even if a webhook is lost — without having to click anything first.
+
 ## [0.2.0-beta.68] - 2026-09-27
 
 ### Added
