@@ -113,6 +113,14 @@ describe('past_due reconcile', () => {
     await expect(getOrganizationBillingStatus(h.org.id)).resolves.toBe('past_due');
   });
 
+  it('does not block on an invoice left open by a subscription Stripe has cancelled', async () => {
+    h.org = pastDueOrg(null);
+    h.subs.mockResolvedValue({ data: [sub('sub_old', 'canceled')] });
+    h.invoices.mockResolvedValue({ data: [{ id: 'in_1', parent: { subscription_details: { subscription: 'sub_old' } } }] });
+
+    await expect(getOrganizationBillingStatus(h.org.id)).resolves.toBe('active');
+  });
+
   it('asks Stripe once a minute for an organisation that owes, unless forced', async () => {
     const org = pastDueOrg();
     h.subs.mockResolvedValue({ data: [sub('sub_new', 'past_due')] });

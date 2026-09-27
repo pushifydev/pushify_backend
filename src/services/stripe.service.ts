@@ -20,6 +20,7 @@ import { organizationBillingService, getOrganizationBillingStatus } from './orga
 import type Stripe from 'stripe';
 import { adminNotify } from './admin-notify.service';
 import { logger } from '../lib/logger';
+import { invoiceSubscriptionId, isPayableInvoice } from '../lib/stripe-invoices';
 
 /** Stripe "No such ..." error (resource_missing / 404) — e.g. a customer or price from another mode. */
 function isStripeResourceMissing(err: unknown): boolean {
@@ -135,13 +136,6 @@ export type PayOutstandingResult =
   | { status: 'paid'; paidCount: number }
   | { status: 'nothing_due' }
   | { status: 'payment_required'; payUrl: string | null };
-
-/** The subscription an invoice bills, if any (API 2025+: under `parent.subscription_details`). */
-function invoiceSubscriptionId(invoice: Stripe.Invoice): string | null {
-  const sub = invoice.parent?.subscription_details?.subscription;
-  if (!sub) return null;
-  return typeof sub === 'string' ? sub : sub.id;
-}
 
 /**
  * An invoice of a subscription that is no longer the organisation's current one (a duplicate from
@@ -486,7 +480,7 @@ export const stripeService = {
     if (!org?.stripeCustomerId) return { status: 'nothing_due' };
 
     const open = (await openInvoicesFor(stripe, org.stripeCustomerId)).filter(
-      (inv) => !isStaleSubscriptionInvoice(inv, org.stripeSubscriptionId),
+      (inv) => isPayableInvoice(inv, org.stripeSubscriptionId),
     );
     if (open.length === 0) {
       // Nothing to pay but still flagged past_due (a stale webhook): let Stripe's state decide.

@@ -2,6 +2,7 @@ import { HTTPException } from 'hono/http-exception';
 import type Stripe from 'stripe';
 import { env } from '../config/env';
 import { getStripe } from '../lib/stripe';
+import { isPayableInvoice } from '../lib/stripe-invoices';
 import { organizationRepository } from '../repositories/organization.repository';
 import { PLAN_LIMITS, getPlanInfo, isUnlimited, type PlanLimits, type PlanType } from '../lib/plans';
 import { getGrandfatherStatus } from '../lib/effective-plan-limits';
@@ -143,6 +144,8 @@ export const billingService = {
       status: inv.status,
       hostedInvoiceUrl: inv.hosted_invoice_url,
       invoicePdf: inv.invoice_pdf,
+      // Open but left behind by an ended subscription: shown, never offered for payment.
+      payable: inv.status === 'open' && isPayableInvoice(inv, org.stripeSubscriptionId ?? null),
     }));
   },
 
