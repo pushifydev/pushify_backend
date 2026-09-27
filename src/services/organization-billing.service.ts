@@ -12,7 +12,7 @@ import { logger } from '../lib/logger';
 import { sendBillingPaymentFailedEmail, sendBillingSuspendedEmail } from '../lib/email';
 import { resolveBillingNotifyEmail } from '../lib/billing-notify';
 import { pauseProjectContainers } from '../lib/project-remote-cleanup';
-import { getStripe } from '../lib/stripe';
+import { getStripe, getPlanFromPriceId } from '../lib/stripe';
 
 const PAYMENT_FAILED_EMAIL_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
@@ -28,29 +28,97 @@ function getProviderToken(provider: ProviderType): string {
 export async function getOrganizationBillingStatus(organizationId: string): Promise<BillingStatus> {
   const org = await organizationRepository.findById(organizationId);
   const status = (org?.billingStatus ?? 'active') as BillingStatus;
-  if (status === 'past_due' && org?.stripeSubscriptionId) {
-    return (await reconcilePastDue(organizationId, org.stripeSubscriptionId)) ? 'active' : status;
+  if (status === 'past_due' && org) {
+    return (await reconcilePastDue(org)) ? 'active' : status;
   }
   return status;
 }
 
+/** Don't ask Stripe again on every click for an organisation that really owes money. */
+const RECONCILE_NEGATIVE_TTL_MS = 60 * 1000;
+const owingCheckedAt = new Map<string, number>();
+
+type ReconcilableOrg = {
+  id: string;
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+};
+
 /**
  * past_due is a copy of Stripe's state, and a copy can go stale: a webhook for an older
- * subscription, or one that arrived out of order, can leave an organisation blocked after it has
- * paid. Before refusing, ask Stripe: if the current subscription is in good standing, clear the flag.
+ * subscription, one that arrived out of order or never arrived, or a new subscription that was
+ * never linked. Stripe is the source of truth, so ask it — about the whole customer, not only the
+ * linked subscription:
+ *  - a subscription in good standing (the linked one first, else the newest) → active, and link it;
+ *  - nothing live and nothing owed → the flag has nothing behind it → active;
+ *  - a subscription past due / unpaid, or an open invoice → really owes; stay blocked.
+ * Returns true when the flag was cleared.
  */
-async function reconcilePastDue(organizationId: string, subscriptionId: string): Promise<boolean> {
-  if (!env.STRIPE_SECRET_KEY) return false;
+export async function reconcilePastDue(org: ReconcilableOrg, opts: { force?: boolean } = {}): Promise<boolean> {
+  if (!env.STRIPE_SECRET_KEY || !org.stripeCustomerId) return false;
+  const last = owingCheckedAt.get(org.id);
+  if (!opts.force && last && Date.now() - last < RECONCILE_NEGATIVE_TTL_MS) return false;
+
   try {
-    const sub = await getStripe().subscriptions.retrieve(subscriptionId);
-    if (sub.status !== 'active' && sub.status !== 'trialing') return false;
-    await organizationBillingService.markActive(organizationId);
-    logger.info({ organizationId, subscriptionId }, 'past_due cleared: Stripe reports the subscription in good standing');
+    const stripe = getStripe();
+    const subs = (await stripe.subscriptions.list({ customer: org.stripeCustomerId, status: 'all', limit: 20 })).data;
+    const good = subs.filter((s) => s.status === 'active' || s.status === 'trialing');
+    const pick = good.find((s) => s.id === org.stripeSubscriptionId) ?? [...good].sort((a, b) => b.created - a.created)[0];
+
+    if (pick) {
+      const priceId = pick.items.data[0]?.price?.id;
+      const plan = priceId ? getPlanFromPriceId(priceId) : null;
+      await db
+        .update(organizations)
+        .set({
+          billingStatus: 'active',
+          billingPaymentFailedNotifiedAt: null,
+          stripeSubscriptionId: pick.id,
+          ...(plan ? { plan } : {}),
+          updatedAt: new Date(),
+        })
+        .where(eq(organizations.id, org.id));
+      owingCheckedAt.delete(org.id);
+      logger.info(
+        { organizationId: org.id, subscriptionId: pick.id, relinked: pick.id !== org.stripeSubscriptionId },
+        'past_due cleared: Stripe has a subscription in good standing',
+      );
+      return true;
+    }
+
+    const owing =
+      subs.some((s) => s.status === 'past_due' || s.status === 'unpaid') ||
+      (await stripe.invoices.list({ customer: org.stripeCustomerId, status: 'open', limit: 1 })).data.length > 0;
+    if (owing) {
+      owingCheckedAt.set(org.id, Date.now());
+      return false;
+    }
+
+    await organizationBillingService.markActive(org.id);
+    owingCheckedAt.delete(org.id);
+    logger.info({ organizationId: org.id }, 'past_due cleared: nothing live and nothing owed in Stripe');
     return true;
   } catch (err) {
-    logger.warn({ err, organizationId, subscriptionId }, 'past_due reconcile with Stripe failed');
+    logger.warn({ err, organizationId: org.id }, 'past_due reconcile with Stripe failed');
     return false;
   }
+}
+
+/** Background pass: every past_due organisation is re-checked, so a paid customer is unblocked without clicking. */
+export async function reconcilePastDueOrganizations(): Promise<{ checked: number; cleared: number }> {
+  const rows = await db
+    .select({
+      id: organizations.id,
+      stripeCustomerId: organizations.stripeCustomerId,
+      stripeSubscriptionId: organizations.stripeSubscriptionId,
+    })
+    .from(organizations)
+    .where(eq(organizations.billingStatus, 'past_due'));
+  let cleared = 0;
+  for (const org of rows) {
+    if (await reconcilePastDue(org, { force: true })) cleared++;
+  }
+  return { checked: rows.length, cleared };
 }
 
 export function assertOrganizationBillingAllowsMutations(
