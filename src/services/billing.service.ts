@@ -8,6 +8,7 @@ import { getGrandfatherStatus } from '../lib/effective-plan-limits';
 import { t, type SupportedLocale } from '../i18n';
 import { planLimitsService } from './plan-limits.service';
 import { usageMeteringService } from './usage-metering.service';
+import { getOrganizationBillingStatus } from './organization-billing.service';
 
 export interface UsageItem {
   used: number;
@@ -184,7 +185,10 @@ export const billingService = {
       plan,
       planName: planInfo.name,
       price: planInfo.price,
-      billingStatus: (org.billingStatus ?? 'active') as BillingInfo['billingStatus'],
+      // past_due is re-checked against Stripe, so a stale flag doesn't keep the banner up after paying.
+      billingStatus: (org.billingStatus === 'past_due'
+        ? await getOrganizationBillingStatus(org.id)
+        : (org.billingStatus ?? 'active')) as BillingInfo['billingStatus'],
       billingEmail: org.billingEmail,
       currentPeriodEnd: org.stripeCurrentPeriodEnd?.toISOString() ?? null,
       apiRequestsPerMinute: effectiveLimits.apiRequestsPerMinute,

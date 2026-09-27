@@ -17,6 +17,10 @@ const h = vi.hoisted(() => ({
     customers: { retrieve: vi.fn(), create: vi.fn() },
   },
   suspendOrganization: vi.fn(),
+  markPastDue: vi.fn(),
+  markActive: vi.fn(),
+  notifyPaymentFailedIfDue: vi.fn(),
+  grantIncludedInfraCredit: vi.fn(),
 }));
 
 vi.mock('../db', () => {
@@ -60,9 +64,17 @@ vi.mock('../lib/email', () => ({
 }));
 vi.mock('../lib/billing-notify', () => ({ resolveBillingNotifyEmail: vi.fn() }));
 vi.mock('../repositories/organization.repository', () => ({ organizationRepository: { findById: vi.fn() } }));
-vi.mock('./infra-billing.service', () => ({ infraBillingService: {} }));
+vi.mock('./infra-billing.service', () => ({
+  infraBillingService: { grantIncludedInfraCredit: h.grantIncludedInfraCredit },
+}));
 vi.mock('./organization-billing.service', () => ({
-  organizationBillingService: { suspendOrganization: h.suspendOrganization },
+  organizationBillingService: {
+    suspendOrganization: h.suspendOrganization,
+    markPastDue: h.markPastDue,
+    markActive: h.markActive,
+    notifyPaymentFailedIfDue: h.notifyPaymentFailedIfDue,
+  },
+  getOrganizationBillingStatus: vi.fn(),
 }));
 vi.mock('./admin-notify.service', () => ({ adminNotify: vi.fn() }));
 vi.mock('../lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
@@ -169,5 +181,57 @@ describe('subscription webhooks for a non-current subscription', () => {
     await runEvent(subEvent('customer.subscription.updated', { ...oldSub, status: 'active' }));
 
     expect(h.updates[0]).toMatchObject({ plan: 'hobby', stripeSubscriptionId: 'sub_old', billingStatus: 'active' });
+  });
+});
+
+const invoiceEvent = (type: string, subscriptionId: string | null) =>
+  ({
+    id: 'evt_inv',
+    type,
+    data: {
+      object: {
+        id: 'in_1',
+        customer: 'cus_1',
+        hosted_invoice_url: 'https://invoice.stripe.test/i',
+        parent: subscriptionId ? { subscription_details: { subscription: subscriptionId } } : null,
+      },
+    },
+  }) as unknown as Stripe.Event;
+
+const paidOrg = { id: ORG, name: 'Org', plan: 'pro', stripeSubscriptionId: 'sub_new' };
+
+describe('invoice webhooks for an older subscription', () => {
+  it('a failed invoice of an older subscription does not mark a paid-up org past due', async () => {
+    h.selectResults.push([paidOrg]);
+
+    await runEvent(invoiceEvent('invoice.payment_failed', 'sub_old'));
+
+    expect(h.markPastDue).not.toHaveBeenCalled();
+    expect(h.notifyPaymentFailedIfDue).not.toHaveBeenCalled();
+  });
+
+  it('a failed invoice of the current subscription marks the org past due', async () => {
+    h.selectResults.push([paidOrg]);
+
+    await runEvent(invoiceEvent('invoice.payment_failed', 'sub_new'));
+
+    expect(h.markPastDue).toHaveBeenCalledWith(ORG);
+    expect(h.notifyPaymentFailedIfDue).toHaveBeenCalledWith(ORG, 'Org', 'https://invoice.stripe.test/i', 'failed');
+  });
+
+  it('a paid invoice of an older subscription does not clear past due', async () => {
+    h.selectResults.push([paidOrg]);
+
+    await runEvent(invoiceEvent('invoice.paid', 'sub_old'));
+
+    expect(h.markActive).not.toHaveBeenCalled();
+  });
+
+  it('a paid invoice of the current subscription clears past due', async () => {
+    h.selectResults.push([paidOrg]);
+
+    await runEvent(invoiceEvent('invoice.paid', 'sub_new'));
+
+    expect(h.markActive).toHaveBeenCalledWith(ORG);
   });
 });

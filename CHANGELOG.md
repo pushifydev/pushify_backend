@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.67] - 2026-09-27
+
+### Fixed
+- **An organisation that had paid stayed "past due" and could not start a stopped server.** Invoice webhooks were matched by customer only, so a failed invoice of an older subscription (a duplicate from before in-place plan changes, or one replaced by a new checkout) marked the organisation past due again after it had paid for its current subscription — and a paid invoice of an old subscription could clear the flag for an unpaid current one. `invoice.payment_failed`, `invoice.payment_action_required` and `invoice.paid` now only change billing status for the organisation's current subscription, and "Pay now" only retries that subscription's invoices.
+- **A stale past_due flag heals itself.** Before blocking an action (and when the billing page loads), a past_due organisation is re-checked against Stripe: if its current subscription is active or trialing, the flag is cleared on the spot. Organisations stuck today are unblocked on their next action, with no script to run.
+
 ## [0.2.0-beta.66] - 2026-09-26
 
 ### Fixed

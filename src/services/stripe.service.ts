@@ -16,7 +16,7 @@ import { organizationRepository } from '../repositories/organization.repository'
 import { getPlanInfo, type PlanType } from '../lib/plans';
 import { INFRA_TOPUP_AMOUNTS_CENTS } from '../lib/infra-billing';
 import { infraBillingService } from './infra-billing.service';
-import { organizationBillingService } from './organization-billing.service';
+import { organizationBillingService, getOrganizationBillingStatus } from './organization-billing.service';
 import type Stripe from 'stripe';
 import { adminNotify } from './admin-notify.service';
 import { logger } from '../lib/logger';
@@ -135,6 +135,23 @@ export type PayOutstandingResult =
   | { status: 'paid'; paidCount: number }
   | { status: 'nothing_due' }
   | { status: 'payment_required'; payUrl: string | null };
+
+/** The subscription an invoice bills, if any (API 2025+: under `parent.subscription_details`). */
+function invoiceSubscriptionId(invoice: Stripe.Invoice): string | null {
+  const sub = invoice.parent?.subscription_details?.subscription;
+  if (!sub) return null;
+  return typeof sub === 'string' ? sub : sub.id;
+}
+
+/**
+ * An invoice of a subscription that is no longer the organisation's current one (a duplicate from
+ * before in-place plan changes, or one replaced by a new checkout) says nothing about whether the
+ * organisation is paid up; letting it flip billingStatus blocks an organisation that has paid.
+ */
+function isStaleSubscriptionInvoice(invoice: Stripe.Invoice, currentSubscriptionId: string | null): boolean {
+  const invoiceSub = invoiceSubscriptionId(invoice);
+  return Boolean(invoiceSub && currentSubscriptionId && invoiceSub !== currentSubscriptionId);
+}
 
 async function openInvoicesFor(stripe: Stripe, customerId: string): Promise<Stripe.Invoice[]> {
   const out: Stripe.Invoice[] = [];
@@ -462,14 +479,20 @@ export const stripeService = {
   async payOutstanding(organizationId: string): Promise<PayOutstandingResult> {
     const stripe = getStripe();
     const [org] = await db
-      .select({ stripeCustomerId: organizations.stripeCustomerId })
+      .select({ stripeCustomerId: organizations.stripeCustomerId, stripeSubscriptionId: organizations.stripeSubscriptionId })
       .from(organizations)
       .where(eq(organizations.id, organizationId))
       .limit(1);
     if (!org?.stripeCustomerId) return { status: 'nothing_due' };
 
-    const open = await openInvoicesFor(stripe, org.stripeCustomerId);
-    if (open.length === 0) return { status: 'nothing_due' };
+    const open = (await openInvoicesFor(stripe, org.stripeCustomerId)).filter(
+      (inv) => !isStaleSubscriptionInvoice(inv, org.stripeSubscriptionId),
+    );
+    if (open.length === 0) {
+      // Nothing to pay but still flagged past_due (a stale webhook): let Stripe's state decide.
+      await getOrganizationBillingStatus(organizationId);
+      return { status: 'nothing_due' };
+    }
 
     let paidCount = 0;
     for (const invoice of open) {
@@ -948,10 +971,19 @@ export const stripeService = {
         if (!customerId) break;
 
         const [org] = await db
-          .select({ id: organizations.id, plan: organizations.plan })
+          .select({
+            id: organizations.id,
+            plan: organizations.plan,
+            stripeSubscriptionId: organizations.stripeSubscriptionId,
+          })
           .from(organizations)
           .where(eq(organizations.stripeCustomerId, customerId))
           .limit(1);
+
+        if (org && isStaleSubscriptionInvoice(invoice, org.stripeSubscriptionId)) {
+          logger.info({ organizationId: org.id, invoiceId: invoice.id }, 'invoice.paid: older subscription — status unchanged');
+          break;
+        }
 
         if (org) {
           await organizationBillingService.markActive(org.id);
@@ -976,12 +1008,21 @@ export const stripeService = {
           .select({
             id: organizations.id,
             name: organizations.name,
+            stripeSubscriptionId: organizations.stripeSubscriptionId,
           })
           .from(organizations)
           .where(eq(organizations.stripeCustomerId, customerId))
           .limit(1);
 
         if (!org) break;
+
+        if (isStaleSubscriptionInvoice(invoice, org.stripeSubscriptionId)) {
+          logger.warn(
+            { organizationId: org.id, invoiceId: invoice.id, subscriptionId: invoiceSubscriptionId(invoice) },
+            `${event.type}: invoice of an older subscription — not marking the organisation past due`,
+          );
+          break;
+        }
 
         // 3D Secure is not a failure: the subscription is fine until the bank's window closes.
         if (!actionRequired) await organizationBillingService.markPastDue(org.id);
