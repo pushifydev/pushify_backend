@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.71] - 2026-09-27
+
+### Fixed
+- **A managed server could be started again on the Free plan.** When a subscription ends the organisation is moved to Free and its managed servers are stopped, but "Start" only checked the billing status, not the plan. Starting a managed server now requires a plan with managed servers (same rule as creating one); the customer is told to re-subscribe or connect their own server.
+- **A late `invoice.payment_failed` no longer turns a suspended organisation into a past-due one.** Stripe's last retry can arrive around the cancellation; it used to overwrite `suspended` with `past_due`, which the past-due reconcile then cleared to `active` — leaving an organisation without a subscription unblocked.
+
 ## [0.2.0-beta.70] - 2026-09-27
 
 ### Fixed

@@ -193,10 +193,12 @@ async function stopManagedServerForBillingSuspension(
 
 export const organizationBillingService = {
   async markPastDue(organizationId: string): Promise<void> {
+    // A late payment_failed (Stripe's last retry arrives around the cancellation) must not turn a
+    // suspended organisation — subscription ended, servers stopped — back into a merely late one.
     await db
       .update(organizations)
       .set({ billingStatus: 'past_due', updatedAt: new Date() })
-      .where(eq(organizations.id, organizationId));
+      .where(and(eq(organizations.id, organizationId), ne(organizations.billingStatus, 'suspended')));
   },
 
   async markActive(organizationId: string): Promise<void> {
