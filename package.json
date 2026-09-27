@@ -1,6 +1,6 @@
 {
   "name": "pushify-backend",
-  "version": "0.2.0-beta.67",
+  "version": "0.2.0-beta.68",
   "private": true,
   "description": "Pushify cloud deployment platform — API server",
   "license": "MIT",
@@ -35,6 +35,7 @@
     "refund:infra-overcharge": "tsx scripts/refund-infra-overcharge.ts",
     "stripe:create-prices": "tsx scripts/create-stripe-prices.ts",
     "stripe:audit": "tsx scripts/stripe-audit.ts",
+    "billing:diagnose": "tsx scripts/billing-diagnose.ts",
     "cert:install-wildcard": "tsx scripts/install-wildcard-cert.ts",
     "marketplace:export": "tsx scripts/export-marketplace.ts",
     "test:e2e": "bash e2e/run.sh",

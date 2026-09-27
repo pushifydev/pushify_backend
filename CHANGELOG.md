@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.68] - 2026-09-27
+
+### Added
+- **`npm run billing:diagnose -- --server <id>` (or `--org <id>`)**: read-only answer to "why is this organisation blocked by billing?" — the organisation's billing row next to every Stripe subscription of its customer and every open invoice (with its pay link and whether it belongs to the current subscription), and a one-line verdict.
+
 ## [0.2.0-beta.67] - 2026-09-27
 
 ### Fixed
