@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   findByProject: vi.fn(),
   findByDomain: vi.fn(),
   updateSslStatus: vi.fn(),
+  findProject: vi.fn(),
 }));
 
 vi.mock('dns', () => ({ promises: { resolve4: mocks.resolve4 } }));
@@ -23,6 +24,8 @@ vi.mock('../repositories/domain.repository', () => ({
     updateSslStatus: mocks.updateSslStatus,
   },
 }));
+
+vi.mock('../db', () => ({ db: { query: { projects: { findFirst: mocks.findProject } } } }));
 
 import { syncProjectSites, wwwCounterpart } from './project-sites';
 import { generateProjectSitesConfig } from '../workers/nginx-manager';
@@ -108,6 +111,7 @@ const sync = (ssh: never, extra: Record<string, unknown> = {}) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.findProject.mockResolvedValue({ id: 'project-1', slug: 'yeli', settings: {} });
   mocks.findByDomain.mockImplementation(async (domain: string) =>
     (await mocks.findByProject()).find((r: { domain: string }) => r.domain === domain) ?? null
   );
@@ -339,5 +343,54 @@ describe('generateProjectSitesConfig', () => {
 
     expect(config).toContain('client_max_body_size 512m;');
     expect(config).toContain('proxy_pass http://127.0.0.1:8080;');
+  });
+});
+
+describe('syncProjectSites for a static site', () => {
+  const uploaded = { id: '3c6c924f-7aec-4768-a49e-8b4596763153', slug: 'yuppi', settings: { static: true, staticSource: 'upload' } };
+
+  it('serves the site folder, not a container, under the upload site key', async () => {
+    mocks.findProject.mockResolvedValue(uploaded);
+    mocks.findByProject.mockResolvedValue([row('yuppikids.com', { isPrimary: true })]);
+    dnsPointsHere('yuppikids.com');
+    const server = fakeServer();
+
+    const result = await sync(server.ssh, { projectSlug: 'yuppi', containerPort: 0 });
+
+    expect(result.success).toBe(true);
+    const commands = server.commands.join('\n');
+    // Its own file, named by the site key…
+    expect(commands).toContain('ln -sf /etc/nginx/sites-available/pushify-yuppi-3c6c924f');
+    // …serving files: no proxy, no wake fallback to the control plane.
+    expect(result.domains[0]).toMatchObject({ domain: 'yuppikids.com', ssl: true });
+  });
+
+  it('retires stale vhosts for the same domains', async () => {
+    mocks.findProject.mockResolvedValue(uploaded);
+    mocks.findByProject.mockResolvedValue([row('yuppikids.com', { isPrimary: true })]);
+    dnsPointsHere('yuppikids.com');
+    const server = fakeServer();
+
+    await sync(server.ssh, { projectSlug: 'yuppi', containerPort: 0 });
+
+    const retire = server.commands.filter((c) => c.includes('grep -qwF -e yuppikids.com'));
+    expect(retire.some((c) => c.includes('/etc/nginx/conf.d/pushify-yuppi-3c6c924f.conf'))).toBe(true);
+    expect(retire.some((c) => c.includes('/etc/nginx/sites-available/pushify-yuppi '))).toBe(true);
+  });
+});
+
+describe('generateProjectSitesConfig for a static site', () => {
+  it('serves files from the root, hides dotfiles, and never proxies', () => {
+    const config = generateProjectSitesConfig({
+      projectSlug: 'yuppi-3c6c924f',
+      containerPort: 0,
+      staticRoot: '/opt/pushify/site-studio/yuppi-3c6c924f',
+      domains: [{ domain: 'yuppikids.com', kind: 'custom', ssl: true }],
+    });
+    expect(config).toContain('root /opt/pushify/site-studio/yuppi-3c6c924f;');
+    expect(config).toContain('location ~ /\\. {');
+    expect(config).toContain('ssl_certificate /etc/letsencrypt/live/yuppikids.com/fullchain.pem;');
+    expect(config).not.toContain('proxy_pass');
+    expect(config).not.toContain('pushify_wake');
   });
 });

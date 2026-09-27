@@ -301,6 +301,11 @@ export interface ProjectSiteDomain {
 export interface ProjectSitesConfig {
   projectSlug: string;
   containerPort: number;
+  /**
+   * A static site (Site Studio or uploaded): serve the files in this folder instead of
+   * proxying to a container. Same domains, certificates and redirects as an app.
+   */
+  staticRoot?: string;
   /** Every replica's host port; one entry means a single container (the usual case). */
   containerPorts?: number[];
   domains: ProjectSiteDomain[];
@@ -350,9 +355,34 @@ function appLocation(
   zoneKey: string,
   containerPort: number,
   nginxSettings: NginxSettings | undefined,
-  upstreamName?: string | null
+  upstreamName?: string | null,
+  staticRoot?: string
 ): { zone: string; body: string; forceHttps: boolean } {
   const settings = { ...DEFAULT_NGINX_SETTINGS, ...(nginxSettings || {}) };
+  if (staticRoot) {
+    // No upstream: files straight from disk. Hidden files are never served (.git, .env).
+    const headers = generateCustomHeaders(settings.customHeaders);
+    return {
+      zone: '',
+      forceHttps: settings.forceHttps !== false,
+      body: `
+    root ${staticRoot};
+    index index.html;
+
+    gzip on;
+    gzip_vary on;
+    gzip_types text/plain text/css application/javascript application/json image/svg+xml;
+
+    location ~ /\\. {
+        deny all;
+        return 404;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;${headers ? '\n' + headers : ''}
+    }`,
+    };
+  }
   const targetPort = settings.proxyPort || containerPort;
   // A per-domain proxy port override points at one container, so it wins over the replica set.
   const target = upstreamName && !settings.proxyPort ? `http://${upstreamName}` : `http://127.0.0.1:${targetPort}`;
@@ -403,12 +433,13 @@ function renderProjectDomain(
   projectSlug: string,
   containerPort: number,
   index: number,
-  upstreamName?: string | null
+  upstreamName?: string | null,
+  staticRoot?: string
 ) {
   // One rate-limit zone per domain: two domains of one project each with rate limiting on
   // would otherwise declare the same zone twice and fail `nginx -t`.
   const zoneKey = index === 0 ? projectSlug : `${projectSlug}_${index}`;
-  const app = appLocation(projectSlug, zoneKey, containerPort, site.nginxSettings, upstreamName);
+  const app = appLocation(projectSlug, zoneKey, containerPort, site.nginxSettings, upstreamName, staticRoot);
   const blocks: string[] = [];
   const aliases = site.aliases ?? [];
   const sslAliases = (site.sslAliases ?? []).filter((a) => aliases.includes(a));
@@ -498,9 +529,9 @@ ${TLS_SETTINGS}
  */
 export function generateProjectSitesConfig(config: ProjectSitesConfig): string {
   const ports = config.containerPorts?.length ? config.containerPorts : [config.containerPort];
-  const upstream = proxyUpstream(config.projectSlug, ports);
+  const upstream = config.staticRoot ? { name: null, block: '' } : proxyUpstream(config.projectSlug, ports);
   const rendered = config.domains.map((site, i) =>
-    renderProjectDomain(site, config.projectSlug, config.containerPort, i, upstream.name)
+    renderProjectDomain(site, config.projectSlug, config.containerPort, i, upstream.name, config.staticRoot)
   );
   const zones = [upstream.block, ...rendered.map((r) => r.zone)].filter(Boolean);
   const names = config.domains

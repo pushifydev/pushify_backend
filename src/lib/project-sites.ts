@@ -3,6 +3,10 @@ import type { SSHClient } from '../utils/ssh';
 import { domainRepository } from '../repositories/domain.repository';
 import { env } from '../config/env';
 import { logger } from './logger';
+import { eq } from 'drizzle-orm';
+import { db } from '../db';
+import { projects } from '../db/schema/projects';
+import { staticSiteKey } from './static-upload';
 import {
   writeProjectSites,
   reloadNginx,
@@ -94,6 +98,27 @@ function toSite(p: PlannedDomain): ProjectSiteDomain {
 }
 
 /**
+ * Vhosts an earlier version wrote for a static site's domains, which would now compete with
+ * the real one for the same server_name: a single-domain static file in conf.d, and an app
+ * proxy under the bare slug (an uploaded site's files live under `<slug>-<id>`). Removed only
+ * when they name one of this site's domains — on a shared runner the bare slug may belong to
+ * another organisation's project.
+ */
+async function retireStaleStaticVhosts(ssh: SSHClient, slug: string, key: string, domains: string[]): Promise<void> {
+  if (domains.length === 0 || !/^[a-z0-9-]+$/.test(slug) || !/^[a-z0-9-]+$/.test(key)) return;
+  const names = domains.filter((d) => /^[a-z0-9.-]+$/i.test(d)).map((d) => `-e ${d}`).join(' ');
+  if (!names) return;
+  const candidates = [`/etc/nginx/conf.d/pushify-${key}.conf`];
+  if (slug !== key) candidates.push(`/etc/nginx/sites-available/pushify-${slug}`);
+  for (const file of candidates) {
+    const link = file.startsWith('/etc/nginx/sites-available/')
+      ? ` /etc/nginx/sites-enabled/pushify-${slug}`
+      : '';
+    await ssh.exec(`if [ -f ${file} ] && grep -qwF ${names} ${file}; then rm -f ${file}${link}; fi`);
+  }
+}
+
+/**
  * Bring a project's Nginx vhost in line with its domains in the database — all of them, in one
  * file — and (optionally) get the certificates that are missing.
  *
@@ -112,6 +137,24 @@ export async function syncProjectSites(
   const all = await domainRepository.findByProject(options.projectId);
   const rows = all.filter((row) => (row.environment ?? 'production') === environment);
   const ordered = [...rows].sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary));
+
+  // A static site (Site Studio or uploaded) has no container to proxy to: its vhost serves the
+  // site's folder. Every caller (verify, delete, settings) goes through here, so none of them
+  // can write an app proxy for it — which 502'd, then fell back to the wake endpoint.
+  let staticRoot: string | undefined;
+  let fileSlug = options.projectSlug;
+  if (environment === 'production') {
+    const project = await db.query.projects.findFirst({
+      where: eq(projects.id, options.projectId),
+      columns: { id: true, slug: true, settings: true },
+    });
+    if ((project?.settings as Record<string, unknown> | null)?.static === true) {
+      const key = staticSiteKey(project!);
+      staticRoot = `/opt/pushify/site-studio/${key}`;
+      fileSlug = key;
+      await retireStaleStaticVhosts(ssh, project!.slug, key, rows.map((r) => r.domain));
+    }
+  }
 
   // Auto subdomains live on the wildcard certificate, which only Pushify's shared host has.
   let wildcard = false;
@@ -157,9 +200,10 @@ export async function syncProjectSites(
 
   const write = async () => {
     const result = await writeProjectSites(ssh, {
-      projectSlug: options.projectSlug,
+      projectSlug: fileSlug,
       containerPorts: options.containerPorts,
       containerPort: options.containerPort,
+      staticRoot,
       domains: plan.map(toSite),
     });
     if (!result.success) return result;
