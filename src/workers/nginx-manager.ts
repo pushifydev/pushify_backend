@@ -581,16 +581,24 @@ export interface StaticSiteConfig {
   port?: number;
   ssl?: boolean;
   additionalDomains?: string[];
+  /** Certificate directory when not the domain's own Let's Encrypt one (the *.pushify.dev wildcard). */
+  certDir?: string;
 }
 
 /** Static-file Nginx vhost: serves /opt/pushify/site-studio/<slug> (no upstream container). */
 function generateStaticSiteConfig(config: StaticSiteConfig): string {
-  const { domain, port, slug, ssl = false, additionalDomains = [] } = config;
+  const { domain, port, slug, ssl = false, additionalDomains = [], certDir } = config;
   const root = `/opt/pushify/site-studio/${slug}`;
 
+  // Hidden files are never served, whatever ends up in the folder (.git, .env — Sept 2026 leak).
   const serveBlock = `
     root ${root};
     index index.html;
+
+    location ~ /\\. {
+        deny all;
+        return 404;
+    }
 
     location / {
         try_files $uri $uri/ /index.html;
@@ -628,8 +636,8 @@ server {
     listen [::]:443 ssl http2;
     server_name ${allDomains};
 
-    ssl_certificate /etc/letsencrypt/live/${domain}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
+    ssl_certificate ${certDir ?? `/etc/letsencrypt/live/${domain}`}/fullchain.pem;
+    ssl_certificate_key ${certDir ?? `/etc/letsencrypt/live/${domain}`}/privkey.pem;
 ${serveBlock}
 }
 `;

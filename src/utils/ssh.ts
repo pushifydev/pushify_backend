@@ -185,6 +185,32 @@ export class SSHClient {
   }
 
   /**
+   * Upload many files over one SFTP session (a new session per file is slow for a site with
+   * hundreds of assets). Parent directories must already exist.
+   */
+  async uploadFiles(files: { remotePath: string; content: string | Buffer | Uint8Array }[]): Promise<void> {
+    if (!this.connected) {
+      throw new Error('SSH client is not connected');
+    }
+
+    const sftp = await new Promise<import('ssh2').SFTPWrapper>((resolve, reject) => {
+      this.client.sftp((err, session) => (err ? reject(new Error(`SFTP error: ${err.message}`)) : resolve(session)));
+    });
+    try {
+      for (const file of files) {
+        const data = typeof file.content === 'string' ? Buffer.from(file.content) : Buffer.from(file.content);
+        await new Promise<void>((resolve, reject) => {
+          sftp.writeFile(file.remotePath, data, (err) =>
+            err ? reject(new Error(`SFTP write error (${file.remotePath}): ${err.message}`)) : resolve(),
+          );
+        });
+      }
+    } finally {
+      sftp.end();
+    }
+  }
+
+  /**
    * Download a file from the remote server
    */
   /**

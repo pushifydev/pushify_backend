@@ -22,6 +22,8 @@ import { extractLogTail } from '../lib/log-tail';
 import { generateDockerfile, hasDockerfile, writeDockerfile } from './dockerfile';
 import { deployToRemoteServer, canDeployToServer, quickRollbackToDeployment } from './remote-deployment';
 import { publishStaticSite } from '../lib/static-site-publish';
+import { staticUploadService, isUploadProject } from '../services/static-upload.service';
+import { staticSiteKey, type SiteFile } from '../lib/static-upload';
 import { buildMarketplaceDeployConfig } from '../marketplace/deploy-config';
 import {
   loadPushifyConfig,
@@ -467,7 +469,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
     // No container build — "deploying" here means upload + Nginx config + open port.
     const earlySettings = project.settings as Record<string, unknown>;
     if (earlySettings?.static === true || earlySettings?.siteStudioStack === 'static') {
-      addLog('🎨 Static site — publishing rendered HTML...');
+      addLog(isUploadProject(earlySettings) ? '📁 Uploaded site — publishing files...' : '🎨 Static site — publishing rendered HTML...');
       if (!deployTargetServerId) {
         throw new Error('Static site has no server assigned');
       }
@@ -483,11 +485,23 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
 
       await updateDeploymentStatus(job.id, 'deploying', logBuffer.join('\n'), job.projectId);
 
+      // An uploaded site publishes its stored files; a Site Studio site renders its design.
+      let uploadedFiles: SiteFile[] | undefined;
+      if (isUploadProject(earlySettings)) {
+        const stored = await staticUploadService.filesForDeployment(project.id, job.id, job.rollbackFromDeploymentId);
+        if (!stored) throw new Error('No uploaded files for this site — upload them again');
+        uploadedFiles = stored;
+        addLog(`📦 ${stored.length} uploaded file(s)`);
+      }
+
       const result = await publishStaticSite({
         projectId: project.id,
         slug: project.slug,
+        // Uploaded sites may land on a shared runner, where slugs of different orgs can clash.
+        siteKey: staticSiteKey(project),
         domain: primaryDomain?.domain ?? null,
         server,
+        files: uploadedFiles,
         onLog: addLog,
       });
 

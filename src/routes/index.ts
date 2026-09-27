@@ -32,6 +32,7 @@ import { cliAuthRoutes } from './cli-auth';
 import { marketplaceRoutes } from './marketplace';
 import { siteStudioRoutes } from './site-studio';
 import { siteEditorRoutes } from './site-editor';
+import { staticSiteRoutes } from './static-sites';
 import { dashboardRoutes } from './dashboard';
 import { alertsRoutes } from './alerts';
 import { registrarDomainRoutes } from './registrar-domains';
@@ -53,6 +54,7 @@ export function registerRoutes(app: OpenAPIHono<any>) {
   // project router, otherwise /{projectId} catches /overview, etc.
   app.route('/api/v1/projects', metricsRoutes);
   app.route('/api/v1/projects', siteEditorRoutes);
+  app.route('/api/v1/static-sites', staticSiteRoutes);
   app.route('/api/v1/projects', notificationRoutes);
   app.route('/api/v1/projects', scheduledTaskRoutes);
   app.route('/api/v1/projects', projectVolumeRoutes);

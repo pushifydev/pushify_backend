@@ -20,6 +20,11 @@ export function isSharedRunnerServer(serverId: string | null | undefined): boole
   return !!serverId && runnerPool().includes(serverId);
 }
 
+/** Whether this Pushify has shared runners at all (self-hosted installs usually don't). */
+export function hasRunnerServers(): boolean {
+  return runnerPool().length > 0;
+}
+
 export function pickRunnerServerId(projectId: string): string | null {
   const pool = runnerPool();
   if (pool.length === 0) return null;

@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.72] - 2026-09-27
+
+### Added
+- **Publish a website by uploading its files.** `POST /api/v1/static-sites` creates a project from a dropped folder (many `files`, each named by its path in the site) or a `.zip` (`file`); `POST /api/v1/static-sites/:projectId/versions` publishes new files to it. Uploads are checked and tidied in `lib/static-upload.ts`: relative paths only (no `..`, shell-safe names), hidden files and OS junk (`.git`, `.env`, `__MACOSX`) dropped, a single wrapping folder unwrapped, `index.html` required at the root, at most 2,000 files / 25 MB per file / 50 MB per site, and zips refused if they would expand past that. Each upload is stored as a version (`static_uploads`, migration 0060; the last five are kept) and published through the normal deployment pipeline, so it shows up under Deployments with logs, and redeploy and rollback republish the right version.
+- **Static sites get a `*.pushify.dev` address on Pushify's shared host.** Without a custom domain, a static site (uploaded or Site Studio) on a host carrying the wildcard certificate is served at `<slug>.pushify.dev` over HTTPS instead of `http://ip:port`; its DNS record is created as for app deploys.
+- `SSHClient.uploadFiles`: many files over one SFTP session.
+
+### Changed
+- **Static publishes swap the whole folder at once**: new files are written beside the live ones and moved into place, so visitors never see a half-uploaded site.
+- **Static vhosts never serve hidden files** (`location ~ /\.` → 404), whatever is in the folder.
+
+### Fixed
+- **Deleting a static site left it online.** Its files and Nginx vhost stayed on the server — and on the shared host, where `*.pushify.dev` resolves by wildcard, the site kept answering. Deleting a static project now removes both, and runs no container teardown (that one matches by slug, which on a shared runner is only unique within an organisation).
+
 ## [0.2.0-beta.71] - 2026-09-27
 
 ### Fixed
