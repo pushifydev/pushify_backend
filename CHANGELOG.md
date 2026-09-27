@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.73] - 2026-09-27
+
+### Fixed
+- **A static site with a custom domain answered 502.** Verifying a domain (and deleting one, or editing its Nginx settings) always wrote the app template — a proxy to a container on `127.0.0.1:<port>` — whatever the project was. A static site (uploaded or Site Studio) has no container, so the request failed and fell through to the wake endpoint on the control plane, which answered 502 as well; the certificate itself was fine. `syncProjectSites` now recognises a static project and writes a vhost that serves its folder (same domains, www redirects, certificates and HSTS as an app; hidden files never served), and publishing a static site with a domain goes through the same path instead of its own single-domain file. Vhosts an earlier version left for the site's domains are removed, but only when they name one of those domains (on a shared runner the bare slug may belong to another organisation). A site broken this way is fixed by publishing it again or by re-verifying its domain.
+
 ## [0.2.0-beta.72] - 2026-09-27
 
 ### Added

@@ -6,7 +6,7 @@ import { SSHClient } from '../utils/ssh';
 import { decrypt } from './encryption';
 import { renderSiteFiles } from './site-html-renderer';
 import type { SitePage } from '../sites/block-types';
-import { addStaticSite, requestSSLCertificate } from '../workers/nginx-manager';
+import { addStaticSite } from '../workers/nginx-manager';
 import { getOrAssignPort } from '../workers/port-manager';
 import { openFirewallPort } from '../workers/remote-deployment';
 import { logger } from './logger';
@@ -123,41 +123,34 @@ export async function publishStaticSite(opts: {
     let url: string | null = null;
     let port: number | undefined;
 
-    if (domain && isAutoDomain(domain) && hasWildcard) {
-      log(`🌐 Configuring Nginx for ${domain}...`);
-      const { cloudflareDnsConfigured, ensureAutoSubdomainRecord } = await import('./cloudflare-dns');
-      if (cloudflareDnsConfigured()) {
-        await ensureAutoSubdomainRecord(domain, server.ipv4).catch((err) =>
-          log(`⚠️ DNS record for ${domain} not updated: ${err instanceof Error ? err.message : 'unknown'}`),
-        );
-      }
-      nginx = await addStaticSite(ssh, { slug, domain, ssl: true, certDir: wildcardDir! });
-      ssl = nginx.success;
-      url = `https://${domain}`;
-    } else if (domain && !isAutoDomain(domain)) {
-      log(`🌐 Configuring Nginx for ${domain}...`);
-      nginx = await addStaticSite(ssh, { slug, domain, ssl: false });
-      url = `http://${domain}`;
-      if (nginx.success) {
-        try {
-          log('🔐 Requesting SSL certificate...');
-          const cert = await requestSSLCertificate(ssh, domain, `admin@${domain}`);
-          if (cert.success) {
-            const sslRes = await addStaticSite(ssh, { slug, domain, ssl: true });
-            if (sslRes.success) {
-              ssl = true;
-              nginx = sslRes;
-              url = `https://${domain}`;
-              log('✅ SSL enabled');
-            }
-          } else {
-            log('⚠️ SSL not issued yet (check DNS) — serving over HTTP');
-          }
-        } catch (err: any) {
-          logger.warn({ projectId, domain, err: err?.message }, 'Static SSL provisioning failed');
-          log('⚠️ SSL provisioning failed — serving over HTTP');
+    if (domain && (!isAutoDomain(domain) || hasWildcard)) {
+      if (isAutoDomain(domain)) {
+        const { cloudflareDnsConfigured, ensureAutoSubdomainRecord } = await import('./cloudflare-dns');
+        if (cloudflareDnsConfigured()) {
+          await ensureAutoSubdomainRecord(domain, server.ipv4).catch((err) =>
+            log(`⚠️ DNS record for ${domain} not updated: ${err instanceof Error ? err.message : 'unknown'}`),
+          );
         }
       }
+      // Same path as app domains: every domain of the project, www redirects, certificates —
+      // serving the site's folder instead of a container (project-sites.ts picks that up).
+      log('🌐 Configuring Nginx for the site\'s domains...');
+      const { syncProjectSites, describeSyncedDomains } = await import('./project-sites');
+      const { isSharedRunnerServer } = await import('./runner-routing');
+      const sync = await syncProjectSites(ssh, {
+        projectId,
+        projectSlug: slug,
+        containerPort: 0,
+        serverIp: server.ipv4,
+        requestCertificates: true,
+        sharedHost: isSharedRunnerServer(server.id ?? null),
+        onProgress: log,
+      });
+      nginx = { success: sync.success, message: sync.message };
+      const primary = sync.domains.find((d) => d.domain === domain) ?? sync.domains[0];
+      ssl = !!primary?.ssl;
+      url = primary ? `${ssl ? 'https' : 'http'}://${primary.domain}` : null;
+      if (sync.success && sync.domains.length) log(`🌐 ${describeSyncedDomains(sync.domains)}`);
     } else {
       const assigned = await getOrAssignPort(ssh, slug);
       port = assigned.port;
