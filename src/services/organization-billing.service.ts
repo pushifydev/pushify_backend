@@ -12,6 +12,7 @@ import { logger } from '../lib/logger';
 import { sendBillingPaymentFailedEmail, sendBillingSuspendedEmail } from '../lib/email';
 import { resolveBillingNotifyEmail } from '../lib/billing-notify';
 import { pauseProjectContainers } from '../lib/project-remote-cleanup';
+import { getStripe } from '../lib/stripe';
 
 const PAYMENT_FAILED_EMAIL_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
@@ -26,7 +27,30 @@ function getProviderToken(provider: ProviderType): string {
 
 export async function getOrganizationBillingStatus(organizationId: string): Promise<BillingStatus> {
   const org = await organizationRepository.findById(organizationId);
-  return (org?.billingStatus ?? 'active') as BillingStatus;
+  const status = (org?.billingStatus ?? 'active') as BillingStatus;
+  if (status === 'past_due' && org?.stripeSubscriptionId) {
+    return (await reconcilePastDue(organizationId, org.stripeSubscriptionId)) ? 'active' : status;
+  }
+  return status;
+}
+
+/**
+ * past_due is a copy of Stripe's state, and a copy can go stale: a webhook for an older
+ * subscription, or one that arrived out of order, can leave an organisation blocked after it has
+ * paid. Before refusing, ask Stripe: if the current subscription is in good standing, clear the flag.
+ */
+async function reconcilePastDue(organizationId: string, subscriptionId: string): Promise<boolean> {
+  if (!env.STRIPE_SECRET_KEY) return false;
+  try {
+    const sub = await getStripe().subscriptions.retrieve(subscriptionId);
+    if (sub.status !== 'active' && sub.status !== 'trialing') return false;
+    await organizationBillingService.markActive(organizationId);
+    logger.info({ organizationId, subscriptionId }, 'past_due cleared: Stripe reports the subscription in good standing');
+    return true;
+  } catch (err) {
+    logger.warn({ err, organizationId, subscriptionId }, 'past_due reconcile with Stripe failed');
+    return false;
+  }
 }
 
 export function assertOrganizationBillingAllowsMutations(
