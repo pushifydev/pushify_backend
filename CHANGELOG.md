@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.70] - 2026-09-27
+
+### Fixed
+- **Customers could be charged for a subscription that had already ended.** When Stripe exhausts its retries it cancels the subscription but leaves the last invoice open. That invoice showed a "Pay" button, "Pay now" retried it, and the past-due check counted it as debt — paying it would have cost the customer the plan price and given them nothing (the organisation stays on Free). Invoices are now payable only when they are one-off or belong to the organisation's current subscription (`lib/stripe-invoices.ts`): `/billing/invoices` returns `payable`, `pay-outstanding` skips the rest, and the past-due reconcile ignores invoices of cancelled subscriptions.
+
 ## [0.2.0-beta.69] - 2026-09-27
 
 ### Fixed

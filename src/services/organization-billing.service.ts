@@ -13,6 +13,7 @@ import { sendBillingPaymentFailedEmail, sendBillingSuspendedEmail } from '../lib
 import { resolveBillingNotifyEmail } from '../lib/billing-notify';
 import { pauseProjectContainers } from '../lib/project-remote-cleanup';
 import { getStripe, getPlanFromPriceId } from '../lib/stripe';
+import { invoiceSubscriptionId } from '../lib/stripe-invoices';
 
 const PAYMENT_FAILED_EMAIL_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
@@ -86,9 +87,16 @@ export async function reconcilePastDue(org: ReconcilableOrg, opts: { force?: boo
       return true;
     }
 
+    // An open invoice of a subscription that has ended (Stripe gave up and cancelled it) is not
+    // debt we enforce: paying it would buy nothing. Only one-off invoices and live subscriptions' count.
+    const liveSubIds = new Set(subs.filter((s) => s.status === 'past_due' || s.status === 'unpaid').map((s) => s.id));
+    const openInvoices = (await stripe.invoices.list({ customer: org.stripeCustomerId, status: 'open', limit: 20 })).data;
     const owing =
-      subs.some((s) => s.status === 'past_due' || s.status === 'unpaid') ||
-      (await stripe.invoices.list({ customer: org.stripeCustomerId, status: 'open', limit: 1 })).data.length > 0;
+      liveSubIds.size > 0 ||
+      openInvoices.some((inv) => {
+        const sub = invoiceSubscriptionId(inv);
+        return !sub || liveSubIds.has(sub);
+      });
     if (owing) {
       owingCheckedAt.set(org.id, Date.now());
       return false;
