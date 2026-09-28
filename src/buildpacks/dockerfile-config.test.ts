@@ -6,6 +6,18 @@ import { getBuildpack } from './index';
 const gen = (id: string, cfg: Record<string, unknown>) => getBuildpack(id)!.generateDockerfile(cfg as never);
 
 describe('nodejs buildpack', () => {
+  it.each(['nodejs', 'nextjs', 'nuxt', 'react'])(
+    '%s: builder has a native-addon toolchain before install and keeps rebuild output',
+    (framework) => {
+      const df = gen('nodejs', { framework });
+      const toolchain = df.indexOf('apt-get install -y --no-install-recommends python3 make g++ pkg-config');
+      expect(toolchain).toBeGreaterThan(-1);
+      expect(toolchain).toBeLessThan(df.indexOf('--ignore-scripts'));
+      expect(df).toContain('RUN npm rebuild || echo');
+      expect(df).not.toContain('npm rebuild 2>/dev/null');
+    }
+  );
+
   it('nextjs: custom build + start replace the defaults', () => {
     const df = gen('nodejs', { framework: 'nextjs', buildCommand: 'pnpm build:prod', startCommand: 'node server.js --port 3000' });
     expect(df).toContain('pnpm build:prod');
