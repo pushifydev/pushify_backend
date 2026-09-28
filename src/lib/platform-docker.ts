@@ -14,17 +14,34 @@ export function nodeRunnerUserLines(): string {
   return `RUN groupadd --system --gid 1001 nodejs && useradd --system --uid 1001 --gid nodejs nextjs`;
 }
 
-/** Install deps without lifecycle scripts, then postinstall + optional native rebuild. */
+/**
+ * The slim Node images ship without a compiler, so any dependency that builds a native addon
+ * with node-gyp (bcrypt, better-sqlite3, argon2, …) cannot compile. Installed before the
+ * source is copied, so BuildKit caches this layer across deploys.
+ */
+export function nodeNativeToolchainLines(): string {
+  return `RUN apt-get update \\
+  && apt-get install -y --no-install-recommends python3 make g++ pkg-config \\
+  && rm -rf /var/lib/apt/lists/*`;
+}
+
+/**
+ * Install deps without lifecycle scripts, then postinstall + native rebuild. The rebuild stays
+ * non-fatal (not every addon is needed at runtime) but its output now stays in the build log
+ * instead of being discarded, so a failed native compile can be seen and classified.
+ * The echoed warning must not contain words the failure classifier matches on.
+ */
 export function nodeInstallLines(installCommand: string): string {
   // Cache mounts for all three package managers — whichever the install command
   // uses hits a warm cache; the other two mounts are inert.
-  return `RUN --mount=type=cache,target=/root/.npm \\
+  return `${nodeNativeToolchainLines()}
+RUN --mount=type=cache,target=/root/.npm \\
     --mount=type=cache,target=/usr/local/share/.cache/yarn \\
     --mount=type=cache,target=/root/.local/share/pnpm/store \\
     ${installCommand} --ignore-scripts
 COPY . .
 RUN npm run postinstall --if-present
-RUN npm rebuild 2>/dev/null || true`;
+RUN npm rebuild || echo 'Pushify warning: npm rebuild did not finish cleanly, see the output above.'`;
 }
 
 /**

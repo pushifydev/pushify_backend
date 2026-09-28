@@ -94,6 +94,26 @@ function classifyText(text: string): ClassifiedDeployFailure {
     };
   }
 
+  // A dependency's native addon could not be compiled (node-gyp) or was never built, so the
+  // app fails when it loads the missing .node binary.
+  if (
+    text.includes('gyp err!') ||
+    text.includes('could not locate the bindings file') ||
+    text.includes('was compiled against a different node.js version') ||
+    (text.includes('cannot find module') && text.includes('build/release/'))
+  ) {
+    return {
+      category: 'platform_native',
+      blame: 'pushify',
+      label: 'Native module build',
+      userHint:
+        'A dependency with a native addon (node-gyp) could not be compiled. The Pushify build image includes python3, make, g++ and pkg-config; ' +
+        'if the log shows a missing header or library (e.g. cairo, vips, libpq), that system package is not in the image. ' +
+        'Deploy with your own Dockerfile that installs it (apt-get install <lib>-dev), or use a prebuilt alternative ' +
+        '(e.g. bcryptjs instead of bcrypt).',
+    };
+  }
+
   if (
     text.includes('lightningcss') ||
     text.includes('linux-x64-musl') ||
