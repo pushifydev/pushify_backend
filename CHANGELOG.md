@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.78] - 2026-09-29
+
+### Added
+- **Regions know the plan.** The regions endpoint marks each region with `availableForPlan`: whether the organization's plan can create at least one in-stock size there. Fixes Hobby users landing in Nuremberg (nbg1), where the only in-stock small server is above Hobby's limits while cx23 is sold out. The dashboard hides such regions (frontend beta.90).
+
 ## [0.2.0-beta.77] - 2026-09-29
 
 ### Fixed
