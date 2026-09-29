@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.90] - 2026-09-30
+
+### Added
+- **Retention periods for records that were kept forever**, applied by a daily sweep:
+  - organization activity log: 1 year;
+  - sign-in history: 90 days;
+  - build and deploy output: 90 days. The deployment row stays, and every project keeps full logs for its latest 10 deployments;
+  - expired sessions and password-reset/verification tokens: 1 day after they expire.
+- Migration `0064_retention_indexes` adds `created_at` indexes on `activity_logs` and `deployments`.
+
 ## [0.2.0-beta.89] - 2026-09-30
 
 ### Changed

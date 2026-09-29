@@ -442,6 +442,13 @@
       "when": 1787270400022,
       "tag": "0063_account_deletion",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1787270400023,
+      "tag": "0064_retention_indexes",
+      "breakpoints": true
     }
   ]
 }
