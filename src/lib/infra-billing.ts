@@ -36,12 +36,17 @@ export const PLAN_INFRA_LIMITS: Record<PlanType, PlanInfraLimits> = {
     managedServersEnabled: true,
     maxServerVcpus: 4,
     maxServerMemoryMb: 8192,
-    maxProviderMonthlyUsdCents: 3500,
+    // The only 4 vCPU / 8 GB shared type in stock is cpx32 (EUR 35.49 ≈ $41 at 2026-09 FX).
+    // $50 lets Pro create it with room for FX drift up to ~1.40 EUR/USD. Customers pay it
+    // from credits with margin, so the cap is about plan positioning, not our cost.
+    maxProviderMonthlyUsdCents: 5000,
   },
   business: {
     managedServersEnabled: true,
     maxServerVcpus: 8,
-    maxServerMemoryMb: 32768,
+    // No shared x86 type has 8 vCPU / 32 GB; the largest Business can create is 8 vCPU / 16 GB
+    // (cpx42). Stated as 16 GB so the limit matches what the plan can actually run.
+    maxServerMemoryMb: 16384,
     maxProviderMonthlyUsdCents: 10000,
   },
   enterprise: {
