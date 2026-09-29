@@ -31,13 +31,14 @@ CREATE TABLE IF NOT EXISTS "deleted_organizations" (
   "retain_until" timestamp with time zone NOT NULL
 );
 --> statement-breakpoint
--- Purge progress per organization; no foreign key, the organization row is deleted last.
+-- Purge progress per organization or user (`subject_id`); no foreign key, the row being purged
+-- is deleted last.
 CREATE TABLE IF NOT EXISTS "deletion_purge_steps" (
-  "organization_id" uuid NOT NULL,
+  "subject_id" uuid NOT NULL,
   "step" varchar(64) NOT NULL,
   "status" varchar(16) NOT NULL,
   "attempts" integer DEFAULT 0 NOT NULL,
   "last_error" text,
   "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-  CONSTRAINT "deletion_purge_steps_pk" PRIMARY KEY ("organization_id", "step")
+  CONSTRAINT "deletion_purge_steps_pk" PRIMARY KEY ("subject_id", "step")
 );

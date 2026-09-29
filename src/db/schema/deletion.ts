@@ -15,16 +15,19 @@ export const deletedOrganizations = pgTable('deleted_organizations', {
   retainUntil: timestamp('retain_until', { withTimezone: true }).notNull(),
 });
 
-/** Progress of a purge, one row per step, so a failed step is retried without redoing the rest. */
+/**
+ * Progress of a purge, one row per step, so a failed step is retried without redoing the rest.
+ * `subjectId` is the organization's id, or the user's for `account:` steps.
+ */
 export const deletionPurgeSteps = pgTable(
   'deletion_purge_steps',
   {
-    organizationId: uuid('organization_id').notNull(),
+    subjectId: uuid('subject_id').notNull(),
     step: varchar('step', { length: 64 }).notNull(),
     status: varchar('status', { length: 16 }).notNull(), // pending | done | failed
     attempts: integer('attempts').default(0).notNull(),
     lastError: text('last_error'),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
-  (t) => ({ pk: primaryKey({ name: 'deletion_purge_steps_pk', columns: [t.organizationId, t.step] }) }),
+  (t) => ({ pk: primaryKey({ name: 'deletion_purge_steps_pk', columns: [t.subjectId, t.step] }) }),
 );
