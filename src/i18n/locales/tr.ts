@@ -250,6 +250,8 @@ export const tr: TranslationKeys = {
     orgHasMembers:
       'Başka üyeleri olan bir organizasyonun sahibisiniz. Önce o organizasyonu silin ya da üyelerini çıkarın.',
     restoreTokenInvalid: 'Bu geri alma bağlantısının süresi doldu. Hesabınızı geri almak için yeniden giriş yapın.',
+    confirmLinkInvalid: 'Bu onay bağlantısı geçersiz ya da süresi dolmuş. Silmeyi Ayarlar’dan yeniden isteyin.',
+    confirmLinkUsed: 'Bu onay bağlantısı zaten kullanıldı.',
   },
 
   planLimits: {

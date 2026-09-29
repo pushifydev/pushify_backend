@@ -1080,6 +1080,18 @@ authRouter.post('/me/deletion', async (c) => {
   if (!body.success) throw new HTTPException(400, { message: t(locale, 'validation', 'invalidRequest') });
   const { accountDeletionService } = await import('../services/account-deletion.service');
   const result = await accountDeletionService.requestAccountDeletion(userId, body.data, locale);
+  // 202: an account without a password or 2FA confirms from its inbox first.
+  return c.json({ data: result }, 'confirmationSent' in result ? 202 : 200);
+});
+
+// The link emailed to such an account (valid one hour, once).
+authRouter.use('/deletion/confirm', authRateLimiter);
+authRouter.post('/deletion/confirm', async (c) => {
+  const locale = c.get('locale');
+  const body = z.object({ token: z.string().min(1).max(4096) }).safeParse(await c.req.json().catch(() => ({})));
+  if (!body.success) throw new HTTPException(400, { message: t(locale, 'validation', 'invalidRequest') });
+  const { accountDeletionService } = await import('../services/account-deletion.service');
+  const result = await accountDeletionService.confirmDeletion(body.data.token, locale);
   return c.json({ data: result });
 });
 

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.89] - 2026-09-30
+
+### Changed
+- **Accounts with neither a password nor 2FA confirm a deletion by email.**
+  - Deleting an organization or the account sends a link instead of starting the deletion. The link works once and is valid for one hour.
+  - The deletion starts only when the link is clicked. The request then answers `202 { confirmationSent: true }`.
+  - The link goes through `POST /auth/deletion/confirm`, which checks everything again (still the owner, nothing already scheduled).
+
 ## [0.2.0-beta.88] - 2026-09-30
 
 ### Fixed

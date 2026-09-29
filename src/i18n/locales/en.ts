@@ -211,6 +211,8 @@ export interface TranslationKeys {
     notScheduled: string;
     orgHasMembers: string;
     restoreTokenInvalid: string;
+    confirmLinkInvalid: string;
+    confirmLinkUsed: string;
   };
   planLimits: {
     servers: string;
@@ -608,6 +610,8 @@ export const en: TranslationKeys = {
     orgHasMembers:
       'You own an organization that has other members. Delete that organization first, or remove its members.',
     restoreTokenInvalid: 'This restore link has expired. Sign in again to restore your account.',
+    confirmLinkInvalid: 'This confirmation link is invalid or has expired. Request the deletion again from Settings.',
+    confirmLinkUsed: 'This confirmation link has already been used.',
   },
 
   planLimits: {

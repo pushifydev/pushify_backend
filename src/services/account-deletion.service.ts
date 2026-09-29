@@ -15,9 +15,16 @@ import { t, type SupportedLocale } from '../i18n';
 import { logger } from '../lib/logger';
 import { verifyPassword } from '../lib/password';
 import { invalidateDeletionLock } from '../lib/deletion-lock';
-import { generateAccountRestoreToken, verifyAccountRestoreToken } from '../lib/jwt';
+import {
+  generateAccountRestoreToken,
+  generateDeletionConfirmToken,
+  verifyAccountRestoreToken,
+  verifyDeletionConfirmToken,
+} from '../lib/jwt';
+import { getOptionalRedis } from '../lib/redis-client';
+import { env } from '../config/env';
 import { pauseProjectContainers } from '../lib/project-remote-cleanup';
-import { sendDeletionRestoredEmail, sendDeletionScheduledEmail } from '../lib/email';
+import { sendDeletionConfirmEmail, sendDeletionRestoredEmail, sendDeletionScheduledEmail } from '../lib/email';
 import { resolveBillingNotifyEmail } from '../lib/billing-notify';
 import { projectRepository } from '../repositories/project.repository';
 import { userRepository } from '../repositories/user.repository';
@@ -68,9 +75,56 @@ export interface DeletionCredentials {
   twoFactorCode?: string;
 }
 
+/** Returned instead of a schedule when the request must first be confirmed from the inbox. */
+export interface DeletionConfirmationSent {
+  confirmationSent: true;
+}
+
+interface RequestOptions {
+  /** Set when the request comes back through the emailed link */
+  confirmedByEmail?: boolean;
+}
+
+/** An account with neither a password nor 2FA has nothing to re-enter: it confirms by email. */
+function confirmsByEmail(user: { passwordHash: string | null; twoFactorEnabled: boolean }): boolean {
+  return !user.passwordHash && !user.twoFactorEnabled;
+}
+
+async function sendConfirmation(
+  user: { id: string; email: string },
+  kind: 'organization' | 'account',
+  name: string,
+  locale: SupportedLocale,
+  organizationId?: string,
+): Promise<DeletionConfirmationSent> {
+  const token = await generateDeletionConfirmToken(user.id, kind, organizationId);
+  const confirmUrl = `${env.FRONTEND_URL}/confirm-deletion#token=${encodeURIComponent(token)}`;
+  await sendDeletionConfirmEmail(user.email, { kind, name, confirmUrl }, locale === 'tr' ? 'tr' : 'en');
+  logger.info({ userId: user.id, kind, organizationId }, 'deletion confirmation link sent');
+  return { confirmationSent: true };
+}
+
+/** A confirmation link works once: its id is claimed for as long as the link could be valid. */
+const claimedLinks = new Map<string, number>();
+async function claimLink(jti: string): Promise<boolean> {
+  const redis = getOptionalRedis();
+  if (redis) {
+    try {
+      return (await redis.set(`deletion-confirm:${jti}`, '1', 'EX', 3600, 'NX')) === 'OK';
+    } catch (err) {
+      logger.warn({ err }, 'deletion confirm: Redis unavailable, using process memory');
+    }
+  }
+  const now = Date.now();
+  for (const [k, exp] of claimedLinks) if (exp < now) claimedLinks.delete(k);
+  if (claimedLinks.has(jti)) return false;
+  claimedLinks.set(jti, now + 3600_000);
+  return true;
+}
+
 /**
  * Re-authentication before a deletion: the password when the account has one, and a 2FA code when
- * 2FA is on. An OAuth-only account without 2FA has neither; the typed confirmation is its check.
+ * 2FA is on. An account with neither confirms from its inbox instead (sendConfirmation).
  */
 async function verifyIdentity(userId: string, credentials: DeletionCredentials, locale: SupportedLocale): Promise<void> {
   const user = await userRepository.findById(userId);
@@ -244,7 +298,8 @@ export const accountDeletionService = {
     input: DeletionCredentials & { confirmName: string },
     locale: SupportedLocale,
     now: Date = new Date(),
-  ): Promise<DeletionScheduled> {
+    opts: RequestOptions = {},
+  ): Promise<DeletionScheduled | DeletionConfirmationSent> {
     await assertOwner(organizationId, userId, locale);
     const [org] = await db.select().from(organizations).where(eq(organizations.id, organizationId)).limit(1);
     if (!org) throw new HTTPException(404, { message: t(locale, 'errors', 'notFound') });
@@ -252,7 +307,12 @@ export const accountDeletionService = {
     if (input.confirmName.trim() !== org.name) {
       throw new HTTPException(400, { message: t(locale, 'deletion', 'confirmMismatch') });
     }
-    await verifyIdentity(userId, input, locale);
+    if (!opts.confirmedByEmail) {
+      const user = await userRepository.findById(userId);
+      if (!user) throw new HTTPException(404, { message: t(locale, 'auth', 'userNotFound') });
+      if (confirmsByEmail(user)) return sendConfirmation(user, 'organization', org.name, locale, organizationId);
+      await verifyIdentity(userId, input, locale);
+    }
 
     const result = await scheduleOrganization(organizationId, userId, now, locale);
     const to = (await resolveBillingNotifyEmail(organizationId)) ?? (await userRepository.findById(userId))?.email;
@@ -296,14 +356,14 @@ export const accountDeletionService = {
     input: DeletionCredentials & { confirmEmail: string },
     locale: SupportedLocale,
     now: Date = new Date(),
-  ): Promise<DeletionScheduled & { organizations: string[] }> {
+    opts: RequestOptions = {},
+  ): Promise<(DeletionScheduled & { organizations: string[] }) | DeletionConfirmationSent> {
     const user = await userRepository.findById(userId);
     if (!user) throw new HTTPException(404, { message: t(locale, 'auth', 'userNotFound') });
     if (user.deletionScheduledFor) throw new HTTPException(409, { message: t(locale, 'deletion', 'alreadyScheduled') });
     if (input.confirmEmail.trim().toLowerCase() !== user.email.toLowerCase()) {
       throw new HTTPException(400, { message: t(locale, 'deletion', 'confirmMismatch') });
     }
-    await verifyIdentity(userId, input, locale);
 
     const owned = await db
       .select({ organizationId: organizationMembers.organizationId })
@@ -319,6 +379,10 @@ export const accountDeletionService = {
       if (memberCounts.some((m) => Number(m.n) > 1)) {
         throw new HTTPException(409, { message: t(locale, 'deletion', 'orgHasMembers') });
       }
+    }
+    if (!opts.confirmedByEmail) {
+      if (confirmsByEmail(user)) return sendConfirmation(user, 'account', user.email, locale);
+      await verifyIdentity(userId, input, locale);
     }
 
     const toSchedule = ownedIds.length
@@ -361,6 +425,37 @@ export const accountDeletionService = {
       locale === 'tr' ? 'tr' : 'en',
     );
     return { scheduledFor, servers: allServers, walletBalanceCents, organizations: toSchedule.map((o) => o.name) };
+  },
+
+  /**
+   * The emailed link: re-checks everything (still the owner, nothing scheduled yet) and then runs
+   * the same request as the dashboard would have. One use, one hour.
+   */
+  async confirmDeletion(token: string, locale: SupportedLocale) {
+    let payload: Awaited<ReturnType<typeof verifyDeletionConfirmToken>>;
+    try {
+      payload = await verifyDeletionConfirmToken(token);
+    } catch {
+      throw new HTTPException(401, { message: t(locale, 'deletion', 'confirmLinkInvalid') });
+    }
+    if (!(await claimLink(payload.jti))) {
+      throw new HTTPException(409, { message: t(locale, 'deletion', 'confirmLinkUsed') });
+    }
+    const opts = { confirmedByEmail: true };
+    if (payload.kind === 'organization') {
+      const [org] = await db
+        .select({ name: organizations.name })
+        .from(organizations)
+        .where(eq(organizations.id, payload.org!))
+        .limit(1);
+      if (!org) throw new HTTPException(404, { message: t(locale, 'errors', 'notFound') });
+      const result = await this.requestOrganizationDeletion(payload.org!, payload.sub, { confirmName: org.name }, locale, new Date(), opts);
+      return { kind: 'organization' as const, ...result };
+    }
+    const user = await userRepository.findById(payload.sub);
+    if (!user) throw new HTTPException(404, { message: t(locale, 'auth', 'userNotFound') });
+    const result = await this.requestAccountDeletion(payload.sub, { confirmEmail: user.email }, locale, new Date(), opts);
+    return { kind: 'account' as const, ...result };
   },
 
   /**

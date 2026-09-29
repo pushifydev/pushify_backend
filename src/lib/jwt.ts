@@ -4,7 +4,9 @@ import { env } from '../config/env';
 export interface TokenPayload extends JWTPayload {
   sub: string; // user id
   org?: string; // organization id
-  type: 'access' | 'refresh' | 'twoFactor' | 'accountRestore';
+  type: 'access' | 'refresh' | 'twoFactor' | 'accountRestore' | 'deletionConfirm';
+  /** deletionConfirm: what is being deleted */
+  kind?: 'organization' | 'account';
 }
 
 const secret = new TextEncoder().encode(env.JWT_SECRET);
@@ -149,4 +151,32 @@ export async function verifyAccountRestoreToken(token: string): Promise<TokenPay
   const payload = await verifyToken(token);
   if (payload.type !== 'accountRestore' || !payload.sub) throw new Error('Invalid restore token');
   return payload;
+}
+
+/**
+ * The link emailed to an account with neither a password nor 2FA before it can delete an
+ * organization or itself: one hour, single use (the `jti` is claimed when it is redeemed).
+ */
+export async function generateDeletionConfirmToken(
+  userId: string,
+  kind: 'organization' | 'account',
+  organizationId?: string,
+): Promise<string> {
+  const { randomUUID } = await import('crypto');
+  return new SignJWT({ sub: userId, type: 'deletionConfirm', kind, org: organizationId } satisfies TokenPayload)
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setJti(randomUUID())
+    .setExpirationTime('1h')
+    .setIssuer('pushify')
+    .sign(secret);
+}
+
+export async function verifyDeletionConfirmToken(token: string): Promise<TokenPayload & { kind: 'organization' | 'account'; jti: string }> {
+  const payload = await verifyToken(token);
+  if (payload.type !== 'deletionConfirm' || !payload.sub || !payload.kind || !payload.jti) {
+    throw new Error('Invalid deletion confirmation token');
+  }
+  if (payload.kind === 'organization' && !payload.org) throw new Error('Invalid deletion confirmation token');
+  return payload as TokenPayload & { kind: 'organization' | 'account'; jti: string };
 }

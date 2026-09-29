@@ -55,7 +55,7 @@ organizationRouter.post('/deletion', async (c) => {
     body.data,
     locale,
   );
-  return c.json({ data });
+  return c.json({ data }, 'confirmationSent' in data ? 202 : 200);
 });
 
 organizationRouter.delete('/deletion', async (c) => {
