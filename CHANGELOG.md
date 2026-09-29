@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.88] - 2026-09-30
+
+### Fixed
+- **Deleting a database removes its data from the server.** This covers the data directory with its local backups, and the earlier copies that provisioning set aside in `.old/<name>-*`. Until now only the container was removed.
+- **CLI browser login no longer holds an API key server-side.**
+  - Approving now only records who approved it. The key is created when the CLI collects it, and handed out once.
+  - An approval nobody collects leaves no key behind. Before, it left a full-scope key the user never saw.
+  - The plain login code is no longer stored, only its hash.
+  - No key is issued once the organization is scheduled for deletion.
+
 ## [0.2.0-beta.87] - 2026-09-29
 
 ### Fixed
