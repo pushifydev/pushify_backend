@@ -53,6 +53,16 @@ ssoRouter.get('/callback', async (c) => {
       : new URLSearchParams({ accessToken: result.accessToken, refreshToken: result.refreshToken });
     return c.redirect(`${dashboard}/login/sso?${params.toString()}`, 302);
   } catch (err) {
+    // An account waiting to be deleted: hand the dashboard its restore token in the fragment,
+    // which the browser keeps to itself (never sent to a server or written to access logs).
+    const cause = err instanceof HTTPException ? (err.cause as { code?: string; details?: { restoreToken?: string; scheduledFor?: string } } | undefined) : undefined;
+    if (cause?.code === 'ACCOUNT_PENDING_DELETION' && cause.details?.restoreToken) {
+      const fragment = new URLSearchParams({
+        restoreToken: cause.details.restoreToken,
+        scheduledFor: cause.details.scheduledFor ?? '',
+      });
+      return c.redirect(`${dashboard}/login?pendingDeletion=1#${fragment.toString()}`, 302);
+    }
     return failure(err instanceof HTTPException ? err.message : 'The sign-in could not be completed');
   }
 });
