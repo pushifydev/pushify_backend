@@ -48,6 +48,8 @@ export interface Region {
   country: string;
   city: string;
   available: boolean;
+  /** Set when listed for an organization: its plan can create at least one size in stock here. */
+  availableForPlan?: boolean;
 }
 
 export interface Image {

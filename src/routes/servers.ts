@@ -25,8 +25,9 @@ serverRouter.use('*', combinedAuthMiddleware);
 serverRouter.get('/providers/:provider/regions', requireScope('servers:read'), async (c) => {
   const locale = c.get('locale');
   const provider = c.req.param('provider') as ProviderType;
+  const organizationId = c.get('organizationId');
 
-  const regions = await serverService.getRegions(provider, locale);
+  const regions = await serverService.getRegions(provider, locale, organizationId ?? undefined);
 
   return c.json({ data: regions });
 });
