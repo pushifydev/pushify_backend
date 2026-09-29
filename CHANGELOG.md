@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.83] - 2026-09-29
+
+### Fixed
+- **Late or out-of-order Stripe webhooks can no longer roll billing back.** Subscription, invoice and schedule events are now applied using the object as Stripe reports it at that moment, not the copy in the event. A stale update cannot restore an older plan, grant or remove included credit, or mark a paid-up organization past due.
+
 ## [0.2.0-beta.82] - 2026-09-29
 
 ### Changed

@@ -11,8 +11,11 @@ import type Stripe from 'stripe';
 const h = vi.hoisted(() => ({
   selectResults: [] as unknown[][],
   updates: [] as Record<string, unknown>[],
+  /** What Stripe says now, by id. Unset ids fall back to the event's own object. */
+  live: {} as Record<string, unknown>,
   stripe: {
     subscriptions: { retrieve: vi.fn() },
+    invoices: { retrieve: vi.fn() },
     checkout: { sessions: { create: vi.fn() } },
     customers: { retrieve: vi.fn(), create: vi.fn() },
   },
@@ -91,6 +94,7 @@ import { stripeService } from './stripe.service';
 const ORG = 'org_1';
 
 beforeEach(() => {
+  h.live = {};
   h.selectResults = [];
   h.updates = [];
   vi.clearAllMocks();
@@ -141,8 +145,20 @@ const oldSub = {
   items: { data: [{ price: { id: 'price_hobby' } }] },
 } as unknown as Stripe.Subscription;
 
-const runEvent = (event: Stripe.Event) =>
-  stripeService.processWebhookEvent(event, h.stripe as unknown as Stripe);
+const runEvent = (event: Stripe.Event) => {
+  const obj = event.data.object as { id?: string };
+  const byType: Record<string, unknown> = event.type.startsWith('invoice.')
+    ? { ...obj, status: event.type === 'invoice.paid' ? 'paid' : 'open' }
+    : obj;
+  const fallback = (id: string) => (id in h.live ? h.live[id] : id === obj.id ? byType : undefined);
+  h.stripe.subscriptions.retrieve.mockImplementation(async (id: string) => {
+    const v = fallback(id);
+    if (v === null) throw Object.assign(new Error('No such subscription'), { code: 'resource_missing', statusCode: 404 });
+    return v;
+  });
+  h.stripe.invoices.retrieve.mockImplementation(async (id: string) => fallback(id));
+  return stripeService.processWebhookEvent(event, h.stripe as unknown as Stripe);
+};
 
 describe('subscription webhooks for a non-current subscription', () => {
   it('subscription.deleted does not downgrade or suspend an org linked to another subscription', async () => {
@@ -277,7 +293,7 @@ describe('included server credit on subscription events', () => {
   it('subscription.deleted expires what is left of the credit', async () => {
     h.selectResults.push([{ id: ORG }]);
 
-    await runEvent(subEvent('customer.subscription.deleted', sub('price_pro')));
+    await runEvent(subEvent('customer.subscription.deleted', sub('price_pro', 'canceled')));
 
     expect(h.includedCredit.expire).toHaveBeenCalledWith(ORG, 'canceled');
   });
@@ -312,5 +328,82 @@ describe('subscription schedule events', () => {
     h.selectResults.push([{ id: ORG }]);
     await runEvent(subEvent('customer.subscription.deleted', oldSub));
     expect(h.planSchedule.reconcileFromSubscription).toHaveBeenCalledWith(ORG, null);
+  });
+});
+
+describe('late or out-of-order events act on what Stripe says now', () => {
+  const sub = (priceId: string, status = 'active') =>
+    ({ id: 'sub_old', status, metadata: { organizationId: ORG }, items: { data: [{ price: { id: priceId } }] } }) as unknown as Stripe.Subscription;
+
+  it('a stale subscription.updated (Hobby) does not undo a newer plan (Pro)', async () => {
+    h.selectResults.push([{ id: ORG }]);
+    h.live.sub_old = sub('price_pro');
+    h.includedCredit.currentPlan.mockResolvedValue('pro');
+
+    await runEvent(subEvent('customer.subscription.updated', sub('price_hobby')));
+
+    expect(h.updates[0]).toMatchObject({ plan: 'pro' });
+    expect(h.includedCredit.grantUpgradeDifference).not.toHaveBeenCalled();
+  });
+
+  it('a stale Hobby → Pro event does not grant upgrade credit when Stripe still bills Hobby', async () => {
+    h.selectResults.push([{ id: ORG }]);
+    h.live.sub_old = sub('price_hobby');
+    h.includedCredit.currentPlan.mockResolvedValue('hobby');
+
+    await runEvent(subEvent('customer.subscription.updated', sub('price_pro')));
+
+    expect(h.updates[0]).toMatchObject({ plan: 'hobby' });
+    expect(h.includedCredit.grantUpgradeDifference).not.toHaveBeenCalled();
+  });
+
+  it('subscription.updated after the subscription ended changes nothing', async () => {
+    h.selectResults.push([{ id: ORG }]);
+    h.live.sub_old = sub('price_pro', 'canceled');
+
+    await runEvent(subEvent('customer.subscription.updated', sub('price_pro')));
+
+    expect(h.updates).toHaveLength(0);
+    expect(h.includedCredit.ensurePeriodGrant).not.toHaveBeenCalled();
+  });
+
+  it('subscription.deleted for a subscription that is still live does not downgrade or expire credit', async () => {
+    h.selectResults.push([{ id: ORG }]);
+    h.live.sub_old = sub('price_pro', 'active');
+
+    await runEvent(subEvent('customer.subscription.deleted', sub('price_pro', 'canceled')));
+
+    expect(h.updates).toHaveLength(0);
+    expect(h.suspendOrganization).not.toHaveBeenCalled();
+    expect(h.includedCredit.expire).not.toHaveBeenCalled();
+  });
+
+  it('subscription.deleted for a subscription Stripe no longer has still ends it', async () => {
+    h.selectResults.push([{ id: ORG }]);
+    h.live.sub_old = null;
+
+    await runEvent(subEvent('customer.subscription.deleted', sub('price_pro', 'canceled')));
+
+    expect(h.updates[0]).toMatchObject({ plan: 'free' });
+    expect(h.includedCredit.expire).toHaveBeenCalledWith(ORG, 'canceled');
+  });
+
+  it('a late payment_failed for an invoice paid since does not mark the org past due', async () => {
+    h.selectResults.push([paidOrg]);
+    h.live.in_1 = { id: 'in_1', status: 'paid' };
+
+    await runEvent(invoiceEvent('invoice.payment_failed', 'sub_new'));
+
+    expect(h.markPastDue).not.toHaveBeenCalled();
+  });
+
+  it('invoice.paid for an invoice voided since grants nothing', async () => {
+    h.selectResults.push([paidOrg]);
+    h.live.in_1 = { id: 'in_1', status: 'void' };
+
+    await runEvent(invoiceEvent('invoice.paid', 'sub_new'));
+
+    expect(h.markActive).not.toHaveBeenCalled();
+    expect(h.includedCredit.ensurePeriodGrant).not.toHaveBeenCalled();
   });
 });
