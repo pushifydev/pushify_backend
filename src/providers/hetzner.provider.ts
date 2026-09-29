@@ -528,15 +528,31 @@ export class HetznerProvider implements ICloudProvider {
     });
   }
 
+  /** Every snapshot in the account, across all pages. */
+  private async listAllSnapshots(): Promise<HetznerSnapshot[]> {
+    const all: HetznerSnapshot[] = [];
+    for (let page = 1; page <= 100; page++) {
+      const res = await this.request<{
+        images: HetznerSnapshot[];
+        meta?: { pagination?: { next_page: number | null } };
+      }>(`/images?type=snapshot&per_page=50&page=${page}`);
+      all.push(...res.images);
+      if (!res.meta?.pagination?.next_page) break;
+    }
+    return all;
+  }
+
+  /**
+   * Snapshots of one server (or all, without an id). Matched on `created_from`: Hetzner's
+   * `bound_to` filter only applies to backup images and returns nothing for snapshots.
+   */
   async listSnapshots(providerId?: string): Promise<Snapshot[]> {
-    const endpoint = providerId
-      ? `/images?type=snapshot&bound_to=${providerId}`
-      : '/images?type=snapshot';
+    const images = (await this.listAllSnapshots()).filter(
+      (img) => !providerId || String(img.created_from?.id ?? '') === String(providerId),
+    );
 
-    const response = await this.request<{ images: HetznerSnapshot[] }>(endpoint);
-
-    const snapshots = await Promise.all(
-      response.images.map(async (snap) => {
+    return Promise.all(
+      images.map(async (snap) => {
         const progress =
           snap.status === 'creating' ? await this.getSnapshotProgress(snap.id.toString()) : null;
 
@@ -551,28 +567,13 @@ export class HetznerProvider implements ICloudProvider {
         };
       })
     );
-
-    return snapshots;
   }
 
-  /**
-   * Ids of every snapshot taken from a server, including after the server is gone. Hetzner's
-   * `bound_to` filter only applies to backup images, so snapshots are matched on `created_from`
-   * across all pages.
-   */
+  /** Ids of every snapshot taken from a server, including after the server is gone. */
   async listSnapshotIdsCreatedFrom(providerId: string): Promise<string[]> {
-    const ids: string[] = [];
-    for (let page = 1; page <= 100; page++) {
-      const res = await this.request<{
-        images: HetznerSnapshot[];
-        meta?: { pagination?: { next_page: number | null } };
-      }>(`/images?type=snapshot&per_page=50&page=${page}`);
-      for (const img of res.images) {
-        if (String(img.created_from?.id ?? '') === String(providerId)) ids.push(String(img.id));
-      }
-      if (!res.meta?.pagination?.next_page) break;
-    }
-    return ids;
+    return (await this.listAllSnapshots())
+      .filter((img) => String(img.created_from?.id ?? '') === String(providerId))
+      .map((img) => String(img.id));
   }
 
   async restoreSnapshot(providerId: string, snapshotId: string): Promise<void> {

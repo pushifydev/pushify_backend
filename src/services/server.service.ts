@@ -15,7 +15,7 @@ import { getServerStatusQueue } from '../queue';
 import { generateSSHKeyPair, removeSSHConnection } from '../utils/ssh';
 import { removePushifyKey, type KeyRemovalResult } from '../lib/server-key-removal';
 import { encrypt, decrypt } from '../lib/encryption';
-import { type PlanType } from '../lib/plans';
+import { isUnlimited, type PlanType } from '../lib/plans';
 import { getEffectivePlanLimits } from '../lib/effective-plan-limits';
 import { usageMeteringService } from './usage-metering.service';
 import { planLimitsService } from './plan-limits.service';
@@ -52,6 +52,24 @@ export async function revokePushifyAccess(
     logger.warn({ serverId: server.id, host: server.ipv4, reason: result.reason }, 'could not remove Pushify SSH key from server');
   }
   return result;
+}
+
+/**
+ * After a managed server is deleted: its snapshots and the SSH key uploaded for it. Best effort —
+ * the server itself is gone either way; what is left is reported by scripts/hetzner-leftovers.ts.
+ */
+async function releaseProviderLeftovers(
+  provider: ReturnType<typeof createProvider>,
+  serverId: string,
+  snapshotIds: string[],
+  sshKeyId: string | null,
+): Promise<void> {
+  for (const id of snapshotIds) {
+    await provider.deleteSnapshot(id).catch((err) => logger.warn({ err, serverId, snapshotId: id }, 'could not delete snapshot of the deleted server'));
+  }
+  if (sshKeyId) {
+    await provider.deleteSSHKey(sshKeyId).catch((err) => logger.warn({ err, serverId, sshKeyId }, 'could not delete the SSH key of the deleted server'));
+  }
 }
 
 export interface CreateServerInput {
@@ -807,7 +825,15 @@ export const serverService = {
       if (server.isManaged && server.providerId) {
         const apiToken = getProviderToken(server.provider as ProviderType);
         const provider = createProvider(server.provider as ProviderType, apiToken);
+        // Snapshots can only be restored onto this server, so without it they are just a bill.
+        const snapshotIds = provider.listSnapshotIdsCreatedFrom
+          ? await provider.listSnapshotIdsCreatedFrom(server.providerId).catch((err) => {
+              logger.warn({ err, serverId }, 'could not list snapshots of the deleted server');
+              return [] as string[];
+            })
+          : [];
         await provider.deleteServer(server.providerId);
+        await releaseProviderLeftovers(provider, serverId, snapshotIds, server.sshKeyId);
       }
 
       // Delete from database
@@ -1599,10 +1625,9 @@ export const serverService = {
 
     const apiToken = getProviderToken('hetzner');
     const provider = createProvider('hetzner', apiToken);
-    const label = input.name?.trim() || `pushify-${server.name}-${Date.now()}`;
-    const snapshot = await provider.createSnapshot(server.providerId, label, input.description);
 
-    const { serverSnapshotAutomationService } = await import('./server-snapshot-automation.service');
+    // At the plan limit a new snapshot is refused. Existing ones are never removed to make room
+    // (the limit was not enforced before, so some servers are over it and keep what they have).
     const [org] = await db
       .select({
         plan: organizations.plan,
@@ -1618,13 +1643,14 @@ export const serverService = {
         grandfatheredUntil: org.grandfatheredUntil,
         planLimitsOverride: org.planLimitsOverride as Record<string, number | boolean> | null,
       });
-      const all = await provider.listSnapshots(server.providerId);
-      await serverSnapshotAutomationService.pruneSnapshots(
-        provider,
-        all,
-        limits.snapshotsPerServer,
-      );
+      const existing = await provider.listSnapshots(server.providerId);
+      if (!isUnlimited(limits.snapshotsPerServer) && existing.length >= limits.snapshotsPerServer) {
+        throw new HTTPException(403, { message: t(locale, 'servers', 'snapshotLimitReached') });
+      }
     }
+
+    const label = input.name?.trim() || `pushify-${server.name}-${Date.now()}`;
+    const snapshot = await provider.createSnapshot(server.providerId, label, input.description);
 
     return snapshot;
   },

@@ -318,6 +318,7 @@ export const tr: TranslationKeys = {
     snapshotsNotSupported: 'Anlık görüntüler yalnızca yönetilen Hetzner sunucularında kullanılabilir',
     autoSnapshotPlanRequired: 'Otomatik anlık görüntü için anlık görüntü kotası olan bir plan gerekir (Hobby ve üzeri).',
     snapshotRequiresRunning: 'Anlık görüntü için sunucu çalışıyor olmalı',
+    snapshotLimitReached: 'Bu sunucuda planınızın izin verdiği kadar anlık görüntü var. Yenisini almak için birini silin.',
     snapshotCreated: 'Anlık görüntü oluşturma başlatıldı',
     snapshotDeleted: 'Anlık görüntü silindi',
     snapshotRestoreStarted:
