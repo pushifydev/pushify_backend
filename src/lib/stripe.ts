@@ -113,6 +113,23 @@ export function getSubscriptionCurrentPeriodEnd(sub: Stripe.Subscription): Date 
   return null;
 }
 
+/**
+ * Current billing period and interval of a subscription (legacy top-level fields or, on newer
+ * API versions, the first item's). Used to cut monthly included-credit periods.
+ */
+export function getSubscriptionPeriod(
+  sub: Stripe.Subscription,
+): { start: Date; end: Date; interval: 'month' | 'year' } | null {
+  const item = sub.items?.data?.[0] as (Stripe.SubscriptionItem & { current_period_start?: number }) | undefined;
+  const legacyStart = (sub as Stripe.Subscription & { current_period_start?: number }).current_period_start;
+  const startSec = typeof legacyStart === 'number' ? legacyStart : item?.current_period_start;
+  const end = getSubscriptionCurrentPeriodEnd(sub);
+  const interval = item?.price?.recurring?.interval;
+  if (typeof startSec !== 'number' || !Number.isFinite(startSec) || !end) return null;
+  if (interval !== 'month' && interval !== 'year') return null;
+  return { start: new Date(startSec * 1000), end, interval };
+}
+
 export function getOrganizationIdFromSubscription(sub: Stripe.Subscription): string | null {
   const fromMeta = sub.metadata?.organizationId;
   if (fromMeta) return fromMeta;

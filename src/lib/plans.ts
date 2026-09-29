@@ -34,12 +34,9 @@ export interface PlanInfo {
   name: string;
   price: number; // Monthly price in USD, 0 for free
   /**
-   * Upper bound (USD cents) for the managed-infra compute credit included with the plan.
-   * The ACTUAL granted amount is dynamic: it tracks the cheapest plan-eligible server's
-   * current price (FX-adjusted) plus a small headroom, capped at this ceiling — so a paying
-   * customer can always start their entry server without a separate top-up even as Hetzner/FX
-   * prices move. Kept below the plan's net margin so we never lose money. See
-   * grantIncludedInfraCredit() / computeIncludedCreditTargetCents().
+   * Managed-server credit included every month (USD cents), fixed per plan. Kept in its own
+   * balance, spent before the wallet, servers only, no roll-over; yearly plans get it monthly.
+   * See lib/included-credit.ts and services/included-credit.service.ts.
    */
   includedInfraCreditCents: number;
   limits: PlanLimits;
@@ -80,7 +77,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
   hobby: {
     name: 'Hobby',
     price: 15,
-    includedInfraCreditCents: 900, // ceiling ~$9 — dynamic grant covers the cheapest server (~$6.5-7.5); < $15 margin
+    includedInfraCreditCents: 900, // $9 — covers the entry server (cx23 ≈ $7.65 at ~1.16 EUR/USD) up to ~1.36
     limits: {
       apiRequestsPerMinute: 120,
       servers: 1,
@@ -104,7 +101,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
   pro: {
     name: 'Pro',
     price: 29,
-    includedInfraCreditCents: 2000, // ceiling ~$20 — dynamic grant covers the cheapest eligible server; < $29 margin
+    includedInfraCreditCents: 1800, // $18
     limits: {
       apiRequestsPerMinute: 300,
       servers: 3,
@@ -128,7 +125,7 @@ export const PLAN_LIMITS: Record<PlanType, PlanInfo> = {
   business: {
     name: 'Business',
     price: 99,
-    includedInfraCreditCents: 5000, // ceiling ~$50 — dynamic grant covers the cheapest eligible server; well under $99
+    includedInfraCreditCents: 4500, // $45
     limits: {
       apiRequestsPerMinute: 600,
       servers: 8,

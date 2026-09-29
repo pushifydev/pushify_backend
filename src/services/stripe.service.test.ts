@@ -20,7 +20,12 @@ const h = vi.hoisted(() => ({
   markPastDue: vi.fn(),
   markActive: vi.fn(),
   notifyPaymentFailedIfDue: vi.fn(),
-  grantIncludedInfraCredit: vi.fn(),
+  includedCredit: {
+    currentPlan: vi.fn(),
+    ensurePeriodGrant: vi.fn(),
+    grantUpgradeDifference: vi.fn(),
+    expire: vi.fn(),
+  },
 }));
 
 vi.mock('../db', () => {
@@ -51,6 +56,7 @@ vi.mock('../lib/stripe', () => ({
   getPriceId: () => 'price_pro_monthly',
   getPlanFromPriceId: (id: string) => (id === 'price_hobby' ? 'hobby' : id === 'price_pro' ? 'pro' : null),
   getSubscriptionCurrentPeriodEnd: () => null,
+  getSubscriptionPeriod: () => null,
   getOrganizationIdFromSubscription: (sub: Stripe.Subscription) => sub.metadata?.organizationId ?? null,
 }));
 
@@ -64,9 +70,8 @@ vi.mock('../lib/email', () => ({
 }));
 vi.mock('../lib/billing-notify', () => ({ resolveBillingNotifyEmail: vi.fn() }));
 vi.mock('../repositories/organization.repository', () => ({ organizationRepository: { findById: vi.fn() } }));
-vi.mock('./infra-billing.service', () => ({
-  infraBillingService: { grantIncludedInfraCredit: h.grantIncludedInfraCredit },
-}));
+vi.mock('./infra-billing.service', () => ({ infraBillingService: {} }));
+vi.mock('./included-credit.service', () => ({ includedCreditService: h.includedCredit }));
 vi.mock('./organization-billing.service', () => ({
   organizationBillingService: {
     suspendOrganization: h.suspendOrganization,
@@ -233,5 +238,61 @@ describe('invoice webhooks for an older subscription', () => {
     await runEvent(invoiceEvent('invoice.paid', 'sub_new'));
 
     expect(h.markActive).toHaveBeenCalledWith(ORG);
+  });
+});
+
+describe('included server credit on subscription events', () => {
+  const sub = (priceId: string, status = 'active') =>
+    ({ id: 'sub_old', status, metadata: { organizationId: ORG }, items: { data: [{ price: { id: priceId } }] } }) as unknown as Stripe.Subscription;
+
+  it('a pending upgrade applied by subscription.updated adds the prorated difference', async () => {
+    h.selectResults.push([{ id: ORG }]);
+    h.includedCredit.currentPlan.mockResolvedValue('hobby');
+
+    await runEvent(subEvent('customer.subscription.updated', sub('price_pro')));
+
+    expect(h.includedCredit.grantUpgradeDifference).toHaveBeenCalledWith(ORG, 'hobby', 'pro');
+  });
+
+  it('a downgrade by subscription.updated grants nothing', async () => {
+    h.selectResults.push([{ id: ORG }]);
+    h.includedCredit.currentPlan.mockResolvedValue('pro');
+
+    await runEvent(subEvent('customer.subscription.updated', sub('price_hobby')));
+
+    expect(h.includedCredit.grantUpgradeDifference).not.toHaveBeenCalled();
+  });
+
+  it('an upgrade on a past_due subscription grants nothing until it is paid', async () => {
+    h.selectResults.push([{ id: ORG }]);
+    h.includedCredit.currentPlan.mockResolvedValue('hobby');
+
+    await runEvent(subEvent('customer.subscription.updated', sub('price_pro', 'past_due')));
+
+    expect(h.includedCredit.grantUpgradeDifference).not.toHaveBeenCalled();
+  });
+
+  it('subscription.deleted expires what is left of the credit', async () => {
+    h.selectResults.push([{ id: ORG }]);
+
+    await runEvent(subEvent('customer.subscription.deleted', sub('price_pro')));
+
+    expect(h.includedCredit.expire).toHaveBeenCalledWith(ORG, 'canceled');
+  });
+
+  it('a paid invoice of the current subscription checks the period grant', async () => {
+    h.selectResults.push([paidOrg]);
+
+    await runEvent(invoiceEvent('invoice.paid', 'sub_new'));
+
+    expect(h.includedCredit.ensurePeriodGrant).toHaveBeenCalledWith(ORG);
+  });
+
+  it('a paid invoice of an older subscription grants nothing', async () => {
+    h.selectResults.push([paidOrg]);
+
+    await runEvent(invoiceEvent('invoice.paid', 'sub_old'));
+
+    expect(h.includedCredit.ensurePeriodGrant).not.toHaveBeenCalled();
   });
 });

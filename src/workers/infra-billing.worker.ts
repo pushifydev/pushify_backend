@@ -1,5 +1,6 @@
 import { logger } from '../lib/logger';
 import { infraBillingService } from '../services/infra-billing.service';
+import { includedCreditService } from '../services/included-credit.service';
 
 const HOURLY_INTERVAL_MS = 60 * 60 * 1000;
 
@@ -16,6 +17,14 @@ export async function startInfraBillingWorker(): Promise<void> {
   logger.info('Infra billing worker started (hourly managed server charges)');
 
   const tick = async () => {
+    // Monthly included credit first, so a server started at a period boundary is charged
+    // against the new period's credit. Idempotent: at most one grant per org and period.
+    try {
+      const credit = await includedCreditService.grantDuePeriods();
+      if (credit.granted > 0) logger.info(credit, 'Included credit: period grants issued');
+    } catch (err) {
+      logger.error({ err }, 'Included credit: period grant tick failed');
+    }
     try {
       const result = await infraBillingService.processHourlyBilling();
       if (result.charged > 0 || result.stopped > 0) {

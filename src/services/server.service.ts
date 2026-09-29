@@ -859,12 +859,13 @@ export const serverService = {
         const required = minimumBalanceToStartCents(server.customerPriceMonthlyCents ?? 0);
         if (required > 0) {
           const [orgWallet] = await db
-            .select({ balance: organizations.infraWalletBalanceCents })
+            .select({ balance: organizations.infraWalletBalanceCents, included: organizations.includedCreditCents })
             .from(organizations)
             .where(eq(organizations.id, organizationId))
             .limit(1);
 
-          if ((orgWallet?.balance ?? 0) < required) {
+          // This period's included credit counts toward the restart threshold too.
+          if ((orgWallet?.balance ?? 0) + (orgWallet?.included ?? 0) < required) {
             throw new HTTPException(402, {
               message: t(locale, 'infraBilling', 'insufficientWallet'),
             });

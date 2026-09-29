@@ -27,7 +27,6 @@
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
-    "backfill:infra-credit": "tsx scripts/backfill-included-infra-credit.ts",
     "reset:storage-usage": "tsx scripts/reset-storage-usage.ts",
     "requeue:stuck-servers": "tsx scripts/requeue-stuck-servers.ts",
     "gc:orphans": "tsx scripts/gc-orphaned-deployments.ts",
