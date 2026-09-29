@@ -58,7 +58,9 @@ serverRouter.get('/providers/:provider/sizes', requireScope('servers:read'), asy
   return c.json({ data: sizes });
 });
 
-// Get available server types for a provider (raw types from provider)
+// Get available server types for a provider (raw types from provider).
+// The provider's own list prices are stripped: customers see Pushify prices (the /sizes
+// endpoint), never what the provider charges us.
 serverRouter.get('/providers/:provider/server-types', requireScope('servers:read'), async (c) => {
   const locale = c.get('locale');
   const provider = c.req.param('provider') as ProviderType;
@@ -66,7 +68,7 @@ serverRouter.get('/providers/:provider/server-types', requireScope('servers:read
 
   const serverTypes = await serverService.getServerTypes(provider, location, locale);
 
-  return c.json({ data: serverTypes });
+  return c.json({ data: serverTypes.map(({ priceMonthly: _m, priceHourly: _h, ...rest }) => rest) });
 });
 
 // ============ Server Routes ============

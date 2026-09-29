@@ -9,6 +9,25 @@ import { stripeService } from '../services/stripe.service';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 
+/**
+ * Purchased-domain rows carry what we pay the registrar (wholesale and renewal wholesale).
+ * Customers only ever see the retail price, so every row leaving these routes goes through here.
+ */
+export function toCustomerDomain<T extends Record<string, unknown>>(
+  row: T
+): Omit<T, 'wholesalePriceCents' | 'renewalWholesaleCents'> {
+  const { wholesalePriceCents: _w, renewalWholesaleCents: _r, ...rest } = row;
+  return rest;
+}
+
+function withCustomerDomain<T>(result: T): T {
+  if (result && typeof result === 'object' && 'domain' in result && (result as { domain?: unknown }).domain) {
+    const r = result as T & { domain: Record<string, unknown> };
+    return { ...r, domain: toCustomerDomain(r.domain) };
+  }
+  return result;
+}
+
 /** Domain sales (registrar reseller) — /api/v1/domains */
 const registrarDomainRoutes = new Hono<AppEnv>();
 
@@ -39,7 +58,7 @@ registrarDomainRoutes.get('/search', async (c) => {
 registrarDomainRoutes.get('/', async (c) => {
   const organizationId = c.get('organizationId')!;
   const domains = await registrarDomainService.listByOrganization(organizationId);
-  return c.json({ data: domains });
+  return c.json({ data: domains.map(toCustomerDomain) });
 });
 
 const purchaseSchema = z.object({
@@ -66,7 +85,7 @@ registrarDomainRoutes.post('/purchase', async (c) => {
     projectId: body.data.projectId,
     locale,
   });
-  return c.json({ data: result }, 201);
+  return c.json({ data: withCustomerDomain(result) }, 201);
 });
 
 // Card payment path: quote → Stripe Checkout; the webhook registers the domain on payment
@@ -111,7 +130,7 @@ registrarDomainRoutes.post('/purchase/confirm', async (c) => {
 
   try {
     const result = await stripeService.confirmDomainPurchase(organizationId, body.data.sessionId);
-    return c.json({ data: result });
+    return c.json({ data: withCustomerDomain(result) });
   } catch (err) {
     if (
       err instanceof Error &&
@@ -152,7 +171,7 @@ registrarDomainRoutes.post('/transfer', async (c) => {
     authCode: body.data.authCode,
     locale,
   });
-  return c.json({ data: result }, 201);
+  return c.json({ data: withCustomerDomain(result) }, 201);
 });
 
 // ── Per-domain management ──
@@ -165,7 +184,7 @@ registrarDomainRoutes.get('/:domainName/details', async (c) => {
     c.req.param('domainName'),
     locale
   );
-  return c.json({ data: details });
+  return c.json({ data: withCustomerDomain(details) });
 });
 
 registrarDomainRoutes.get('/:domainName/dns', async (c) => {
@@ -316,7 +335,7 @@ registrarDomainRoutes.patch('/:domainName/auto-renew', async (c) => {
     body.data.enabled,
     locale
   );
-  return c.json({ data: updated });
+  return c.json({ data: toCustomerDomain(updated) });
 });
 
 export { registrarDomainRoutes };
