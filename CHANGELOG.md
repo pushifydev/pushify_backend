@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.94] - 2026-09-30
+
+### Fixed
+- **Bulk env var upserts (`pushify env push`) no longer overwrite a secret with its masked copy.** Pushing back a `.env` from `pushify env pull` sent `ab****yz` for every secret and replaced the real value; an unchanged mask now leaves the variable as it is (`action: "unchanged"`). `isSecret` is only changed when the request sets it, and the response reports the stored value instead of `false`.
+
+### Added
+- `npm run env:masked-values` (read-only) lists variables whose stored value looks like a mask — the ones this may have hit — by project and key, never the values.
+
 ## [0.2.0-beta.93] - 2026-09-30
 
 ### Security
