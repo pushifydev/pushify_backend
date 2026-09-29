@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.80] - 2026-09-29
+
+### Changed
+- **Safer deploys.** The Jenkins deploy now takes a `pg_dump` backup and runs migrations before the new build replaces the running one. If either fails the deploy stops and the running version stays in place, including after a later restart. A missing `DATABASE_URL` stops the deploy instead of skipping migrations.
+
+### Added
+- **Pre-migration backups.** `scripts/db-backup.sh` (`npm run db:backup`) writes a verified, compressed dump per deploy to `~/pushify-db-backups` (override with `BACKUP_DIR`) and keeps the newest 7 per database.
+
 ## [0.2.0-beta.79] - 2026-09-29
 
 ### Changed
