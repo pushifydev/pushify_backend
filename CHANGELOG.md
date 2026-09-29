@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.82] - 2026-09-29
+
+### Changed
+- **Downgrades take effect at the end of the billing period.** The current plan (and its included credit) continues until the period ends, then the lower plan starts, with no prorated refund — as the refund policy already said. Switching billing cycle on the same plan works the same way. Upgrades still apply immediately. A scheduled change can be cancelled (`POST /billing/cancel-scheduled-change`), is replaced by an upgrade, and is cleared when the subscription is cancelled. The pending change follows the Stripe subscription schedule, including edits made in the Stripe dashboard.
+
+### Database
+- Migration `0062_scheduled_plan_change` (additive): `organizations.pending_plan`, `pending_billing_interval`, `pending_change_at`, `stripe_schedule_id`.
+
 ## [0.2.0-beta.81] - 2026-09-29
 
 ### Changed
