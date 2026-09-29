@@ -24,6 +24,7 @@ import { activityRoutes } from './activity';
 import { twoFactorRoutes } from './twoFactor';
 import { organizationRoutes } from './organizations';
 import { billingRoutes } from './billing';
+import { publicPricingRoutes } from './public-pricing';
 import { serverRoutes } from './servers';
 import { databaseRoutes } from './databases';
 import { githubAppWebhookRoutes } from './github-app-webhook';
@@ -71,6 +72,7 @@ export function registerRoutes(app: OpenAPIHono<any>) {
   app.route('/api/v1/activity', activityRoutes);
   app.route('/api/v1/organizations', organizationRoutes);
   app.route('/api/v1/billing', billingRoutes);
+  app.route('/api/v1/public', publicPricingRoutes);
   app.route('/api/v1/registries', registryRoutes);
   app.route('/api/v1/sso', ssoRoutes);
   app.route('/api/v1/domains', registrarDomainRoutes);
