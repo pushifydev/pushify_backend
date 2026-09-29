@@ -22,6 +22,7 @@ import { startAppSleepWorker, stopAppSleepWorker } from '../workers/app-sleep.wo
 import { startAdminNotifyWorker, stopAdminNotifyWorker } from '../workers/admin-notify.worker';
 import { startDomainRenewalWorker, stopDomainRenewalWorker } from '../workers/domain-renewal.worker';
 import { startBillingReconcileWorker, stopBillingReconcileWorker } from '../workers/billing-reconcile.worker';
+import { startDeletionPurgeWorker, stopDeletionPurgeWorker } from '../workers/deletion-purge.worker';
 import { startOnboardingWorker, stopOnboardingWorker } from '../workers/onboarding.worker';
 import { startDigestWorker, stopDigestWorker } from '../workers/digest.worker';
 import { reconcileProvisioningServers, gcOrphanedLocalDeployments } from '../services/server-reconcile.service';
@@ -81,6 +82,7 @@ export async function startBackgroundWorkers(): Promise<void> {
   startAppSleepWorker();
   startDomainRenewalWorker();
   startBillingReconcileWorker();
+  startDeletionPurgeWorker();
   startOnboardingWorker();
   startDigestWorker();
 
@@ -168,6 +170,7 @@ export async function stopBackgroundWorkers(): Promise<void> {
   stopAppSleepWorker();
   stopDomainRenewalWorker();
   stopBillingReconcileWorker();
+  stopDeletionPurgeWorker();
   stopOnboardingWorker();
   stopDigestWorker();
   stopDeploymentWorker();

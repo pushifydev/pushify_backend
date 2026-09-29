@@ -145,6 +145,8 @@ const envSchema = z.object({
   DB_BACKUP_RCLONE_REMOTE: z.string().optional(),
   /** How long an off-site copy is kept. The on-server copy keeps its own retention. */
   DB_BACKUP_REMOTE_KEEP_DAYS: z.coerce.number().int().min(1).max(3650).default(30),
+  /** How long invoice and payment facts of a deleted organization are kept (Privacy Policy §4) */
+  BILLING_RECORD_RETENTION_YEARS: z.coerce.number().int().min(1).max(30).default(10),
   /** Path to the rclone binary, when it is not on PATH */
   RCLONE_BIN: z.string().optional(),
   PUSHIFY_ALLOW_PRIVATE_APP_URLS: z

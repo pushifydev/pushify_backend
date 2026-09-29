@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  remoteOrganizationPrefix,
   catArgs,
   offsiteConfigured,
   pruneArgs,
@@ -96,5 +97,19 @@ describe('configuration', () => {
     expect(validateRemote('/var/backups')).toMatch(/rclone remote/);
     expect(validateRemote('./backups')).not.toBeNull();
     expect(validateRemote('')).toMatch(/required/);
+  });
+});
+
+describe('remoteOrganizationPrefix', () => {
+  it('is the remote plus the organization id', () => {
+    expect(remoteOrganizationPrefix('r2:bucket/', '0B7E7A7C-1111-4222-8333-444455556666')).toBe(
+      'r2:bucket/0b7e7a7c-1111-4222-8333-444455556666',
+    );
+  });
+
+  it('refuses anything that is not an organization id', () => {
+    for (const bad of ['', '..', '*', 'org/../..', 'not-a-uuid']) {
+      expect(() => remoteOrganizationPrefix('r2:bucket', bad)).toThrow();
+    }
   });
 });

@@ -32,7 +32,8 @@ export type AdminEvent =
   | 'backup.verify_failed'
   | 'certificate.expiring'
   | 'resource.pressure'
-  | 'server.disk_full';
+  | 'server.disk_full'
+  | 'deletion.purge_stuck';
 
 export const ADMIN_EVENT_TITLES: Record<AdminEvent, string> = {
   'user.registered': 'New user registered',
@@ -60,6 +61,7 @@ export const ADMIN_EVENT_TITLES: Record<AdminEvent, string> = {
   'certificate.expiring': 'HTTPS certificate expiring soon',
   'resource.pressure': 'An app is running out of memory or CPU',
   'server.disk_full': 'A server is running out of disk',
+  'deletion.purge_stuck': 'Account deletion purge step keeps failing',
 };
 
 /** Parse ADMIN_NOTIFY_EMAILS into a clean recipient list. */

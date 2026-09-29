@@ -488,6 +488,27 @@ class GitHubService {
   }
 
   /**
+   * Remove the Pushify webhook (matched by its URL) from a repository. Returns how many were
+   * removed; a repository that is gone or no longer accessible counts as nothing to remove.
+   */
+  async deleteRepoWebhook(accessToken: string, owner: string, repo: string, webhookUrl: string): Promise<number> {
+    const headers = {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/vnd.github.v3+json',
+    };
+    const listRes = await fetch(`${GITHUB_API_URL}/repos/${owner}/${repo}/hooks`, { headers });
+    if (listRes.status === 404 || listRes.status === 403) return 0;
+    if (!listRes.ok) throw new Error(`GitHub: listing hooks of ${owner}/${repo} failed (${listRes.status})`);
+    const hooks = (await listRes.json()) as Array<{ id: number; config?: { url?: string } }>;
+    let removed = 0;
+    for (const hook of hooks.filter((h) => h.config?.url === webhookUrl)) {
+      const del = await fetch(`${GITHUB_API_URL}/repos/${owner}/${repo}/hooks/${hook.id}`, { method: 'DELETE', headers });
+      if (del.ok || del.status === 404) removed++;
+    }
+    return removed;
+  }
+
+  /**
    * Create or update the Pushify webhook on a GitHub repository.
    */
   async ensureRepoWebhook(

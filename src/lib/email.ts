@@ -1450,12 +1450,12 @@ export async function sendAdminNotificationEmail(
   subject: string,
   html: string,
   text: string
-): Promise<void> {
+): Promise<boolean> {
   if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
     logger.warn('Email not configured — skipping admin notification');
-    return;
+    return false;
   }
-  if (to.length === 0) return;
+  if (to.length === 0) return false;
 
   try {
     await transporter.sendMail({
@@ -1466,8 +1466,10 @@ export async function sendAdminNotificationEmail(
       text,
     });
     logger.info({ to, subject }, 'Admin notification email sent');
+    return true;
   } catch (error) {
     logger.error({ error, to, subject }, 'Failed to send admin notification email');
+    return false;
   }
 }
 
@@ -2111,5 +2113,76 @@ export async function sendDeletionRestoredEmail(
     });
   } catch (error) {
     logger.error({ error, to, kind: input.kind }, 'Failed to send deletion restored email');
+  }
+}
+
+export async function sendDeletionReminderEmail(
+  to: string,
+  input: Pick<DeletionEmailInput, 'kind' | 'name' | 'scheduledFor'>,
+  locale: 'en' | 'tr' = 'en',
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) return;
+  const tr = locale === 'tr';
+  const date = formatDeletionDate(input.scheduledFor, locale);
+  const name = esc(input.name);
+  const restoreUrl = input.kind === 'account' ? `${env.FRONTEND_URL}/login` : `${env.FRONTEND_URL}/dashboard/settings`;
+  const html = renderTransactionalEmail({
+    eyebrow: tr ? 'Silme yaklaşıyor' : 'Deletion coming up',
+    tone: 'warning',
+    title: tr ? 'Bir hafta kaldı' : 'One week left',
+    greeting: tr ? 'Merhaba,' : 'Hi there,',
+    bodyHtml: [
+      tr
+        ? `<strong style="color:#18181b;">${name}</strong> <strong>${esc(date)}</strong> tarihinde kalıcı olarak silinecek. Sonrasında geri alınamaz.`
+        : `<strong style="color:#18181b;">${name}</strong> will be permanently deleted on <strong>${esc(date)}</strong>. After that it cannot be restored.`,
+      tr
+        ? 'Veritabanı yedeklerini indirmek ya da domain transfer kodu almak için son fırsat.'
+        : 'This is the last chance to download database backups or get domain transfer codes.',
+    ],
+    button: { href: restoreUrl, label: tr ? 'Geri al' : 'Restore' },
+  });
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: tr ? `Bir hafta sonra silinecek — ${input.name}` : `Deleted in one week — ${input.name}`,
+      html,
+    });
+  } catch (error) {
+    logger.error({ error, to, kind: input.kind }, 'Failed to send deletion reminder email');
+  }
+}
+
+export async function sendDeletionCompletedEmail(
+  to: string,
+  input: Pick<DeletionEmailInput, 'kind' | 'name'>,
+  locale: 'en' | 'tr' = 'en',
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) return;
+  const tr = locale === 'tr';
+  const name = esc(input.name);
+  const html = renderTransactionalEmail({
+    eyebrow: tr ? 'Silindi' : 'Deleted',
+    tone: 'neutral',
+    title: tr ? 'Silme tamamlandı' : 'Deletion complete',
+    greeting: tr ? 'Merhaba,' : 'Hi there,',
+    bodyHtml: [
+      tr
+        ? `<strong style="color:#18181b;">${name}</strong> ve verileri kalıcı olarak silindi. Sistem yedeklerimizdeki kopyalar 30 gün içinde üzerine yazılır.`
+        : `<strong style="color:#18181b;">${name}</strong> and its data have been permanently deleted. Copies in our system backups are overwritten within 30 days.`,
+      tr
+        ? 'Yasanın gerektirdiği fatura ve ödeme kayıtlarını saklıyoruz. Bu, bu adrese gönderdiğimiz son e-posta.'
+        : 'We keep the invoice and payment records the law requires. This is the last email we send to this address.',
+    ],
+  });
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: tr ? `Silindi — ${input.name}` : `Deleted — ${input.name}`,
+      html,
+    });
+  } catch (error) {
+    logger.error({ error, to, kind: input.kind }, 'Failed to send deletion completed email');
   }
 }
