@@ -232,6 +232,36 @@ try {
     expect('E', 'plan Business, pending cleared', o.plan === 'business' && o.pendingPlan === null, [o.plan, o.pendingPlan]);
     expect('E', 'upgrade credit added (≤ $27 difference)', o.includedCreditCents > 1800 && o.includedCreditCents <= 4500, o.includedCreditCents);
   }
+
+  // ── F. Late and out-of-order webhooks ────────────────────────────────────────────────────
+  console.log('\nF. Hobby → Pro, events delivered in reverse and re-delivered late');
+  {
+    const s = await setup('F', pHobby, 'hobby');
+    const r = await stripeService.changePlan(s.org.id, 'pro', 'monthly');
+    expect('F', 'upgrade applied', r.status === 'changed', r);
+    let o = await orgRow(s.org.id);
+    const creditAfterUpgrade = o.includedCreditCents;
+    await sleep(2500);
+    const events: Stripe.Event[] = [];
+    for await (const e of stripe.events.list({ limit: 100, created: { gte: Math.floor(stamp / 1000) - 60 } })) {
+      const obj = e.data.object as { id?: string; customer?: string };
+      if (obj.customer === s.customer.id || obj.id === s.sub.id) events.push(e);
+    }
+    events.sort((a, b) => b.created - a.created); // newest first = worst order
+    for (const e of events) await stripeService.processWebhookEvent(e, getStripe());
+    // …and the oldest subscription events once more, as a very late retry
+    for (const e of events.slice().reverse().filter((x) => x.type.startsWith('customer.subscription')).slice(0, 3)) {
+      await stripeService.processWebhookEvent(e, getStripe());
+    }
+    o = await orgRow(s.org.id);
+    const live = await stripe.subscriptions.retrieve(s.sub.id);
+    expect('F', 'Stripe bills Pro', live.items.data[0].price.id === pPro.id);
+    expect('F', 'plan still Pro after stale Hobby events', o.plan === 'pro', o.plan);
+    expect('F', 'no extra credit from re-delivered events', o.includedCreditCents === creditAfterUpgrade, [creditAfterUpgrade, o.includedCreditCents]);
+    const g = await grants(s.org.id);
+    expect('F', 'one period grant and one upgrade top-up', g.filter((x) => x.kind === 'period').length === 1 && g.filter((x) => x.kind === 'upgrade').length === 1, g.map((x) => [x.kind, x.amountCents]));
+    expect('F', 'billing status active', o.billingStatus === 'active', o.billingStatus);
+  }
 } finally {
   console.log('\nCleanup');
   for (const id of clocks) await stripe.testHelpers.testClocks.del(id).catch(() => undefined);

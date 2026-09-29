@@ -201,15 +201,23 @@ export const planScheduleService = {
       return;
     }
 
-    const full =
-      schedule.phases?.some((p) => typeof p.items?.[0]?.price === 'string')
-        ? await getStripe().subscriptionSchedules.retrieve(schedule.id, { expand: ['phases.items.price'] })
-        : schedule;
-    const pending = pendingChangeFromSchedule(full);
+    // The schedule as it is now: a late 'updated' must not resurrect a change that has since been
+    // released or replaced. A schedule Stripe no longer has counts as over.
+    let live: Stripe.SubscriptionSchedule | null;
+    try {
+      live = await getStripe().subscriptionSchedules.retrieve(schedule.id, { expand: ['phases.items.price'] });
+    } catch (err) {
+      if ((err as { code?: string; statusCode?: number })?.code === 'resource_missing' || (err as { statusCode?: number })?.statusCode === 404) {
+        live = null;
+      } else {
+        throw err;
+      }
+    }
+    const pending = live ? pendingChangeFromSchedule(live) : null;
     // A terminal event for a schedule that is no longer ours must not wipe a newer one.
     if (!pending && org.stripeScheduleId && org.stripeScheduleId !== schedule.id) return;
     await writePending(org.id, pending);
-    logger.info({ organizationId: org.id, scheduleId: schedule.id, status: schedule.status, pendingPlan: pending?.plan ?? null }, 'subscription schedule synced');
+    logger.info({ organizationId: org.id, scheduleId: schedule.id, status: live?.status ?? 'missing', pendingPlan: pending?.plan ?? null }, 'subscription schedule synced');
   },
 
   /**

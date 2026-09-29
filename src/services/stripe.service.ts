@@ -97,6 +97,29 @@ async function resolveOrganizationForSubscriptionEvent(
   return metadataOrgId;
 }
 
+/**
+ * Webhooks can arrive late and out of order, so subscription and invoice events are acted on
+ * with what Stripe says NOW, not with the snapshot in the event. `null` when the object is gone.
+ */
+async function liveSubscription(stripe: ReturnType<typeof getStripe>, id: string): Promise<Stripe.Subscription | null> {
+  try {
+    return await stripe.subscriptions.retrieve(id);
+  } catch (err) {
+    if (isStripeResourceMissing(err)) return null;
+    throw err;
+  }
+}
+
+async function liveInvoice(stripe: ReturnType<typeof getStripe>, invoice: Stripe.Invoice): Promise<Stripe.Invoice | null> {
+  if (!invoice.id) return invoice;
+  try {
+    return await stripe.invoices.retrieve(invoice.id);
+  } catch (err) {
+    if (isStripeResourceMissing(err)) return null;
+    throw err;
+  }
+}
+
 /** Hosted invoice URL for a subscription checkout session (best-effort). */
 async function getSessionInvoiceUrl(session: Stripe.Checkout.Session): Promise<string | null> {
   try {
@@ -931,14 +954,22 @@ export const stripeService = {
       }
 
       case 'customer.subscription.updated': {
-        const sub = event.data.object as Stripe.Subscription;
+        const eventSub = event.data.object as Stripe.Subscription;
         // Authoritative mapping is OUR stored subscription→org link, not the mutable Stripe
         // metadata (which an attacker could point at another tenant). Use the DB first and
         // fall back to metadata only when we have no stored link yet (first event). — H-5
-        const organizationId = await resolveOrganizationForSubscriptionEvent(sub, event.type);
+        const organizationId = await resolveOrganizationForSubscriptionEvent(eventSub, event.type);
 
         if (!organizationId) {
-          logger.warn({ subscriptionId: sub.id }, 'subscription.updated: organization not found');
+          logger.warn({ subscriptionId: eventSub.id }, 'subscription.updated: organization not found');
+          break;
+        }
+
+        // Act on the subscription as it is now: a late event must not roll the plan, period or
+        // status back, or grant credit for a state that has already passed.
+        const sub = await liveSubscription(stripe, eventSub.id);
+        if (!sub || sub.status === 'canceled' || sub.status === 'incomplete_expired') {
+          logger.info({ organizationId, subscriptionId: eventSub.id, liveStatus: sub?.status ?? 'missing' }, 'subscription.updated: subscription has ended since — ignoring the event');
           break;
         }
 
@@ -1000,7 +1031,6 @@ export const stripeService = {
       }
 
       case 'customer.subscription.deleted': {
-        adminNotify('subscription.canceled', { stripeEvent: event.type });
         const sub = event.data.object as Stripe.Subscription;
         // Authoritative mapping is OUR stored subscription→org link, not the mutable Stripe
         // metadata (which an attacker could point at another tenant). Use the DB first and
@@ -1008,6 +1038,14 @@ export const stripeService = {
         const organizationId = await resolveOrganizationForSubscriptionEvent(sub, event.type);
 
         if (!organizationId) break;
+
+        // Only downgrade and expire credit if Stripe confirms the subscription is over.
+        const live = await liveSubscription(stripe, sub.id);
+        if (live && live.status !== 'canceled' && live.status !== 'incomplete_expired') {
+          logger.warn({ organizationId, subscriptionId: sub.id, liveStatus: live.status }, 'subscription.deleted: subscription is still live — ignoring the event');
+          break;
+        }
+        adminNotify('subscription.canceled', { stripeEvent: event.type });
 
         await db
           .update(organizations)
@@ -1029,6 +1067,12 @@ export const stripeService = {
 
       case 'invoice.paid': {
         const invoice = event.data.object as Stripe.Invoice;
+        // The invoice as it is now (a voided or refunded invoice does not clear past due).
+        const liveInv = await liveInvoice(stripe, invoice);
+        if (!liveInv || liveInv.status !== 'paid') {
+          logger.info({ invoiceId: invoice.id, liveStatus: liveInv?.status ?? 'missing' }, 'invoice.paid: invoice is no longer paid — ignoring the event');
+          break;
+        }
         const customerId =
           typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
 
@@ -1075,8 +1119,14 @@ export const stripeService = {
       case 'invoice.payment_failed':
       case 'invoice.payment_action_required': {
         const actionRequired = event.type === 'invoice.payment_action_required';
-        if (!actionRequired) adminNotify('payment.failed', { stripeEvent: event.type });
         const invoice = event.data.object as Stripe.Invoice;
+        // A failure that has since been paid, voided or written off must not mark the org past due.
+        const liveInv = await liveInvoice(stripe, invoice);
+        if (!liveInv || liveInv.status !== 'open') {
+          logger.info({ invoiceId: invoice.id, liveStatus: liveInv?.status ?? 'missing' }, `${event.type}: invoice is no longer open — ignoring the event`);
+          break;
+        }
+        if (!actionRequired) adminNotify('payment.failed', { stripeEvent: event.type });
         const customerId =
           typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
 
