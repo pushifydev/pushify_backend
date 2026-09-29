@@ -269,6 +269,7 @@ export interface TranslationKeys {
     snapshotsNotSupported: string;
     autoSnapshotPlanRequired: string;
     snapshotRequiresRunning: string;
+    snapshotLimitReached: string;
     snapshotCreated: string;
     snapshotDeleted: string;
     snapshotRestoreStarted: string;
@@ -674,6 +675,7 @@ export const en: TranslationKeys = {
     snapshotsNotSupported: 'Snapshots are only available for managed Hetzner servers',
     autoSnapshotPlanRequired: 'Automatic snapshots require a plan with snapshot quota (Hobby or higher).',
     snapshotRequiresRunning: 'Server must be running to create a snapshot',
+    snapshotLimitReached: 'This server has as many snapshots as your plan allows. Delete one to take a new snapshot.',
     snapshotCreated: 'Snapshot creation started',
     snapshotDeleted: 'Snapshot deleted successfully',
     snapshotRestoreStarted:

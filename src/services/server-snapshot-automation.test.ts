@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../db', () => ({ db: {} }));
 
-import { serverSnapshotAutomationService, AUTO_SNAPSHOT_DESCRIPTION } from './server-snapshot-automation.service';
+import { planAutomaticSnapshot, AUTO_SNAPSHOT_DESCRIPTION } from './server-snapshot-automation.service';
 import type { Snapshot } from '../providers/cloud-provider.interface';
 
 const snap = (id: string, day: number, auto: boolean): Snapshot => ({
@@ -15,27 +15,21 @@ const snap = (id: string, day: number, auto: boolean): Snapshot => ({
   createdAt: new Date(Date.UTC(2026, 8, day)),
 });
 
-describe('pruneSnapshots', () => {
-  it('removes the oldest automatic snapshots only, until the server is within its limit', async () => {
-    const deleteSnapshot = vi.fn(async () => undefined);
-    const provider = { deleteSnapshot } as never;
-    const pruned = await serverSnapshotAutomationService.pruneSnapshots(
-      provider,
-      [snap('manual-old', 1, false), snap('auto-1', 2, true), snap('auto-2', 3, true), snap('auto-3', 4, true)],
-      2,
-    );
-    expect(pruned).toBe(2);
-    expect(deleteSnapshot.mock.calls.map((c) => (c as unknown as [string])[0])).toEqual(['auto-1', 'auto-2']);
+describe('planAutomaticSnapshot', () => {
+  it('adds a snapshot below the limit', () => {
+    expect(planAutomaticSnapshot([snap('a1', 1, true)], 2)).toEqual({ create: true, replace: null });
   });
 
-  it('never deletes a snapshot taken by hand, even over the limit', async () => {
-    const deleteSnapshot = vi.fn(async () => undefined);
-    const pruned = await serverSnapshotAutomationService.pruneSnapshots(
-      { deleteSnapshot } as never,
-      [snap('m1', 1, false), snap('m2', 2, false), snap('m3', 3, false)],
-      1,
-    );
-    expect(pruned).toBe(0);
-    expect(deleteSnapshot).not.toHaveBeenCalled();
+  it('at the limit, replaces the oldest automatic snapshot — the count never goes down', () => {
+    expect(planAutomaticSnapshot([snap('m', 1, false), snap('a1', 2, true), snap('a2', 3, true)], 3)).toEqual({ create: true, replace: 'a1' });
+  });
+
+  it('over a newly enforced limit, still only replaces one: nothing is deleted to get under it', () => {
+    const over = [snap('m1', 1, false), snap('m2', 2, false), snap('a1', 3, true), snap('a2', 4, true)];
+    expect(planAutomaticSnapshot(over, 1)).toEqual({ create: true, replace: 'a1' });
+  });
+
+  it('does nothing when every snapshot was taken by hand and the limit is reached', () => {
+    expect(planAutomaticSnapshot([snap('m1', 1, false), snap('m2', 2, false)], 2)).toEqual({ create: false, replace: null });
   });
 });

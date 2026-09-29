@@ -24,6 +24,24 @@ const AUTO_SNAPSHOT_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 /** How automatic snapshots are told apart from ones taken by hand (the Hetzner image description). */
 export const AUTO_SNAPSHOT_DESCRIPTION = 'Automatic weekly snapshot';
 
+/**
+ * What the weekly automatic snapshot does, given the server's snapshots and its plan limit. It
+ * never brings the count down: below the limit it adds one; at or over the limit it replaces the
+ * oldest automatic snapshot with a new one; when every snapshot was taken by hand it does nothing.
+ * A snapshot taken by hand is never deleted, and existing snapshots over a (newly enforced) limit
+ * are kept — only new ones are refused.
+ */
+export function planAutomaticSnapshot(
+  snapshots: Snapshot[],
+  maxSnapshots: number,
+): { create: boolean; replace: string | null } {
+  if (isUnlimited(maxSnapshots) || snapshots.length < maxSnapshots) return { create: true, replace: null };
+  const oldestAutomatic = snapshots
+    .filter((s) => s.status === 'available' && s.description === AUTO_SNAPSHOT_DESCRIPTION)
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0];
+  return oldestAutomatic ? { create: true, replace: oldestAutomatic.id } : { create: false, replace: null };
+}
+
 export const serverSnapshotAutomationService = {
   async runScheduledSnapshots(): Promise<{ created: number; pruned: number; skipped: number }> {
     const rows = await db
@@ -91,7 +109,7 @@ export const serverSnapshotAutomationService = {
     }
 
     const provider = createProvider('hetzner', apiToken);
-    let snapshots = await provider.listSnapshots(server.providerId);
+    const snapshots = await provider.listSnapshots(server.providerId);
 
     const hasCreating = snapshots.some((s) => s.status === 'creating');
     if (hasCreating) {
@@ -100,56 +118,37 @@ export const serverSnapshotAutomationService = {
 
     const now = Date.now();
     const lastAt = server.lastAutoSnapshotAt?.getTime() ?? 0;
-    let created = false;
-
-    if (now - lastAt >= AUTO_SNAPSHOT_INTERVAL_MS) {
-      const label = `pushify-auto-${server.name}-${new Date().toISOString().slice(0, 10)}`;
-      await provider.createSnapshot(server.providerId, label, AUTO_SNAPSHOT_DESCRIPTION);
-      await db
-        .update(servers)
-        .set({ lastAutoSnapshotAt: new Date(), updatedAt: new Date() })
-        .where(eq(servers.id, server.id));
-      created = true;
-      logger.info({ serverId: server.id, name: server.name }, 'Automatic server snapshot started');
-      snapshots = await provider.listSnapshots(server.providerId);
+    if (now - lastAt < AUTO_SNAPSHOT_INTERVAL_MS) {
+      return { created: false, pruned: 0 };
     }
 
-    const pruned = await this.pruneSnapshots(provider, snapshots, maxSnapshots);
-    return { created, pruned };
-  },
+    const decision = planAutomaticSnapshot(snapshots, maxSnapshots);
+    if (!decision.create) {
+      logger.info({ serverId: server.id, count: snapshots.length, maxSnapshots }, 'Automatic snapshot skipped: at the plan limit with no automatic snapshot to replace');
+      return { created: false, pruned: 0 };
+    }
 
-  async pruneSnapshots(
-    provider: ReturnType<typeof createProvider>,
-    snapshots: Snapshot[],
-    maxSnapshots: number,
-  ): Promise<number> {
-    if (isUnlimited(maxSnapshots)) return 0;
-
-    // Only automatic snapshots are removed to stay within the limit; one the user took by hand is
-    // theirs to delete, even when it counts towards the limit.
-    const available = snapshots.filter((s) => s.status === 'available');
-    const automatic = available
-      .filter((s) => s.description === AUTO_SNAPSHOT_DESCRIPTION)
-      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-    let total = available.length;
+    const label = `pushify-auto-${server.name}-${new Date().toISOString().slice(0, 10)}`;
+    await provider.createSnapshot(server.providerId, label, AUTO_SNAPSHOT_DESCRIPTION);
+    await db
+      .update(servers)
+      .set({ lastAutoSnapshotAt: new Date(), updatedAt: new Date() })
+      .where(eq(servers.id, server.id));
+    logger.info({ serverId: server.id, name: server.name }, 'Automatic server snapshot started');
 
     let pruned = 0;
-    while (total > maxSnapshots && automatic.length > 0) {
-      const oldest = automatic.shift();
-      if (!oldest) break;
+    if (decision.replace) {
       try {
-        await provider.deleteSnapshot(oldest.id);
-        pruned++;
-        total--;
-        logger.info({ snapshotId: oldest.id }, 'Pruned old server snapshot');
+        await provider.deleteSnapshot(decision.replace);
+        pruned = 1;
+        logger.info({ serverId: server.id, snapshotId: decision.replace }, 'Replaced the oldest automatic snapshot');
       } catch (error) {
-        logger.error({ err: error, snapshotId: oldest.id }, 'Failed to prune snapshot');
-        break;
+        logger.error({ err: error, snapshotId: decision.replace }, 'Failed to replace the oldest automatic snapshot');
       }
     }
-
-    return pruned;
+    return { created: true, pruned };
   },
+
 
   async setAutoSnapshotEnabled(
     serverId: string,

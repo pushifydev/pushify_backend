@@ -15,7 +15,7 @@ import { getServerStatusQueue } from '../queue';
 import { generateSSHKeyPair, removeSSHConnection } from '../utils/ssh';
 import { removePushifyKey, type KeyRemovalResult } from '../lib/server-key-removal';
 import { encrypt, decrypt } from '../lib/encryption';
-import { type PlanType } from '../lib/plans';
+import { isUnlimited, type PlanType } from '../lib/plans';
 import { getEffectivePlanLimits } from '../lib/effective-plan-limits';
 import { usageMeteringService } from './usage-metering.service';
 import { planLimitsService } from './plan-limits.service';
@@ -1625,10 +1625,9 @@ export const serverService = {
 
     const apiToken = getProviderToken('hetzner');
     const provider = createProvider('hetzner', apiToken);
-    const label = input.name?.trim() || `pushify-${server.name}-${Date.now()}`;
-    const snapshot = await provider.createSnapshot(server.providerId, label, input.description);
 
-    const { serverSnapshotAutomationService } = await import('./server-snapshot-automation.service');
+    // At the plan limit a new snapshot is refused. Existing ones are never removed to make room
+    // (the limit was not enforced before, so some servers are over it and keep what they have).
     const [org] = await db
       .select({
         plan: organizations.plan,
@@ -1644,13 +1643,14 @@ export const serverService = {
         grandfatheredUntil: org.grandfatheredUntil,
         planLimitsOverride: org.planLimitsOverride as Record<string, number | boolean> | null,
       });
-      const all = await provider.listSnapshots(server.providerId);
-      await serverSnapshotAutomationService.pruneSnapshots(
-        provider,
-        all,
-        limits.snapshotsPerServer,
-      );
+      const existing = await provider.listSnapshots(server.providerId);
+      if (!isUnlimited(limits.snapshotsPerServer) && existing.length >= limits.snapshotsPerServer) {
+        throw new HTTPException(403, { message: t(locale, 'servers', 'snapshotLimitReached') });
+      }
     }
+
+    const label = input.name?.trim() || `pushify-${server.name}-${Date.now()}`;
+    const snapshot = await provider.createSnapshot(server.providerId, label, input.description);
 
     return snapshot;
   },

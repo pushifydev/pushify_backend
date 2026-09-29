@@ -14,9 +14,10 @@
 - **Deleting a managed server leaves nothing billable behind.** Its snapshots (which can only be restored onto that server) and the SSH key uploaded for it are removed too.
 
 ### Changed
-- Automatic pruning only removes automatic snapshots. A snapshot taken by hand is never deleted automatically, even when it counts towards the plan limit.
+- The snapshot limit now refuses a new snapshot instead of deleting old ones. Snapshots a server already has are kept, even over the limit (it was never enforced before). The weekly automatic snapshot never lowers the count: below the limit it adds one, and at the limit it replaces the oldest automatic snapshot. When every snapshot was taken by hand, it does nothing.
 
 ### Added
+- `npm run snapshots:over-limit` (read-only): the managed servers over their plan's snapshot limit, and how many organizations they belong to.
 - `npm run hetzner:leftovers`: lists snapshots of deleted servers and `pushify-*` SSH keys no server uses. With `--delete` it removes them. Servers unknown to the database are reported and never touched.
 
 ## [0.2.0-beta.86] - 2026-09-29
