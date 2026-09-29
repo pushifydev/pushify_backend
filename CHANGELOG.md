@@ -6,7 +6,7 @@
 
 ### Added
 - **Deleting a connected server removes Pushify's SSH key from it.** Pushify connects as root, removes only its own key from `authorized_keys` and leaves every other key alone. If the server cannot be reached within 10 seconds, the deletion still completes and the response carries the one-line command to remove the key by hand.
-- **`scripts/server-uninstall.sh`** removes what Pushify put on a server: its SSH keys, `pushify-*` containers and network, nginx sites, firewall openings, runner isolation rules and `/opt/pushify`. Supports `--dry-run`, `--keep-apps` and `--keep-data`. Docker volumes, Docker, nginx, certbot and certificates are left in place.
+- **`scripts/server-uninstall.sh`** removes what Pushify put on a server: its SSH keys, `pushify-*` containers and network, nginx sites, firewall openings, runner isolation rules and `/opt/pushify`. It closes only Pushify's app ports (3001-4000) and leaves 22, 80 and 443 open unless `--close-web-ports` is given; port 22 is never touched. Supports `--dry-run`, `--keep-apps` and `--keep-data`. Docker volumes, Docker, nginx, certbot and certificates are left in place.
 
 ### Changed
 - Servers Pushify creates keep the distribution's `/etc/nginx/nginx.conf` as `nginx.conf.pushify-backup` before replacing it; the uninstall script restores it.

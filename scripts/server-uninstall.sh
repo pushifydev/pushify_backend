@@ -10,6 +10,9 @@
 #   --yes        do not ask for confirmation
 #   --keep-apps  leave Pushify's containers running (only remove access, nginx sites, firewall rules)
 #   --keep-data  leave /opt/pushify in place
+#   --close-web-ports  also remove the firewall rules that allow 80 and 443. Off by default: nginx
+#                stays installed, so closing them would take down any site you still serve with it.
+#                Port 22 is never touched.
 #
 # What it removes (everything named or marked by Pushify):
 #   1. Pushify's SSH keys: authorized_keys lines whose comment starts with "pushify-"
@@ -18,21 +21,23 @@
 #      PUSHIFY-FWD / PUSHIFY-IN, pushify-runner-isolation.service; only on Pushify's shared runners)
 #   4. nginx: sites-available/enabled pushify-*, conf.d/pushify-*.conf and preview-*-pr-*.conf;
 #      /etc/nginx/nginx.conf restored from nginx.conf.pushify-backup when Pushify replaced it
-#   5. Firewall openings for apps without a domain (ports in /opt/pushify/port-registry.json)
+#   5. Firewall openings for apps without a domain: the ports in /opt/pushify/port-registry.json
+#      that fall in Pushify's app range 3001-4000. 22, 80 and 443 stay open (see --close-web-ports).
 #   6. /opt/pushify — unless --keep-data
 #
 # What it does NOT remove: Docker, nginx and certbot themselves, Let's Encrypt certificates,
 # Docker volumes (database data lives there — listed at the end so you can delete them yourself).
 set -euo pipefail
 
-DRY=0 YES=0 KEEP_APPS=0 KEEP_DATA=0
+DRY=0 YES=0 KEEP_APPS=0 KEEP_DATA=0 CLOSE_WEB=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY=1 ;;
     --yes|-y) YES=1 ;;
     --keep-apps) KEEP_APPS=1 ;;
     --keep-data) KEEP_DATA=1 ;;
-    -h|--help) sed -n '2,27p' "$0" 2>/dev/null || true; exit 0 ;;
+    --close-web-ports) CLOSE_WEB=1 ;;
+    -h|--help) sed -n '2,31p' "$0" 2>/dev/null || true; exit 0 ;;
     *) echo "Unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -58,18 +63,21 @@ nginx_files=()
 for f in /etc/nginx/sites-enabled/pushify-* /etc/nginx/sites-available/pushify-* /etc/nginx/conf.d/pushify-*.conf /etc/nginx/conf.d/preview-*-pr-*.conf; do
   [[ -e "$f" || -L "$f" ]] && nginx_files+=("$f")
 done
+# Only Pushify's app range (port-manager.ts: 3001-4000); anything else in the file is ignored, so
+# 22, 80 and 443 can never be closed by this step.
+APP_PORT_MIN=3001 APP_PORT_MAX=4000
 ports=()
-if [[ -f /opt/pushify/port-registry.json ]] && have node; then
-  while IFS= read -r p; do [[ -n "$p" ]] && ports+=("$p"); done < <(node -e 'try{const r=require("/opt/pushify/port-registry.json");for(const a of r.assignments||[])console.log(a.port)}catch{}')
-elif [[ -f /opt/pushify/port-registry.json ]]; then
-  while IFS= read -r p; do ports+=("$p"); done < <(grep -oE '"port": *[0-9]+' /opt/pushify/port-registry.json | grep -oE '[0-9]+$')
+if [[ -f /opt/pushify/port-registry.json ]]; then
+  while IFS= read -r p; do
+    [[ "$p" =~ ^[0-9]+$ ]] && (( p >= APP_PORT_MIN && p <= APP_PORT_MAX )) && ports+=("$p")
+  done < <(grep -oE '"port" *: *[0-9]+' /opt/pushify/port-registry.json | grep -oE '[0-9]+$' | sort -un)
 fi
 
 say "Pushify uninstall plan$([[ $DRY -eq 1 ]] && echo ' (dry run)')"
 echo "    SSH keys:        ${#key_files[@]} file(s) with a pushify-* key: ${key_files[*]:-none}"
 if [[ $KEEP_APPS -eq 1 ]]; then echo "    containers:      kept (--keep-apps)"; else echo "    containers:      ${containers[*]:-none}"; fi
 echo "    nginx files:     ${#nginx_files[@]}$([[ -f /etc/nginx/nginx.conf.pushify-backup ]] && echo ' + restore nginx.conf from backup')"
-echo "    firewall ports:  ${ports[*]:-none}"
+echo "    firewall ports:  ${ports[*]:-none} ($([[ $CLOSE_WEB -eq 1 ]] && echo '80 and 443 also closed; 22 kept' || echo '22, 80 and 443 kept'))"
 echo "    /opt/pushify:    $([[ $KEEP_DATA -eq 1 ]] && echo kept || ([[ -d /opt/pushify ]] && echo remove || echo 'not present'))"
 
 if [[ $DRY -eq 0 && $YES -eq 0 ]]; then
@@ -109,12 +117,29 @@ if [[ ${#nginx_files[@]} -gt 0 || -f /etc/nginx/nginx.conf.pushify-backup ]]; th
 fi
 
 # ── 4. Firewall openings ────────────────────────────────────────────────────────────────────
-for p in ${ports[@]+"${ports[@]}"}; do
+# Same order the deploy worker uses to open them: ufw, else firewalld, else iptables.
+close_port() {
+  local p="$1"
   if have ufw; then run "ufw delete allow ${p}/tcp >/dev/null"
-  elif have firewall-cmd; then run "firewall-cmd --permanent --remove-port=${p}/tcp >/dev/null && firewall-cmd --reload >/dev/null"
-  elif have iptables; then run "iptables -D INPUT -p tcp --dport ${p} -j ACCEPT 2>/dev/null || true"
+  elif have firewall-cmd; then run "firewall-cmd --permanent --remove-port=${p}/tcp >/dev/null"
+  elif have iptables; then run "while iptables -D INPUT -p tcp --dport ${p} -j ACCEPT 2>/dev/null; do :; done"
   fi
-done
+}
+if [[ ${#ports[@]} -gt 0 ]]; then
+  say "Closing Pushify app ports: ${ports[*]}"
+  for p in "${ports[@]}"; do close_port "$p"; done
+fi
+if [[ $CLOSE_WEB -eq 1 ]]; then
+  say "Closing ports 80 and 443 (--close-web-ports)"
+  close_port 80
+  close_port 443
+  if ! have ufw && have firewall-cmd; then
+    run "firewall-cmd --permanent --remove-service=http --remove-service=https >/dev/null 2>&1; true"
+  fi
+fi
+if ! have ufw && have firewall-cmd && [[ ${#ports[@]} -gt 0 || $CLOSE_WEB -eq 1 ]]; then
+  run "firewall-cmd --reload >/dev/null"
+fi
 
 # ── 5. Data directory ──────────────────────────────────────────────────────────────────────
 if [[ $KEEP_DATA -eq 0 && -d /opt/pushify ]]; then
