@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.93] - 2026-09-30
+
+### Security
+- **Role checks across the API.** A scan of every endpoint found about 40% of the sensitive or destructive ones open to viewers, and around 30 routes that did not check membership at all. They now go through one helper (`lib/org-access.ts`: viewer < member < admin < owner). Owners and admins only:
+  - database credentials and backup downloads;
+  - buying and transferring domains and taking their transfer code;
+  - server power;
+  - invoices and wallet history;
+  - the activity log.
+
+  Member and up:
+  - deploying, rolling back, cancelling and promoting;
+  - scheduled tasks (which run commands in the container);
+  - creating, pausing and resuming projects;
+  - notifications, health checks, volumes and the site editor.
+
+  Viewers see environment variable names only.
+- API keys can no longer create API keys or approve a CLI login. A member's keys are revoked when they leave, and a key stops working as soon as its owner is no longer a member. Scopes are now enforced on the project sub-routes that lacked them (`logs:read`, `metrics:read` included).
+- Restricted members are kept to their projects on notifications, health checks, previews, webhooks and the metrics overview.
+
 ## [0.2.0-beta.92] - 2026-09-30
 
 ### Fixed
