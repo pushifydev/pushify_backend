@@ -92,6 +92,11 @@ export interface AdminUserOrganization {
   plan: string;
   billingStatus: string;
   infraWalletBalanceCents: number;
+  /** Included server credit this period: granted, left, and used (for refunds under policy 3.4) */
+  includedCreditPeriodKey: string | null;
+  includedCreditGrantedCents: number;
+  includedCreditRemainingCents: number;
+  includedCreditUsedCents: number;
   role: string;
   joinedAt: string;
   createdAt: string;
@@ -473,6 +478,15 @@ export const adminService = {
                  o.plan::text AS "plan",
                  o.billing_status::text AS "billingStatus",
                  o.infra_wallet_balance_cents AS "infraWalletBalanceCents",
+                 o.included_credit_period_key AS "includedCreditPeriodKey",
+                 o.included_credit_cents AS "includedCreditRemainingCents",
+                 (SELECT coalesce(sum(g.amount_cents), 0) FROM included_credit_grants g
+                   WHERE g.organization_id = o.id AND g.period_key = o.included_credit_period_key
+                     AND g.kind IN ('period', 'upgrade'))::int AS "includedCreditGrantedCents",
+                 GREATEST(0,
+                   (SELECT coalesce(sum(g.amount_cents), 0) FROM included_credit_grants g
+                     WHERE g.organization_id = o.id AND g.period_key = o.included_credit_period_key)
+                   - o.included_credit_cents)::int AS "includedCreditUsedCents",
                  m.role::text AS "role",
                  ${iso('m.joined_at')} AS "joinedAt",
                  ${iso('o.created_at')} AS "createdAt",

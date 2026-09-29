@@ -7,6 +7,7 @@ import {
   getPriceId,
   getPlanFromPriceId,
   getSubscriptionCurrentPeriodEnd,
+  getSubscriptionPeriod,
   getOrganizationIdFromSubscription,
 } from '../lib/stripe';
 import { claimStripeWebhookEvent, releaseStripeWebhookEvent } from '../lib/stripe-webhook-dedupe';
@@ -16,6 +17,15 @@ import { organizationRepository } from '../repositories/organization.repository'
 import { getPlanInfo, type PlanType } from '../lib/plans';
 import { INFRA_TOPUP_AMOUNTS_CENTS } from '../lib/infra-billing';
 import { infraBillingService } from './infra-billing.service';
+import { includedCreditService } from './included-credit.service';
+
+const PLAN_RANK: Record<PlanType, number> = { free: 0, hobby: 1, pro: 2, business: 3, enterprise: 4 };
+
+/** Period start and interval of a subscription, for included-credit periods. */
+function subscriptionPeriodFields(sub: Stripe.Subscription): Record<string, unknown> {
+  const p = getSubscriptionPeriod(sub);
+  return p ? { stripeCurrentPeriodStart: p.start, billingInterval: p.interval } : {};
+}
 import { organizationBillingService, getOrganizationBillingStatus } from './organization-billing.service';
 import type Stripe from 'stripe';
 import { adminNotify } from './admin-notify.service';
@@ -400,11 +410,16 @@ export const stripeService = {
   ): Promise<PlanChangeResult> {
     const stripe = getStripe();
     const [org] = await db
-      .select({ stripeSubscriptionId: organizations.stripeSubscriptionId, billingStatus: organizations.billingStatus })
+      .select({
+        stripeSubscriptionId: organizations.stripeSubscriptionId,
+        billingStatus: organizations.billingStatus,
+        plan: organizations.plan,
+      })
       .from(organizations)
       .where(eq(organizations.id, organizationId))
       .limit(1);
     if (!org?.stripeSubscriptionId) return { status: 'checkout_required' };
+    const previousPlan = org.plan as PlanType;
 
     let sub: Stripe.Subscription;
     try {
@@ -457,10 +472,15 @@ export const stripeService = {
         billingStatus: 'active',
         billingPaymentFailedNotifiedAt: null,
         ...(periodEnd ? { stripeCurrentPeriodEnd: periodEnd } : {}),
+        ...subscriptionPeriodFields(updated),
         updatedAt: new Date(),
       })
       .where(eq(organizations.id, organizationId));
-    if (isUpgrade) await infraBillingService.grantIncludedInfraCredit(organizationId, planType);
+    // Upgrade: the included-credit difference, prorated like Stripe's charge (never the full
+    // difference, which would let a last-day upgrade buy a month of credit for a day's price).
+    if (PLAN_RANK[planType] > PLAN_RANK[previousPlan]) {
+      await includedCreditService.grantUpgradeDifference(organizationId, previousPlan, planType);
+    }
     logger.info({ organizationId, subscriptionId: sub.id, planType, isUpgrade }, 'plan changed in place');
     return { status: 'changed', plan: planType };
   },
@@ -866,13 +886,13 @@ export const stripeService = {
               billingStatus: 'active',
               billingPaymentFailedNotifiedAt: null,
               ...(periodEnd ? { stripeCurrentPeriodEnd: periodEnd } : {}),
+              ...subscriptionPeriodFields(sub),
               updatedAt: new Date(),
             })
             .where(eq(organizations.id, organizationId));
 
-          // Fund the included compute credit so the customer can start their entry server
-          // without a separate top-up (tops the wallet up to the plan allowance; never above).
-          await infraBillingService.grantIncludedInfraCredit(organizationId, effectivePlan);
+          // First period's included server credit (idempotent per period).
+          await includedCreditService.ensurePeriodGrant(organizationId);
 
           const org = await organizationRepository.findById(organizationId);
           const notifyEmail = await resolveBillingNotifyEmail(organizationId);
@@ -899,10 +919,13 @@ export const stripeService = {
         const priceId = sub.items.data[0]?.price?.id;
         const newPlan = priceId ? getPlanFromPriceId(priceId) : null;
         const periodEnd = getSubscriptionCurrentPeriodEnd(sub);
+        // Read before the update: a pending upgrade applied here needs the plan it came from.
+        const previousPlan = newPlan ? await includedCreditService.currentPlan(organizationId) : null;
 
         const updateData: Record<string, unknown> = {
           updatedAt: new Date(),
           stripeSubscriptionId: sub.id,
+          ...subscriptionPeriodFields(sub),
         };
 
         if (periodEnd) {
@@ -924,6 +947,15 @@ export const stripeService = {
           .update(organizations)
           .set(updateData)
           .where(eq(organizations.id, organizationId));
+
+        if (
+          newPlan &&
+          previousPlan &&
+          PLAN_RANK[newPlan] > PLAN_RANK[previousPlan] &&
+          (sub.status === 'active' || sub.status === 'trialing')
+        ) {
+          await includedCreditService.grantUpgradeDifference(organizationId, previousPlan, newPlan);
+        }
 
         logger.info(
           { organizationId, subscriptionId: sub.id, plan: newPlan, status: sub.status, periodEnd: periodEnd?.toISOString() },
@@ -953,6 +985,8 @@ export const stripeService = {
           .where(eq(organizations.id, organizationId));
 
         await organizationBillingService.suspendOrganization(organizationId);
+        // The subscription is over: what is left of this period's included credit goes too.
+        await includedCreditService.expire(organizationId, 'canceled');
         logger.info({ organizationId }, 'subscription.deleted: organization suspended');
         break;
       }
@@ -981,9 +1015,10 @@ export const stripeService = {
 
         if (org) {
           await organizationBillingService.markActive(org.id);
-          // Renew the included compute credit each paid cycle (tops up to the plan allowance).
-          await infraBillingService.grantIncludedInfraCredit(org.id, org.plan as PlanType);
-          logger.info({ organizationId: org.id }, 'invoice.paid: billing status cleared, infra credit renewed');
+          // This period's included server credit — also the catch-up after a past_due period is
+          // paid. Idempotent per period, so the hourly worker and this never double-grant.
+          await includedCreditService.ensurePeriodGrant(org.id);
+          logger.info({ organizationId: org.id }, 'invoice.paid: billing status cleared, included credit checked');
         }
         break;
       }

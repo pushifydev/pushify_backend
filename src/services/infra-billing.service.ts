@@ -24,6 +24,7 @@ import {
   sendInfraServerSuspendedEmail,
 } from '../lib/email';
 import { getIncludedInfraCreditCents, type PlanType } from '../lib/plans';
+import { splitCharge } from '../lib/included-credit';
 import { logger } from '../lib/logger';
 import { adminNotify } from './admin-notify.service';
 
@@ -35,13 +36,6 @@ function getProviderToken(provider: ProviderType): string {
       return '';
   }
 }
-
-/**
- * Headroom multiplier applied to the cheapest server's current monthly price when sizing
- * the included compute credit, so FX/price drift between the grant and the customer's
- * "start server" click can't leave them just short of the start threshold.
- */
-const INFRA_INCLUDED_CREDIT_HEADROOM = 1.08;
 
 function mapInfraError(code: string, locale: SupportedLocale): string {
   const keyMap: Record<string, string> = {
@@ -58,6 +52,11 @@ function mapInfraError(code: string, locale: SupportedLocale): string {
 export interface InfraWalletSummary {
   balanceCents: number;
   balanceUsd: string;
+  /** This period's remaining included server credit (spent before the wallet, servers only). */
+  includedCreditCents: number;
+  /** The plan's monthly included credit and when the current period ends. */
+  includedCreditMonthlyCents: number;
+  includedCreditPeriodEnd: string | null;
   estimatedMonthlyBurnCents: number;
   runningManagedServers: number;
   topUpAmountsCents: readonly number[];
@@ -69,6 +68,7 @@ export interface InfraWalletSummary {
 
 export interface ServerInfraBillingContext {
   walletBalanceCents: number;
+  includedCreditCents: number;
   requiredStartCents: number;
   estimatedMonthlyCents: number;
   canStart: boolean;
@@ -124,13 +124,16 @@ export const infraBillingService = {
     }
 
     const balance = org.infraWalletBalanceCents ?? 0;
+    const included = org.includedCreditCents ?? 0;
     const requiredStartCents = org.plan === 'enterprise' ? 0 : monthly;
 
     return {
       walletBalanceCents: balance,
+      includedCreditCents: included,
       requiredStartCents,
       estimatedMonthlyCents: monthly,
-      canStart: org.plan === 'enterprise' || balance >= requiredStartCents,
+      // Included credit counts: a Hobby org can start its entry server on the $9 alone.
+      canStart: org.plan === 'enterprise' || balance + included >= requiredStartCents,
     };
   },
 
@@ -139,12 +142,16 @@ export const infraBillingService = {
       .select({
         balance: organizations.infraWalletBalanceCents,
         plan: organizations.plan,
+        included: organizations.includedCreditCents,
+        includedPeriodEnd: organizations.includedCreditPeriodEnd,
       })
       .from(organizations)
       .where(eq(organizations.id, organizationId))
       .limit(1);
 
     const balanceCents = org?.balance ?? 0;
+    const includedCreditCents = org?.included ?? 0;
+    const spendableCents = balanceCents + includedCreditCents;
     const plan = (org?.plan || 'free') as PlanType;
 
     const running = await db
@@ -169,17 +176,20 @@ export const infraBillingService = {
 
     const isLowBalance =
       plan !== 'enterprise' &&
-      (balanceCents < INFRA_LOW_BALANCE_WARN_CENTS ||
-        (estimatedMonthlyBurnCents > 0 && balanceCents < estimatedMonthlyBurnCents));
+      (spendableCents < INFRA_LOW_BALANCE_WARN_CENTS ||
+        (estimatedMonthlyBurnCents > 0 && spendableCents < estimatedMonthlyBurnCents));
 
     const runwayDays =
       estimatedMonthlyBurnCents > 0
-        ? Math.floor((balanceCents / estimatedMonthlyBurnCents) * 30)
+        ? Math.floor((spendableCents / estimatedMonthlyBurnCents) * 30)
         : null;
 
     return {
       balanceCents,
       balanceUsd: (balanceCents / 100).toFixed(2),
+      includedCreditCents,
+      includedCreditMonthlyCents: getIncludedInfraCreditCents(plan),
+      includedCreditPeriodEnd: org?.includedPeriodEnd ? org.includedPeriodEnd.toISOString() : null,
       estimatedMonthlyBurnCents,
       runningManagedServers: running.length,
       topUpAmountsCents: INFRA_TOPUP_AMOUNTS_CENTS,
@@ -300,13 +310,14 @@ export const infraBillingService = {
     }
 
     const [org] = await db
-      .select({ balance: organizations.infraWalletBalanceCents })
+      .select({ balance: organizations.infraWalletBalanceCents, included: organizations.includedCreditCents })
       .from(organizations)
       .where(eq(organizations.id, organizationId))
       .limit(1);
 
     const required = minimumWalletBalanceForQuote(quote);
-    const balance = org?.balance ?? 0;
+    // Wallet plus this period's included credit: Hobby's $9 alone covers the entry server.
+    const balance = (org?.balance ?? 0) + (org?.included ?? 0);
 
     if (balance < required) {
       throw new HTTPException(402, {
@@ -389,7 +400,7 @@ export const infraBillingService = {
     const org = await organizationRepository.findById(organizationId);
     if (!org) return 0;
 
-    const balance = org.infraWalletBalanceCents ?? 0;
+    const balance = (org.infraWalletBalanceCents ?? 0) + (org.includedCreditCents ?? 0);
     if (org.plan === 'enterprise') {
       const cleared = await db
         .update(servers)
@@ -455,198 +466,65 @@ export const infraBillingService = {
 
     return db.transaction(async (tx) => {
       const [org] = await tx
-        .select({ balance: organizations.infraWalletBalanceCents, plan: organizations.plan })
+        .select({
+          balance: organizations.infraWalletBalanceCents,
+          included: organizations.includedCreditCents,
+          plan: organizations.plan,
+        })
         .from(organizations)
         .where(eq(organizations.id, organizationId))
-        .limit(1);
+        .for('update');
 
       if (org?.plan === 'enterprise') {
         return org.balance ?? 0;
       }
 
       const current = org?.balance ?? 0;
-      if (current < amountCents) {
+      // Server charges spend this period's included credit first; everything else (domains,
+      // adjustments) is wallet-only.
+      const split =
+        type === 'server_hourly_charge'
+          ? splitCharge(amountCents, org?.included ?? 0, current)
+          : current >= amountCents
+            ? { fromIncludedCents: 0, fromWalletCents: amountCents }
+            : null;
+      if (!split) {
         return null;
       }
 
-      const newBalance = current - amountCents;
+      const newBalance = current - split.fromWalletCents;
 
       await tx
         .update(organizations)
-        .set({ infraWalletBalanceCents: newBalance, updatedAt: new Date() })
+        .set({
+          infraWalletBalanceCents: newBalance,
+          ...(split.fromIncludedCents > 0
+            ? { includedCreditCents: (org?.included ?? 0) - split.fromIncludedCents }
+            : {}),
+          updatedAt: new Date(),
+        })
         .where(eq(organizations.id, organizationId));
 
+      // The ledger tracks the wallet; the part paid from included credit is in metadata.
       await tx.insert(infraWalletTransactions).values({
         organizationId,
         serverId: serverId ?? null,
         type,
-        amountCents: -amountCents,
+        amountCents: -split.fromWalletCents,
         balanceAfterCents: newBalance,
         description,
-        metadata: metadata ?? {},
+        metadata: {
+          ...(metadata ?? {}),
+          ...(split.fromIncludedCents > 0
+            ? { chargeCents: amountCents, fromIncludedCents: split.fromIncludedCents }
+            : {}),
+        },
       });
 
       return newBalance;
     });
   },
 
-  /**
-   * Grant the plan's included compute credit by topping the infra wallet UP to the plan
-   * allowance (never above). Called on each paid invoice so a paying customer can run their
-   * entry server without a separate top-up.
-   *
-   * Safe by construction:
-   * - Never over-credits: if the wallet already holds >= the allowance (e.g. the customer
-   *   topped up cash), nothing is added.
-   * - Naturally idempotent: re-processing the same invoice finds the balance already at the
-   *   allowance and grants 0.
-   * - Loss is bounded: the allowance is below each plan's net margin, and the existing
-   *   "balance hits 0 → suspend server" backstop caps provider spend at what was funded.
-   * Free/enterprise (allowance 0) are no-ops.
-   */
-  /**
-   * Cheapest plan-eligible managed server's CURRENT monthly customer price (USD cents),
-   * priced live off Hetzner + the dynamic FX rate. Returns 0 if it can't be determined
-   * (no provider token / API error), so callers fall back to the plan ceiling.
-   */
-  async getCheapestEligibleMonthlyCents(plan: PlanType): Promise<number> {
-    const token = getProviderToken('hetzner');
-    if (!token) return 0;
-
-    const provider = createProvider('hetzner', token);
-    const sizes = await provider.listSizes();
-
-    let cheapest = 0;
-    for (const entry of sizes) {
-      const quote = buildPriceQuote(entry.specs.priceMonthly, entry.specs.priceMonthly / 730, {
-        vcpus: entry.specs.vcpus,
-        memoryMb: entry.specs.memoryMb,
-        diskGb: entry.specs.diskGb,
-      });
-      try {
-        // Same gate the UI/provisioning uses — vcpu, memory, and provider $ cap.
-        assertServerWithinPlanLimits(plan, quote.specs, quote.providerCostMonthlyCents);
-      } catch {
-        continue; // not startable on this plan
-      }
-      if (cheapest === 0 || quote.customerPriceMonthlyCents < cheapest) {
-        cheapest = quote.customerPriceMonthlyCents;
-      }
-    }
-    return cheapest;
-  },
-
-  /**
-   * Target balance the included credit should top the wallet up to: enough to start the
-   * cheapest eligible server at current prices (+ headroom), capped at the plan ceiling so
-   * margin stays bounded. Falls back to the ceiling if the live price can't be determined.
-   */
-  async computeIncludedCreditTargetCents(plan: PlanType): Promise<number> {
-    const ceilingCents = getIncludedInfraCreditCents(plan);
-    if (ceilingCents <= 0) return 0;
-
-    try {
-      const cheapest = await this.getCheapestEligibleMonthlyCents(plan);
-      if (cheapest > 0) {
-        const withHeadroom = Math.ceil(cheapest * INFRA_INCLUDED_CREDIT_HEADROOM);
-        if (withHeadroom > ceilingCents) {
-          logger.warn(
-            { plan, cheapestMonthlyCents: cheapest, ceilingCents },
-            'Included credit: cheapest server exceeds plan ceiling — entry server may not start, review plan economics',
-          );
-          return ceilingCents;
-        }
-        return withHeadroom;
-      }
-    } catch (err) {
-      logger.warn(
-        { plan, err: err instanceof Error ? err.message : String(err) },
-        'Included credit: cheapest-server lookup failed, falling back to plan ceiling',
-      );
-    }
-    return ceilingCents;
-  },
-
-  /**
-   * Grant the plan's included compute credit by topping the infra wallet UP to a target
-   * that covers the cheapest eligible server at CURRENT prices (see
-   * computeIncludedCreditTargetCents). Called on each paid invoice so a paying customer can
-   * start their entry server without a separate top-up.
-   *
-   * Safe by construction:
-   * - Never over-credits: if the wallet already holds >= the target, nothing is added.
-   * - Naturally idempotent: re-processing the same invoice grants 0.
-   * - Loss is bounded: the target is capped at the plan ceiling (< plan net margin), and the
-   *   existing "balance hits 0 → suspend server" backstop caps provider spend at what was funded.
-   * Pass { dryRun } to compute what WOULD be granted without writing.
-   */
-  async grantIncludedInfraCredit(
-    organizationId: string,
-    plan: PlanType,
-    opts?: { dryRun?: boolean },
-  ): Promise<{ grantedCents: number; balanceAfterCents: number; targetCents: number }> {
-    const targetCents = await this.computeIncludedCreditTargetCents(plan);
-
-    if (targetCents <= 0) {
-      const [org] = await db
-        .select({ balance: organizations.infraWalletBalanceCents })
-        .from(organizations)
-        .where(eq(organizations.id, organizationId))
-        .limit(1);
-      return { grantedCents: 0, balanceAfterCents: org?.balance ?? 0, targetCents: 0 };
-    }
-
-    if (opts?.dryRun) {
-      const [org] = await db
-        .select({ balance: organizations.infraWalletBalanceCents })
-        .from(organizations)
-        .where(eq(organizations.id, organizationId))
-        .limit(1);
-      const current = org?.balance ?? 0;
-      const grantedCents = Math.max(0, targetCents - current);
-      return { grantedCents, balanceAfterCents: current + grantedCents, targetCents };
-    }
-
-    const result = await db.transaction(async (tx) => {
-      const [org] = await tx
-        .select({ balance: organizations.infraWalletBalanceCents })
-        .from(organizations)
-        .where(eq(organizations.id, organizationId))
-        .limit(1);
-
-      const current = org?.balance ?? 0;
-      const grantedCents = Math.max(0, targetCents - current);
-
-      if (grantedCents <= 0) {
-        return { grantedCents: 0, balanceAfterCents: current };
-      }
-
-      const balanceAfterCents = current + grantedCents;
-
-      await tx
-        .update(organizations)
-        .set({ infraWalletBalanceCents: balanceAfterCents, updatedAt: new Date() })
-        .where(eq(organizations.id, organizationId));
-
-      await tx.insert(infraWalletTransactions).values({
-        organizationId,
-        type: 'credit_topup',
-        amountCents: grantedCents,
-        balanceAfterCents,
-        description: `Included ${plan} plan compute credit`,
-        metadata: { bundled: true, plan, targetCents },
-      });
-
-      return { grantedCents, balanceAfterCents };
-    });
-
-    if (result.grantedCents > 0) {
-      // A server stopped for low balance can be started again now that credit is available.
-      await this.clearInfraCreditsStoppedMessages(organizationId);
-    }
-
-    return { ...result, targetCents };
-  },
 
   async refundWallet(
     organizationId: string,

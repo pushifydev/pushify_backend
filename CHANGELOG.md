@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.79] - 2026-09-29
+
+### Changed
+- **Included server credit is a fixed monthly amount per plan.** Hobby $9, Pro $18, Business $45, in its own balance that is spent before the wallet, only on managed servers, and resets every month (no roll-over). Yearly plans receive it every month. Upgrades add the difference prorated to the rest of the period; downgrades take nothing back; the credit ends with the subscription; organizations past due receive the month's credit once the invoice is paid. Server start and creation count the credit, so Hobby can run its entry server without topping up. Replaces the previous top-up-to-the-cheapest-server grant.
+
+### Database
+- Migration `0061_included_credit` (additive): `organizations.included_credit_cents`, `included_credit_period_key`, `included_credit_period_end`, `stripe_current_period_start`, `billing_interval`, and table `included_credit_grants` with unique indexes that prevent double grants.
+
 ## [0.2.0-beta.78] - 2026-09-29
 
 ### Added

@@ -421,6 +421,13 @@
       "when": 1787270400019,
       "tag": "0060_static_uploads",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1787270400020,
+      "tag": "0061_included_credit",
+      "breakpoints": true
     }
   ]
 }

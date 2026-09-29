@@ -25,6 +25,14 @@ export const organizations = pgTable('organizations', {
   billingPaymentFailedNotifiedAt: timestamp('billing_payment_failed_notified_at', { withTimezone: true }),
   /** Prepaid USD cents for managed cloud infrastructure (Hetzner, etc.) */
   infraWalletBalanceCents: integer('infra_wallet_balance_cents').default(0).notNull(),
+  /** This period's remaining included server credit (USD cents); resets every period. */
+  includedCreditCents: integer('included_credit_cents').default(0).notNull(),
+  /** Key (ISO start date) and end of the period the included credit belongs to */
+  includedCreditPeriodKey: varchar('included_credit_period_key', { length: 10 }),
+  includedCreditPeriodEnd: timestamp('included_credit_period_end', { withTimezone: true }),
+  /** Stripe subscription period start and interval ('month' | 'year'), for credit periods */
+  stripeCurrentPeriodStart: timestamp('stripe_current_period_start', { withTimezone: true }),
+  billingInterval: varchar('billing_interval', { length: 8 }),
   /** Until this time, legacy (more generous) plan limits apply for paid tiers */
   grandfatheredUntil: timestamp('grandfathered_until', { withTimezone: true }),
   /** Optional per-limit overrides merged on top of effective plan limits */
