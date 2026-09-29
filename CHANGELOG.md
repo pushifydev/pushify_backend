@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.75] - 2026-09-29
+
+### Added
+- **Public managed-server prices.** `GET /api/v1/public/managed-server-prices?region=fsn1` lists the managed Hetzner tiers with customer prices only (per hour, per month) and the cheapest plan that allows each one — no provider cost, exchange rate or margin. Cached for an hour per region, rate limited to 30 requests a minute per client, and served with `Cache-Control: public, max-age=300, s-maxage=3600`. Used by the website's pricing table (frontend beta.83).
+
 ## [0.2.0-beta.74] - 2026-09-29
 
 ### Added
