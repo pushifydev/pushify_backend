@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.87] - 2026-09-29
+
+### Fixed
+- **Server snapshots were never listed.** Hetzner's `bound_to` filter only applies to backup images and returns nothing for snapshots. As a result:
+  - the server page showed no snapshots and they could not be restored from it;
+  - the per-plan snapshot limit was never enforced;
+  - automatic snapshots were never pruned.
+
+  Snapshots are now matched on `created_from`, across all pages.
+- **Deleting a managed server leaves nothing billable behind.** Its snapshots (which can only be restored onto that server) and the SSH key uploaded for it are removed too.
+
+### Changed
+- Automatic pruning only removes automatic snapshots. A snapshot taken by hand is never deleted automatically, even when it counts towards the plan limit.
+
+### Added
+- `npm run hetzner:leftovers`: lists snapshots of deleted servers and `pushify-*` SSH keys no server uses. With `--delete` it removes them. Servers unknown to the database are reported and never touched.
+
 ## [0.2.0-beta.86] - 2026-09-29
 
 ### Added
