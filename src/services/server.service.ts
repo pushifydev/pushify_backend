@@ -982,14 +982,34 @@ export const serverService = {
   /**
    * Get available regions for a provider
    */
-  async getRegions(provider: ProviderType, locale: SupportedLocale = 'en') {
+  async getRegions(provider: ProviderType, locale: SupportedLocale = 'en', organizationId?: string) {
     const apiToken = getProviderToken(provider);
     if (!apiToken) {
       throw new HTTPException(400, { message: t(locale, 'servers', 'providerNotConfigured') });
     }
 
     const providerInstance = createProvider(provider, apiToken);
-    return providerInstance.listRegions();
+    const regions = await providerInstance.listRegions();
+    if (!organizationId) return regions;
+
+    // A region is only useful if the org's plan can create at least one of the sizes in stock
+    // there (e.g. Hobby in nbg1 while cx23 is sold out: the only small type, cpx12, is above
+    // Hobby's cost cap). The catalogue is cached, so this adds no provider calls per region.
+    const org = await organizationRepository.findById(organizationId);
+    const plan = (org?.plan || 'free') as PlanType;
+    return Promise.all(
+      regions.map(async (region) => {
+        if (!region.available) return { ...region, availableForPlan: false };
+        const sizes = await infraBillingService.getSizedOptionsForOrganization(
+          organizationId,
+          plan,
+          provider,
+          region.id,
+          locale,
+        );
+        return { ...region, availableForPlan: sizes.some((s) => s.allowedByPlan) };
+      }),
+    );
   },
 
   /**
