@@ -17,8 +17,32 @@ const WAKE_TIMEOUT_MS = 30_000;
 
 type Project = typeof projects.$inferSelect;
 
-function containerPattern(slug: string): string {
-  return `^pushify-${slug}(-blue|-green)?$`;
+/**
+ * The app's containers: the unslotted legacy name, the blue/green primary and every replica of
+ * either slot (`pushify-shop-blue-3`, see `replicaName`). Workers (`-worker-*`), previews and the
+ * database sidecar are not matched.
+ */
+export function containerPattern(slug: string): string {
+  return `^pushify-${slug}(-(blue|green)(-[0-9]+)?)?$`;
+}
+
+/** Stop every running container of the app. */
+export function sleepCommand(slug: string): string {
+  return `docker ps --format '{{.Names}}' | grep -E '${containerPattern(slug)}' | xargs -r docker stop --time 15`;
+}
+
+/**
+ * Start every stopped container of the app and succeed only when none is left stopped — one
+ * replica up is not "awake" when nginx balances across all of them. Old slots are removed at
+ * deploy time, so the stopped containers here are the ones sleep stopped.
+ */
+export function wakeCommand(slug: string): string {
+  const pattern = containerPattern(slug);
+  return (
+    `names=$(docker ps -a --format '{{.Names}}' | grep -E '${pattern}'); ` +
+    `[ -n "$names" ] && docker start $names >/dev/null && ` +
+    `[ -z "$(docker ps -a --filter status=exited --filter status=created --format '{{.Names}}' | grep -E '${pattern}')" ]`
+  );
 }
 
 /** Run a shell command on the project's host — over SSH for server/runner targets. */
@@ -54,12 +78,9 @@ async function execOnProjectHost(
   });
 }
 
-/** Stop the app's container(s) and mark the project sleeping. */
+/** Stop all of the app's containers, replicas included, and mark the project sleeping. */
 export async function sleepProject(project: Project): Promise<boolean> {
-  const stopCmd =
-    `docker ps --format '{{.Names}}' | grep -E '${containerPattern(project.slug)}' | ` +
-    `xargs -r docker stop --time 15`;
-  const result = await execOnProjectHost(project, stopCmd);
+  const result = await execOnProjectHost(project, sleepCommand(project.slug));
   if (!result.ok) {
     logger.warn({ projectId: project.id }, 'Auto-sleep: failed to stop container');
     return false;
@@ -72,13 +93,9 @@ export async function sleepProject(project: Project): Promise<boolean> {
   return true;
 }
 
-/** Start the app's stopped container(s) and mark the project awake. */
-async function startProjectContainer(project: Project): Promise<boolean> {
-  const startCmd =
-    `docker ps -a --format '{{.Names}}' | grep -E '${containerPattern(project.slug)}' | ` +
-    `xargs -r docker start && ` +
-    `docker ps --format '{{.Names}}' | grep -qE '${containerPattern(project.slug)}'`;
-  const result = await execOnProjectHost(project, startCmd);
+/** Start all of the app's stopped containers; true once every one of them is running. */
+async function startProjectContainers(project: Project): Promise<boolean> {
+  const result = await execOnProjectHost(project, wakeCommand(project.slug));
   return result.ok;
 }
 
@@ -105,7 +122,7 @@ export async function requestWake(projectId: string): Promise<'started' | 'in-pr
   const deadline = Date.now() + WAKE_TIMEOUT_MS;
   let ok = false;
   while (!ok && Date.now() < deadline) {
-    ok = await startProjectContainer(project);
+    ok = await startProjectContainers(project);
     if (!ok) await new Promise((r) => setTimeout(r, 2000));
   }
 
@@ -122,7 +139,7 @@ export async function requestWake(projectId: string): Promise<'started' | 'in-pr
     logger.info({ projectId, slug: project.slug }, '☀️ Project woken');
     return 'started';
   }
-  logger.warn({ projectId, slug: project.slug }, 'Wake failed — container did not start');
+  logger.warn({ projectId, slug: project.slug }, 'Wake failed — not every container started');
   return 'failed';
 }
 
