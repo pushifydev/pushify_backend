@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { requireScopeByMethod } from '../middleware/apikey-auth';
 import { projectWorkerService } from '../services/project-worker.service';
 import { authMiddleware } from '../middleware/auth';
 import type { AppEnv } from '../types';
@@ -6,6 +7,8 @@ import type { AppEnv } from '../types';
 const projectWorkerRouter = new Hono<AppEnv>();
 
 projectWorkerRouter.use('*', authMiddleware);
+projectWorkerRouter.use('/:projectId/workers', requireScopeByMethod('projects:read', 'projects:write'));
+projectWorkerRouter.use('/:projectId/workers/*', requireScopeByMethod('projects:read', 'projects:write'));
 
 // List a project's worker processes
 projectWorkerRouter.get('/:projectId/workers', async (c) => {

@@ -307,6 +307,8 @@ deploymentRouter.post('/', requireScope('deployments:write'), deploymentRateLimi
 deploymentRouter.post('/:deploymentId/cancel', requireScope('deployments:write', 'deployments:cancel'));
 deploymentRouter.post('/:deploymentId/redeploy', requireScope('deployments:write'), deploymentRateLimiter);
 deploymentRouter.post('/:deploymentId/rollback', requireScope('deployments:write'), deploymentRateLimiter);
+deploymentRouter.post('/promote', requireScope('deployments:write'), deploymentRateLimiter);
+deploymentRouter.get('/:deploymentId/container-logs/history', requireScope('deployments:read', 'logs:read'));
 
 // List deployments
 deploymentRouter.openapi(listDeploymentsRoute, async (c) => {

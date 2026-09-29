@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { rejectApiKeyAuth } from '../middleware/apikey-auth';
 import { HTTPException } from 'hono/http-exception';
 import { ssoService } from '../services/sso.service';
 import { authMiddleware } from '../middleware/auth';
@@ -69,6 +70,8 @@ ssoRouter.get('/callback', async (c) => {
 
 // ── Configuration (a session, and the organization's owner) ──
 ssoRouter.use('/connection', authMiddleware);
+// The identity provider's client secret is managed from the dashboard only.
+ssoRouter.use('/connection', rejectApiKeyAuth());
 
 ssoRouter.get('/connection', async (c) => {
   const connection = await ssoService.get(c.get('organizationId')!, c.get('userId')!, c.get('locale'));

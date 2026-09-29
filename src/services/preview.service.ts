@@ -1,4 +1,5 @@
 import { HTTPException } from 'hono/http-exception';
+import { requireProjectMember } from '../lib/org-access';
 import { previewRepository } from '../repositories/preview.repository';
 import { projectRepository } from '../repositories/project.repository';
 import { organizationRepository } from '../repositories/organization.repository';
@@ -38,10 +39,7 @@ export const previewService = {
     locale: SupportedLocale = 'en'
   ): Promise<PreviewDeployment[]> {
     // Verify access
-    const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
-      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
-    }
+    await requireProjectMember(projectId, organizationId, userId, 'viewer', locale);
 
     // Verify project belongs to organization
     const project = await projectRepository.findById(projectId);
@@ -62,10 +60,7 @@ export const previewService = {
     locale: SupportedLocale = 'en'
   ): Promise<PreviewDeployment[]> {
     // Verify access
-    const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
-      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
-    }
+    await requireProjectMember(projectId, organizationId, userId, 'viewer', locale);
 
     // Verify project belongs to organization
     const project = await projectRepository.findById(projectId);

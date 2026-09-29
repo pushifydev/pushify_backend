@@ -1,4 +1,7 @@
 import crypto from 'node:crypto';
+import { and, eq } from 'drizzle-orm';
+import { db } from '../db';
+import { apiKeys } from '../db/schema';
 import { HTTPException } from 'hono/http-exception';
 import { organizationRepository } from '../repositories/organization.repository';
 import { userRepository } from '../repositories/user.repository';
@@ -321,6 +324,8 @@ export const organizationService = {
     }
 
     await organizationRepository.removeMember(organizationId, targetUserId);
+    // Their API keys for this organization go with them.
+    await db.delete(apiKeys).where(and(eq(apiKeys.organizationId, organizationId), eq(apiKeys.userId, targetUserId)));
     logger.info({ organizationId, targetUserId, removedBy: userId }, 'Member removed');
   },
 

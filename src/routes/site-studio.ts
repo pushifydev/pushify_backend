@@ -1,4 +1,6 @@
 import { Hono } from 'hono';
+import { assertOrganizationCanMutateResources } from '../services/organization-billing.service';
+import { requireOrgMember } from '../lib/org-access';
 import { siteStudioService } from '../services/site-studio.service';
 import { authMiddleware } from '../middleware/auth';
 import type { AppEnv } from '../types';
@@ -55,6 +57,10 @@ siteStudioRouter.post('/launch', async (c) => {
   }
 
   const locale = (c.get('locale') as 'en' | 'tr' | undefined) ?? 'en';
+
+  // Launching creates and deploys a project: member and up, and not while the organization is locked.
+  await requireOrgMember(organizationId, userId, 'member', locale);
+  await assertOrganizationCanMutateResources(organizationId, locale);
 
   try {
     const result = await siteStudioService.launch({

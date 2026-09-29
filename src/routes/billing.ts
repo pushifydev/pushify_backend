@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { requireOrgMember, roleAtLeast } from '../lib/org-access';
 import { billingService } from '../services/billing.service';
 import { stripeService } from '../services/stripe.service';
 import { infraBillingService } from '../services/infra-billing.service';
@@ -32,8 +33,11 @@ billingRouter.get('/', async (c) => {
   const locale = c.get('locale');
 
   const billingInfo = await billingService.getBillingInfo(organizationId, userId, locale);
+  // The plan and usage are for everyone (the sidebar shows them); the billing address is not.
+  const member = await requireOrgMember(organizationId, userId, 'viewer', locale);
+  const data = roleAtLeast(member.role, 'admin') ? billingInfo : { ...billingInfo, billingEmail: null };
 
-  return c.json({ data: billingInfo });
+  return c.json({ data });
 });
 
 // Update billing email
@@ -162,7 +166,7 @@ billingRouter.post('/portal', requireOrgRole('owner', 'admin'), async (c) => {
 });
 
 // Get subscription status
-billingRouter.get('/invoices', async (c) => {
+billingRouter.get('/invoices', requireOrgRole('owner', 'admin'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -171,7 +175,7 @@ billingRouter.get('/invoices', async (c) => {
   return c.json({ data: invoices });
 });
 
-billingRouter.get('/subscription', async (c) => {
+billingRouter.get('/subscription', requireOrgRole('owner', 'admin'), async (c) => {
   const organizationId = c.get('organizationId')!;
 
   const status = await stripeService.getSubscriptionStatus(organizationId);
@@ -203,7 +207,7 @@ const cancellationFeedbackSchema = z.object({
   comment: z.string().max(1000).optional(),
 });
 
-billingRouter.post('/cancellation-feedback', async (c) => {
+billingRouter.post('/cancellation-feedback', requireOrgRole('owner', 'admin'), async (c) => {
   const organizationId = c.get('organizationId')!;
   const userId = c.get('userId')!;
   const body = cancellationFeedbackSchema.safeParse(await c.req.json().catch(() => ({})));
@@ -233,7 +237,7 @@ billingRouter.post('/resume', requireOrgRole('owner', 'admin'), async (c) => {
 });
 
 // Infrastructure wallet (managed Hetzner billing)
-billingRouter.get('/infra', async (c) => {
+billingRouter.get('/infra', requireOrgRole('owner', 'admin'), async (c) => {
   const organizationId = c.get('organizationId')!;
   const userId = c.get('userId')!;
   const locale = c.get('locale');

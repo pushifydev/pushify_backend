@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { rejectApiKeyAuth } from '../middleware/apikey-auth';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import { organizationService } from '../services/organization.service';
@@ -11,6 +12,8 @@ const organizationRouter = new Hono<AppEnv>();
 
 // All routes require authentication
 organizationRouter.use('*', authMiddleware);
+// People, invitations and deletion are managed from the dashboard, not with API keys.
+organizationRouter.use('*', async (c, next) => (['GET', 'HEAD'].includes(c.req.method.toUpperCase()) ? next() : rejectApiKeyAuth()(c, next)));
 
 // Get organization details
 organizationRouter.get('/', async (c) => {

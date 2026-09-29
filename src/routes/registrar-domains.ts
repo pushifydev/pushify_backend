@@ -2,6 +2,8 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import { authMiddleware } from '../middleware/auth';
+import { rejectApiKeyAuth } from '../middleware/apikey-auth';
+import { requireMinRole } from '../lib/org-access';
 import { domainPublicSearchRateLimiter } from '../middleware/rate-limit';
 import { MAX_PURCHASE_YEARS, registrarDomainService } from '../services/registrar-domain.service';
 import { billingService } from '../services/billing.service';
@@ -42,6 +44,19 @@ registrarDomainRoutes.get('/public-search', domainPublicSearchRateLimiter, async
 });
 
 registrarDomainRoutes.use('*', authMiddleware);
+// Buying, transferring and changing domains spends the wallet or can hand the domain away:
+// admin and up. Reading is for every member, except email forwards (they list people's addresses).
+registrarDomainRoutes.use('*', async (c, next) => {
+  const method = c.req.method.toUpperCase();
+  const isRead = method === 'GET' || method === 'HEAD';
+  const min = !isRead ? 'admin' : /\/email-forwarding$/.test(c.req.path) ? 'member' : 'viewer';
+  return requireMinRole(min)(c, next);
+});
+// Money and the transfer code need a person at the dashboard, not a script.
+registrarDomainRoutes.use('/purchase', rejectApiKeyAuth());
+registrarDomainRoutes.use('/purchase/*', rejectApiKeyAuth());
+registrarDomainRoutes.use('/transfer', rejectApiKeyAuth());
+registrarDomainRoutes.use('/:domainName/auth-code', rejectApiKeyAuth());
 
 // Feature discovery for the dashboard (hidden when no registrar is configured)
 registrarDomainRoutes.get('/config', (c) => {

@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { rejectApiKeyAuth } from '../middleware/apikey-auth';
 import { registryCredentialService } from '../services/registry-credential.service';
 import { authMiddleware } from '../middleware/auth';
 import type { AppEnv } from '../types';
@@ -10,6 +11,8 @@ import type { AppEnv } from '../types';
 const registryRouter = new Hono<AppEnv>();
 
 registryRouter.use('*', authMiddleware);
+// Registry passwords are managed from the dashboard only.
+registryRouter.use('*', rejectApiKeyAuth());
 
 registryRouter.get('/', async (c) => {
   const credentials = await registryCredentialService.list(

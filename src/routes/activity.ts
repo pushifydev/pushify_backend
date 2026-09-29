@@ -1,4 +1,5 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { requireMinRole } from '../lib/org-access';
 import { activityService } from '../services/activity.service';
 import { combinedAuthMiddleware } from '../middleware/auth';
 import type { ActivityAction } from '../db/schema/activity';
@@ -106,6 +107,8 @@ const activityRouter = new OpenAPIHono<AppEnv>();
 
 // All routes require authentication
 activityRouter.use('*', combinedAuthMiddleware);
+// The organization's audit trail (who did what, from which IP): admins and owners.
+activityRouter.use('*', requireMinRole('admin'));
 
 // List activity logs
 activityRouter.openapi(listActivityLogsRoute, async (c) => {

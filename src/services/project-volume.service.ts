@@ -1,31 +1,23 @@
 import { HTTPException } from 'hono/http-exception';
+import { requireProjectMember, type OrgRole } from '../lib/org-access';
 import { eq, and, desc } from 'drizzle-orm';
 import { db } from '../db';
 import { projectVolumes } from '../db/schema/project-volumes';
-import { organizationRepository } from '../repositories/organization.repository';
-import { projectRepository } from '../repositories/project.repository';
 import { validateVolumeName, validateContainerPath } from '../lib/volume-validate';
 import { logger } from '../lib/logger';
-import { t, type SupportedLocale } from '../i18n';
-import { assertMemberProjectScope } from '../lib/member-project-scope';
+import { type SupportedLocale } from '../i18n';
 
 const MAX_VOLUMES_PER_PROJECT = 5;
 
+/** Viewers see volumes; adding or removing one (its data goes with it) is member and up. */
 async function assertProjectAccess(
   projectId: string,
   organizationId: string,
   userId: string,
-  locale: SupportedLocale
+  locale: SupportedLocale,
+  min: OrgRole = 'viewer',
 ) {
-  const membership = await organizationRepository.findMember(organizationId, userId);
-  if (!membership) {
-    throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
-  }
-  const project = await projectRepository.findById(projectId);
-  if (!project || project.organizationId !== organizationId) {
-    throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });
-  }
-  await assertMemberProjectScope(membership, organizationId, userId, projectId, locale);
+  const { project } = await requireProjectMember(projectId, organizationId, userId, min, locale);
   return project;
 }
 
@@ -51,7 +43,7 @@ export const projectVolumeService = {
     input: { name?: string; containerPath?: string },
     locale: SupportedLocale = 'en'
   ) {
-    await assertProjectAccess(projectId, organizationId, userId, locale);
+    await assertProjectAccess(projectId, organizationId, userId, locale, 'member');
 
     const name = input.name?.trim() ?? '';
     const containerPath = input.containerPath?.trim() ?? '';
@@ -93,7 +85,7 @@ export const projectVolumeService = {
     userId: string,
     locale: SupportedLocale = 'en'
   ) {
-    await assertProjectAccess(projectId, organizationId, userId, locale);
+    await assertProjectAccess(projectId, organizationId, userId, locale, 'member');
     const [volume] = await db
       .select()
       .from(projectVolumes)

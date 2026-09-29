@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono';
+import { requireScope } from '../middleware/apikey-auth';
 import { HTTPException } from 'hono/http-exception';
 import { projectLogContainers, searchProjectLogs } from '../workers/log-collector';
 import { organizationRepository } from '../repositories/organization.repository';
@@ -12,6 +13,8 @@ import type { AppEnv } from '../types';
 const projectLogsRouter = new Hono<AppEnv>();
 
 projectLogsRouter.use('*', authMiddleware);
+projectLogsRouter.use('/:projectId/logs/*', requireScope('logs:read'));
+projectLogsRouter.use('/:projectId/scale-events', requireScope('projects:read'));
 
 /** Membership + project scope for every route here; returns the project. */
 async function authorize(c: Context<AppEnv>) {

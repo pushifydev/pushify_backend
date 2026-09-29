@@ -2,12 +2,10 @@ import { HTTPException } from 'hono/http-exception';
 import { eq, and, desc } from 'drizzle-orm';
 import { db } from '../db';
 import { scheduledTasks, scheduledTaskRuns } from '../db/schema/scheduled-tasks';
-import { organizationRepository } from '../repositories/organization.repository';
-import { projectRepository } from '../repositories/project.repository';
 import { validateCronExpression, nextCronRun } from '../lib/cron-schedule';
 import { logger } from '../lib/logger';
-import { t, type SupportedLocale } from '../i18n';
-import { assertMemberProjectScope } from '../lib/member-project-scope';
+import { type SupportedLocale } from '../i18n';
+import { requireProjectMember, type OrgRole } from '../lib/org-access';
 
 /** Flat per-project cap — generous for real use, low enough to stop abuse. */
 const MAX_TASKS_PER_PROJECT = 10;
@@ -25,21 +23,15 @@ export interface ScheduledTaskInput {
   enabled?: boolean;
 }
 
+/** Viewers see the tasks; running, changing and reading their output (it can hold secrets) is member and up. */
 async function assertProjectAccess(
   projectId: string,
   organizationId: string,
   userId: string,
-  locale: SupportedLocale
+  locale: SupportedLocale,
+  min: OrgRole = 'viewer',
 ) {
-  const membership = await organizationRepository.findMember(organizationId, userId);
-  if (!membership) {
-    throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
-  }
-  const project = await projectRepository.findById(projectId);
-  if (!project || project.organizationId !== organizationId) {
-    throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });
-  }
-  await assertMemberProjectScope(membership, organizationId, userId, projectId, locale);
+  const { project } = await requireProjectMember(projectId, organizationId, userId, min, locale);
   return project;
 }
 
@@ -122,7 +114,7 @@ export const scheduledTaskService = {
     input: ScheduledTaskInput,
     locale: SupportedLocale = 'en'
   ) {
-    await assertProjectAccess(projectId, organizationId, userId, locale);
+    await assertProjectAccess(projectId, organizationId, userId, locale, 'member');
     validateTaskFields(input, true);
 
     const existing = await db
@@ -166,7 +158,7 @@ export const scheduledTaskService = {
     input: ScheduledTaskInput,
     locale: SupportedLocale = 'en'
   ) {
-    await assertProjectAccess(projectId, organizationId, userId, locale);
+    await assertProjectAccess(projectId, organizationId, userId, locale, 'member');
     const task = await this.getTask(projectId, taskId);
     validateTaskFields({ ...input, type: task.type }, false);
 
@@ -209,7 +201,7 @@ export const scheduledTaskService = {
     userId: string,
     locale: SupportedLocale = 'en'
   ) {
-    await assertProjectAccess(projectId, organizationId, userId, locale);
+    await assertProjectAccess(projectId, organizationId, userId, locale, 'member');
     await this.getTask(projectId, taskId);
     await db
       .delete(scheduledTasks)
@@ -225,7 +217,7 @@ export const scheduledTaskService = {
     locale: SupportedLocale = 'en',
     limit = 20
   ) {
-    await assertProjectAccess(projectId, organizationId, userId, locale);
+    await assertProjectAccess(projectId, organizationId, userId, locale, 'member');
     await this.getTask(projectId, taskId);
     return db
       .select()
@@ -233,6 +225,11 @@ export const scheduledTaskService = {
       .where(eq(scheduledTaskRuns.taskId, taskId))
       .orderBy(desc(scheduledTaskRuns.startedAt))
       .limit(Math.min(limit, 100));
+  },
+
+  /** The manual "run now" route: member and up, like changing a task. */
+  async authorizeRun(projectId: string, organizationId: string, userId: string, locale: SupportedLocale): Promise<void> {
+    await assertProjectAccess(projectId, organizationId, userId, locale, 'member');
   },
 
   async getTask(projectId: string, taskId: string) {

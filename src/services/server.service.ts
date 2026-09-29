@@ -1,4 +1,5 @@
 import { HTTPException } from 'hono/http-exception';
+import { requireOrgMember } from '../lib/org-access';
 import { env } from '../config/env';
 import { eq, and, desc, count, ne, inArray } from 'drizzle-orm';
 import { db } from '../db';
@@ -881,10 +882,8 @@ export const serverService = {
     locale: SupportedLocale = 'en'
   ): Promise<ServerWithDetails> {
     // Verify access
-    const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
-      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
-    }
+    // Starting, stopping and rebooting a server affects every app on it: admins and owners.
+    await requireOrgMember(organizationId, userId, 'admin', locale);
 
     // Get server
     let [server] = await db
@@ -992,10 +991,8 @@ export const serverService = {
     locale: SupportedLocale = 'en'
   ): Promise<ServerWithDetails> {
     // Verify access
-    const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
-      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
-    }
+    // Refreshing the status from the provider changes nothing on the server: member and up.
+    await requireOrgMember(organizationId, userId, 'member', locale);
 
     // Get server
     const [server] = await db

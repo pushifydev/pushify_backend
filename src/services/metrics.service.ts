@@ -149,8 +149,10 @@ export const metricsService = {
   },
 
   // Get metrics overview for all projects in an organization
-  async getMetricsOverview(organizationId: string): Promise<MetricsOverview> {
-    const latestMetrics = await metricsRepository.findLatestByOrganization(organizationId);
+  /** `allowedProjectIds`: a restricted member's projects (null = every project). */
+  async getMetricsOverview(organizationId: string, allowedProjectIds: string[] | null = null): Promise<MetricsOverview> {
+    const allMetrics = await metricsRepository.findLatestByOrganization(organizationId);
+    const latestMetrics = allowedProjectIds ? allMetrics.filter((m) => allowedProjectIds.includes(m.projectId)) : allMetrics;
 
     const projectSnapshots: ProjectMetricSnapshot[] = latestMetrics.map((m) => ({
       projectId: m.projectId,

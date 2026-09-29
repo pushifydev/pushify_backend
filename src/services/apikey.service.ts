@@ -155,6 +155,12 @@ export const apiKeyService = {
       return null;
     }
 
+    // A key acts as the member who created it: once they have left the organization, it stops.
+    const member = await organizationRepository.findMember(apiKey.organizationId, apiKey.userId);
+    if (!member) {
+      return null;
+    }
+
     // Update last used (fire and forget)
     apiKeyRepository.updateLastUsed(apiKey.id).catch(() => {});
 
@@ -233,7 +239,8 @@ export const apiKeyService = {
   ): Promise<void> {
     const apiKey = await apiKeyRepository.findById(keyId);
 
-    if (!apiKey) {
+    // A key of another organization is not found here, even for this organization's owner.
+    if (!apiKey || apiKey.organizationId !== organizationId) {
       throw new HTTPException(404, { message: t(locale, 'apiKeys', 'notFound') });
     }
 

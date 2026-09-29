@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { roleAtLeast, type OrgRole } from '../lib/org-access';
 import { eq } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { db } from '../db';
@@ -42,6 +43,8 @@ export const siteEditorService = {
     organizationId: string,
     userId: string,
     locale: SupportedLocale,
+    /** Editing and publishing are member and up; viewers can look. */
+    min: OrgRole = 'viewer',
   ) {
     const project = await db.query.projects.findFirst({
       where: eq(projects.id, projectId),
@@ -57,6 +60,9 @@ export const siteEditorService = {
     }
 
     await assertMemberProjectScope(membership, organizationId, userId, projectId, locale);
+    if (!roleAtLeast(membership.role, min)) {
+      throw new HTTPException(403, { message: t(locale, 'errors', 'forbidden') });
+    }
 
     const settings = (project.settings || {}) as Record<string, unknown>;
     if (!isSiteStudioProject(settings)) {
@@ -154,7 +160,7 @@ export const siteEditorService = {
     seo: Partial<SiteSeo>,
     locale: SupportedLocale,
   ) {
-    await this.assertProjectAccess(projectId, organizationId, userId, locale);
+    await this.assertProjectAccess(projectId, organizationId, userId, locale, 'member');
 
     const [row] = await db
       .select()
@@ -182,7 +188,7 @@ export const siteEditorService = {
     blocks: SiteBlock[],
     locale: SupportedLocale,
   ) {
-    await this.assertProjectAccess(projectId, organizationId, userId, locale);
+    await this.assertProjectAccess(projectId, organizationId, userId, locale, 'member');
 
     await db
       .update(projectSiteEditor)
@@ -200,7 +206,7 @@ export const siteEditorService = {
     pages: SitePage[],
     locale: SupportedLocale,
   ) {
-    await this.assertProjectAccess(projectId, organizationId, userId, locale);
+    await this.assertProjectAccess(projectId, organizationId, userId, locale, 'member');
 
     if (!Array.isArray(pages) || pages.length === 0) {
       throw new HTTPException(400, { message: 'At least one page is required' });
@@ -222,7 +228,7 @@ export const siteEditorService = {
     theme: Partial<SiteTheme>,
     locale: SupportedLocale,
   ) {
-    await this.assertProjectAccess(projectId, organizationId, userId, locale);
+    await this.assertProjectAccess(projectId, organizationId, userId, locale, 'member');
 
     const [row] = await db
       .select()
@@ -265,7 +271,7 @@ export const siteEditorService = {
     designKey: string,
     locale: SupportedLocale,
   ) {
-    const { project } = await this.assertProjectAccess(projectId, organizationId, userId, locale);
+    const { project } = await this.assertProjectAccess(projectId, organizationId, userId, locale, 'member');
 
     const design = getDesignByKey(designKey);
     if (!design) {
@@ -299,7 +305,7 @@ export const siteEditorService = {
     input: { mode: CmsMode; apiUrl?: string; apiToken?: string; collection?: string },
     locale: SupportedLocale,
   ) {
-    await this.assertProjectAccess(projectId, organizationId, userId, locale);
+    await this.assertProjectAccess(projectId, organizationId, userId, locale, 'member');
 
     const [row] = await db
       .select()
@@ -338,8 +344,7 @@ export const siteEditorService = {
       projectId,
       organizationId,
       userId,
-      locale,
-    );
+      locale, 'member');
 
     const isStatic = settings.siteStudioStack === 'static' || settings.static === true;
 

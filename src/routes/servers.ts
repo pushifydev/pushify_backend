@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { requireOrgMember } from '../lib/org-access';
 import { metricsRepository } from '../repositories/metrics.repository';
 import { serverService } from '../services/server.service';
 import { combinedAuthMiddleware } from '../middleware/auth';
@@ -403,6 +404,7 @@ serverRouter.get('/:serverId/timeline', requireScope('servers:read'), async (c) 
 serverRouter.get('/:serverId/ssh-info', requireScope('servers:read'), async (c) => {
   const serverId = c.req.param('serverId');
   const organizationId = c.get('organizationId')!;
+  await requireOrgMember(organizationId, c.get('userId')!, 'viewer', c.get('locale'));
 
   const server = await db.query.servers.findFirst({
     where: and(eq(servers.id, serverId), eq(servers.organizationId, organizationId)),

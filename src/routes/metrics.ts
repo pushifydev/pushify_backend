@@ -1,4 +1,7 @@
 import { Hono } from 'hono';
+import { requireScope } from '../middleware/apikey-auth';
+import { getMemberAllowedProjectIds } from '../lib/member-project-scope';
+import { requireOrgMember } from '../lib/org-access';
 import { metricsService } from '../services/metrics.service';
 import { projectRepository } from '../repositories/project.repository';
 import { authMiddleware } from '../middleware/auth';
@@ -12,6 +15,9 @@ const metricsRouter = new Hono<AppEnv>();
 
 // All routes require authentication
 metricsRouter.use('*', authMiddleware);
+metricsRouter.use('/overview', requireScope('metrics:read'));
+metricsRouter.use('/:projectId/metrics', requireScope('metrics:read'));
+metricsRouter.use('/:projectId/metrics/*', requireScope('metrics:read'));
 
 /**
  * Verify project access
@@ -43,7 +49,10 @@ async function verifyProjectAccess(
 // Get metrics overview for all projects in the organization
 metricsRouter.get('/overview', async (c) => {
   const organizationId = c.get('organizationId')!;
-  const overview = await metricsService.getMetricsOverview(organizationId);
+  const userId = c.get('userId')!;
+  const membership = await requireOrgMember(organizationId, userId, 'viewer', c.get('locale'));
+  const allowed = await getMemberAllowedProjectIds(membership, organizationId, userId);
+  const overview = await metricsService.getMetricsOverview(organizationId, allowed);
   return c.json({ data: overview });
 });
 

@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { requireScopeByMethod } from '../middleware/apikey-auth';
 import { healthCheckService } from '../services/healthcheck.service';
 import { authMiddleware } from '../middleware/auth';
 import { t } from '../i18n';
@@ -8,6 +9,9 @@ const healthCheckRouter = new Hono<AppEnv>();
 
 // All routes require authentication
 healthCheckRouter.use('*', authMiddleware);
+healthCheckRouter.use('/:projectId/health-check', requireScopeByMethod('projects:read', 'projects:write'));
+healthCheckRouter.use('/:projectId/health-check/*', requireScopeByMethod('projects:read', 'projects:write'));
+healthCheckRouter.use('/:projectId/health-status', requireScopeByMethod('projects:read', 'projects:write'));
 
 // What monitoring last saw (status badge on the project page)
 healthCheckRouter.get('/:projectId/health-status', async (c) => {

@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { rejectApiKeyAuth } from '../middleware/apikey-auth';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { apiKeyService } from '../services/apikey.service';
@@ -11,6 +12,8 @@ const apiKeyRouter = new Hono<AppEnv>();
 
 // All routes require authentication (JWT only - not API key)
 apiKeyRouter.use('*', authMiddleware);
+// Keys are managed from the dashboard only: a key must not be able to mint another (wider) key.
+apiKeyRouter.use('*', rejectApiKeyAuth());
 
 // Validation schemas
 const createApiKeySchema = z.object({

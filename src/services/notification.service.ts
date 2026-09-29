@@ -1,9 +1,9 @@
 import { HTTPException } from 'hono/http-exception';
+import { requireProjectMember } from '../lib/org-access';
 import nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
 import { notificationRepository } from '../repositories/notification.repository';
 import { projectRepository } from '../repositories/project.repository';
-import { organizationRepository } from '../repositories/organization.repository';
 import { encrypt, decrypt } from '../lib/encryption';
 import { assertPublicUrl } from '../lib/ssrf-guard';
 import { logger } from '../lib/logger';
@@ -81,10 +81,7 @@ export const notificationService = {
     locale: SupportedLocale = 'en'
   ) {
     // Verify access
-    const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
-      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
-    }
+    await requireProjectMember(projectId, organizationId, userId, 'viewer', locale);
 
     // Verify project belongs to organization
     const project = await projectRepository.findById(projectId);
@@ -123,10 +120,7 @@ export const notificationService = {
     locale: SupportedLocale = 'en'
   ) {
     // Verify access
-    const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
-      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
-    }
+    await requireProjectMember(projectId, organizationId, userId, 'member', locale);
 
     // Verify project belongs to organization
     const project = await projectRepository.findById(projectId);
@@ -176,10 +170,7 @@ export const notificationService = {
     locale: SupportedLocale = 'en'
   ) {
     // Verify access
-    const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
-      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
-    }
+    await requireProjectMember(projectId, organizationId, userId, 'member', locale);
 
     // Verify project belongs to organization (prevents cross-tenant access via a forged projectId)
     const project = await projectRepository.findById(projectId);
@@ -229,10 +220,7 @@ export const notificationService = {
     locale: SupportedLocale = 'en'
   ) {
     // Verify access
-    const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
-      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
-    }
+    await requireProjectMember(projectId, organizationId, userId, 'member', locale);
 
     // Verify project belongs to organization (prevents cross-tenant access via a forged projectId)
     const project = await projectRepository.findById(projectId);
@@ -262,10 +250,7 @@ export const notificationService = {
     locale: SupportedLocale = 'en'
   ) {
     // Verify access
-    const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
-      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
-    }
+    await requireProjectMember(projectId, organizationId, userId, 'member', locale);
 
     // Verify channel exists and belongs to project
     const channel = await notificationRepository.findChannelById(channelId);
@@ -308,10 +293,7 @@ export const notificationService = {
     locale: SupportedLocale = 'en'
   ) {
     // Verify access
-    const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
-      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
-    }
+    await requireProjectMember(projectId, organizationId, userId, 'viewer', locale);
 
     // Verify project belongs to organization (prevents cross-tenant access via a forged projectId)
     const project = await projectRepository.findById(projectId);

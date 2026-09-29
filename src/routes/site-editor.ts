@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { requireScopeByMethod } from '../middleware/apikey-auth';
 import { authMiddleware } from '../middleware/auth';
 import { siteEditorService } from '../services/site-editor.service';
 import type { AppEnv } from '../types';
@@ -9,6 +10,8 @@ import { uploadSiteEditorImage } from '../lib/site-editor-assets';
 const siteEditorRouter = new Hono<AppEnv>();
 
 siteEditorRouter.use('*', authMiddleware);
+siteEditorRouter.use('/:projectId/site-editor', requireScopeByMethod('projects:read', 'projects:write'));
+siteEditorRouter.use('/:projectId/site-editor/*', requireScopeByMethod('projects:read', 'projects:write'));
 
 siteEditorRouter.get('/:projectId/site-editor', async (c) => {
   const projectId = c.req.param('projectId');

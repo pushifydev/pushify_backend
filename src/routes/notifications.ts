@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { requireScopeByMethod } from '../middleware/apikey-auth';
 import { notificationService } from '../services/notification.service';
 import { authMiddleware } from '../middleware/auth';
 import { t } from '../i18n';
@@ -8,6 +9,9 @@ const notificationRouter = new Hono<AppEnv>();
 
 // All routes require authentication
 notificationRouter.use('*', authMiddleware);
+// API-key scopes on this router's own paths (see requireScopeByMethod).
+notificationRouter.use('/:projectId/notifications', requireScopeByMethod('projects:read', 'projects:write'));
+notificationRouter.use('/:projectId/notifications/*', requireScopeByMethod('projects:read', 'projects:write'));
 
 // Get all notification channels for a project
 notificationRouter.get('/:projectId/notifications', async (c) => {
