@@ -10,6 +10,7 @@ import { organizationMembers } from '../db/schema/organizations';
 import { eq, and } from 'drizzle-orm';
 import { decrypt } from '../lib/encryption';
 import { SSHClient } from '../utils/ssh';
+import { UNINSTALL_SCRIPT_URL } from '../lib/server-key-removal';
 import type { AppEnv } from '../types';
 import type { ProviderType } from '../providers';
 
@@ -184,9 +185,20 @@ serverRouter.delete('/:serverId', requireScope('servers:write'), async (c) => {
   const locale = c.get('locale');
   const serverId = c.req.param('serverId');
 
-  await serverService.deleteServer(serverId, organizationId, userId, locale);
+  const { keyRemoval } = await serverService.deleteServer(serverId, organizationId, userId, locale);
 
-  return c.json({ message: t(locale, 'servers', 'deleted') });
+  // keyRemoval is null for servers Pushify created (the machine itself is gone). For a connected
+  // server whose key could not be removed, the client shows manualCommand.
+  return c.json({
+    message: t(locale, 'servers', 'deleted'),
+    data: keyRemoval
+      ? {
+          keyRemoved: keyRemoval.keyRemoved,
+          manualCommand: keyRemoval.manualCommand ?? null,
+          uninstallScriptUrl: UNINSTALL_SCRIPT_URL,
+        }
+      : null,
+  });
 });
 
 // Power actions

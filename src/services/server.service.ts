@@ -12,7 +12,8 @@ import { organizations } from '../db/schema/organizations';
 import { createProvider, type ProviderType, type ServerConfig } from '../providers';
 import { t, type SupportedLocale } from '../i18n';
 import { getServerStatusQueue } from '../queue';
-import { generateSSHKeyPair } from '../utils/ssh';
+import { generateSSHKeyPair, removeSSHConnection } from '../utils/ssh';
+import { removePushifyKey, type KeyRemovalResult } from '../lib/server-key-removal';
 import { encrypt, decrypt } from '../lib/encryption';
 import { type PlanType } from '../lib/plans';
 import { getEffectivePlanLimits } from '../lib/effective-plan-limits';
@@ -159,7 +160,8 @@ SITE
 ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
 rm -f /etc/nginx/sites-enabled/default.bak 2>/dev/null || true
 
-# Configure main nginx.conf
+# Configure main nginx.conf (keep the distribution's original; server-uninstall.sh restores it)
+[ -f /etc/nginx/nginx.conf ] && [ ! -f /etc/nginx/nginx.conf.pushify-backup ] && cp -a /etc/nginx/nginx.conf /etc/nginx/nginx.conf.pushify-backup
 cat > /etc/nginx/nginx.conf << 'NGINXCONF'
 user www-data;
 worker_processes auto;
@@ -741,7 +743,7 @@ export const serverService = {
     organizationId: string,
     userId: string,
     locale: SupportedLocale = 'en'
-  ): Promise<void> {
+  ): Promise<{ keyRemoval: KeyRemovalResult | null }> {
     // Verify access - need admin or owner role
     const membership = await organizationRepository.findMember(organizationId, userId);
     if (!membership) {
@@ -769,6 +771,27 @@ export const serverService = {
       .set({ status: 'deleting', updatedAt: new Date() })
       .where(eq(servers.id, serverId));
 
+    // A connected (BYOS) server outlives its Pushify record: take Pushify's SSH key off it. This
+    // never fails the deletion — an unreachable server gets a manual command instead.
+    let keyRemoval: KeyRemovalResult | null = null;
+    if (!server.isManaged && server.ipv4 && server.sshPublicKey) {
+      let privateKey: string | undefined;
+      let password: string | undefined;
+      try {
+        privateKey = server.sshPrivateKey ? decrypt(server.sshPrivateKey) : undefined;
+        password = server.rootPassword ? decrypt(server.rootPassword) : undefined;
+      } catch (err) {
+        logger.warn({ err, serverId }, 'could not decrypt server credentials for key removal');
+      }
+      removeSSHConnection(server.ipv4, 22, 'root');
+      keyRemoval = await removePushifyKey({ host: server.ipv4, publicKey: server.sshPublicKey, privateKey, password });
+      if (keyRemoval.keyRemoved) {
+        logger.info({ serverId, host: server.ipv4 }, 'removed Pushify SSH key from deleted server');
+      } else {
+        logger.warn({ serverId, host: server.ipv4, reason: keyRemoval.reason }, 'could not remove Pushify SSH key from deleted server');
+      }
+    }
+
     try {
       // Delete from provider if managed
       if (server.isManaged && server.providerId) {
@@ -780,6 +803,7 @@ export const serverService = {
       // Delete from database
       await db.delete(servers).where(eq(servers.id, serverId));
       adminNotify('server.deleted', { server: server.name, organizationId });
+      return { keyRemoval };
     } catch (error) {
       // Revert status on error
       await db
