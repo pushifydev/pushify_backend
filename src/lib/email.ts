@@ -2186,3 +2186,44 @@ export async function sendDeletionCompletedEmail(
     logger.error({ error, to, kind: input.kind }, 'Failed to send deletion completed email');
   }
 }
+
+export async function sendDeletionConfirmEmail(
+  to: string,
+  input: { kind: 'organization' | 'account'; name: string; confirmUrl: string },
+  locale: 'en' | 'tr' = 'en',
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping deletion confirmation email');
+    return;
+  }
+  const tr = locale === 'tr';
+  const name = esc(input.name);
+  const what =
+    input.kind === 'organization'
+      ? tr ? `<strong style="color:#18181b;">${name}</strong> organizasyonunu` : `the organization <strong style="color:#18181b;">${name}</strong>`
+      : tr ? `<strong style="color:#18181b;">${name}</strong> hesabınızı` : `your account <strong style="color:#18181b;">${name}</strong>`;
+  const html = renderTransactionalEmail({
+    eyebrow: tr ? 'Silmeyi onaylayın' : 'Confirm deletion',
+    tone: 'warning',
+    title: tr ? 'Silmeyi onaylayın' : 'Confirm deletion',
+    greeting: tr ? 'Merhaba,' : 'Hi there,',
+    bodyHtml: [
+      tr
+        ? `${what} silmek için bir talep aldık. Silme, aşağıdaki düğmeye tıkladığınızda başlar; 30 gün boyunca geri alabilirsiniz.`
+        : `We received a request to delete ${what}. The deletion starts when you click the button below; you can restore it for 30 days after that.`,
+      tr ? 'Bu talebi siz yapmadıysanız bu e-postayı yok sayın; hiçbir şey değişmez.' : 'If this was not you, ignore this email and nothing will change.',
+    ],
+    button: { href: input.confirmUrl, label: tr ? 'Silmeyi onayla' : 'Confirm deletion' },
+    notes: [tr ? 'Bağlantı 1 saat geçerli ve yalnızca bir kez kullanılabilir.' : 'The link works once, for one hour.'],
+  });
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: tr ? `Silmeyi onaylayın — ${input.name}` : `Confirm deletion — ${input.name}`,
+      html,
+    });
+  } catch (error) {
+    logger.error({ error, to, kind: input.kind }, 'Failed to send deletion confirmation email');
+  }
+}

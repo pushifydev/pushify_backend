@@ -15,6 +15,7 @@ const h = vi.hoisted(() => ({
   pause: vi.fn(),
   scheduledEmail: vi.fn(),
   restoredEmail: vi.fn(),
+  confirmEmail: vi.fn(),
 }));
 
 vi.mock('../db', async () => {
@@ -42,7 +43,12 @@ vi.mock('./organization-billing.service', async (importOriginal) => {
 });
 vi.mock('../lib/email', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/email')>();
-  return { ...actual, sendDeletionScheduledEmail: h.scheduledEmail, sendDeletionRestoredEmail: h.restoredEmail };
+  return {
+    ...actual,
+    sendDeletionScheduledEmail: h.scheduledEmail,
+    sendDeletionRestoredEmail: h.restoredEmail,
+    sendDeletionConfirmEmail: h.confirmEmail,
+  };
 });
 
 import { eq, sql } from 'drizzle-orm';
@@ -61,7 +67,7 @@ import {
 } from '../db/schema';
 import { hashPassword } from '../lib/password';
 import { isOrganizationPendingDeletion } from '../lib/deletion-lock';
-import { accountDeletionService, DELETION_STATUS_MESSAGE } from './account-deletion.service';
+import { accountDeletionService, DELETION_STATUS_MESSAGE, type DeletionScheduled } from './account-deletion.service';
 import { assertOrganizationCanMutateResources, getOrganizationBillingStatus } from './organization-billing.service';
 import { authService } from './auth.service';
 
@@ -77,6 +83,20 @@ async function makeUser() {
     .returning();
   return u;
 }
+
+async function makeOAuthUser() {
+  seq++;
+  const [u] = await db
+    .insert(users)
+    .values({ email: `deletion-test-${Date.now()}-${seq}@example.com`, name: 'deletion-test', passwordHash: null, githubId: `gh-${Date.now()}-${seq}` })
+    .returning();
+  return u;
+}
+
+const tokenFromEmail = (call: unknown[]) => {
+  const url = (call[1] as { confirmUrl: string }).confirmUrl;
+  return decodeURIComponent(url.split('#token=')[1]);
+};
 
 async function makeOrg(owner: string, over: Partial<typeof organizations.$inferInsert> = {}) {
   seq++;
@@ -176,7 +196,7 @@ describe.skipIf(!TEST_URL)('account deletion (real Postgres)', () => {
       const o = await makeOrg(owner.id, { plan: 'pro', stripeSubscriptionId: 'sub_del_1', infraWalletBalanceCents: 1234, includedCreditCents: 1800 });
       const f = await fillOrg(o.id, owner.id);
 
-      const result = await accountDeletionService.requestOrganizationDeletion(o.id, owner.id, { confirmName: o.name, password: PASSWORD }, 'en', NOW);
+      const result = (await accountDeletionService.requestOrganizationDeletion(o.id, owner.id, { confirmName: o.name, password: PASSWORD }, 'en', NOW)) as DeletionScheduled;
 
       expect(result.scheduledFor.toISOString()).toBe('2026-10-31T12:00:00.000Z');
       expect(result.walletBalanceCents).toBe(1234);
@@ -263,7 +283,7 @@ describe.skipIf(!TEST_URL)('account deletion (real Postgres)', () => {
       await db.insert(userSessions).values({ userId: u.id, tokenHash: `t${Date.now()}`, expiresAt: new Date(Date.now() + 86_400_000) });
       await db.insert(gitIntegrations).values({ userId: u.id, provider: 'github', providerAccountId: '1', accessToken: 'enc' });
 
-      const result = await accountDeletionService.requestAccountDeletion(u.id, { confirmEmail: u.email.toUpperCase(), password: PASSWORD }, 'en', NOW);
+      const result = (await accountDeletionService.requestAccountDeletion(u.id, { confirmEmail: u.email.toUpperCase(), password: PASSWORD }, 'en', NOW)) as DeletionScheduled & { organizations: string[] };
       expect(result.organizations).toEqual([o.name]);
       expect((await user(u.id)).deletionScheduledFor?.toISOString()).toBe('2026-10-31T12:00:00.000Z');
       expect((await org(o.id)).deletionScheduledFor).not.toBeNull();
@@ -298,6 +318,48 @@ describe.skipIf(!TEST_URL)('account deletion (real Postgres)', () => {
 
     it('rejects a restore token that is not one', async () => {
       expect((await httpError(accountDeletionService.restoreAccount('not-a-token', 'en'))).status).toBe(401);
+    });
+  });
+
+  describe('accounts with neither a password nor 2FA', () => {
+    it('emails a one-hour, single-use link and changes nothing until it is clicked', async () => {
+      const u = await makeOAuthUser();
+      const o = await makeOrg(u.id);
+      const sent = await accountDeletionService.requestOrganizationDeletion(o.id, u.id, { confirmName: o.name }, 'en', NOW);
+      expect(sent).toEqual({ confirmationSent: true });
+      expect((await org(o.id)).deletionScheduledFor).toBeNull();
+      expect(h.cancel).not.toHaveBeenCalled();
+      expect(h.confirmEmail).toHaveBeenCalledTimes(1);
+      expect(h.confirmEmail.mock.calls[0][1]).toMatchObject({ kind: 'organization', name: o.name });
+
+      const token = tokenFromEmail(h.confirmEmail.mock.calls[0]);
+      const confirmed = await accountDeletionService.confirmDeletion(token, 'en');
+      expect(confirmed.kind).toBe('organization');
+      expect((await org(o.id)).deletionScheduledFor).not.toBeNull();
+
+      expect((await httpError(accountDeletionService.confirmDeletion(token, 'en'))).status).toBe(409);
+    });
+
+    it('works the same for the account itself', async () => {
+      const u = await makeOAuthUser();
+      await makeOrg(u.id);
+      expect(await accountDeletionService.requestAccountDeletion(u.id, { confirmEmail: u.email }, 'en', NOW)).toEqual({ confirmationSent: true });
+      expect((await user(u.id)).deletionScheduledFor).toBeNull();
+      await accountDeletionService.confirmDeletion(tokenFromEmail(h.confirmEmail.mock.calls[0]), 'en');
+      expect((await user(u.id)).deletionScheduledFor).not.toBeNull();
+    });
+
+    it('still refuses an owner of an organization with other members, before any email', async () => {
+      const u = await makeOAuthUser();
+      const o = await makeOrg(u.id);
+      const member = await makeUser();
+      await db.insert(organizationMembers).values({ organizationId: o.id, userId: member.id, role: 'member' });
+      expect((await httpError(accountDeletionService.requestAccountDeletion(u.id, { confirmEmail: u.email }, 'en', NOW))).status).toBe(409);
+      expect(h.confirmEmail).not.toHaveBeenCalled();
+    });
+
+    it('rejects a link that is not one', async () => {
+      expect((await httpError(accountDeletionService.confirmDeletion('nope', 'en'))).status).toBe(401);
     });
   });
 });
