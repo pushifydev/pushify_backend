@@ -29,7 +29,7 @@ const BulkResultSchema = z
     key: z.string(),
     environment: z.string(),
     isSecret: z.boolean(),
-    action: z.enum(['created', 'updated']),
+    action: z.enum(['created', 'updated', 'unchanged']),
   })
   .openapi('BulkResult');
 
