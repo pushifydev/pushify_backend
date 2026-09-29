@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.95] - 2026-09-30
+
+### Fixed
+- **Webhook signatures can be verified.** `X-Pushify-Signature` was computed over the event payload, but the request body wraps it (`{ event, timestamp, data }`), so a receiver checking the signature against the body it received always failed. The signature is now `sha256=` + HMAC-SHA256 of the exact request body, keyed with the channel's secret. **Receivers that worked around the old behaviour by re-serialising `data` must switch to the raw body.** A Node.js verification example is in the docs (Monitoring & alerts).
+
 ## [0.2.0-beta.94] - 2026-09-30
 
 ### Fixed
