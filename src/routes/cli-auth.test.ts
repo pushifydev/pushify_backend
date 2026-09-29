@@ -4,6 +4,8 @@ const h = vi.hoisted(() => ({ create: vi.fn(), pending: vi.fn() }));
 
 vi.mock('../services/apikey.service', () => ({ apiKeyService: { create: h.create } }));
 vi.mock('../lib/deletion-lock', () => ({ isOrganizationPendingDeletion: h.pending }));
+// Process memory, as without REDIS_URL (the Redis path is covered in lib/cli-auth-store.test.ts).
+vi.mock('../lib/redis-client', () => ({ getOptionalRedis: () => null }));
 vi.mock('../middleware/rate-limit', () => ({ authRateLimiter: async (_c: unknown, next: () => Promise<void>) => next() }));
 vi.mock('../middleware/auth', () => ({
   authMiddleware: async (c: { set: (k: string, v: string) => void }, next: () => Promise<void>) => {
