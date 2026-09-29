@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.97] - 2026-09-30
+
+### Fixed
+- **Sleep stops every replica, and wake starts them all.** Sleep only matched the primary container (`pushify-<slug>-blue`), so replicas (`-blue-2`, `-blue-3`, …) kept running and serving traffic while the project showed as sleeping. It now matches every replica of either slot, leaving workers, previews and the database sidecar alone. Wake used to count as done as soon as one container was running. It now starts all of them and succeeds only when none is left stopped, retrying within the 30 s window.
+
 ## [0.2.0-beta.96] - 2026-09-30
 
 ### Fixed
