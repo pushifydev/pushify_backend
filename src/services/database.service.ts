@@ -20,6 +20,7 @@ import {
   buildConnectionString,
   buildDatabaseRunCommand,
   buildReadonlyUserCommand,
+  buildDatabaseDataRemovalCommand,
   databaseDataDir,
   internalConnectionString,
   isDatabaseType,
@@ -430,7 +431,8 @@ export const databaseService = {
         database.serverId,
         database.containerName,
         database.containerPort,
-        database.externalAccess
+        database.externalAccess,
+        database.databaseName,
       ).catch((error) => console.error(`Failed to delete container:`, error));
     }
 
@@ -450,7 +452,8 @@ export const databaseService = {
     serverId: string,
     containerName: string,
     containerPort: number | null,
-    externalAccess: boolean
+    externalAccess: boolean,
+    databaseName?: string,
   ) {
     const server = await db.query.servers.findFirst({
       where: eq(servers.id, serverId),
@@ -475,6 +478,10 @@ export const databaseService = {
       if (externalAccess && containerPort) {
         await ssh.exec(`ufw delete allow ${containerPort}/tcp || true`);
       }
+
+      // The data and the local backups: "delete" must not leave the customer's rows on disk.
+      const removeData = databaseName ? buildDatabaseDataRemovalCommand(databaseName) : null;
+      if (removeData) await ssh.exec(removeData);
     } finally {
       ssh.disconnect();
     }

@@ -3,15 +3,19 @@ import { randomBytes, createHash } from 'crypto';
 import { authMiddleware } from '../middleware/auth';
 import { authRateLimiter } from '../middleware/rate-limit';
 import { apiKeyService } from '../services/apikey.service';
+import { isOrganizationPendingDeletion } from '../lib/deletion-lock';
 import type { AppEnv } from '../types';
 
 // ─── In-memory store for CLI auth sessions ───
 // In production, use Redis for multi-instance support
+//
+// Only the code's hash is kept, and never an API key: approving records who approved, and the
+// key is created when the CLI collects it — so an approval nobody collects leaves no key behind,
+// and no secret waits in memory.
 interface CliAuthSession {
-  code: string;
   codeHash: string;
   status: 'pending' | 'approved' | 'expired';
-  apiKey: string | null;
+  approvedBy: { userId: string; organizationId: string } | null;
   createdAt: number;
   expiresAt: number;
 }
@@ -130,10 +134,9 @@ cliAuthRouter.openapi(createSessionRoute, async (c) => {
   const expiresAt = now + 10 * 60 * 1000; // 10 minutes
 
   sessions.set(codeHash, {
-    code,
     codeHash,
     status: 'pending',
-    apiKey: null,
+    approvedBy: null,
     createdAt: now,
     expiresAt,
   });
@@ -156,10 +159,18 @@ cliAuthRouter.openapi(pollRoute, async (c) => {
     return c.json({ status: 'expired' as const, apiKey: null });
   }
 
-  if (session.status === 'approved') {
-    const apiKey = session.apiKey;
-    sessions.delete(codeHash); // One-time read
-    return c.json({ status: 'approved' as const, apiKey });
+  if (session.status === 'approved' && session.approvedBy) {
+    const { userId, organizationId } = session.approvedBy;
+    sessions.delete(codeHash); // One-time: removed before the key exists, so it is issued once
+    // Approved, then the organization was scheduled for deletion: its keys are revoked, so no new one.
+    if (await isOrganizationPendingDeletion(organizationId)) {
+      return c.json({ status: 'expired' as const, apiKey: null });
+    }
+    const result = await apiKeyService.create(userId, organizationId, {
+      name: `CLI Login (${new Date().toLocaleDateString()})`,
+      scopes: ['*'],
+    });
+    return c.json({ status: 'approved' as const, apiKey: result.secretKey });
   }
 
   return c.json({ status: 'pending' as const, apiKey: null });
@@ -187,14 +198,9 @@ cliAuthRouter.openapi(approveRoute, async (c) => {
     return c.json({ message: 'Already approved' }, 400);
   }
 
-  // Create an API key for CLI usage
-  const result = await apiKeyService.create(userId, organizationId, {
-    name: `CLI Login (${new Date().toLocaleDateString()})`,
-    scopes: ['*'],
-  });
-
+  // The key itself is created when the CLI collects it (see poll).
   session.status = 'approved';
-  session.apiKey = result.secretKey;
+  session.approvedBy = { userId, organizationId };
 
   return c.json({ message: 'CLI login approved' });
 });

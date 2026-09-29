@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  buildDatabaseDataRemovalCommand,
   buildConnectionString,
   buildDatabaseRunCommand,
   buildReadonlyUserCommand,
@@ -152,5 +153,35 @@ describe('buildReadonlyUserCommand', () => {
     const cmd = buildReadonlyUserCommand({ ...base, type: 'mongodb' });
     expect(cmd).toContain("role: 'read', db: 'app'");
     expect(cmd).toContain("print('PUSHIFY_RO_OK')");
+  });
+});
+
+describe('buildDatabaseDataRemovalCommand', () => {
+  it('removes the data directory and the copies set aside in .old, in a real shell', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const { tmpdir } = await import('node:os');
+    const root = mkdtempSync(join(tmpdir(), 'pushify-db-'));
+    try {
+      const base = join(root, 'opt/pushify/databases');
+      for (const d of ['app/backups', '.old/app-1700000000', '.old/app_2-1700000000', 'other']) mkdirSync(join(base, d), { recursive: true });
+      writeFileSync(join(base, 'app/backups/app_x.sql.gz'), 'x');
+      const cmd = buildDatabaseDataRemovalCommand('app')!.replaceAll('/opt/pushify', join(root, 'opt/pushify'));
+      execFileSync('bash', ['-c', cmd]);
+      expect(existsSync(join(base, 'app'))).toBe(false);
+      expect(existsSync(join(base, '.old/app-1700000000'))).toBe(false);
+      // A different database whose name starts the same way, and any other, are left alone.
+      expect(existsSync(join(base, '.old/app_2-1700000000'))).toBe(true);
+      expect(existsSync(join(base, 'other'))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a name we would never generate', () => {
+    for (const bad of ['', '..', '../etc', 'a b', 'app;rm -rf /', "x'y", 'A']) {
+      expect(buildDatabaseDataRemovalCommand(bad)).toBeNull();
+    }
   });
 });

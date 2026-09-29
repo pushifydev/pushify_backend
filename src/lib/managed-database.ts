@@ -90,6 +90,20 @@ export function databaseDataDir(databaseName: string): string {
 }
 
 /**
+ * What a deleted database leaves on its server: the data directory (with the local backups in
+ * it) and earlier copies that provisioning set aside in `.old/<name>-<timestamp>`. `null` for a
+ * name that is not one we generate, so an odd value can never widen the `rm`.
+ */
+export function buildDatabaseDataRemovalCommand(databaseName: string): string | null {
+  if (!/^[a-z0-9_]{1,64}$/.test(databaseName)) return null;
+  return [
+    `rm -rf -- '${databaseDataDir(databaseName)}'`,
+    `find /opt/pushify/databases/.old -mindepth 1 -maxdepth 1 -name '${databaseName}-*' -exec rm -rf -- {} + 2>/dev/null`,
+    'true',
+  ].join('; ');
+}
+
+/**
  * `docker run` for a managed database: on the `pushify` network (reachable from apps by name),
  * published on 127.0.0.1 — or 0.0.0.0 with external access — at `hostPort`.
  */
