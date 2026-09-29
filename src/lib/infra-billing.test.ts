@@ -101,3 +101,31 @@ describe('assertServerWithinPlanLimits', () => {
     ).toThrow('PLAN_SERVER_VCPU_EXCEEDED');
   });
 });
+
+/**
+ * Plan limits must equal what each plan can actually create from Hetzner's in-stock shared
+ * types (2026-09 catalogue, ~1.16 EUR/USD applied rate).
+ */
+describe('plan server limits match creatable servers', () => {
+  const at = (eur: number, fx = 1.16) => Math.round(eur * fx * 100);
+
+  it('Pro can create cpx32 (4 vCPU / 8 GB, EUR 35.49)', () => {
+    expect(() => assertServerWithinPlanLimits('pro', { vcpus: 4, memoryMb: 8192, diskGb: 160 }, at(35.49))).not.toThrow();
+    // ...with room for the exchange rate to move
+    expect(() => assertServerWithinPlanLimits('pro', { vcpus: 4, memoryMb: 8192, diskGb: 160 }, at(35.49, 1.35))).not.toThrow();
+  });
+
+  it('Pro still stops at 4 vCPU', () => {
+    expect(() => assertServerWithinPlanLimits('pro', { vcpus: 8, memoryMb: 16384, diskGb: 320 }, at(69.49))).toThrow();
+  });
+
+  it('Business tops out at 8 vCPU / 16 GB (cpx42); 32 GB is not offered', () => {
+    expect(() => assertServerWithinPlanLimits('business', { vcpus: 8, memoryMb: 16384, diskGb: 320 }, at(69.49))).not.toThrow();
+    expect(() => assertServerWithinPlanLimits('business', { vcpus: 8, memoryMb: 32768, diskGb: 240 }, at(69.49))).toThrow();
+  });
+
+  it('Hobby cannot create cpx12 (EUR 11.49), the only small type in nbg1 while cx23 is out of stock there', () => {
+    expect(() => assertServerWithinPlanLimits('hobby', { vcpus: 1, memoryMb: 2048, diskGb: 40 }, at(11.49))).toThrow();
+    expect(() => assertServerWithinPlanLimits('hobby', { vcpus: 2, memoryMb: 4096, diskGb: 40 }, at(5.49))).not.toThrow();
+  });
+});
