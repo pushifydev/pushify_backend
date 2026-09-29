@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.77] - 2026-09-29
+
+### Fixed
+- **Plan server limits match what each plan can create.** Pro can now create a 4 vCPU / 8 GB server (its provider cost cap was below the only in-stock type, cpx32). Business's memory limit is 16 GB, the largest shared server available at 8 vCPU (cpx42); there is no shared 8 vCPU / 32 GB type.
+
 ## [0.2.0-beta.76] - 2026-09-29
 
 ### Security
