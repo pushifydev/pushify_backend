@@ -37,6 +37,7 @@
     "stripe:audit": "tsx scripts/stripe-audit.ts",
     "billing:diagnose": "tsx scripts/billing-diagnose.ts",
     "notify:admin": "tsx scripts/notify-admin.ts",
+    "hetzner:leftovers": "tsx scripts/hetzner-leftovers.ts",
     "cert:install-wildcard": "tsx scripts/install-wildcard-cert.ts",
     "marketplace:export": "tsx scripts/export-marketplace.ts",
     "test:e2e": "bash e2e/run.sh",

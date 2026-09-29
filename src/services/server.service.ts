@@ -54,6 +54,24 @@ export async function revokePushifyAccess(
   return result;
 }
 
+/**
+ * After a managed server is deleted: its snapshots and the SSH key uploaded for it. Best effort —
+ * the server itself is gone either way; what is left is reported by scripts/hetzner-leftovers.ts.
+ */
+async function releaseProviderLeftovers(
+  provider: ReturnType<typeof createProvider>,
+  serverId: string,
+  snapshotIds: string[],
+  sshKeyId: string | null,
+): Promise<void> {
+  for (const id of snapshotIds) {
+    await provider.deleteSnapshot(id).catch((err) => logger.warn({ err, serverId, snapshotId: id }, 'could not delete snapshot of the deleted server'));
+  }
+  if (sshKeyId) {
+    await provider.deleteSSHKey(sshKeyId).catch((err) => logger.warn({ err, serverId, sshKeyId }, 'could not delete the SSH key of the deleted server'));
+  }
+}
+
 export interface CreateServerInput {
   name: string;
   description?: string;
@@ -807,7 +825,15 @@ export const serverService = {
       if (server.isManaged && server.providerId) {
         const apiToken = getProviderToken(server.provider as ProviderType);
         const provider = createProvider(server.provider as ProviderType, apiToken);
+        // Snapshots can only be restored onto this server, so without it they are just a bill.
+        const snapshotIds = provider.listSnapshotIdsCreatedFrom
+          ? await provider.listSnapshotIdsCreatedFrom(server.providerId).catch((err) => {
+              logger.warn({ err, serverId }, 'could not list snapshots of the deleted server');
+              return [] as string[];
+            })
+          : [];
         await provider.deleteServer(server.providerId);
+        await releaseProviderLeftovers(provider, serverId, snapshotIds, server.sshKeyId);
       }
 
       // Delete from database

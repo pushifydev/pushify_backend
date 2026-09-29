@@ -21,6 +21,8 @@ import { logger } from '../lib/logger';
 import type { Snapshot } from '../providers/cloud-provider.interface';
 
 const AUTO_SNAPSHOT_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+/** How automatic snapshots are told apart from ones taken by hand (the Hetzner image description). */
+export const AUTO_SNAPSHOT_DESCRIPTION = 'Automatic weekly snapshot';
 
 export const serverSnapshotAutomationService = {
   async runScheduledSnapshots(): Promise<{ created: number; pruned: number; skipped: number }> {
@@ -102,7 +104,7 @@ export const serverSnapshotAutomationService = {
 
     if (now - lastAt >= AUTO_SNAPSHOT_INTERVAL_MS) {
       const label = `pushify-auto-${server.name}-${new Date().toISOString().slice(0, 10)}`;
-      await provider.createSnapshot(server.providerId, label, 'Automatic weekly snapshot');
+      await provider.createSnapshot(server.providerId, label, AUTO_SNAPSHOT_DESCRIPTION);
       await db
         .update(servers)
         .set({ lastAutoSnapshotAt: new Date(), updatedAt: new Date() })
@@ -123,17 +125,22 @@ export const serverSnapshotAutomationService = {
   ): Promise<number> {
     if (isUnlimited(maxSnapshots)) return 0;
 
-    const available = snapshots
-      .filter((s) => s.status === 'available')
+    // Only automatic snapshots are removed to stay within the limit; one the user took by hand is
+    // theirs to delete, even when it counts towards the limit.
+    const available = snapshots.filter((s) => s.status === 'available');
+    const automatic = available
+      .filter((s) => s.description === AUTO_SNAPSHOT_DESCRIPTION)
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    let total = available.length;
 
     let pruned = 0;
-    while (available.length > maxSnapshots) {
-      const oldest = available.shift();
+    while (total > maxSnapshots && automatic.length > 0) {
+      const oldest = automatic.shift();
       if (!oldest) break;
       try {
         await provider.deleteSnapshot(oldest.id);
         pruned++;
+        total--;
         logger.info({ snapshotId: oldest.id }, 'Pruned old server snapshot');
       } catch (error) {
         logger.error({ err: error, snapshotId: oldest.id }, 'Failed to prune snapshot');

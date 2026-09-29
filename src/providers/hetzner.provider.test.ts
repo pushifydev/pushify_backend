@@ -98,3 +98,20 @@ describe('listSnapshotIdsCreatedFrom', () => {
     expect(fetchMock.mock.calls[0][0]).not.toContain('bound_to');
   });
 });
+
+describe('listSnapshots', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('lists one server\'s snapshots by created_from (bound_to returns nothing for snapshots)', async () => {
+    const images = [
+      { id: 1, description: 'a', image_size: 1, disk_size: 20, created: '2026-09-01T00:00:00Z', status: 'available', created_from: { id: 5, name: 's' } },
+      { id: 2, description: 'b', image_size: 1, disk_size: 20, created: '2026-09-02T00:00:00Z', status: 'available', created_from: { id: 6, name: 't' } },
+    ];
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ images, meta: { pagination: { next_page: null } } }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new HetznerProvider('token');
+    expect((await provider.listSnapshots('5')).map((s) => s.id)).toEqual(['1']);
+    expect((await provider.listSnapshots()).map((s) => s.id)).toEqual(['1', '2']);
+    for (const call of fetchMock.mock.calls as unknown as [string][]) expect(call[0]).not.toContain('bound_to');
+  });
+});
