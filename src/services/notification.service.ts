@@ -1,4 +1,5 @@
 import { HTTPException } from 'hono/http-exception';
+import { createHmac } from 'node:crypto';
 import { requireProjectMember } from '../lib/org-access';
 import nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
@@ -68,6 +69,14 @@ interface NotificationPayload {
   /** Last lines of build logs (deployment.failed) */
   logTail?: string;
   url?: string;
+}
+
+/**
+ * `X-Pushify-Signature` for a webhook: `sha256=` + the hex HMAC-SHA256 of the exact request body,
+ * keyed with the channel's secret. Receivers verify it against the raw body (docs: Monitoring).
+ */
+export function signWebhookBody(secret: string, body: string): string {
+  return `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`;
 }
 
 export const notificationService = {
@@ -573,19 +582,19 @@ export const notificationService = {
    */
   async sendWebhookNotification(config: WebhookConfig, payload: NotificationPayload): Promise<boolean> {
     try {
+      // The body is serialised once: the signature is over exactly these bytes, and these bytes
+      // are what is sent, so a receiver can verify it against the raw request body.
+      const body = JSON.stringify({
+        event: payload.event,
+        timestamp: new Date().toISOString(),
+        data: payload,
+      });
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
         'User-Agent': 'Pushify-Webhook/1.0',
       };
-
-      // Add signature if secret is configured
       if (config.secret) {
-        const crypto = await import('crypto');
-        const signature = crypto
-          .createHmac('sha256', config.secret)
-          .update(JSON.stringify(payload))
-          .digest('hex');
-        headers['X-Pushify-Signature'] = `sha256=${signature}`;
+        headers['X-Pushify-Signature'] = signWebhookBody(config.secret, body);
       }
 
       // SSRF guard: block webhook URLs that resolve to private/internal addresses.
@@ -595,11 +604,7 @@ export const notificationService = {
         method: 'POST',
         headers,
         redirect: 'manual',
-        body: JSON.stringify({
-          event: payload.event,
-          timestamp: new Date().toISOString(),
-          data: payload,
-        }),
+        body,
       });
 
       return response.ok;
