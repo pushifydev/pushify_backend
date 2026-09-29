@@ -188,6 +188,13 @@ billingRouter.post('/cancel', requireOrgRole('owner', 'admin'), async (c) => {
   return c.json({ message: 'Subscription will be cancelled at the end of the billing period' });
 });
 
+// Cancel a plan change that is waiting for the end of the period (e.g. a scheduled downgrade)
+billingRouter.post('/cancel-scheduled-change', requireOrgRole('owner', 'admin'), async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const result = await stripeService.cancelScheduledChange(organizationId);
+  return c.json({ data: result });
+});
+
 // Resume cancelled subscription
 
 // One-question exit survey — recorded before/after cancellation, never blocks it

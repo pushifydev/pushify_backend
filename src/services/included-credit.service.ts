@@ -9,7 +9,7 @@ import {
   type BillingInterval,
   type CreditPeriod,
 } from '../lib/included-credit';
-import { getStripe, getSubscriptionPeriod } from '../lib/stripe';
+import { getPlanFromPriceId, getStripe, getSubscriptionPeriod } from '../lib/stripe';
 import { logger } from '../lib/logger';
 
 /**
@@ -83,11 +83,12 @@ export const includedCreditService = {
    * or over, fetches the subscription once and stores it (self-healing for subscriptions that
    * predate these columns).
    */
-  async resolvePeriod(org: OrgCreditRow, now: Date = new Date()): Promise<CreditPeriod | null> {
+  async resolvePeriod(org: OrgCreditRow, now: Date = new Date()): Promise<(CreditPeriod & { stripePlan?: PlanType }) | null> {
     if (!org.stripeSubscriptionId) return null;
     let start = org.stripeCurrentPeriodStart;
     let end = org.stripeCurrentPeriodEnd;
     let interval = org.billingInterval as BillingInterval | null;
+    let stripePlan: PlanType | undefined;
 
     if (!start || !end || !interval || end.getTime() <= now.getTime()) {
       try {
@@ -95,6 +96,10 @@ export const includedCreditService = {
         const p = getSubscriptionPeriod(sub);
         if (!p) return null;
         ({ start, end, interval } = p);
+        // The plan Stripe bills for the new period. At a scheduled downgrade, invoice.paid can
+        // arrive before subscription.updated has moved our stored plan.
+        const priceId = sub.items?.data?.[0]?.price?.id;
+        stripePlan = (priceId && getPlanFromPriceId(priceId)) || undefined;
         await db
           .update(organizations)
           .set({ stripeCurrentPeriodStart: start, stripeCurrentPeriodEnd: end, billingInterval: interval })
@@ -104,7 +109,7 @@ export const includedCreditService = {
         return null;
       }
     }
-    return creditPeriod(interval!, start!, end!, now);
+    return { ...creditPeriod(interval!, start!, end!, now), stripePlan };
   },
 
   /**
@@ -117,13 +122,15 @@ export const includedCreditService = {
     const period = await this.resolvePeriod(org, now);
     if (!period || org.includedCreditPeriodKey === period.key) return 0;
 
-    const amount = getIncludedInfraCreditCents(org.plan);
+    const plan = period.stripePlan ?? org.plan;
+    if (!PAID_PLANS.includes(plan)) return 0;
+    const amount = getIncludedInfraCreditCents(plan);
     if (amount <= 0) return 0;
 
     const granted = await db.transaction(async (tx) => {
       const inserted = await tx
         .insert(includedCreditGrants)
-        .values({ organizationId, periodKey: period.key, kind: 'period', plan: org.plan, amountCents: amount })
+        .values({ organizationId, periodKey: period.key, kind: 'period', plan, amountCents: amount })
         .onConflictDoNothing()
         .returning({ id: includedCreditGrants.id });
       if (inserted.length === 0) return 0;
@@ -155,7 +162,7 @@ export const includedCreditService = {
     });
 
     if (granted > 0) {
-      logger.info({ organizationId, plan: org.plan, periodKey: period.key, amountCents: granted }, 'Included credit granted');
+      logger.info({ organizationId, plan, periodKey: period.key, amountCents: granted }, 'Included credit granted');
     }
     return granted;
   },
