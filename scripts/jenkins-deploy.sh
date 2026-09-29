@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Jenkins "Execute shell" for pushify_backend (Linux agent or SSH deploy host).
-# Prerequisites: Node 20+, npm, pm2, PostgreSQL client, .env on server, ecosystem.config.cjs
+# Prerequisites: Node 20+, npm, pm2, PostgreSQL client (pg_dump/pg_restore >= server version),
+# .env on server, ecosystem.config.cjs
+#
+# Order: install → build into dist.new → backup (pg_dump) → migrate → swap dist → pm2 reload.
+# A failed backup or migration stops the deploy with the running version untouched.
 set -euo pipefail
 
 resolve_backend_dir() {
@@ -71,16 +75,37 @@ fi
 rm -rf dist.new dist.old
 TSUP_OUT_DIR=dist.new npm run build
 [[ -f dist.new/index.js ]] || { echo "ERROR: build produced no dist.new/index.js" >&2; exit 1; }
+
+# Database: back up, then migrate — both BEFORE the new build is put in place. If either fails the
+# script stops here (set -e) and the new build is thrown away, so the old code stays on disk as
+# well as in memory: a later pm2 restart (crash, reboot) cannot start new code on an old schema.
+trap 'rm -rf dist.new; echo "ERROR: deploy stopped before the new build went live; the running version is unchanged." >&2' ERR
+
+DB_URL=""
+if [[ -f .env ]]; then
+  DB_URL="$(grep -m1 '^DATABASE_URL=' .env | cut -d= -f2- | sed -E "s/^[\"']//; s/[\"']$//")"
+fi
+if [[ -z "$DB_URL" ]]; then
+  echo "ERROR: DATABASE_URL missing in .env — not deploying without migrations" >&2
+  false
+fi
+
+# Timestamped pg_dump before every migration run; the newest 7 per database are kept
+# (scripts/db-backup.sh, BACKUP_DIR defaults to ~/pushify-db-backups). SKIP_DB_BACKUP=1 is an
+# emergency override only, e.g. when the host's pg_dump is older than the server.
+if [[ "${SKIP_DB_BACKUP:-0}" == "1" ]]; then
+  echo "WARN: SKIP_DB_BACKUP=1 — migrating WITHOUT a fresh backup"
+else
+  DATABASE_URL="$DB_URL" bash scripts/db-backup.sh
+fi
+
+echo "==> Running database migrations"
+npm run db:migrate
+
+trap - ERR
 if [[ -d dist ]]; then mv dist dist.old; fi
 mv dist.new dist
 rm -rf dist.old
-
-# Database migrations (requires DATABASE_URL in .env)
-if [[ -f .env ]] && grep -q '^DATABASE_URL=' .env; then
-  npm run db:migrate
-else
-  echo "WARN: skip db:migrate — .env or DATABASE_URL missing"
-fi
 
 # PM2: reload if already managed, else first start
 if [[ ! -f ecosystem.config.cjs ]]; then
