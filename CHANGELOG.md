@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.74] - 2026-09-29
+
+### Added
+- **Repository hygiene.** `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1) and an issue template config that routes security reports to the private policy and support questions to `/contact`.
+
 ## [0.2.0-beta.73] - 2026-09-27
 
 ### Fixed
