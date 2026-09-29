@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.92] - 2026-09-30
+
+### Fixed
+- **CLI browser login works when the API runs more than one process.** Sessions move from process memory to Redis (in memory only when Redis is not configured).
+  - They expire with the code, after 10 minutes.
+  - Who approved is stored encrypted.
+  - Collecting the key removes the session atomically, so concurrent polls on different processes cannot both get a key.
+
 ## [0.2.0-beta.91] - 2026-09-30
 
 ### Added
