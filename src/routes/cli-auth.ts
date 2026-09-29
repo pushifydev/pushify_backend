@@ -4,33 +4,12 @@ import { authMiddleware } from '../middleware/auth';
 import { authRateLimiter } from '../middleware/rate-limit';
 import { apiKeyService } from '../services/apikey.service';
 import { isOrganizationPendingDeletion } from '../lib/deletion-lock';
+import { cliAuthStore } from '../lib/cli-auth-store';
 import type { AppEnv } from '../types';
 
-// ─── In-memory store for CLI auth sessions ───
-// In production, use Redis for multi-instance support
-//
+// Sessions live in lib/cli-auth-store (Redis when configured, so every API process sees them).
 // Only the code's hash is kept, and never an API key: approving records who approved, and the
-// key is created when the CLI collects it — so an approval nobody collects leaves no key behind,
-// and no secret waits in memory.
-interface CliAuthSession {
-  codeHash: string;
-  status: 'pending' | 'approved' | 'expired';
-  approvedBy: { userId: string; organizationId: string } | null;
-  createdAt: number;
-  expiresAt: number;
-}
-
-const sessions = new Map<string, CliAuthSession>();
-
-// Clean expired sessions every 5 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, session] of sessions) {
-    if (now > session.expiresAt) {
-      sessions.delete(key);
-    }
-  }
-}, 5 * 60 * 1000);
+// key is created when the CLI collects it — so an approval nobody collects leaves no key behind.
 
 function generateCode(): string {
   return randomBytes(4).toString('hex').toUpperCase(); // 8-char hex code
@@ -133,13 +112,7 @@ cliAuthRouter.openapi(createSessionRoute, async (c) => {
   const now = Date.now();
   const expiresAt = now + 10 * 60 * 1000; // 10 minutes
 
-  sessions.set(codeHash, {
-    codeHash,
-    status: 'pending',
-    approvedBy: null,
-    createdAt: now,
-    expiresAt,
-  });
+  await cliAuthStore().create(codeHash, expiresAt);
 
   return c.json({ code, expiresAt });
 });
@@ -148,20 +121,17 @@ cliAuthRouter.openapi(createSessionRoute, async (c) => {
 cliAuthRouter.openapi(pollRoute, async (c) => {
   const { code } = c.req.valid('param');
   const codeHash = hashCode(code);
-  const session = sessions.get(codeHash);
+  const session = await cliAuthStore().get(codeHash);
 
   if (!session) {
     return c.json({ status: 'expired' as const, apiKey: null });
   }
 
-  if (Date.now() > session.expiresAt) {
-    sessions.delete(codeHash);
-    return c.json({ status: 'expired' as const, apiKey: null });
-  }
-
-  if (session.status === 'approved' && session.approvedBy) {
-    const { userId, organizationId } = session.approvedBy;
-    sessions.delete(codeHash); // One-time: removed before the key exists, so it is issued once
+  if (session.status === 'approved') {
+    // One-time: taken (and removed) before the key exists, so it is issued once.
+    const approval = await cliAuthStore().take(codeHash);
+    if (!approval) return c.json({ status: 'expired' as const, apiKey: null });
+    const { userId, organizationId } = approval;
     // Approved, then the organization was scheduled for deletion: its keys are revoked, so no new one.
     if (await isOrganizationPendingDeletion(organizationId)) {
       return c.json({ status: 'expired' as const, apiKey: null });
@@ -183,15 +153,10 @@ cliAuthRouter.openapi(approveRoute, async (c) => {
   const organizationId = c.get('organizationId')!;
   const { code } = c.req.valid('json');
   const codeHash = hashCode(code.toUpperCase());
-  const session = sessions.get(codeHash);
+  const session = await cliAuthStore().get(codeHash);
 
   if (!session) {
     return c.json({ message: 'Invalid or expired code' }, 400);
-  }
-
-  if (Date.now() > session.expiresAt) {
-    sessions.delete(codeHash);
-    return c.json({ message: 'Code expired' }, 400);
   }
 
   if (session.status === 'approved') {
@@ -199,8 +164,7 @@ cliAuthRouter.openapi(approveRoute, async (c) => {
   }
 
   // The key itself is created when the CLI collects it (see poll).
-  session.status = 'approved';
-  session.approvedBy = { userId, organizationId };
+  await cliAuthStore().approve(codeHash, { userId, organizationId });
 
   return c.json({ message: 'CLI login approved' });
 });
