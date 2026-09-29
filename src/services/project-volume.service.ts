@@ -6,8 +6,9 @@ import { projectVolumes } from '../db/schema/project-volumes';
 import { validateVolumeName, validateContainerPath } from '../lib/volume-validate';
 import { logger } from '../lib/logger';
 import { type SupportedLocale } from '../i18n';
+import { PROJECT_LIMITS } from '../lib/project-limits';
 
-const MAX_VOLUMES_PER_PROJECT = 5;
+const MAX_VOLUMES_PER_PROJECT = PROJECT_LIMITS.volumes.maxPerProject;
 
 /** Viewers see volumes; adding or removing one (its data goes with it) is member and up. */
 async function assertProjectAccess(

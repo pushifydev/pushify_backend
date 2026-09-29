@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.96] - 2026-09-30
+
+### Fixed
+- **pushify.yaml limits match the dashboard.** The file accepted 20 cron jobs, 5–3600 s timeouts and 10 volumes, while the dashboard and API allowed 10, 10–600 s and 5. Both now read one definition (`src/lib/project-limits.ts`): **10 cron jobs per project (timeout 10–600 s, default 120), 5 volumes, 5 workers**. A pushify.yaml over these limits is reported as invalid in the deploy log and ignored, like any other invalid file.
+- The deploy-time sync of pushify.yaml now counts what the project already has. A new cron job, volume or worker that would go over the limit is skipped with a line in the deploy log; the deploy continues.
+
+### Added
+- `npm run limits:over` (read-only): lists projects that already hold more cron jobs, volumes or workers than the limits, and cron jobs whose timeout is outside 10–600 s. Nothing is changed.
+
 ## [0.2.0-beta.95] - 2026-09-30
 
 ### Fixed

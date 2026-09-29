@@ -4,7 +4,8 @@ import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 import { validateCronExpression, isValidTimezone, nextCronRun } from './cron-schedule';
 import { validateVolumeName, validateContainerPath } from './volume-validate';
-import { validateWorkerName, validateWorkerCommand, MAX_WORKERS_PER_PROJECT } from './worker-validate';
+import { validateWorkerName, validateWorkerCommand } from './worker-validate';
+import { PROJECT_LIMITS } from './project-limits';
 import { validateSingleLineCommand, validateRepoRelativePath } from './repo-settings-validate';
 
 /**
@@ -15,12 +16,14 @@ import { validateSingleLineCommand, validateRepoRelativePath } from './repo-sett
  * A malformed file never breaks a deploy: it is reported and ignored.
  */
 
+const TASK = PROJECT_LIMITS.scheduledTasks;
+
 const cronItemSchema = z.object({
-  name: z.string().min(1).max(255),
+  name: z.string().min(1).max(TASK.maxNameLength),
   schedule: z.string().min(9).max(100),
-  command: z.string().min(1).max(2000),
+  command: z.string().min(1).max(TASK.maxCommandLength),
   timezone: z.string().max(64).optional(),
-  timeoutSeconds: z.number().int().min(5).max(3600).optional(),
+  timeoutSeconds: z.number().int().min(TASK.minTimeoutSeconds).max(TASK.maxTimeoutSeconds).optional(),
 });
 
 const volumeItemSchema = z.object({
@@ -30,7 +33,7 @@ const volumeItemSchema = z.object({
 
 const workerItemSchema = z.object({
   name: z.string().min(1).max(40),
-  command: z.string().min(1).max(1000),
+  command: z.string().min(1).max(PROJECT_LIMITS.workers.maxCommandLength),
 });
 
 const fileSchema = z
@@ -41,9 +44,9 @@ const fileSchema = z
     output: z.string().min(1).max(255).optional(),
     port: z.number().int().min(1).max(65535).optional(),
     framework: z.string().min(1).max(50).optional(),
-    cron: z.array(cronItemSchema).max(20).optional(),
-    volumes: z.array(volumeItemSchema).max(10).optional(),
-    workers: z.array(workerItemSchema).max(MAX_WORKERS_PER_PROJECT).optional(),
+    cron: z.array(cronItemSchema).max(TASK.maxPerProject).optional(),
+    volumes: z.array(volumeItemSchema).max(PROJECT_LIMITS.volumes.maxPerProject).optional(),
+    workers: z.array(workerItemSchema).max(PROJECT_LIMITS.workers.maxPerProject).optional(),
   })
   .strict();
 

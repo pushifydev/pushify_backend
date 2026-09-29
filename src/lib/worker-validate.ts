@@ -1,5 +1,7 @@
-export const MAX_WORKERS_PER_PROJECT = 5;
-export const MAX_WORKER_COMMAND_LENGTH = 1000;
+import { PROJECT_LIMITS } from './project-limits';
+
+export const MAX_WORKERS_PER_PROJECT = PROJECT_LIMITS.workers.maxPerProject;
+export const MAX_WORKER_COMMAND_LENGTH = PROJECT_LIMITS.workers.maxCommandLength;
 
 /** Lowercase alphanumeric + hyphens, must start/end alphanumeric (container-name safe) */
 const WORKER_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;

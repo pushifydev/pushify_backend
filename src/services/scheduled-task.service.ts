@@ -6,11 +6,17 @@ import { validateCronExpression, nextCronRun } from '../lib/cron-schedule';
 import { logger } from '../lib/logger';
 import { type SupportedLocale } from '../i18n';
 import { requireProjectMember, type OrgRole } from '../lib/org-access';
+import { PROJECT_LIMITS } from '../lib/project-limits';
 
 /** Flat per-project cap — generous for real use, low enough to stop abuse. */
-const MAX_TASKS_PER_PROJECT = 10;
-const MIN_TIMEOUT_SECONDS = 10;
-const MAX_TIMEOUT_SECONDS = 600;
+const {
+  maxPerProject: MAX_TASKS_PER_PROJECT,
+  minTimeoutSeconds: MIN_TIMEOUT_SECONDS,
+  maxTimeoutSeconds: MAX_TIMEOUT_SECONDS,
+  defaultTimeoutSeconds: DEFAULT_TIMEOUT_SECONDS,
+  maxNameLength: MAX_NAME_LENGTH,
+  maxCommandLength: MAX_COMMAND_LENGTH,
+} = PROJECT_LIMITS.scheduledTasks;
 
 export interface ScheduledTaskInput {
   name?: string;
@@ -37,8 +43,8 @@ async function assertProjectAccess(
 
 function validateTaskFields(input: ScheduledTaskInput, isCreate: boolean): void {
   if (isCreate || input.name !== undefined) {
-    if (!input.name?.trim() || input.name.trim().length > 255) {
-      throw new HTTPException(400, { message: 'Task name is required (max 255 chars)' });
+    if (!input.name?.trim() || input.name.trim().length > MAX_NAME_LENGTH) {
+      throw new HTTPException(400, { message: `Task name is required (max ${MAX_NAME_LENGTH} chars)` });
     }
   }
 
@@ -60,8 +66,8 @@ function validateTaskFields(input: ScheduledTaskInput, isCreate: boolean): void 
   if (isCreate && input.type === 'command' && !input.command?.trim()) {
     throw new HTTPException(400, { message: 'Command is required for command tasks' });
   }
-  if (input.command && input.command.length > 2000) {
-    throw new HTTPException(400, { message: 'Command too long (max 2000 chars)' });
+  if (input.command && input.command.length > MAX_COMMAND_LENGTH) {
+    throw new HTTPException(400, { message: `Command too long (max ${MAX_COMMAND_LENGTH} chars)` });
   }
 
   if (isCreate && input.type === 'http' && !input.httpUrl?.trim()) {
@@ -140,7 +146,7 @@ export const scheduledTaskService = {
         timezone,
         command: input.type === 'command' ? input.command!.trim() : null,
         httpUrl: input.type === 'http' ? input.httpUrl!.trim() : null,
-        timeoutSeconds: input.timeoutSeconds ?? 120,
+        timeoutSeconds: input.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS,
         enabled: input.enabled ?? true,
         nextRunAt: nextCronRun(schedule, timezone),
       })
