@@ -2227,3 +2227,72 @@ export async function sendDeletionConfirmEmail(
     logger.error({ error, to, kind: input.kind }, 'Failed to send deletion confirmation email');
   }
 }
+
+// ============ Managed servers left off for non-payment ============
+
+export async function sendStoppedServerWarningEmail(
+  to: string,
+  input: { orgName: string; serverName: string; deleteOn: Date; final: boolean },
+  locale: 'en' | 'tr' = 'en',
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) return;
+  const tr = locale === 'tr';
+  const date = formatDeletionDate(input.deleteOn, locale);
+  const server = esc(input.serverName);
+  const html = renderTransactionalEmail({
+    eyebrow: tr ? (input.final ? 'Son uyarı' : 'Sunucu silinecek') : input.final ? 'Final notice' : 'Server will be deleted',
+    tone: input.final ? 'danger' : 'warning',
+    title: tr ? `${input.serverName} ${date} tarihinde silinecek` : `${input.serverName} will be deleted on ${date}`,
+    greeting: tr ? 'Merhaba,' : 'Hi there,',
+    bodyHtml: [
+      tr
+        ? `<strong style="color:#18181b;">${esc(input.orgName)}</strong> organizasyonundaki <strong style="color:#18181b;">${server}</strong> sunucusu ödeme olmadığı için kapalı. <strong>${esc(date)}</strong> tarihine kadar bakiye yüklemez ya da aboneliğinizi yenilemezseniz sunucu ve üzerindeki her şey kalıcı olarak silinecek.`
+        : `The server <strong style="color:#18181b;">${server}</strong> in <strong style="color:#18181b;">${esc(input.orgName)}</strong> is powered off because it is not paid for. Unless you top up your balance or renew your plan by <strong>${esc(date)}</strong>, the server and everything on it will be permanently deleted.`,
+      tr
+        ? 'Tutmak istediğiniz verileri, örneğin veritabanı yedeklerini, şimdi indirin.'
+        : 'Download anything you want to keep, such as database backups, now.',
+    ],
+    button: { href: `${env.FRONTEND_URL}/dashboard/billing`, label: tr ? 'Faturalamaya git' : 'Go to billing' },
+  });
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: tr ? `${input.serverName} ${date} tarihinde silinecek` : `${input.serverName} will be deleted on ${date}`,
+      html,
+    });
+  } catch (error) {
+    logger.error({ error, to }, 'Failed to send stopped server warning email');
+  }
+}
+
+export async function sendStoppedServerDeletedEmail(
+  to: string,
+  input: { orgName: string; serverName: string },
+  locale: 'en' | 'tr' = 'en',
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) return;
+  const tr = locale === 'tr';
+  const html = renderTransactionalEmail({
+    eyebrow: tr ? 'Sunucu silindi' : 'Server deleted',
+    tone: 'neutral',
+    title: tr ? `${input.serverName} silindi` : `${input.serverName} was deleted`,
+    greeting: tr ? 'Merhaba,' : 'Hi there,',
+    bodyHtml: [
+      tr
+        ? `<strong style="color:#18181b;">${esc(input.serverName)}</strong> sunucusu 30 gün boyunca ödemesiz kapalı kaldığı için silindi. Sunucudaki veriler geri getirilemez.`
+        : `The server <strong style="color:#18181b;">${esc(input.serverName)}</strong> was deleted after 30 days powered off without payment. Its data cannot be recovered.`,
+    ],
+    button: { href: `${env.FRONTEND_URL}/dashboard/servers`, label: tr ? 'Sunucular' : 'Servers' },
+  });
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: tr ? `${input.serverName} silindi` : `${input.serverName} was deleted`,
+      html,
+    });
+  } catch (error) {
+    logger.error({ error, to }, 'Failed to send stopped server deleted email');
+  }
+}

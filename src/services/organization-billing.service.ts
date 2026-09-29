@@ -188,6 +188,8 @@ export async function stopManagedServerForBillingSuspension(
       .set({
         status: 'stopped',
         statusMessage,
+        stoppedAt: new Date(),
+        stopWarningStep: 0,
         updatedAt: new Date(),
       })
       .where(eq(servers.id, serverId));
