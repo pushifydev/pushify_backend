@@ -1,4 +1,6 @@
 import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
+import { z } from 'zod';
 import { organizationService } from '../services/organization.service';
 import { authService } from '../services/auth.service';
 import { authMiddleware } from '../middleware/auth';
@@ -29,6 +31,39 @@ organizationRouter.get('/mine', async (c) => {
 });
 
 // Switch the active organization — re-issues tokens scoped to the target org
+// Organization deletion: preview what goes, request it (owner, re-authenticated), or restore it.
+organizationRouter.get('/deletion', async (c) => {
+  const { accountDeletionService } = await import('../services/account-deletion.service');
+  const data = await accountDeletionService.organizationPreview(c.get('organizationId')!, c.get('userId')!, c.get('locale'));
+  return c.json({ data });
+});
+
+organizationRouter.post('/deletion', async (c) => {
+  const locale = c.get('locale');
+  const body = z
+    .object({
+      confirmName: z.string().min(1).max(255),
+      password: z.string().max(1024).optional(),
+      twoFactorCode: z.string().max(32).optional(),
+    })
+    .safeParse(await c.req.json().catch(() => ({})));
+  if (!body.success) throw new HTTPException(400, { message: t(locale, 'validation', 'invalidRequest') });
+  const { accountDeletionService } = await import('../services/account-deletion.service');
+  const data = await accountDeletionService.requestOrganizationDeletion(
+    c.get('organizationId')!,
+    c.get('userId')!,
+    body.data,
+    locale,
+  );
+  return c.json({ data });
+});
+
+organizationRouter.delete('/deletion', async (c) => {
+  const { accountDeletionService } = await import('../services/account-deletion.service');
+  await accountDeletionService.restoreOrganization(c.get('organizationId')!, c.get('userId')!, c.get('locale'));
+  return c.json({ data: { restored: true } });
+});
+
 organizationRouter.post('/switch', async (c) => {
   const userId = c.get('userId')!;
   const locale = c.get('locale');

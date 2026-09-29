@@ -435,6 +435,13 @@
       "when": 1787270400021,
       "tag": "0062_scheduled_plan_change",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1787270400022,
+      "tag": "0063_account_deletion",
+      "breakpoints": true
     }
   ]
 }

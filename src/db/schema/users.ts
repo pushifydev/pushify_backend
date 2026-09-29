@@ -23,6 +23,9 @@ export const users = pgTable('users', {
     .notNull(),
   twoFactorSecret: varchar('two_factor_secret', { length: 255 }),
   twoFactorBackupCodes: text('two_factor_backup_codes'), // JSON array of hashed backup codes
+  /** Account deletion requested: sign-in is refused (restore only) until the purge */
+  deletionRequestedAt: timestamp('deletion_requested_at', { withTimezone: true }),
+  deletionScheduledFor: timestamp('deletion_scheduled_for', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });

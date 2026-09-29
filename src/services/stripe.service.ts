@@ -620,6 +620,37 @@ export const stripeService = {
     });
   },
 
+  /**
+   * Organization deletion: end the subscription now, without proration or a final invoice.
+   * Our record moves to Free at once rather than waiting for the webhook, which then finds a
+   * pending deletion and skips the usual suspension (and its email). Returns false when there
+   * was no subscription.
+   */
+  async cancelSubscriptionForDeletion(organizationId: string): Promise<boolean> {
+    const [org] = await db
+      .select({ stripeSubscriptionId: organizations.stripeSubscriptionId })
+      .from(organizations)
+      .where(eq(organizations.id, organizationId))
+      .limit(1);
+    if (!org?.stripeSubscriptionId) return false;
+
+    await planScheduleService.releasePending(organizationId).catch((err) => {
+      logger.warn({ err, organizationId }, 'deletion: could not release the plan schedule');
+    });
+    try {
+      await getStripe().subscriptions.cancel(org.stripeSubscriptionId, { invoice_now: false, prorate: false });
+    } catch (err) {
+      // Already gone at Stripe: nothing left to cancel.
+      if (!isStripeResourceMissing(err)) throw err;
+    }
+    await db
+      .update(organizations)
+      .set({ plan: 'free', stripeSubscriptionId: null, stripeCurrentPeriodEnd: null, updatedAt: new Date() })
+      .where(eq(organizations.id, organizationId));
+    logger.info({ organizationId }, 'deletion: subscription cancelled');
+    return true;
+  },
+
   /** Drop a scheduled plan change; the current plan simply continues. */
   async cancelScheduledChange(organizationId: string): Promise<{ released: boolean }> {
     return { released: await planScheduleService.releasePending(organizationId) };
@@ -1057,7 +1088,15 @@ export const stripeService = {
           })
           .where(eq(organizations.id, organizationId));
 
-        await organizationBillingService.suspendOrganization(organizationId);
+        // A deletion cancelled this subscription and has already locked the organization.
+        const [pendingDeletion] = await db
+          .select({ scheduledFor: organizations.deletionScheduledFor })
+          .from(organizations)
+          .where(eq(organizations.id, organizationId))
+          .limit(1);
+        if (!pendingDeletion?.scheduledFor) {
+          await organizationBillingService.suspendOrganization(organizationId);
+        }
         // The subscription is over: what is left of this period's included credit goes too.
         await includedCreditService.expire(organizationId, 'canceled');
         await planScheduleService.reconcileFromSubscription(organizationId, null);

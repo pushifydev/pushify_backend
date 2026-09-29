@@ -240,6 +240,18 @@ export const tr: TranslationKeys = {
       'Platform aboneliğiniz sona erdi. Sunucuları, projeleri ve dağıtımları yeniden kullanmak için Faturalandırma sayfasından planınızı yenileyin.',
   },
 
+  deletion: {
+    organizationPending: 'Bu organizasyon silinmek üzere planlandı. Değişiklik yapmak için Ayarlar’dan geri alın.',
+    accountPending: 'Bu hesap silinmek üzere planlandı. Giriş yapmak için geri alın.',
+    ownerOnly: 'Organizasyonu yalnızca sahibi silebilir veya geri alabilir.',
+    confirmMismatch: 'Onay metni eşleşmiyor.',
+    alreadyScheduled: 'Silme zaten planlandı.',
+    notScheduled: 'Silinmek üzere planlanmış bir şey yok.',
+    orgHasMembers:
+      'Başka üyeleri olan bir organizasyonun sahibisiniz. Önce o organizasyonu silin ya da üyelerini çıkarın.',
+    restoreTokenInvalid: 'Bu geri alma bağlantısının süresi doldu. Hesabınızı geri almak için yeniden giriş yapın.',
+  },
+
   planLimits: {
     servers: 'Sunucu limitine ulaşıldı. Daha fazla sunucu için planınızı yükseltin.',
     databases: 'Veritabanı limitine ulaşıldı. Daha fazla veritabanı için planınızı yükseltin.',

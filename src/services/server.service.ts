@@ -27,6 +27,33 @@ import { wsManager } from '../lib/ws';
 import { logger } from '../lib/logger';
 import { adminNotify } from './admin-notify.service';
 
+/**
+ * Take Pushify's SSH key off a connected (BYOS) server. Never throws: an unreachable server comes
+ * back as `keyRemoved: false` with the command to run by hand. `null` for servers Pushify created
+ * (or ones never set up), where there is no key of ours to remove.
+ */
+export async function revokePushifyAccess(
+  server: Pick<typeof servers.$inferSelect, 'id' | 'isManaged' | 'ipv4' | 'sshPublicKey' | 'sshPrivateKey' | 'rootPassword'>,
+): Promise<KeyRemovalResult | null> {
+  if (server.isManaged || !server.ipv4 || !server.sshPublicKey) return null;
+  let privateKey: string | undefined;
+  let password: string | undefined;
+  try {
+    privateKey = server.sshPrivateKey ? decrypt(server.sshPrivateKey) : undefined;
+    password = server.rootPassword ? decrypt(server.rootPassword) : undefined;
+  } catch (err) {
+    logger.warn({ err, serverId: server.id }, 'could not decrypt server credentials for key removal');
+  }
+  removeSSHConnection(server.ipv4, 22, 'root');
+  const result = await removePushifyKey({ host: server.ipv4, publicKey: server.sshPublicKey, privateKey, password });
+  if (result.keyRemoved) {
+    logger.info({ serverId: server.id, host: server.ipv4 }, 'removed Pushify SSH key from server');
+  } else {
+    logger.warn({ serverId: server.id, host: server.ipv4, reason: result.reason }, 'could not remove Pushify SSH key from server');
+  }
+  return result;
+}
+
 export interface CreateServerInput {
   name: string;
   description?: string;
@@ -773,24 +800,7 @@ export const serverService = {
 
     // A connected (BYOS) server outlives its Pushify record: take Pushify's SSH key off it. This
     // never fails the deletion — an unreachable server gets a manual command instead.
-    let keyRemoval: KeyRemovalResult | null = null;
-    if (!server.isManaged && server.ipv4 && server.sshPublicKey) {
-      let privateKey: string | undefined;
-      let password: string | undefined;
-      try {
-        privateKey = server.sshPrivateKey ? decrypt(server.sshPrivateKey) : undefined;
-        password = server.rootPassword ? decrypt(server.rootPassword) : undefined;
-      } catch (err) {
-        logger.warn({ err, serverId }, 'could not decrypt server credentials for key removal');
-      }
-      removeSSHConnection(server.ipv4, 22, 'root');
-      keyRemoval = await removePushifyKey({ host: server.ipv4, publicKey: server.sshPublicKey, privateKey, password });
-      if (keyRemoval.keyRemoved) {
-        logger.info({ serverId, host: server.ipv4 }, 'removed Pushify SSH key from deleted server');
-      } else {
-        logger.warn({ serverId, host: server.ipv4, reason: keyRemoval.reason }, 'could not remove Pushify SSH key from deleted server');
-      }
-    }
+    const keyRemoval = await revokePushifyAccess(server);
 
     try {
       // Delete from provider if managed

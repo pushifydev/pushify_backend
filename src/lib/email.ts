@@ -1975,3 +1975,141 @@ export async function sendDeploymentRecoveredEmail(
     logger.error({ error, to, project: input.projectName }, 'Failed to send deployment recovered email');
   }
 }
+
+// ============ Organization / account deletion ============
+
+export interface DeletionEmailInput {
+  kind: 'organization' | 'account';
+  /** Organization name, or the account's email for an account deletion */
+  name: string;
+  scheduledFor: Date;
+  /** Connected servers Pushify could not reach to remove its SSH key */
+  manualKeyRemovals?: { server: string; command: string }[];
+  walletBalanceCents?: number;
+}
+
+function formatDeletionDate(d: Date, locale: 'en' | 'tr'): string {
+  return d.toLocaleDateString(locale === 'tr' ? 'tr-TR' : 'en-US', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    timeZone: 'UTC',
+  });
+}
+
+function deletionScheduledTemplate(input: DeletionEmailInput, restoreUrl: string, locale: 'en' | 'tr'): string {
+  const date = formatDeletionDate(input.scheduledFor, locale);
+  const name = esc(input.name);
+  const tr = locale === 'tr';
+  const what =
+    input.kind === 'organization'
+      ? tr
+        ? `<strong style="color:#18181b;">${name}</strong> organizasyonu`
+        : `The organization <strong style="color:#18181b;">${name}</strong>`
+      : tr
+        ? `<strong style="color:#18181b;">${name}</strong> hesabınız`
+        : `Your account <strong style="color:#18181b;">${name}</strong>`;
+  const bodyHtml = [
+    tr
+      ? `${what} <strong>${esc(date)}</strong> tarihinde kalıcı olarak silinecek. O güne kadar panelden geri alabilirsiniz.`
+      : `${what} will be permanently deleted on <strong>${esc(date)}</strong>. Until then you can restore it from the dashboard.`,
+    tr
+      ? 'Oturumlar kapatıldı, API anahtarları iptal edildi, abonelik iptal edildi ve yönetilen sunucular kapatıldı.'
+      : 'Sessions were signed out, API keys revoked, any subscription cancelled and managed servers powered off.',
+  ];
+  const notes: string[] = [];
+  if (input.manualKeyRemovals?.length) {
+    notes.push(
+      tr
+        ? 'Şu sunuculara ulaşılamadı; Pushify’ın SSH anahtarını kaldırmak için her birinde root olarak çalıştırın:'
+        : 'These servers could not be reached; run this as root on each to remove Pushify’s SSH key:',
+    );
+    for (const m of input.manualKeyRemovals) {
+      notes.push(`<strong>${esc(m.server)}</strong><br><code style="font-family:monospace;font-size:12px;">${esc(m.command)}</code>`);
+    }
+  }
+  if (input.walletBalanceCents && input.walletBalanceCents > 0) {
+    const usd = (input.walletBalanceCents / 100).toFixed(2);
+    notes.push(
+      tr
+        ? `Kalan cüzdan bakiyeniz $${usd}. İade için support@pushify.dev adresine yazabilirsiniz.`
+        : `Your remaining wallet balance is $${usd}. Write to support@pushify.dev to have it refunded.`,
+    );
+  }
+  return renderTransactionalEmail({
+    eyebrow: tr ? 'Silme planlandı' : 'Deletion scheduled',
+    tone: 'danger',
+    title: tr ? 'Silme planlandı' : 'Deletion scheduled',
+    greeting: tr ? 'Merhaba,' : 'Hi there,',
+    bodyHtml,
+    button: { href: restoreUrl, label: tr ? 'Geri al' : 'Restore' },
+    notes,
+  });
+}
+
+export async function sendDeletionScheduledEmail(
+  to: string,
+  input: DeletionEmailInput,
+  locale: 'en' | 'tr' = 'en',
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping deletion scheduled email');
+    return;
+  }
+  // Account restores start from sign-in (the account has no session); organizations from settings.
+  const restoreUrl =
+    input.kind === 'account' ? `${env.FRONTEND_URL}/login` : `${env.FRONTEND_URL}/dashboard/settings`;
+  const subjects = {
+    en: `Deletion scheduled — ${input.name}`,
+    tr: `Silme planlandı — ${input.name}`,
+  };
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: subjects[locale] ?? subjects.en,
+      html: deletionScheduledTemplate(input, restoreUrl, locale),
+    });
+    logger.info({ to, kind: input.kind }, 'Deletion scheduled email sent');
+  } catch (error) {
+    logger.error({ error, to, kind: input.kind }, 'Failed to send deletion scheduled email');
+  }
+}
+
+export async function sendDeletionRestoredEmail(
+  to: string,
+  input: Pick<DeletionEmailInput, 'kind' | 'name'>,
+  locale: 'en' | 'tr' = 'en',
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping deletion restored email');
+    return;
+  }
+  const tr = locale === 'tr';
+  const name = esc(input.name);
+  const html = renderTransactionalEmail({
+    eyebrow: tr ? 'Geri alındı' : 'Restored',
+    tone: 'success',
+    title: tr ? 'Silme iptal edildi' : 'Deletion cancelled',
+    greeting: tr ? 'Merhaba,' : 'Hi there,',
+    bodyHtml: [
+      tr
+        ? `<strong style="color:#18181b;">${name}</strong> artık silinmeyecek. Ücretsiz planda açıldı; projeler duraklatılmış ve yönetilen sunucular kapalı durumda.`
+        : `<strong style="color:#18181b;">${name}</strong> will no longer be deleted. It is back on the Free plan; projects are paused and managed servers are powered off.`,
+      tr
+        ? 'Bağlı sunucularınızı yeniden bağlamanız ve aboneliğinizi yeniden başlatmanız gerekiyor.'
+        : 'Connect your own servers again and restart your subscription to pick up where you left off.',
+    ],
+    button: { href: `${env.FRONTEND_URL}/dashboard`, label: tr ? 'Panele git' : 'Open dashboard' },
+  });
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject: tr ? `Silme iptal edildi — ${input.name}` : `Deletion cancelled — ${input.name}`,
+      html,
+    });
+  } catch (error) {
+    logger.error({ error, to, kind: input.kind }, 'Failed to send deletion restored email');
+  }
+}

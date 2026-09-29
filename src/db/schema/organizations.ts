@@ -43,6 +43,10 @@ export const organizations = pgTable('organizations', {
   /** Optional per-limit overrides merged on top of effective plan limits */
   planLimitsOverride: jsonb('plan_limits_override').$type<Partial<Record<string, number | boolean>>>(),
   settings: jsonb('settings').default({}).notNull(),
+  /** Deletion requested: locked until `deletionScheduledFor`, then purged (restorable until then) */
+  deletionRequestedAt: timestamp('deletion_requested_at', { withTimezone: true }),
+  deletionScheduledFor: timestamp('deletion_scheduled_for', { withTimezone: true }),
+  deletionRequestedBy: uuid('deletion_requested_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
@@ -66,7 +70,7 @@ export const organizationMembers = pgTable('organization_members', {
    * the ability to change it.
    */
   studioAccess: studioAccessEnum('studio_access').default('none').notNull(),
-  invitedBy: uuid('invited_by').references(() => users.id),
+  invitedBy: uuid('invited_by').references(() => users.id, { onDelete: 'set null' }),
   joinedAt: timestamp('joined_at', { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });

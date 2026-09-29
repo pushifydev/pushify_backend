@@ -198,6 +198,16 @@ describe('subscription webhooks for a non-current subscription', () => {
     expect(h.suspendOrganization).toHaveBeenCalledWith(ORG);
   });
 
+  it('subscription.deleted for an organization pending deletion downgrades without suspending it again', async () => {
+    // org lookup by subscription, then the pending-deletion check
+    h.selectResults.push([{ id: ORG }], [{ scheduledFor: new Date('2026-10-31T00:00:00Z') }]);
+
+    await runEvent(subEvent('customer.subscription.deleted', oldSub));
+
+    expect(h.updates[0]).toMatchObject({ plan: 'free', stripeSubscriptionId: null });
+    expect(h.suspendOrganization).not.toHaveBeenCalled();
+  });
+
   it('subscription.updated for the current subscription updates the plan', async () => {
     h.selectResults.push([{ id: ORG }]);
 

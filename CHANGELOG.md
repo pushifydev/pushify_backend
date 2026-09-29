@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.85] - 2026-09-29
+
+### Added
+- **Organization and account deletion, with a 30-day grace period.**
+  - The owner can delete an organization and any user can delete their account. Both need the typed name or email, the password, and a 2FA code when 2FA is on.
+  - A request takes effect immediately:
+    - the subscription is cancelled with no proration or final invoice;
+    - API keys are revoked; for an account, sessions and Git tokens are revoked too;
+    - included credit is reset and domain auto-renew is turned off;
+    - projects on shared runners are paused and managed servers are powered off;
+    - Pushify's SSH key is removed from connected servers and the credentials stored for them are wiped. Apps on the user's own server keep running.
+  - An email gives the date, any manual key-removal commands and the remaining wallet balance.
+  - The owner can restore the organization within 30 days; it comes back unlocked on Free. An account pending deletion cannot sign in. Sign-in returns a short-lived token that restores the account and the organizations scheduled with it.
+  - An account that owns an organization with other members cannot be deleted.
+  - A pending organization is read-only for every member. Only restoring, leaving, signing out and getting a domain transfer code still work.
+  - Migration `0063_account_deletion` (additive). `organization_members.invited_by` becomes ON DELETE SET NULL.
+- API errors can carry a specific `code` and `details`, e.g. `ACCOUNT_PENDING_DELETION` with a restore token.
+
+### Changed
+- `customer.subscription.deleted` no longer suspends an organization that is pending deletion again, and no longer sends it the "services paused" email.
+
 ## [0.2.0-beta.84] - 2026-09-29
 
 ### Added

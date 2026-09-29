@@ -28,6 +28,8 @@ function getProviderToken(provider: ProviderType): string {
 
 export async function getOrganizationBillingStatus(organizationId: string): Promise<BillingStatus> {
   const org = await organizationRepository.findById(organizationId);
+  // An organization waiting to be deleted is locked like a suspended one: no deploys, no purchases.
+  if (org?.deletionScheduledFor) return 'suspended';
   const status = (org?.billingStatus ?? 'active') as BillingStatus;
   if (status === 'past_due' && org) {
     return (await reconcilePastDue(org)) ? 'active' : status;
@@ -145,6 +147,10 @@ export async function assertOrganizationCanMutateResources(
   organizationId: string,
   locale: SupportedLocale
 ): Promise<void> {
+  const org = await organizationRepository.findById(organizationId);
+  if (org?.deletionScheduledFor) {
+    throw new HTTPException(403, { message: t(locale, 'deletion', 'organizationPending') });
+  }
   const status = await getOrganizationBillingStatus(organizationId);
   assertOrganizationBillingAllowsMutations(status, locale);
 }
@@ -154,9 +160,11 @@ export async function canOrganizationDeploy(organizationId: string): Promise<boo
   return status === 'active';
 }
 
-async function stopManagedServerForBillingSuspension(
+/** Power off one managed server; `statusMessage` says why (billing, or a pending deletion). */
+export async function stopManagedServerForBillingSuspension(
   serverId: string,
-  organizationId: string
+  organizationId: string,
+  statusMessage: string = 'billing_suspended',
 ): Promise<boolean> {
   const [server] = await db
     .select()
@@ -179,7 +187,7 @@ async function stopManagedServerForBillingSuspension(
       .update(servers)
       .set({
         status: 'stopped',
-        statusMessage: 'billing_suspended',
+        statusMessage,
         updatedAt: new Date(),
       })
       .where(eq(servers.id, serverId));
