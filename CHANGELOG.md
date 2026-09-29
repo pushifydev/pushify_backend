@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.81] - 2026-09-29
+
+### Changed
+- **`.env.example`:** local development must use a local database; production or staging URLs do not belong in a local `.env`.
+
 ## [0.2.0-beta.80] - 2026-09-29
 
 ### Changed
