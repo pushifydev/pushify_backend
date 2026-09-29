@@ -40,6 +40,7 @@
     "hetzner:leftovers": "tsx scripts/hetzner-leftovers.ts",
     "snapshots:over-limit": "tsx scripts/snapshots-over-limit.ts",
     "env:masked-values": "tsx scripts/env-masked-values.ts",
+    "limits:over": "tsx scripts/project-limits-over.ts",
     "cert:install-wildcard": "tsx scripts/install-wildcard-cert.ts",
     "marketplace:export": "tsx scripts/export-marketplace.ts",
     "test:e2e": "bash e2e/run.sh",

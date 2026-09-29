@@ -2,7 +2,9 @@ import { db } from '../db';
 import { deployments } from '../db/schema/deployments';
 import { projects, environmentVariables } from '../db/schema/projects';
 import { organizations } from '../db/schema/organizations';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, count } from 'drizzle-orm';
+import type { PgColumn, PgTable } from 'drizzle-orm/pg-core';
+import { PROJECT_LIMITS } from '../lib/project-limits';
 import { decrypt } from '../lib/encryption';
 import { logger } from '../lib/logger';
 import { pickRunnerServerId } from '../lib/runner-routing';
@@ -1655,6 +1657,12 @@ export function getActiveDeploymentCount(): number {
   return getMemoryActiveDeploymentCount();
 }
 
+/** Rows a project already has in one of the declared-resource tables. */
+async function countRows(table: PgTable, projectColumn: PgColumn, projectId: string): Promise<number> {
+  const [row] = await db.select({ n: count() }).from(table).where(eq(projectColumn, projectId));
+  return Number(row?.n ?? 0);
+}
+
 /**
  * Upsert cron jobs and volumes declared in pushify.yaml (by name, per project).
  * Upsert-only by design: resources removed from the file are NOT deleted — the
@@ -1695,6 +1703,10 @@ async function syncDeclaredResources(
         addLog(`  ⏰ cron updated: ${item.name} (${item.schedule})`);
       }
     } else {
+      if ((await countRows(scheduledTasks, scheduledTasks.projectId, projectId)) >= PROJECT_LIMITS.scheduledTasks.maxPerProject) {
+        addLog(`  ⚠️ cron skipped: ${item.name} — project already has ${PROJECT_LIMITS.scheduledTasks.maxPerProject} scheduled tasks (the limit)`);
+        continue;
+      }
       await db.insert(scheduledTasks).values({
         projectId,
         name: item.name,
@@ -1727,6 +1739,10 @@ async function syncDeclaredResources(
         volumesChanged = true;
       }
     } else {
+      if ((await countRows(projectVolumes, projectVolumes.projectId, projectId)) >= PROJECT_LIMITS.volumes.maxPerProject) {
+        addLog(`  ⚠️ volume skipped: ${vol.name} — project already has ${PROJECT_LIMITS.volumes.maxPerProject} volumes (the limit)`);
+        continue;
+      }
       await db.insert(projectVolumes).values({ projectId, name: vol.name, containerPath: vol.path });
       addLog(`  💾 volume created: ${vol.name} → ${vol.path}`);
       volumesChanged = true;
@@ -1749,6 +1765,10 @@ async function syncDeclaredResources(
         addLog(`  ⚙️ worker updated: ${worker.name}`);
       }
     } else {
+      if ((await countRows(projectWorkers, projectWorkers.projectId, projectId)) >= PROJECT_LIMITS.workers.maxPerProject) {
+        addLog(`  ⚠️ worker skipped: ${worker.name} — project already has ${PROJECT_LIMITS.workers.maxPerProject} workers (the limit)`);
+        continue;
+      }
       await db.insert(projectWorkers).values({
         projectId,
         name: worker.name,
