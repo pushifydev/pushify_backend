@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.86] - 2026-09-29
+
+### Added
+- **Permanent purge of deleted organizations and accounts.** An hourly worker sends a reminder one week before the date, then purges once the date has passed. External resources are removed first:
+  - managed servers at Hetzner, with their uploaded SSH key and every snapshot taken from them;
+  - projects on shared runners;
+  - `*.pushify.dev` DNS records;
+  - off-site database backups (`<remote>/<orgId>/`);
+  - Pushify's GitHub webhooks and app installation;
+  - email forwards at the registrar;
+  - the Stripe customer.
+
+  The row goes last, and the cascade removes the rest. An account goes after its organizations, along with its sign-in history.
+- **Billing facts are kept.** The name, billing email, Stripe customer id and wallet ledger go into `deleted_organizations` for `BILLING_RECORD_RETENTION_YEARS` (default 10).
+- **Failures:** each step is recorded. A failed required step is retried and the admin is emailed after three attempts. A failed best-effort step (GitHub, registrar, DNS) does not block the purge.
+- `npm run notify:admin`: emails `ADMIN_NOTIFY_EMAILS` from shell scripts, e.g. when the nightly control-plane backup fails.
+
+### Changed
+- Pre-deploy database dumps (`scripts/db-backup.sh`) are also removed after 14 days, not only beyond the newest 7.
+- Control-plane off-site backups (`backup-control-plane.sh`) are kept for 30 days instead of 60.
+
 ## [0.2.0-beta.85] - 2026-09-29
 
 ### Added
