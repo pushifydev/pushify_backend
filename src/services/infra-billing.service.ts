@@ -636,6 +636,8 @@ export const infraBillingService = {
         .set({
           status: 'stopped',
           statusMessage: 'infra_credits_stopped',
+          stoppedAt: new Date(),
+          stopWarningStep: 0,
           updatedAt: new Date(),
         })
         .where(eq(servers.id, serverId));

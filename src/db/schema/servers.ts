@@ -1,6 +1,7 @@
 import {
   pgTable,
   uuid,
+  smallint,
   varchar,
   timestamp,
   text,
@@ -77,6 +78,10 @@ export const servers = pgTable('servers', {
 
   // SSH
   sshKeyId: varchar('ssh_key_id', { length: 255 }), // Provider's SSH key ID
+  /** When this managed server was powered off (cleared when it runs again) */
+  stoppedAt: timestamp('stopped_at', { withTimezone: true }),
+  /** Warnings sent while it stays off for non-payment: 0 none, 1 day 14, 2 day 27 */
+  stopWarningStep: smallint('stop_warning_step').default(0).notNull(),
   sshPrivateKey: text('ssh_private_key'), // Encrypted private key for SSH connections
   sshPublicKey: text('ssh_public_key'), // Public key (uploaded to provider)
   rootPassword: text('root_password'), // Encrypted, only for initial setup

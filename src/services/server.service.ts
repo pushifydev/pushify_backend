@@ -55,6 +55,27 @@ export async function revokePushifyAccess(
 }
 
 /**
+ * Delete a managed server at its provider together with what would outlive it: its snapshots
+ * (restorable only onto this server) and the SSH key uploaded for it. Throws if the server itself
+ * cannot be deleted; the leftovers are best effort.
+ */
+export async function destroyAtProvider(
+  provider: ReturnType<typeof createProvider>,
+  server: Pick<typeof servers.$inferSelect, 'id' | 'providerId' | 'sshKeyId'>,
+): Promise<void> {
+  if (!server.providerId) return;
+  // Snapshots can only be restored onto this server, so without it they are just a bill.
+  const snapshotIds = provider.listSnapshotIdsCreatedFrom
+    ? await provider.listSnapshotIdsCreatedFrom(server.providerId).catch((err) => {
+        logger.warn({ err, serverId: server.id }, 'could not list snapshots of the deleted server');
+        return [] as string[];
+      })
+    : [];
+  await provider.deleteServer(server.providerId);
+  await releaseProviderLeftovers(provider, server.id, snapshotIds, server.sshKeyId);
+}
+
+/**
  * After a managed server is deleted: its snapshots and the SSH key uploaded for it. Best effort —
  * the server itself is gone either way; what is left is reported by scripts/hetzner-leftovers.ts.
  */
@@ -825,15 +846,7 @@ export const serverService = {
       if (server.isManaged && server.providerId) {
         const apiToken = getProviderToken(server.provider as ProviderType);
         const provider = createProvider(server.provider as ProviderType, apiToken);
-        // Snapshots can only be restored onto this server, so without it they are just a bill.
-        const snapshotIds = provider.listSnapshotIdsCreatedFrom
-          ? await provider.listSnapshotIdsCreatedFrom(server.providerId).catch((err) => {
-              logger.warn({ err, serverId }, 'could not list snapshots of the deleted server');
-              return [] as string[];
-            })
-          : [];
-        await provider.deleteServer(server.providerId);
-        await releaseProviderLeftovers(provider, serverId, snapshotIds, server.sshKeyId);
+        await destroyAtProvider(provider, server);
       }
 
       // Delete from database
