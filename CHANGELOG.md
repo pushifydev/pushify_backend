@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.76] - 2026-09-29
+
+### Security
+- **Internal pricing no longer reaches customers.** Server sizes and resize options no longer include provider cost or margin; the infra wallet summary no longer includes the margin; the raw provider server-type list no longer includes the provider's prices; purchased-domain responses no longer include registrar wholesale prices. Customer prices are unchanged.
+
 ## [0.2.0-beta.75] - 2026-09-29
 
 ### Added

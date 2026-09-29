@@ -14,7 +14,6 @@ import {
   buildPriceQuote,
   getPlanInfraLimits,
   minimumWalletBalanceForQuote,
-  INFRA_MARGIN_PERCENT,
   INFRA_TOPUP_AMOUNTS_CENTS,
   INFRA_LOW_BALANCE_WARN_CENTS,
   type InfraPriceQuote,
@@ -59,7 +58,6 @@ function mapInfraError(code: string, locale: SupportedLocale): string {
 export interface InfraWalletSummary {
   balanceCents: number;
   balanceUsd: string;
-  marginPercent: number;
   estimatedMonthlyBurnCents: number;
   runningManagedServers: number;
   topUpAmountsCents: readonly number[];
@@ -82,11 +80,9 @@ export interface SizedOptionForPlan {
     vcpus: number;
     memoryMb: number;
     diskGb: number;
-    providerCostMonthlyCents: number;
-    providerCostHourlyCents: number;
+    // Customer prices only. Provider cost, exchange rate and margin never leave the server.
     customerPriceMonthlyCents: number;
     customerPriceHourlyCents: number;
-    marginPercent: number;
   };
   allowedByPlan: boolean;
   /** Stable code for clients to localize UI (prefer over disallowReason). */
@@ -184,7 +180,6 @@ export const infraBillingService = {
     return {
       balanceCents,
       balanceUsd: (balanceCents / 100).toFixed(2),
-      marginPercent: INFRA_MARGIN_PERCENT,
       estimatedMonthlyBurnCents,
       runningManagedServers: running.length,
       topUpAmountsCents: INFRA_TOPUP_AMOUNTS_CENTS,
@@ -245,11 +240,8 @@ export const infraBillingService = {
           vcpus: quote.specs.vcpus,
           memoryMb: quote.specs.memoryMb,
           diskGb: quote.specs.diskGb,
-          providerCostMonthlyCents: quote.providerCostMonthlyCents,
-          providerCostHourlyCents: quote.providerCostHourlyCents,
           customerPriceMonthlyCents: quote.customerPriceMonthlyCents,
           customerPriceHourlyCents: quote.customerPriceHourlyCents,
-          marginPercent: quote.marginPercent,
         },
         allowedByPlan,
         disallowCode,
