@@ -209,7 +209,7 @@ export const envVarService = {
       key: string;
       environment: string;
       isSecret: boolean;
-      action: 'created' | 'updated';
+      action: 'created' | 'updated' | 'unchanged';
     }> = [];
 
     for (const variable of input.variables) {
@@ -224,16 +224,22 @@ export const envVarService = {
       const valueEncrypted = encrypt(variable.value);
 
       if (existing) {
-        // Update existing
-        await envVarRepository.update(existing.id, {
+        // `pushify env pull` writes secrets masked; pushing that file back must not replace the
+        // real secret with its mask. An unchanged mask leaves the variable as it is.
+        if (existing.isSecret && variable.value === maskValue(decrypt(existing.valueEncrypted))) {
+          results.push({ id: existing.id, key: variable.key, environment, isSecret: true, action: 'unchanged' });
+          continue;
+        }
+        // isSecret is only changed when the request says so; otherwise the variable keeps it.
+        const updated = await envVarRepository.update(existing.id, {
           valueEncrypted,
-          isSecret: variable.isSecret,
+          ...(variable.isSecret !== undefined ? { isSecret: variable.isSecret } : {}),
         });
         results.push({
           id: existing.id,
           key: variable.key,
           environment,
-          isSecret: variable.isSecret ?? false,
+          isSecret: updated?.isSecret ?? existing.isSecret,
           action: 'updated',
         });
       } else {

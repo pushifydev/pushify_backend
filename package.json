@@ -1,6 +1,6 @@
 {
   "name": "pushify-backend",
-  "version": "0.2.0-beta.93",
+  "version": "0.2.0-beta.94",
   "private": true,
   "description": "Pushify cloud deployment platform — API server",
   "license": "MIT",
@@ -39,6 +39,7 @@
     "notify:admin": "tsx scripts/notify-admin.ts",
     "hetzner:leftovers": "tsx scripts/hetzner-leftovers.ts",
     "snapshots:over-limit": "tsx scripts/snapshots-over-limit.ts",
+    "env:masked-values": "tsx scripts/env-masked-values.ts",
     "cert:install-wildcard": "tsx scripts/install-wildcard-cert.ts",
     "marketplace:export": "tsx scripts/export-marketplace.ts",
     "test:e2e": "bash e2e/run.sh",
