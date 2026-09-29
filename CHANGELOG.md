@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.91] - 2026-09-30
+
+### Added
+- **Managed servers left off for non-payment are deleted after 30 days.** This covers servers powered off because the subscription ended or the wallet ran dry.
+  - Warning emails go out on day 14 and day 27. On day 30 the server is deleted with its snapshots and SSH key, and a final email is sent.
+  - Topping up, renewing the plan or starting the server stops the clock.
+  - Servers the customer stopped themselves are not affected.
+- Migration `0065_stopped_servers` adds `servers.stopped_at` and `stop_warning_step`.
+
 ## [0.2.0-beta.90] - 2026-09-30
 
 ### Added
