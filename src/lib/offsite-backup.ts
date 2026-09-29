@@ -52,6 +52,15 @@ export function remoteDatabasePrefix(remote: string, organizationId: string, dat
   return [remote.replace(/\/+$/, ''), safeSegment(organizationId), safeSegment(databaseId)].join('/');
 }
 
+/** Everything belonging to one organization, for its permanent deletion. */
+export function remoteOrganizationPrefix(remote: string, organizationId: string): string {
+  // Only ever a real organization id: anything else could widen this to the whole remote.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(organizationId)) {
+    throw new Error('Refusing to build an off-site prefix without an organization id');
+  }
+  return [remote.replace(/\/+$/, ''), organizationId.toLowerCase()].join('/');
+}
+
 /**
  * `rclone rcat` writes what it reads on stdin to that path, creating directories as it goes —
  * so the dump never touches the control plane's disk on the way through.

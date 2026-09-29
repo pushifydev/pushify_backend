@@ -171,7 +171,7 @@ docker compose exec postgres pg_dump -U pushify pushify > backup.sql   # DB back
 **Automate it.** `scripts/backup-control-plane.sh` dumps the control-plane database nightly,
 checks the dump (size, gzip integrity, pg_dump's completion marker), keeps 14 days locally
 and — with `BACKUP_RCLONE_REMOTE` (any rclone remote) — copies every dump off the machine,
-lists it back, and prunes copies older than `BACKUP_REMOTE_KEEP_DAYS` (60) there. Any failure
+lists it back, and prunes copies older than `BACKUP_REMOTE_KEEP_DAYS` (30) there. Any failure
 exits non-zero; `BACKUP_HEARTBEAT_URL` is pinged on success and at `<url>/fail` on failure
 (healthchecks.io, Uptime Kuma push monitors), so a backup that stops running gets noticed.
 A backup on the same disk is not a backup.
@@ -201,6 +201,14 @@ rclone ls offsite:
 
 ```bash
 15 3 * * * BACKUP_RCLONE_REMOTE=offsite: BACKUP_HEARTBEAT_URL=https://hc-ping.com/<uuid> /opt/pushify/pushify_backend/scripts/backup-control-plane.sh >> /var/log/pushify-backup.log 2>&1
+```
+
+The heartbeat also catches a backup that stops running at all. To get an email from the platform
+itself when a run fails (to `ADMIN_NOTIFY_EMAILS`, through the Gmail settings in `.env`), pipe the
+end of the log into `notify:admin` from the backend directory:
+
+```bash
+15 3 * * * cd /opt/pushify/pushify_backend && { BACKUP_RCLONE_REMOTE=offsite: ./scripts/backup-control-plane.sh >> /var/log/pushify-backup.log 2>&1 || tail -n 40 /var/log/pushify-backup.log | npm run --silent notify:admin -- "Control-plane backup failed"; }
 ```
 
 Restore: `rclone copy offsite:pushify-control-plane-<stamp>.sql.gz .` then

@@ -10,6 +10,7 @@ import {
   purgeArgs,
   rcatArgs,
   remoteDatabasePrefix,
+  remoteOrganizationPrefix,
   remoteObjectPath,
   type BackupLocation,
 } from '../lib/offsite-backup';
@@ -129,6 +130,20 @@ export const offsiteBackupService = {
     const prefix = remoteDatabasePrefix(target, organizationId, databaseId);
     const { code, stderr } = await runRclone(pruneArgs(prefix, keepDays));
     if (code !== 0) logger.warn({ prefix, stderr }, 'Off-site backup prune failed');
+  },
+
+  /**
+   * Everything of an organization, when it is permanently deleted. Throws on failure, so the
+   * purge step is retried rather than recorded as done.
+   */
+  async purgeOrganization(organizationId: string): Promise<void> {
+    const target = remote();
+    if (!target) return;
+    const prefix = remoteOrganizationPrefix(target, organizationId);
+    const { code, stderr } = await runRclone(purgeArgs(prefix));
+    if (code !== 0 && !/not found/i.test(stderr)) {
+      throw new Error(`Off-site purge of ${prefix} failed: ${stderr.trim().slice(0, 300)}`);
+    }
   },
 
   /** Everything of a database, when the database is deleted. */

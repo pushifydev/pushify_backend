@@ -120,6 +120,8 @@ export interface ICloudProvider {
   createSnapshot(providerId: string, name: string, description?: string): Promise<Snapshot>;
   deleteSnapshot(snapshotId: string): Promise<void>;
   listSnapshots(providerId?: string): Promise<Snapshot[]>;
+  /** Snapshots taken from a server, found even after the server is deleted */
+  listSnapshotIdsCreatedFrom?(providerId: string): Promise<string[]>;
   restoreSnapshot(providerId: string, snapshotId: string): Promise<void>;
 
   // SSH Key Operations

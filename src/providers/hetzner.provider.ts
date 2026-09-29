@@ -110,6 +110,8 @@ interface HetznerSSHKey {
 
 interface HetznerSnapshot {
   id: number;
+  /** The server a snapshot was taken from; kept after that server is deleted */
+  created_from?: { id: number; name: string } | null;
   description: string;
   image_size: number;
   disk_size: number;
@@ -551,6 +553,26 @@ export class HetznerProvider implements ICloudProvider {
     );
 
     return snapshots;
+  }
+
+  /**
+   * Ids of every snapshot taken from a server, including after the server is gone. Hetzner's
+   * `bound_to` filter only applies to backup images, so snapshots are matched on `created_from`
+   * across all pages.
+   */
+  async listSnapshotIdsCreatedFrom(providerId: string): Promise<string[]> {
+    const ids: string[] = [];
+    for (let page = 1; page <= 100; page++) {
+      const res = await this.request<{
+        images: HetznerSnapshot[];
+        meta?: { pagination?: { next_page: number | null } };
+      }>(`/images?type=snapshot&per_page=50&page=${page}`);
+      for (const img of res.images) {
+        if (String(img.created_from?.id ?? '') === String(providerId)) ids.push(String(img.id));
+      }
+      if (!res.meta?.pagination?.next_page) break;
+    }
+    return ids;
   }
 
   async restoreSnapshot(providerId: string, snapshotId: string): Promise<void> {

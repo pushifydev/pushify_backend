@@ -5,6 +5,9 @@
 #
 #   crontab -e  →  15 3 * * * /opt/pushify/pushify_backend/scripts/backup-control-plane.sh >> /var/log/pushify-backup.log 2>&1
 #
+# To also email ADMIN_NOTIFY_EMAILS when it fails (run from the backend directory for its .env):
+#   15 3 * * * cd /opt/pushify/pushify_backend && { ./scripts/backup-control-plane.sh >> /var/log/pushify-backup.log 2>&1 || tail -n 40 /var/log/pushify-backup.log | npm run --silent notify:admin -- "Control-plane backup failed"; }
+#
 # Reads DATABASE_URL from the backend .env. Keeps BACKUP_KEEP_DAYS locally and, when
 # BACKUP_RCLONE_REMOTE is set (e.g. "offsite:" — ideally an rclone crypt remote over a
 # Storage Box / B2 bucket, see docs/SELF_HOSTING.md), copies each dump off the machine and
@@ -20,7 +23,7 @@ ENV_FILE="${ENV_FILE:-$(dirname "$0")/../.env}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/pushify}"
 BACKUP_KEEP_DAYS="${BACKUP_KEEP_DAYS:-14}"
 BACKUP_RCLONE_REMOTE="${BACKUP_RCLONE_REMOTE:-}"
-BACKUP_REMOTE_KEEP_DAYS="${BACKUP_REMOTE_KEEP_DAYS:-60}"
+BACKUP_REMOTE_KEEP_DAYS="${BACKUP_REMOTE_KEEP_DAYS:-30}"
 BACKUP_HEARTBEAT_URL="${BACKUP_HEARTBEAT_URL:-}"
 
 STAMP="$(date -u +%Y-%m-%dT%H-%M-%SZ)"

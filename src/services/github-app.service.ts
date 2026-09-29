@@ -142,6 +142,26 @@ export const githubAppService = {
    * installation as 'pending' when the webhook has not arrived yet (or never will — wrong
    * secret); without the account type we cannot even build the right "manage" link.
    */
+  /**
+   * Uninstall the app from the GitHub account (organization deletion). An installation that is
+   * already gone counts as done.
+   */
+  async uninstall(installationId: number): Promise<void> {
+    const jwt = await createAppJwt(appConfig());
+    const response = await fetch(`${GITHUB_API_URL}/app/installations/${installationId}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${jwt}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+    if (!response.ok && response.status !== 404) {
+      throw new Error(`GitHub: uninstalling installation ${installationId} failed (${response.status})`);
+    }
+    await this.removeInstallation(installationId);
+  },
+
   async hydrateInstallation(installationId: number): Promise<GithubAppInstallation | null> {
     const jwt = await createAppJwt(appConfig());
     const response = await fetch(`${GITHUB_API_URL}/app/installations/${installationId}`, {

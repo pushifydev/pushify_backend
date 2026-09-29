@@ -34,7 +34,7 @@ import { logger } from '../lib/logger';
 import { invoiceSubscriptionId, isPayableInvoice } from '../lib/stripe-invoices';
 
 /** Stripe "No such ..." error (resource_missing / 404) — e.g. a customer or price from another mode. */
-function isStripeResourceMissing(err: unknown): boolean {
+export function isStripeResourceMissing(err: unknown): boolean {
   if (typeof err !== 'object' || err === null) return false;
   const e = err as { code?: string; statusCode?: number };
   return e.code === 'resource_missing' || e.statusCode === 404;

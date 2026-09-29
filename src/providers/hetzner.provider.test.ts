@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { resolveTier, type Catalogue } from './hetzner.provider';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { HetznerProvider, resolveTier, type Catalogue } from './hetzner.provider';
 
 type T = Catalogue['types'][number];
 
@@ -67,5 +67,34 @@ describe('resolveTier', () => {
 
   it('returns nothing when no type fits the tier in stock', () => {
     expect(resolveTier(catalogue, 'xl', 'fsn1')).toBeUndefined();
+  });
+});
+
+describe('listSnapshotIdsCreatedFrom', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('matches created_from across every page, including snapshots of deleted servers', async () => {
+    const pages: Record<string, unknown> = {
+      '1': {
+        images: [
+          { id: 11, created_from: { id: 9001, name: 'gone' } },
+          { id: 12, created_from: { id: 1234, name: 'other' } },
+          { id: 13, created_from: null },
+        ],
+        meta: { pagination: { next_page: 2 } },
+      },
+      '2': { images: [{ id: 21, created_from: { id: 9001, name: 'gone' } }], meta: { pagination: { next_page: null } } },
+    };
+    const fetchMock = vi.fn(async (url: string) => {
+      const page = new URL(url).searchParams.get('page')!;
+      return new Response(JSON.stringify(pages[page]), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const ids = await new HetznerProvider('token').listSnapshotIdsCreatedFrom('9001');
+    expect(ids).toEqual(['11', '21']);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toContain('type=snapshot');
+    expect(fetchMock.mock.calls[0][0]).not.toContain('bound_to');
   });
 });

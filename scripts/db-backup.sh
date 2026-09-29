@@ -14,6 +14,7 @@ set -euo pipefail
 : "${DATABASE_URL:?DATABASE_URL is required}"
 BACKUP_DIR="${BACKUP_DIR:-$HOME/pushify-db-backups}"
 KEEP="${KEEP:-7}"
+MAX_AGE_DAYS="${MAX_AGE_DAYS:-14}"
 
 command -v pg_dump >/dev/null || { echo "ERROR: pg_dump not found (install the PostgreSQL client)" >&2; exit 1; }
 command -v node >/dev/null || { echo "ERROR: node not found" >&2; exit 1; }
@@ -51,8 +52,14 @@ fi
 mv "$tmp" "$file"
 echo "==> Backup done ($(du -h "$file" | cut -f1))"
 
-# Retention: newest KEEP dumps of this database stay.
+# Retention: newest KEEP dumps of this database stay, and none older than MAX_AGE_DAYS — a
+# deleted customer's data must leave the backups within the time the Privacy Policy states,
+# even when deploys are rare.
 ls -1t "$BACKUP_DIR"/"${db_name}"-*.dump 2>/dev/null | tail -n +"$((KEEP + 1))" | while IFS= read -r f; do
   rm -f -- "$f"
   echo "    removed old backup $(basename "$f")"
+done
+find "$BACKUP_DIR" -maxdepth 1 -name "${db_name}-*.dump" -mtime +"$MAX_AGE_DAYS" -print | while IFS= read -r f; do
+  rm -f -- "$f"
+  echo "    removed backup older than ${MAX_AGE_DAYS} days $(basename "$f")"
 done
