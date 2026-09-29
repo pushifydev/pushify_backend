@@ -1065,4 +1065,32 @@ authRouter.post('/invitations/accept', authMiddleware, async (c) => {
   });
 });
 
+// Account deletion (30-day grace). Requesting needs a session; restoring uses the token that
+// sign-in hands out for an account pending deletion, since such an account gets no session.
+const accountDeletionSchema = z.object({
+  confirmEmail: z.string().min(1).max(255),
+  password: z.string().max(1024).optional(),
+  twoFactorCode: z.string().max(32).optional(),
+});
+
+authRouter.post('/me/deletion', async (c) => {
+  const userId = c.get('userId')!;
+  const locale = c.get('locale');
+  const body = accountDeletionSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!body.success) throw new HTTPException(400, { message: t(locale, 'validation', 'invalidRequest') });
+  const { accountDeletionService } = await import('../services/account-deletion.service');
+  const result = await accountDeletionService.requestAccountDeletion(userId, body.data, locale);
+  return c.json({ data: result });
+});
+
+authRouter.use('/deletion/restore', authRateLimiter);
+authRouter.post('/deletion/restore', async (c) => {
+  const locale = c.get('locale');
+  const body = z.object({ restoreToken: z.string().min(1).max(4096) }).safeParse(await c.req.json().catch(() => ({})));
+  if (!body.success) throw new HTTPException(400, { message: t(locale, 'validation', 'invalidRequest') });
+  const { accountDeletionService } = await import('../services/account-deletion.service');
+  await accountDeletionService.restoreAccount(body.data.restoreToken, locale);
+  return c.json({ data: { restored: true } });
+});
+
 export { authRouter as authRoutes };

@@ -34,6 +34,8 @@ vi.mock('../repositories/user.repository', () => ({
     findSessionByTokenHash: mocks.findSessionByTokenHash,
     deleteSessionByTokenHash: mocks.deleteSessionByTokenHash,
     createSession: mocks.createSession,
+    // createSession checks for a pending account deletion first
+    findById: async (id: string) => ({ id, deletionScheduledFor: null }),
   },
 }));
 

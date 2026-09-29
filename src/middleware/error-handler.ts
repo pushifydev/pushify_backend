@@ -40,11 +40,15 @@ export function errorHandler(err: Error, c: Context) {
       message: err.message,
     });
 
+    // A service can name the error and attach details (e.g. a restore token) through `cause`.
+    const cause = err.cause as { code?: unknown; details?: unknown } | undefined;
+    const causeCode = cause && typeof cause === 'object' && typeof cause.code === 'string' ? cause.code : null;
     return c.json(
       {
         error: {
-          code: getErrorCode(err.status),
+          code: causeCode ?? getErrorCode(err.status),
           message: err.message, // Message is already translated by the service
+          ...(causeCode && cause?.details !== undefined ? { details: cause.details } : {}),
         },
       },
       err.status

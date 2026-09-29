@@ -4,7 +4,7 @@ import { env } from '../config/env';
 export interface TokenPayload extends JWTPayload {
   sub: string; // user id
   org?: string; // organization id
-  type: 'access' | 'refresh' | 'twoFactor';
+  type: 'access' | 'refresh' | 'twoFactor' | 'accountRestore';
 }
 
 const secret = new TextEncoder().encode(env.JWT_SECRET);
@@ -130,4 +130,23 @@ export async function verifyTwoFactorToken(token: string): Promise<TokenPayload>
   } catch {
     throw new Error('Invalid or expired 2FA token');
   }
+}
+
+/**
+ * Handed out when an account waiting to be deleted signs in (after its password and 2FA passed):
+ * it can restore the account and nothing else.
+ */
+export async function generateAccountRestoreToken(userId: string): Promise<string> {
+  return new SignJWT({ sub: userId, type: 'accountRestore' } satisfies TokenPayload)
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime('15m')
+    .setIssuer('pushify')
+    .sign(secret);
+}
+
+export async function verifyAccountRestoreToken(token: string): Promise<TokenPayload> {
+  const payload = await verifyToken(token);
+  if (payload.type !== 'accountRestore' || !payload.sub) throw new Error('Invalid restore token');
+  return payload;
 }

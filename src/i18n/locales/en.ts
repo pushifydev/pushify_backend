@@ -202,6 +202,16 @@ export interface TranslationKeys {
     pastDue: string;
     suspended: string;
   };
+  deletion: {
+    organizationPending: string;
+    accountPending: string;
+    ownerOnly: string;
+    confirmMismatch: string;
+    alreadyScheduled: string;
+    notScheduled: string;
+    orgHasMembers: string;
+    restoreTokenInvalid: string;
+  };
   planLimits: {
     servers: string;
     databases: string;
@@ -585,6 +595,18 @@ export const en: TranslationKeys = {
       'Your platform subscription payment is past due. Update your payment method in Billing to create or deploy resources.',
     suspended:
       'Your platform subscription has ended. Renew your plan in Billing to resume servers, projects, and deployments.',
+  },
+
+  deletion: {
+    organizationPending: 'This organization is scheduled for deletion. Restore it in Settings to make changes.',
+    accountPending: 'This account is scheduled for deletion. Restore it to sign in.',
+    ownerOnly: 'Only the organization owner can delete or restore it.',
+    confirmMismatch: 'The confirmation text does not match.',
+    alreadyScheduled: 'Deletion is already scheduled.',
+    notScheduled: 'Nothing is scheduled for deletion.',
+    orgHasMembers:
+      'You own an organization that has other members. Delete that organization first, or remove its members.',
+    restoreTokenInvalid: 'This restore link has expired. Sign in again to restore your account.',
   },
 
   planLimits: {

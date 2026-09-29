@@ -418,8 +418,19 @@ export const authService = {
     userId: string,
     refreshToken: string,
     ipAddress?: string,
-    userAgent?: string
+    userAgent?: string,
+    locale: SupportedLocale = 'en'
   ): Promise<void> {
+    // Every sign-in path (password, 2FA, OAuth, SSO, refresh) ends here: an account waiting to be
+    // deleted gets no session, only a token to restore it.
+    const account = await userRepository.findById(userId);
+    if (account?.deletionScheduledFor) {
+      const { accountDeletionService } = await import('./account-deletion.service');
+      throw await accountDeletionService.pendingAccountError(
+        { id: account.id, deletionScheduledFor: account.deletionScheduledFor },
+        locale,
+      );
+    }
     const tokenHash = await hashToken(refreshToken);
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
 

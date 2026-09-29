@@ -9,6 +9,7 @@ import {
 } from './apikey-auth';
 import { applyPlanApiRateLimit } from './rate-limit';
 import { t, type SupportedLocale } from '../i18n';
+import { isAllowedWhilePendingDeletion, isOrganizationPendingDeletion } from '../lib/deletion-lock';
 
 export async function authMiddleware(c: Context, next: Next) {
   const locale: SupportedLocale = c.get('locale') || 'en';
@@ -39,6 +40,12 @@ export async function authMiddleware(c: Context, next: Next) {
     c.set('userId', payload.sub);
     if (payload.org) {
       c.set('organizationId', payload.org);
+      if (!isAllowedWhilePendingDeletion(c.req.method, c.req.path) && (await isOrganizationPendingDeletion(payload.org))) {
+        throw new HTTPException(403, {
+          message: t(locale, 'deletion', 'organizationPending'),
+          cause: { code: 'ORGANIZATION_PENDING_DELETION' },
+        });
+      }
     }
 
     await applyPlanApiRateLimit(c, next);
