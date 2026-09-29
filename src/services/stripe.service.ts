@@ -18,6 +18,7 @@ import { getPlanInfo, type PlanType } from '../lib/plans';
 import { INFRA_TOPUP_AMOUNTS_CENTS } from '../lib/infra-billing';
 import { infraBillingService } from './infra-billing.service';
 import { includedCreditService } from './included-credit.service';
+import { planScheduleService } from './plan-schedule.service';
 
 const PLAN_RANK: Record<PlanType, number> = { free: 0, hobby: 1, pro: 2, business: 3, enterprise: 4 };
 
@@ -124,19 +125,11 @@ async function getSessionReceiptUrl(session: Stripe.Checkout.Session): Promise<s
   }
 }
 
-/** Monthly-normalised amount of a recurring price, to tell an upgrade from a downgrade. */
-function monthlyCents(price: Stripe.Price): number {
-  const amount = price.unit_amount ?? 0;
-  const interval = price.recurring?.interval;
-  const count = price.recurring?.interval_count ?? 1;
-  if (interval === 'year') return amount / (12 * count);
-  if (interval === 'week') return (amount * 52) / (12 * count);
-  if (interval === 'day') return (amount * 365) / (12 * count);
-  return amount / count;
-}
 
 export type PlanChangeResult =
   | { status: 'changed'; plan: PlanType }
+  /** A downgrade (or other non-upgrade): the current plan runs to the period end, then this one. */
+  | { status: 'scheduled'; plan: PlanType; effectiveAt: string }
   /** The card was declined or needs 3D Secure: nothing changed yet; paying this URL applies it. */
   | { status: 'payment_required'; payUrl: string | null }
   /** No subscription to change: start one with Checkout. */
@@ -441,20 +434,36 @@ export const stripeService = {
     const item = sub.items.data[0];
     if (!item) return { status: 'checkout_required' };
     if (item.price.id === priceId) {
+      // Choosing the plan you are on cancels a pending change.
+      await planScheduleService.releasePending(organizationId, sub);
       if (sub.cancel_at_period_end) await stripe.subscriptions.update(sub.id, { cancel_at_period_end: false });
       return { status: 'changed', plan: planType };
     }
 
-    const target = await stripe.prices.retrieve(priceId);
-    const isUpgrade = monthlyCents(target) > monthlyCents(item.price) || target.recurring?.interval !== item.price.recurring?.interval;
+    // Only a move to a higher plan happens now (charged with proration). Anything else — a lower
+    // plan, or the same plan on another billing cycle — waits for the period end with no
+    // proration, so a paid period is never partly refunded (refund policy 7.2). Ranked by the
+    // plan Stripe is actually billing, not our stored copy.
+    const currentPlan = getPlanFromPriceId(item.price.id) ?? previousPlan;
+    const isUpgrade = PLAN_RANK[planType] > PLAN_RANK[currentPlan];
+    if (!isUpgrade) {
+      const pending = await planScheduleService.scheduleChange(organizationId, sub, priceId, planType);
+      return { status: 'scheduled', plan: planType, effectiveAt: pending.effectiveAt.toISOString() };
+    }
+
+    // An upgrade replaces any downgrade that was waiting; the subscription must be free of its
+    // schedule before it can be updated in place.
+    if (sub.schedule) {
+      await planScheduleService.releasePending(organizationId, sub);
+      sub = await stripe.subscriptions.retrieve(sub.id);
+    }
 
     const updated = await stripe.subscriptions.update(sub.id, {
       items: [{ id: item.id, price: priceId }],
       cancel_at_period_end: false,
       metadata: { ...sub.metadata, organizationId, planType },
-      ...(isUpgrade
-        ? { proration_behavior: 'always_invoice', payment_behavior: 'pending_if_incomplete' }
-        : { proration_behavior: 'create_prorations' }),
+      proration_behavior: 'always_invoice',
+      payment_behavior: 'pending_if_incomplete',
       expand: ['latest_invoice'],
     });
 
@@ -478,9 +487,7 @@ export const stripeService = {
       .where(eq(organizations.id, organizationId));
     // Upgrade: the included-credit difference, prorated like Stripe's charge (never the full
     // difference, which would let a last-day upgrade buy a month of credit for a day's price).
-    if (PLAN_RANK[planType] > PLAN_RANK[previousPlan]) {
-      await includedCreditService.grantUpgradeDifference(organizationId, previousPlan, planType);
-    }
+    await includedCreditService.grantUpgradeDifference(organizationId, currentPlan, planType);
     logger.info({ organizationId, subscriptionId: sub.id, planType, isUpgrade }, 'plan changed in place');
     return { status: 'changed', plan: planType };
   },
@@ -581,9 +588,18 @@ export const stripeService = {
       throw new Error('No active subscription found');
     }
 
+    // A pending downgrade is moot once the subscription is ending; its schedule would also keep
+    // the subscription from being updated.
+    await planScheduleService.releasePending(organizationId);
+
     await stripe.subscriptions.update(org.stripeSubscriptionId, {
       cancel_at_period_end: true,
     });
+  },
+
+  /** Drop a scheduled plan change; the current plan simply continues. */
+  async cancelScheduledChange(organizationId: string): Promise<{ released: boolean }> {
+    return { released: await planScheduleService.releasePending(organizationId) };
   },
 
   async resumeSubscription(organizationId: string): Promise<void> {
@@ -611,6 +627,9 @@ export const stripeService = {
         stripeSubscriptionId: organizations.stripeSubscriptionId,
         stripeCurrentPeriodEnd: organizations.stripeCurrentPeriodEnd,
         stripeCustomerId: organizations.stripeCustomerId,
+        pendingPlan: organizations.pendingPlan,
+        pendingBillingInterval: organizations.pendingBillingInterval,
+        pendingChangeAt: organizations.pendingChangeAt,
       })
       .from(organizations)
       .where(eq(organizations.id, organizationId))
@@ -638,6 +657,13 @@ export const stripeService = {
       currentPeriodEnd: org.stripeCurrentPeriodEnd?.toISOString() || null,
       cancelAtPeriodEnd,
       hasPaymentMethod: !!org.stripeCustomerId,
+      pendingChange: org.pendingPlan
+        ? {
+            plan: org.pendingPlan as PlanType,
+            billingInterval: org.pendingBillingInterval,
+            effectiveAt: org.pendingChangeAt?.toISOString() ?? null,
+          }
+        : null,
     };
   },
 
@@ -957,6 +983,15 @@ export const stripeService = {
           await includedCreditService.grantUpgradeDifference(organizationId, previousPlan, newPlan);
         }
 
+        // No schedule on the subscription any more (released, completed, cancelled): no pending change.
+        await planScheduleService.reconcileFromSubscription(organizationId, sub);
+
+        // A new period (renewal, or a scheduled change taking effect) starts the new period's
+        // included credit on the plan just stored — whichever of this and invoice.paid comes first.
+        if (sub.status === 'active' || sub.status === 'trialing') {
+          await includedCreditService.ensurePeriodGrant(organizationId);
+        }
+
         logger.info(
           { organizationId, subscriptionId: sub.id, plan: newPlan, status: sub.status, periodEnd: periodEnd?.toISOString() },
           'subscription.updated processed',
@@ -987,6 +1022,7 @@ export const stripeService = {
         await organizationBillingService.suspendOrganization(organizationId);
         // The subscription is over: what is left of this period's included credit goes too.
         await includedCreditService.expire(organizationId, 'canceled');
+        await planScheduleService.reconcileFromSubscription(organizationId, null);
         logger.info({ organizationId }, 'subscription.deleted: organization suspended');
         break;
       }
@@ -1020,6 +1056,19 @@ export const stripeService = {
           await includedCreditService.ensurePeriodGrant(org.id);
           logger.info({ organizationId: org.id }, 'invoice.paid: billing status cleared, included credit checked');
         }
+        break;
+      }
+
+      case 'subscription_schedule.created':
+      case 'subscription_schedule.updated':
+      case 'subscription_schedule.released':
+      case 'subscription_schedule.canceled':
+      case 'subscription_schedule.completed':
+      case 'subscription_schedule.aborted':
+      case 'subscription_schedule.expiring': {
+        // Mirror the schedule (ours, or edited/released in the Stripe dashboard) so the pending
+        // change we show and act on is always what Stripe will actually do.
+        await planScheduleService.syncFromSchedule(event.data.object as Stripe.SubscriptionSchedule);
         break;
       }
 

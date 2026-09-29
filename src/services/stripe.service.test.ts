@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
   markPastDue: vi.fn(),
   markActive: vi.fn(),
   notifyPaymentFailedIfDue: vi.fn(),
+  planSchedule: { syncFromSchedule: vi.fn(), reconcileFromSubscription: vi.fn(), releasePending: vi.fn(), scheduleChange: vi.fn() },
   includedCredit: {
     currentPlan: vi.fn(),
     ensurePeriodGrant: vi.fn(),
@@ -72,6 +73,7 @@ vi.mock('../lib/billing-notify', () => ({ resolveBillingNotifyEmail: vi.fn() }))
 vi.mock('../repositories/organization.repository', () => ({ organizationRepository: { findById: vi.fn() } }));
 vi.mock('./infra-billing.service', () => ({ infraBillingService: {} }));
 vi.mock('./included-credit.service', () => ({ includedCreditService: h.includedCredit }));
+vi.mock('./plan-schedule.service', () => ({ planScheduleService: h.planSchedule }));
 vi.mock('./organization-billing.service', () => ({
   organizationBillingService: {
     suspendOrganization: h.suspendOrganization,
@@ -294,5 +296,21 @@ describe('included server credit on subscription events', () => {
     await runEvent(invoiceEvent('invoice.paid', 'sub_old'));
 
     expect(h.includedCredit.ensurePeriodGrant).not.toHaveBeenCalled();
+  });
+});
+
+describe('subscription schedule events', () => {
+  for (const type of ['created', 'updated', 'released', 'canceled', 'completed', 'aborted']) {
+    it(`subscription_schedule.${type} re-syncs the pending change`, async () => {
+      const schedule = { id: 'sub_sched_1', status: 'active', subscription: 'sub_new', phases: [] };
+      await runEvent({ id: `evt_${type}`, type: `subscription_schedule.${type}`, data: { object: schedule } } as unknown as Stripe.Event);
+      expect(h.planSchedule.syncFromSchedule).toHaveBeenCalledWith(schedule);
+    });
+  }
+
+  it('subscription.deleted clears any pending change', async () => {
+    h.selectResults.push([{ id: ORG }]);
+    await runEvent(subEvent('customer.subscription.deleted', oldSub));
+    expect(h.planSchedule.reconcileFromSubscription).toHaveBeenCalledWith(ORG, null);
   });
 });

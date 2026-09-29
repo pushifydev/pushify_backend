@@ -33,6 +33,11 @@ export const organizations = pgTable('organizations', {
   /** Stripe subscription period start and interval ('month' | 'year'), for credit periods */
   stripeCurrentPeriodStart: timestamp('stripe_current_period_start', { withTimezone: true }),
   billingInterval: varchar('billing_interval', { length: 8 }),
+  /** A plan change waiting for the end of the period (downgrade), and the schedule behind it */
+  pendingPlan: varchar('pending_plan', { length: 16 }),
+  pendingBillingInterval: varchar('pending_billing_interval', { length: 8 }),
+  pendingChangeAt: timestamp('pending_change_at', { withTimezone: true }),
+  stripeScheduleId: varchar('stripe_schedule_id', { length: 255 }),
   /** Until this time, legacy (more generous) plan limits apply for paid tiers */
   grandfatheredUntil: timestamp('grandfathered_until', { withTimezone: true }),
   /** Optional per-limit overrides merged on top of effective plan limits */
