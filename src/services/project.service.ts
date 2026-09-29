@@ -1,4 +1,5 @@
 import { HTTPException } from 'hono/http-exception';
+import { requireOrgMember } from '../lib/org-access';
 import crypto from 'crypto';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../db';
@@ -83,11 +84,8 @@ export const projectService = {
     input: CreateProjectInput,
     locale: SupportedLocale = 'en'
   ) {
-    // Verify user has access to organization
-    const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
-      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
-    }
+    // Creating a project (and so deploying code) is member and up.
+    await requireOrgMember(organizationId, userId, 'member', locale);
 
     await assertOrganizationCanMutateResources(organizationId, locale);
 
@@ -499,10 +497,8 @@ export const projectService = {
     locale: SupportedLocale = 'en'
   ) {
     // Verify user has access to organization
-    const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
-      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
-    }
+    // Pausing stops the app; resuming starts it: member and up.
+    const membership = await requireOrgMember(organizationId, userId, 'member', locale);
 
     // Check project exists and belongs to organization
     const existing = await projectRepository.findById(projectId);
@@ -549,10 +545,9 @@ export const projectService = {
     locale: SupportedLocale = 'en'
   ) {
     // Verify user has access to organization
-    const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
-      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
-    }
+    // Returns the new secret and breaks the old one: member and up, in their projects.
+    const membership = await requireOrgMember(organizationId, userId, 'member', locale);
+    await assertMemberProjectScope(membership, organizationId, userId, projectId, locale);
 
     // Check project exists and belongs to organization
     const existing = await projectRepository.findById(projectId);
@@ -642,10 +637,9 @@ export const projectService = {
     userId: string,
     locale: SupportedLocale = 'en'
   ) {
-    const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
-      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
-    }
+    // Changes the repository's webhooks: member and up, in their projects.
+    const membership = await requireOrgMember(organizationId, userId, 'member', locale);
+    await assertMemberProjectScope(membership, organizationId, userId, projectId, locale);
 
     const project = await projectRepository.findById(projectId);
     if (!project || project.organizationId !== organizationId || project.status === 'deleted') {

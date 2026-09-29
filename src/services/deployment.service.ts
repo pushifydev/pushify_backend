@@ -1,4 +1,5 @@
 import { HTTPException } from 'hono/http-exception';
+import { roleAtLeast, type OrgRole } from '../lib/org-access';
 import { deploymentRepository } from '../repositories/deployment.repository';
 import { projectRepository } from '../repositories/project.repository';
 import { organizationRepository } from '../repositories/organization.repository';
@@ -27,7 +28,9 @@ export const deploymentService = {
     projectId: string,
     organizationId: string,
     userId: string,
-    locale: SupportedLocale
+    locale: SupportedLocale,
+    /** Deploying, cancelling and rolling back are member and up; viewers only look. */
+    min: OrgRole = 'viewer',
   ) {
     // Verify organization membership
     const membership = await organizationRepository.findMember(organizationId, userId);
@@ -42,6 +45,9 @@ export const deploymentService = {
     }
 
     await assertMemberProjectScope(membership, organizationId, userId, projectId, locale);
+    if (!roleAtLeast(membership.role, min)) {
+      throw new HTTPException(403, { message: t(locale, 'errors', 'forbidden') });
+    }
 
     return project;
   },
@@ -91,7 +97,7 @@ export const deploymentService = {
     input: CreateDeploymentInput,
     locale: SupportedLocale
   ) {
-    const project = await this.checkProjectAccess(projectId, organizationId, userId, locale);
+    const project = await this.checkProjectAccess(projectId, organizationId, userId, locale, 'member');
 
     await assertOrganizationCanMutateResources(organizationId, locale);
     await planLimitsService.assertDeploymentsQuota(organizationId, locale);
@@ -146,7 +152,7 @@ export const deploymentService = {
     input: { deploymentId?: string },
     locale: SupportedLocale
   ) {
-    const project = await this.checkProjectAccess(projectId, organizationId, userId, locale);
+    const project = await this.checkProjectAccess(projectId, organizationId, userId, locale, 'member');
     await assertOrganizationCanMutateResources(organizationId, locale);
     await planLimitsService.assertDeploymentsQuota(organizationId, locale);
 
@@ -191,7 +197,7 @@ export const deploymentService = {
     userId: string,
     locale: SupportedLocale
   ) {
-    await this.checkProjectAccess(projectId, organizationId, userId, locale);
+    await this.checkProjectAccess(projectId, organizationId, userId, locale, 'member');
 
     const deployment = await deploymentRepository.findById(deploymentId);
     if (!deployment || deployment.projectId !== projectId) {
@@ -216,7 +222,7 @@ export const deploymentService = {
     userId: string,
     locale: SupportedLocale
   ) {
-    await this.checkProjectAccess(projectId, organizationId, userId, locale);
+    await this.checkProjectAccess(projectId, organizationId, userId, locale, 'member');
 
     const deployment = await deploymentRepository.findById(deploymentId);
     if (!deployment || deployment.projectId !== projectId) {
@@ -249,7 +255,7 @@ export const deploymentService = {
     userId: string,
     locale: SupportedLocale
   ) {
-    await this.checkProjectAccess(projectId, organizationId, userId, locale);
+    await this.checkProjectAccess(projectId, organizationId, userId, locale, 'member');
 
     const deployment = await deploymentRepository.findById(deploymentId);
     if (!deployment || deployment.projectId !== projectId) {

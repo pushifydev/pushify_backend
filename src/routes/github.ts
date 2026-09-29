@@ -1,4 +1,5 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { requireOrgMember } from '../lib/org-access';
 import { githubService, hasRepoScope } from '../services/github.service';
 import { authMiddleware } from '../middleware/auth';
 import { t } from '../i18n';
@@ -534,6 +535,8 @@ githubRouter.openapi(appSetupRoute, async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
+  // Connecting the organization to a GitHub account gives it repository access: admins and owners.
+  await requireOrgMember(organizationId, userId, 'admin', locale);
 
   const stored = await consumeOAuthState(state);
   if (
@@ -581,6 +584,7 @@ githubRouter.openapi(appInstallationsRoute, async (c) => {
     return c.json({ data: { configured: false, installations: [] } });
   }
 
+  await requireOrgMember(organizationId, c.get('userId')!, 'viewer', c.get('locale'));
   const installations = await githubAppService.listForOrganization(organizationId);
 
   return c.json({
@@ -600,6 +604,7 @@ githubRouter.openapi(appInstallationsRoute, async (c) => {
 
 githubRouter.openapi(appRepositoriesRoute, async (c) => {
   const organizationId = c.get('organizationId')!;
+  await requireOrgMember(organizationId, c.get('userId')!, 'viewer', c.get('locale'));
   const installationId = Number(c.req.valid('param').installationId);
 
   const installation = await githubAppService.findByInstallationId(installationId);

@@ -1,4 +1,5 @@
 import { HTTPException } from 'hono/http-exception';
+import { requireOrgMember } from '../lib/org-access';
 import { databaseRepository } from '../repositories/database.repository';
 import { organizationRepository } from '../repositories/organization.repository';
 import { projectRepository } from '../repositories/project.repository';
@@ -126,10 +127,9 @@ export const databaseService = {
     userId: string,
     locale: SupportedLocale
   ) {
-    const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
-      throw new HTTPException(403, { message: t(locale, 'errors', 'forbidden') });
-    }
+    // Passwords and connection strings: owners and admins only (a viewer or member with no
+    // database access must not be able to connect with full rights).
+    await requireOrgMember(organizationId, userId, 'admin', locale);
 
     const database = await databaseRepository.findById(databaseId);
     if (!database || database.organizationId !== organizationId) {

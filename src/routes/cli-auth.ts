@@ -1,4 +1,5 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { rejectApiKeyAuth } from '../middleware/apikey-auth';
 import { randomBytes, createHash } from 'crypto';
 import { authMiddleware } from '../middleware/auth';
 import { authRateLimiter } from '../middleware/rate-limit';
@@ -148,6 +149,8 @@ cliAuthRouter.openapi(pollRoute, async (c) => {
 
 // POST /approve — Browser calls this (authenticated)
 cliAuthRouter.use('/approve', authMiddleware);
+// Approving issues a full-access key: a person in the dashboard, never another key.
+cliAuthRouter.use('/approve', rejectApiKeyAuth());
 cliAuthRouter.openapi(approveRoute, async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;

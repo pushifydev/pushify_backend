@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { requireScopeByMethod } from '../middleware/apikey-auth';
 import { projectVolumeService } from '../services/project-volume.service';
 import { authMiddleware } from '../middleware/auth';
 import type { AppEnv } from '../types';
@@ -6,6 +7,8 @@ import type { AppEnv } from '../types';
 const projectVolumeRouter = new Hono<AppEnv>();
 
 projectVolumeRouter.use('*', authMiddleware);
+projectVolumeRouter.use('/:projectId/volumes', requireScopeByMethod('projects:read', 'projects:write'));
+projectVolumeRouter.use('/:projectId/volumes/*', requireScopeByMethod('projects:read', 'projects:write'));
 
 // List a project's volumes
 projectVolumeRouter.get('/:projectId/volumes', async (c) => {

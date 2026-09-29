@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { requireScopeByMethod } from '../middleware/apikey-auth';
 import { previewService } from '../services/preview.service';
 import { authMiddleware } from '../middleware/auth';
 import type { AppEnv } from '../types';
@@ -7,6 +8,8 @@ const previewRouter = new Hono<AppEnv>();
 
 // All routes require authentication
 previewRouter.use('*', authMiddleware);
+previewRouter.use('/:projectId/previews', requireScopeByMethod('projects:read', 'projects:write'));
+previewRouter.use('/:projectId/previews/*', requireScopeByMethod('projects:read', 'projects:write'));
 
 // Get all preview deployments for a project
 previewRouter.get('/:projectId/previews', async (c) => {

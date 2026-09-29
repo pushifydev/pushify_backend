@@ -1,4 +1,5 @@
 import { and, desc, eq, inArray, notInArray } from 'drizzle-orm';
+import { requireProjectMember } from '../lib/org-access';
 import { HTTPException } from 'hono/http-exception';
 import { db } from '../db';
 import { staticUploads } from '../db/schema';
@@ -118,6 +119,8 @@ export const staticUploadService = {
     files: SiteFile[],
     locale: SupportedLocale,
   ) {
+    // Publishing a new version is a deploy: member and up.
+    await requireProjectMember(projectId, organizationId, userId, 'member', locale);
     const project = await projectService.getById(projectId, organizationId, userId, locale);
     if (!isUploadProject(project.settings)) {
       throw new HTTPException(400, { message: 'This project deploys from Git or an image, not from uploaded files' });

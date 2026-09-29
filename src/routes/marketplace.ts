@@ -1,4 +1,6 @@
 import { Hono } from 'hono';
+import { assertOrganizationCanMutateResources } from '../services/organization-billing.service';
+import { requireOrgMember } from '../lib/org-access';
 import { marketplaceService } from '../services/marketplace.service';
 import { authMiddleware } from '../middleware/auth';
 import type { AppEnv } from '../types';
@@ -40,6 +42,10 @@ marketplaceRouter.post('/deploy', async (c) => {
     );
   }
 
+  // Deploying an app is member and up, and a locked organization (unpaid, or being deleted) cannot.
+  await requireOrgMember(organizationId, userId, 'member', c.get('locale'));
+  await assertOrganizationCanMutateResources(organizationId, c.get('locale'));
+
   try {
     const result = await marketplaceService.deploy({
       organizationId,
@@ -61,6 +67,7 @@ marketplaceRouter.post('/deploy', async (c) => {
 
 marketplaceRouter.get('/deployments', async (c) => {
   const organizationId = c.get('organizationId')!;
+  await requireOrgMember(organizationId, c.get('userId')!, 'viewer', c.get('locale'));
   const deployments = await marketplaceService.getDeployments(organizationId);
   return c.json(deployments);
 });

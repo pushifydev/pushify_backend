@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { requireScopeByMethod } from '../middleware/apikey-auth';
 import { scheduledTaskService } from '../services/scheduled-task.service';
 import { executeScheduledTask } from '../workers/scheduled-task.worker';
 import { authMiddleware } from '../middleware/auth';
@@ -7,6 +8,8 @@ import type { AppEnv } from '../types';
 const scheduledTaskRouter = new Hono<AppEnv>();
 
 scheduledTaskRouter.use('*', authMiddleware);
+scheduledTaskRouter.use('/:projectId/scheduled-tasks', requireScopeByMethod('projects:read', 'projects:write'));
+scheduledTaskRouter.use('/:projectId/scheduled-tasks/*', requireScopeByMethod('projects:read', 'projects:write'));
 
 // List a project's scheduled tasks
 scheduledTaskRouter.get('/:projectId/scheduled-tasks', async (c) => {
@@ -79,7 +82,7 @@ scheduledTaskRouter.post('/:projectId/scheduled-tasks/:taskId/run', async (c) =>
 
   // Access check + existence via the service, then execute synchronously so the
   // response carries the outcome (manual runs are interactive).
-  await scheduledTaskService.listTasks(projectId, organizationId, userId, locale);
+  await scheduledTaskService.authorizeRun(projectId, organizationId, userId, locale);
   const task = await scheduledTaskService.getTask(projectId, taskId);
   const result = await executeScheduledTask(task, 'manual');
   return c.json({ data: result });

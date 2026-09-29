@@ -1,10 +1,10 @@
 import { HTTPException } from 'hono/http-exception';
+import { requireProjectMember } from '../lib/org-access';
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { projectHealthState } from '../db/schema/healthchecks';
 import { healthCheckRepository } from '../repositories/healthcheck.repository';
 import { projectRepository } from '../repositories/project.repository';
-import { organizationRepository } from '../repositories/organization.repository';
 import { notificationService } from './notification.service';
 import { restartPushifyContainer } from '../lib/container-resolve';
 import { env } from '../config/env';
@@ -34,10 +34,7 @@ export const healthCheckService = {
     locale: SupportedLocale = 'en'
   ): Promise<HealthCheck | null> {
     // Verify access
-    const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
-      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
-    }
+    await requireProjectMember(projectId, organizationId, userId, 'viewer', locale);
 
     // Verify project belongs to organization
     const project = await projectRepository.findById(projectId);
@@ -60,10 +57,7 @@ export const healthCheckService = {
     locale: SupportedLocale = 'en'
   ): Promise<HealthCheck> {
     // Verify access
-    const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
-      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
-    }
+    await requireProjectMember(projectId, organizationId, userId, 'member', locale);
 
     // Verify project belongs to organization
     const project = await projectRepository.findById(projectId);
@@ -109,10 +103,7 @@ export const healthCheckService = {
     locale: SupportedLocale = 'en'
   ): Promise<void> {
     // Verify access
-    const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
-      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
-    }
+    await requireProjectMember(projectId, organizationId, userId, 'member', locale);
 
     // Verify project belongs to organization
     const project = await projectRepository.findById(projectId);
@@ -134,10 +125,7 @@ export const healthCheckService = {
     locale: SupportedLocale = 'en'
   ): Promise<HealthCheckLog[]> {
     // Verify access
-    const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
-      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
-    }
+    await requireProjectMember(projectId, organizationId, userId, 'viewer', locale);
 
     // Verify project belongs to organization
     const project = await projectRepository.findById(projectId);
@@ -222,10 +210,7 @@ export const healthCheckService = {
 
   /** What monitoring last saw for this project (services/app-health.service.ts keeps it). */
   async getStatus(projectId: string, organizationId: string, userId: string, locale: SupportedLocale = 'en') {
-    const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
-      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
-    }
+    await requireProjectMember(projectId, organizationId, userId, 'viewer', locale);
     const project = await projectRepository.findById(projectId);
     if (!project || project.organizationId !== organizationId) {
       throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });

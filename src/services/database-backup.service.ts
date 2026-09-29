@@ -1,4 +1,5 @@
 import { HTTPException } from 'hono/http-exception';
+import { requireOrgMember } from '../lib/org-access';
 import { databaseRepository } from '../repositories/database.repository';
 import { organizationRepository } from '../repositories/organization.repository';
 import { t, type SupportedLocale } from '../i18n';
@@ -522,10 +523,8 @@ export const databaseBackupService = {
     userId: string,
     locale: SupportedLocale
   ): Promise<{ buffer: Buffer; fileName: string }> {
-    const membership = await organizationRepository.findMember(organizationId, userId);
-    if (!membership) {
-      throw new HTTPException(403, { message: t(locale, 'errors', 'forbidden') });
-    }
+    // A backup is the whole database: owners and admins only.
+    await requireOrgMember(organizationId, userId, 'admin', locale);
 
     const database = await databaseRepository.findById(databaseId);
     if (!database || database.organizationId !== organizationId) {

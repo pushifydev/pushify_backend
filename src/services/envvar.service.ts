@@ -35,6 +35,19 @@ function maskValue(value: string): string {
   return value.substring(0, 2) + '****' + value.substring(value.length - 2);
 }
 
+/**
+ * What a reader sees of a value: viewers see names only (every value is ****, nothing of the
+ * secret leaks); others see plain values and secrets as their first/last two characters.
+ */
+function displayValue(decrypted: string, isSecret: boolean, role: string): string {
+  if (role === 'viewer') return '****';
+  return isSecret ? maskValue(decrypted) : decrypted;
+}
+
+async function readerRole(organizationId: string, userId: string): Promise<string> {
+  return (await organizationRepository.findMember(organizationId, userId))?.role ?? 'viewer';
+}
+
 export const envVarService = {
   /**
    * Check if user has access to project
@@ -79,6 +92,7 @@ export const envVarService = {
     locale: SupportedLocale
   ) {
     await this.checkProjectAccess(projectId, organizationId, userId, locale);
+    const role = await readerRole(organizationId, userId);
 
     const envVars = await envVarRepository.findByProject(projectId, environment);
 
@@ -90,7 +104,7 @@ export const envVarService = {
         projectId: envVar.projectId,
         environment: envVar.environment,
         key: envVar.key,
-        value: envVar.isSecret ? maskValue(decryptedValue) : decryptedValue,
+        value: displayValue(decryptedValue, envVar.isSecret, role),
         isSecret: envVar.isSecret,
         createdAt: envVar.createdAt,
         updatedAt: envVar.updatedAt,
@@ -109,6 +123,7 @@ export const envVarService = {
     locale: SupportedLocale
   ) {
     await this.checkProjectAccess(projectId, organizationId, userId, locale);
+    const role = await readerRole(organizationId, userId);
 
     const envVar = await envVarRepository.findById(envVarId);
     if (!envVar || envVar.projectId !== projectId) {
@@ -121,7 +136,7 @@ export const envVarService = {
       projectId: envVar.projectId,
       environment: envVar.environment,
       key: envVar.key,
-      value: envVar.isSecret ? maskValue(decryptedValue) : decryptedValue,
+      value: displayValue(decryptedValue, envVar.isSecret, role),
       isSecret: envVar.isSecret,
       createdAt: envVar.createdAt,
       updatedAt: envVar.updatedAt,
