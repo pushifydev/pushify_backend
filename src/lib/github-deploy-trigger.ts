@@ -44,6 +44,31 @@ export interface TriggerResult {
   previewId?: string;
 }
 
+export type PushTarget =
+  | { deploy: true; environment: 'production' | 'staging' }
+  | { deploy: false; message: string };
+
+/**
+ * Which environment a push to `branch` deploys, or why it is ignored. The staging branch deploys
+ * the staging copy; the project's own branch (or any branch when none is set), production.
+ * Shared by the GitHub and GitLab push paths so they cannot drift.
+ */
+export function resolvePushTarget(
+  project: Pick<DeployTargetProject, 'gitBranch' | 'stagingBranch'>,
+  branch: string
+): PushTarget {
+  if (project.stagingBranch && branch === project.stagingBranch) {
+    return { deploy: true, environment: 'staging' };
+  }
+  if (project.gitBranch && branch !== project.gitBranch) {
+    const tracked = project.stagingBranch
+      ? `'${project.gitBranch}' (production) or '${project.stagingBranch}' (staging)`
+      : `'${project.gitBranch}'`;
+    return { deploy: false, message: `Push to '${branch}' ignored, project tracks ${tracked}` };
+  }
+  return { deploy: true, environment: 'production' };
+}
+
 export async function handlePushEvent(
   project: DeployTargetProject,
   payload: GitHubPushPayload
@@ -55,14 +80,11 @@ export async function handlePushEvent(
   // refs/heads/main -> main
   const branch = payload.ref.replace('refs/heads/', '');
 
-  // The staging branch deploys the staging copy; the project's own branch, production.
-  const environment = project.stagingBranch && branch === project.stagingBranch ? 'staging' : 'production';
-  if (environment === 'production' && project.gitBranch && branch !== project.gitBranch) {
-    const tracked = project.stagingBranch
-      ? `'${project.gitBranch}' (production) or '${project.stagingBranch}' (staging)`
-      : `'${project.gitBranch}'`;
-    return { message: `Push to '${branch}' ignored, project tracks ${tracked}` };
+  const target = resolvePushTarget(project, branch);
+  if (!target.deploy) {
+    return { message: target.message };
   }
+  const { environment } = target;
 
   // No commits means something like a branch deletion.
   if (!payload.head_commit) {
