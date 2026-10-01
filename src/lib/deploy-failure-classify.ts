@@ -100,17 +100,15 @@ function classifyText(text: string): ClassifiedDeployFailure {
     text.includes('gyp err!') ||
     text.includes('could not locate the bindings file') ||
     text.includes('was compiled against a different node.js version') ||
-    (text.includes('cannot find module') && text.includes('build/release/'))
+    (text.includes('cannot find module') && text.includes('build/release/')) ||
+    SHARP_PREBUILT_PATTERNS.some((p) => text.includes(p)) ||
+    LIBC_MISMATCH_PATTERN.test(text)
   ) {
     return {
       category: 'platform_native',
       blame: 'pushify',
       label: 'Native module build',
-      userHint:
-        'A dependency with a native addon (node-gyp) could not be compiled. The Pushify build image includes python3, make, g++ and pkg-config; ' +
-        'if the log shows a missing header or library (e.g. cairo, vips, libpq), that system package is not in the image. ' +
-        'Deploy with your own Dockerfile that installs it (apt-get install <lib>-dev), or use a prebuilt alternative ' +
-        '(e.g. bcryptjs instead of bcrypt).',
+      userHint: nativeBuildHint(text),
     };
   }
 
@@ -197,6 +195,131 @@ function classifyText(text: string): ClassifiedDeployFailure {
     label: 'Deployment failed',
     userHint: 'Review the full deploy log. Fix errors in your app or contact support with the deployment ID.',
   };
+}
+
+const DOCKERFILE_OPTION =
+  'Or add your own Dockerfile to the repository (or set the project Dockerfile path) that installs what the dependency needs, so Pushify builds with it instead of the buildpack.';
+
+const GENERIC_NATIVE_HINT =
+  'A dependency with a native addon (node-gyp) could not be compiled. The Pushify build image includes python3, make, g++ and pkg-config; ' +
+  'if the log shows a missing header or library (e.g. cairo, vips, libpq), that system package is not in the image. ' +
+  'Deploy with your own Dockerfile that installs it (apt-get install <lib>-dev), or use a prebuilt alternative ' +
+  '(e.g. bcryptjs instead of bcrypt).';
+
+const SHARP_PREBUILT_PATTERNS = [
+  'could not load the "sharp" module',
+  'something went wrong installing the "sharp" module',
+  'sharp: installation error',
+  'sharp: prebuilt libvips',
+];
+
+/** A prebuilt binary that needs a newer glibc, or a glibc binary loaded on musl (Alpine). */
+const LIBC_MISMATCH_PATTERN = /glibc_\d+\.\d+[^\n]*not found|error relocating[^\n]*\.node|ld-linux-x86-64\.so\.2[^\n]*no such file/;
+
+/** C headers that commonly break node-gyp builds → Debian package that provides them. */
+const HEADER_PACKAGES: Array<[RegExp, string]> = [
+  [/^vips\//, 'libvips-dev'],
+  [/^cairo/, 'libcairo2-dev'],
+  [/^pango/, 'libpango1.0-dev'],
+  [/^jpeglib\.h$/, 'libjpeg-dev'],
+  [/^gif_lib\.h$/, 'libgif-dev'],
+  [/^png\.h$/, 'libpng-dev'],
+  [/^librsvg/, 'librsvg2-dev'],
+  [/^libpq-fe\.h$/, 'libpq-dev'],
+  [/^sqlite3\.h$/, 'libsqlite3-dev'],
+  [/^openssl\//, 'libssl-dev'],
+  [/^krb5|^gssapi/, 'libkrb5-dev'],
+  [/^zmq\.h$/, 'libzmq3-dev'],
+  [/^libusb/, 'libusb-1.0-0-dev'],
+  [/^pcap/, 'libpcap-dev'],
+  [/^udev\.h$|^libudev\.h$/, 'libudev-dev'],
+];
+
+/** pkg-config module names → Debian package. */
+const PKGCONFIG_PACKAGES: Record<string, string> = {
+  'pixman-1': 'libpixman-1-dev',
+  cairo: 'libcairo2-dev',
+  pangocairo: 'libpango1.0-dev',
+  pango: 'libpango1.0-dev',
+  'vips-cpp': 'libvips-dev',
+  vips: 'libvips-dev',
+  libpng: 'libpng-dev',
+  'librsvg-2.0': 'librsvg2-dev',
+  libjpeg: 'libjpeg-dev',
+  libpq: 'libpq-dev',
+  sqlite3: 'libsqlite3-dev',
+  openssl: 'libssl-dev',
+  libusb: 'libusb-1.0-0-dev',
+  'libusb-1.0': 'libusb-1.0-0-dev',
+};
+
+/**
+ * Turn a native build failure into something the user can act on: what is missing, how to fix
+ * it, and the Dockerfile escape hatch. `text` is already lower-cased. Falls back to the generic
+ * hint when the log has no recognisable cause.
+ */
+export function nativeBuildHint(text: string): string {
+  const header = text.match(/fatal error: ([\w./+-]+\.h): no such file or directory/);
+  if (header) {
+    const pkg = HEADER_PACKAGES.find(([re]) => re.test(header[1]))?.[1];
+    return (
+      `Missing system library: the native addon needs the C header "${header[1]}", which is not in the Pushify build image` +
+      (pkg ? ` (Debian package ${pkg}).` : '.') +
+      ` Use a prebuilt alternative of the dependency if one exists. ${DOCKERFILE_OPTION}` +
+      (pkg ? ` Example: RUN apt-get update && apt-get install -y ${pkg}` : '')
+    );
+  }
+
+  const pkgConfig =
+    text.match(/package '?([\w.+-]+)'?,? (?:was )?not found/) ??
+    text.match(/no package '([\w.+-]+)' found/);
+  if (pkgConfig) {
+    const pkg = PKGCONFIG_PACKAGES[pkgConfig[1]];
+    return (
+      `Missing system library: pkg-config could not find "${pkgConfig[1]}"` +
+      (pkg ? ` (Debian package ${pkg}).` : '.') +
+      ` It is not in the Pushify build image. ${DOCKERFILE_OPTION}` +
+      (pkg ? ` Example: RUN apt-get update && apt-get install -y ${pkg}` : '')
+    );
+  }
+
+  const toolchain: string[] = [];
+  if (/not found: make\b|make: not found|make: command not found/.test(text)) toolchain.push('make');
+  if (/find python|could not find any python|python is not set|python3: not found/.test(text)) toolchain.push('python3');
+  if (/not found: g\+\+|g\+\+: not found|g\+\+: command not found|not found: (?:cc|gcc)\b|gcc: not found/.test(text)) {
+    toolchain.push('g++');
+  }
+  if (toolchain.length > 0) {
+    return (
+      `Missing build tools: ${toolchain.join(', ')} not found while compiling a native addon. ` +
+      'The Pushify buildpack image installs python3, make, g++ and pkg-config — redeploy so the build uses the current image; ' +
+      'if you use a custom install command that replaces the base image, add them yourself. ' +
+      `${DOCKERFILE_OPTION} Example: RUN apt-get update && apt-get install -y build-essential python3`
+    );
+  }
+
+  if (LIBC_MISMATCH_PATTERN.test(text)) {
+    return (
+      'libc mismatch: a prebuilt native binary was built for a different C library than the image ' +
+      '(a newer glibc, or glibc vs musl/Alpine). The Pushify buildpack builds and runs on Debian bookworm (glibc 2.36). ' +
+      'Delete node_modules from the repository if committed, regenerate the lockfile on Linux, or pin a dependency version whose ' +
+      `prebuilt binary supports glibc 2.36. ${DOCKERFILE_OPTION}`
+    );
+  }
+
+  if (SHARP_PREBUILT_PATTERNS.some((p) => text.includes(p))) {
+    return (
+      'sharp has no prebuilt binary for linux-x64 (glibc) in this install — usually a lockfile generated on macOS/Windows ' +
+      'without the Linux optional packages. Run `npm install --os=linux --cpu=x64 sharp` (sharp ≥ 0.33) and commit the lockfile, ' +
+      `or upgrade sharp. ${DOCKERFILE_OPTION}`
+    );
+  }
+
+  if (text.includes('bcrypt')) {
+    return `The bcrypt native addon could not be built or loaded. Switch to bcryptjs (pure JavaScript, same API) to avoid native compilation. ${DOCKERFILE_OPTION}`;
+  }
+
+  return GENERIC_NATIVE_HINT;
 }
 
 export function formatClassifiedErrorMessage(
