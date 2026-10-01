@@ -6,6 +6,7 @@ import { githubAppService } from '../services/github-app.service';
 import {
   handlePullRequestEvent,
   handlePushEvent,
+  resolvePushTarget,
   type GitHubPullRequestPayload,
   type GitHubPushPayload,
 } from '../lib/github-deploy-trigger';
@@ -301,9 +302,11 @@ webhookRouter.openapi(gitlabWebhookRoute, async (c) => {
 
     const push = rawPayload as GitLabPushPayload;
     const branch = push.ref.replace('refs/heads/', '');
-    if (project.gitBranch && branch !== project.gitBranch) {
-      return c.json({ message: `Push to '${branch}' ignored, project tracks '${project.gitBranch}'` });
+    const target = resolvePushTarget(project, branch);
+    if (!target.deploy) {
+      return c.json({ message: target.message });
     }
+    const { environment } = target;
 
     const commitHash = push.checkout_sha || push.commits?.[0]?.id;
     if (!commitHash) {
@@ -330,15 +333,16 @@ webhookRouter.openapi(gitlabWebhookRoute, async (c) => {
       commitHash,
       commitMessage: push.commits?.[0]?.message?.substring(0, 500),
       branch,
+      environment,
     });
 
     const { scheduleDeploymentProcessing } = await import('../lib/deployment-scheduler');
     await scheduleDeploymentProcessing(deployment.id, project.id);
 
-    logger.info({ projectId, deploymentId: deployment.id }, 'Deployment from GitLab push');
+    logger.info({ projectId, deploymentId: deployment.id, environment }, 'Deployment from GitLab push');
 
     return c.json({
-      message: 'Deployment triggered',
+      message: `Deployment triggered (${environment})`,
       deploymentId: deployment.id,
     });
   });
