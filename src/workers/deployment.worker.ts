@@ -825,6 +825,13 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
           deployFramework = localDetection.framework;
           deployBuildpackId = localDetection.buildpackId;
           addLog(`✅ Detected: ${localDetection.buildpackId} (${localDetection.framework})`);
+          if (localDetection.buildpackId === 'nodejs') {
+            const { readNativeDependencyLogLines } = await import('../buildpacks/nodejs-native');
+            for (const line of await readNativeDependencyLogLines(
+              localClone.workDir,
+              normalizeRootDirectory(project.rootDirectory)
+            )) addLog(line);
+          }
         }
       }
 
@@ -1178,6 +1185,10 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         const buildpack = getBuildpack(detection.buildpackId);
         if (buildpack) {
           addLog(`✅ Detected: ${buildpack.name} (${detection.framework})`);
+          if (detection.buildpackId === 'nodejs') {
+            const { readNativeDependencyLogLines } = await import('../buildpacks/nodejs-native');
+            for (const line of await readNativeDependencyLogLines(workDir, project.rootDirectory || '.')) addLog(line);
+          }
           addLog('📄 Generating optimized Dockerfile...');
           dockerfileContent = buildpack.generateDockerfile({
             ...dockerGenBase,
