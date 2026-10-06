@@ -1,6 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -19,6 +18,10 @@ const file = process.env.FAKE_DOCKER_STATE;
 const state = JSON.parse(fs.readFileSync(file, 'utf8'));
 const [cmd, ...rest] = process.argv.slice(2);
 const fail = (process.env.FAIL_START || '').split(',').filter(Boolean);
+if (cmd === 'ps' && process.env.FAIL_PS) {
+  console.error('Cannot connect to the Docker daemon');
+  process.exit(1);
+}
 if (cmd === 'ps') {
   const all = rest.includes('-a');
   const statuses = rest.filter((a, i) => rest[i - 1] === '--filter').map((f) => f.replace('status=', ''));
@@ -56,8 +59,13 @@ function run(command: string, env: Record<string, string> = {}) {
   }).status;
 }
 
+// Inside the repo (git-ignored) rather than os.tmpdir(): a noexec /tmp would stop the fake
+// docker from running at all.
+const FAKE_ROOT = path.join(process.cwd(), 'node_modules', '.cache', 'app-sleep-test');
+
 beforeEach(() => {
-  dir = mkdtempSync(path.join(tmpdir(), 'fake-docker-'));
+  mkdirSync(FAKE_ROOT, { recursive: true });
+  dir = mkdtempSync(path.join(FAKE_ROOT, 'fake-docker-'));
   stateFile = path.join(dir, 'state.json');
   writeFileSync(path.join(dir, 'docker'), FAKE_DOCKER);
   chmodSync(path.join(dir, 'docker'), 0o755);
@@ -99,6 +107,18 @@ describe('sleep and wake commands', () => {
     const state = getState();
     for (const name of Object.keys(APP)) expect(state[name], name).toBe('exited');
     for (const name of Object.keys(OTHERS)) expect(state[name], name).toBe('running');
+  });
+
+  it('sleep fails when docker ps fails, instead of reporting success', () => {
+    setState({ ...APP, ...OTHERS });
+    expect(run(sleepCommand('shop'), { FAIL_PS: '1' })).not.toBe(0);
+    for (const name of Object.keys(APP)) expect(getState()[name], name).toBe('running');
+  });
+
+  it('sleep succeeds as a no-op when the app has no running containers', () => {
+    setState(OTHERS);
+    expect(run(sleepCommand('shop'))).toBe(0);
+    expect(getState()).toEqual(OTHERS);
   });
 
   it('wake starts every replica that sleep stopped', () => {
