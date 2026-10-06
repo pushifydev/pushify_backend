@@ -26,9 +26,16 @@ export function containerPattern(slug: string): string {
   return `^pushify-${slug}(-(blue|green)(-[0-9]+)?)?$`;
 }
 
-/** Stop every running container of the app. */
+/**
+ * Stop every running container of the app. `docker ps` runs on its own first: in a plain
+ * `sh` pipeline (no pipefail) its failure would be masked by `xargs -r` exiting 0, and the
+ * project would be marked sleeping while its containers keep running.
+ */
 export function sleepCommand(slug: string): string {
-  return `docker ps --format '{{.Names}}' | grep -E '${containerPattern(slug)}' | xargs -r docker stop --time 15`;
+  return (
+    `names=$(docker ps --format '{{.Names}}') && ` +
+    `{ printf '%s\\n' "$names" | grep -E '${containerPattern(slug)}' | xargs -r docker stop --time 15; }`
+  );
 }
 
 /**
