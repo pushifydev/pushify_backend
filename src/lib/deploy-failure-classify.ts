@@ -114,18 +114,26 @@ function classifyText(text: string): ClassifiedDeployFailure {
     };
   }
 
+  // A prebuilt platform binary (lightningcss, Tailwind oxide, …) is missing or built for the
+  // wrong libc. Match the binary/package names that appear in the actual error — not the bare
+  // word "lightningcss" or "linux-x64-gnu", which every Node build log contains via the
+  // generated `RUN if [ -d node_modules/lightningcss ] … lightningcss-linux-x64-gnu@…` step.
   if (
-    text.includes('lightningcss') ||
+    text.includes('lightningcss.linux-') ||
     text.includes('linux-x64-musl') ||
-    text.includes('linux-x64-gnu') ||
-    text.includes('@tailwindcss/oxide')
+    text.includes('linux-arm64-musl') ||
+    text.includes('@tailwindcss/oxide') ||
+    text.includes('cannot find native binding')
   ) {
     return {
       category: 'platform_native',
       blame: 'pushify',
       label: 'Native module (platform)',
       userHint:
-        'A CSS/native binary mismatch occurred. Redeploy with the latest Pushify backend; contact support if this persists.',
+        'This is a Pushify build-platform issue, not a bug in your code: a prebuilt native binary (e.g. lightningcss, Tailwind oxide) ' +
+        'was missing or built for the wrong platform in the Pushify build image (Debian, glibc, linux). ' +
+        'To unblock now: regenerate your lockfile on Linux (or delete it and let the build resolve platform packages), ' +
+        'or deploy with your own Dockerfile based on node:20-bookworm-slim. Please contact support with the deployment ID so we can fix the image.',
     };
   }
 
@@ -144,7 +152,7 @@ function classifyText(text: string): ClassifiedDeployFailure {
     text.includes('error ts') ||
     text.includes('syntaxerror') ||
     text.includes('module not found') ||
-    (text.includes('cannot find module') && !text.includes('lightningcss'))
+    text.includes('cannot find module')
   ) {
     return {
       category: 'application_build',

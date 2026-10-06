@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { classifyDeployFailure } from './deploy-failure-classify';
-import { nodeInstallLines } from './platform-docker';
+import { nodeInstallLines, nodeLightningcssGlibcFixLines } from './platform-docker';
 
 describe('classifyDeployFailure — native addon compile failures', () => {
   it('flags a node-gyp compile failure and points at a Dockerfile deploy', () => {
@@ -67,5 +67,35 @@ describe('classifyDeployFailure — the error wins over the log', () => {
   it('still finds a real native-module failure', () => {
     const result = classifyDeployFailure('', "Error: Cannot find module '../lightningcss.linux-x64-musl.node'");
     expect(result.category).toBe('platform_native');
+  });
+});
+
+describe('classifyDeployFailure — platform native binaries', () => {
+  const generatedLightningcssStep = nodeLightningcssGlibcFixLines();
+
+  it('does not blame the platform for the generated lightningcss step in the log', () => {
+    const result = classifyDeployFailure(`#14 [builder 8/8] ${generatedLightningcssStep}\n#14 DONE 0.2s`, 'Deployment failed');
+    expect(result.category).toBe('unknown');
+  });
+
+  it('classifies a real application error even when the log contains the lightningcss step', () => {
+    const result = classifyDeployFailure(
+      `${generatedLightningcssStep}\nError: Cannot find module './routes/missing'`,
+      'Deployment failed'
+    );
+    expect(result.category).toBe('application_build');
+  });
+
+  it.each([
+    "Error: Cannot find module '../lightningcss.linux-x64-gnu.node'",
+    "Error: Cannot find module '@tailwindcss/oxide-linux-x64-gnu'",
+    'Error: Cannot find native binding. npm has a bug related to optional dependencies',
+  ])('flags %j as a platform issue with an actionable hint', (message) => {
+    const result = classifyDeployFailure('', message);
+    expect(result.category).toBe('platform_native');
+    expect(result.blame).toBe('pushify');
+    expect(result.label).toBe('Native module (platform)');
+    expect(result.userHint).toContain('Pushify build-platform issue');
+    expect(result.userHint).toContain('Dockerfile');
   });
 });
