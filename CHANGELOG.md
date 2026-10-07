@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.98] - 2026-10-07
+
+### Fixed
+- **Server sizes, regions and public prices work again.** Hetzner removed its `/datacenters` API (announced 2026-06-02, now answering `410 API functionality was removed`). Stock was read from it, so `GET /servers/providers/hetzner/sizes`, `/regions`, the server quote and create flow and `GET /public/managed-server-prices` all failed. Stock now comes from each server type's `locations[].available` in `/server_types`.
+- **Server details no longer crash on Hetzner's new server object.** Servers come back without `datacenter`; the region and coordinates now come from the top-level `location`. Sync, status and the server list read servers through this path.
+
 ## [0.2.0-beta.97] - 2026-09-30
 
 ### Fixed

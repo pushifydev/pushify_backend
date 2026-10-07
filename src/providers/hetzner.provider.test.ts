@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { HetznerProvider, resolveTier, type Catalogue } from './hetzner.provider';
+import { HetznerProvider, resolveTier, stockByLocation, type Catalogue } from './hetzner.provider';
 
 type T = Catalogue['types'][number];
 
@@ -113,5 +113,53 @@ describe('listSnapshots', () => {
     expect((await provider.listSnapshots('5')).map((s) => s.id)).toEqual(['1']);
     expect((await provider.listSnapshots()).map((s) => s.id)).toEqual(['1', '2']);
     for (const call of fetchMock.mock.calls as unknown as [string][]) expect(call[0]).not.toContain('bound_to');
+  });
+});
+
+describe('after Hetzner removed /datacenters (2026-06-02)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('reads stock from server_types[].locations, not from prices', () => {
+    const stock = stockByLocation([
+      type('cx23', 2, 4, { fsn1: 5.49, nbg1: 5.49 }, {
+        locations: [{ id: 1, name: 'fsn1', available: false }, { id: 2, name: 'nbg1', available: false }],
+      }),
+      type('cpx22', 2, 4, { fsn1: 9.49, nbg1: 9.49 }, {
+        locations: [{ id: 1, name: 'fsn1', available: true }, { id: 2, name: 'nbg1', available: false }],
+      }),
+    ]);
+    expect([...stock.get('fsn1')!]).toEqual(['cpx22']);
+    // A location where nothing is in stock is still listed, with an empty set
+    expect(stock.get('nbg1')?.size).toBe(0);
+  });
+
+  it('lists sizes with only /server_types and never calls /datacenters', async () => {
+    const server_types = [
+      type('cpx22', 2, 4, { fsn1: 9.49 }, { locations: [{ id: 1, name: 'fsn1', available: true }] }),
+    ];
+    const fetchMock = vi.fn(async (url: string) =>
+      url.includes('/datacenters')
+        ? new Response(JSON.stringify({ error: { code: 'deprecated_api_endpoint' } }), { status: 410 })
+        : new Response(JSON.stringify({ server_types }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const sizes = await new HetznerProvider('token-sizes').listSizes('fsn1');
+    expect(sizes.length).toBeGreaterThan(0);
+    for (const call of fetchMock.mock.calls as unknown as [string][]) expect(call[0]).not.toContain('/datacenters');
+  });
+
+  it('maps a server that has a top-level location and no datacenter', async () => {
+    const server = {
+      id: 42, name: 'srv', status: 'running',
+      public_net: { ipv4: { ip: '1.2.3.4' }, ipv6: null }, private_net: [],
+      server_type: { id: 1, name: 'cpx22', description: 'CPX 22', cores: 2, memory: 4, disk: 80, deprecated: false, prices: [], storage_type: 'local', cpu_type: 'shared', architecture: 'x86' },
+      location: { id: 3, name: 'hel1', description: 'Helsinki DC Park 1', country: 'FI', city: 'Helsinki', latitude: 60.1, longitude: 24.9, network_zone: 'eu-central' },
+      image: null, created: '2026-10-01T00:00:00Z', labels: {},
+    };
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ server }), { status: 200 })));
+    const mapped = await new HetznerProvider('token-server').getServer('42');
+    expect(mapped.region).toBe('hel1');
+    expect(mapped.providerData).toMatchObject({ location: { city: 'Helsinki' } });
+    expect((mapped.providerData as Record<string, unknown>).datacenter).toBeUndefined();
   });
 });
