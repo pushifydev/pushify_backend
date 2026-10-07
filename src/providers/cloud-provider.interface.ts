@@ -1,7 +1,7 @@
 // Cloud Provider Interface
 // This interface defines the contract for all cloud providers (Hetzner, DigitalOcean, AWS, etc.)
 
-export type ServerSize = 'xs' | 'sm' | 'md' | 'lg' | 'xl' | 'custom';
+export type ServerSize = 'nano' | 'xs' | 'sm' | 'md' | 'lg' | 'xl' | 'custom';
 export type ServerStatus = 'provisioning' | 'running' | 'stopped' | 'rebooting' | 'error' | 'deleting';
 
 export interface ServerSpecs {
@@ -143,6 +143,7 @@ export interface ICloudProvider {
 // Size mappings for different providers
 export const SIZE_MAPPINGS: Record<string, Record<ServerSize, string>> = {
   hetzner: {
+    nano: 'cpx02',
     xs: 'cx11',
     sm: 'cx21',
     md: 'cx31',
@@ -151,6 +152,7 @@ export const SIZE_MAPPINGS: Record<string, Record<ServerSize, string>> = {
     custom: 'custom',
   },
   digitalocean: {
+    nano: 's-1vcpu-1gb',
     xs: 's-1vcpu-1gb',
     sm: 's-1vcpu-2gb',
     md: 's-2vcpu-4gb',
@@ -159,6 +161,7 @@ export const SIZE_MAPPINGS: Record<string, Record<ServerSize, string>> = {
     custom: 'custom',
   },
   aws: {
+    nano: 't3.micro',
     xs: 't3.micro',
     sm: 't3.small',
     md: 't3.medium',

@@ -14,6 +14,7 @@ import { SSHClient } from '../utils/ssh';
 import { UNINSTALL_SCRIPT_URL } from '../lib/server-key-removal';
 import type { AppEnv } from '../types';
 import type { ProviderType } from '../providers';
+import type { ServerSize } from '../providers/cloud-provider.interface';
 
 const serverRouter = new Hono<AppEnv>();
 
@@ -305,7 +306,7 @@ serverRouter.post('/:serverId/resize', requireScope('servers:write'), async (c) 
     serverId,
     organizationId,
     userId,
-    body.size as 'xs' | 'sm' | 'md' | 'lg' | 'xl' | 'custom',
+    body.size as ServerSize,
     locale,
   );
 

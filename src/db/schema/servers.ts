@@ -38,7 +38,7 @@ export const serverProviderEnum = pgEnum('server_provider', [
   'self_hosted',
 ]);
 
-export const serverSizeEnum = pgEnum('server_size', ['xs', 'sm', 'md', 'lg', 'xl', 'custom']);
+export const serverSizeEnum = pgEnum('server_size', ['nano', 'xs', 'sm', 'md', 'lg', 'xl', 'custom']);
 
 // Servers Table
 export const servers = pgTable('servers', {
