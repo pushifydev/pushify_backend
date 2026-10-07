@@ -99,7 +99,7 @@ export interface CreateServerInput {
   description?: string;
   provider: ProviderType;
   region: string;
-  size: 'xs' | 'sm' | 'md' | 'lg' | 'xl' | 'custom';
+  size: ServerSize;
   image: string;
   sshKeyIds?: string[];
   labels?: Record<string, string>;
@@ -145,6 +145,19 @@ wait_for_apt() {
 # Create directories
 log "Creating directories..."
 mkdir -p /opt/pushify/{apps,nginx,ssl,logs}
+
+# 1 GB servers (nano) get 2 GB of swap: images are built on the server, and a build
+# that runs out of memory fails. Larger servers are left as they are.
+MEM_KB=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+if [ "$MEM_KB" -lt 1500000 ] && [ -z "$(swapon --noheadings 2>/dev/null)" ]; then
+    log "Adding 2 GB swap (memory: $MEM_KB kB)..."
+    fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+    chmod 600 /swapfile
+    mkswap /swapfile && swapon /swapfile
+    grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    echo 'vm.swappiness=10' > /etc/sysctl.d/99-pushify-swap.conf
+    sysctl -q -p /etc/sysctl.d/99-pushify-swap.conf || true
+fi
 
 # Non-interactive apt
 export DEBIAN_FRONTEND=noninteractive
@@ -475,12 +488,13 @@ async function toServerDetails(
 
 // Get provider API token from organization settings or env
 const SIZE_RANK: Record<ServerSize, number> = {
-  xs: 0,
-  sm: 1,
-  md: 2,
-  lg: 3,
-  xl: 4,
-  custom: 5,
+  nano: 0,
+  xs: 1,
+  sm: 2,
+  md: 3,
+  lg: 4,
+  xl: 5,
+  custom: 6,
 };
 
 function isUpgradeSize(current: ServerSize, next: ServerSize): boolean {

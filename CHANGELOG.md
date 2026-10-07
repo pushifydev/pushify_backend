@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.99] - 2026-10-07
+
+### Added
+- **Nano managed servers (1 vCPU / 1 GB, Hetzner cpx02).** A new `nano` size for when Hetzner has no cheap 2 GB+ server in stock (cx23 sold out). It is open on every paid plan, from Hobby up, and sits inside Hobby's included monthly credit. When an xs server is in stock for the same price or less, nano is not listed, because xs is then the better buy. **Needs migration 0067** (`server_size` enum gains `nano`; additive).
+- New managed servers with under 1.5 GB of memory get a 2 GB swap file at setup, so image builds on the server don't run out of memory. Larger servers are unchanged.
+
 ## [0.2.0-beta.98] - 2026-10-07
 
 ### Fixed

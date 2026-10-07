@@ -163,3 +163,41 @@ describe('after Hetzner removed /datacenters (2026-06-02)', () => {
     expect((mapped.providerData as Record<string, unknown>).datacenter).toBeUndefined();
   });
 });
+
+describe('nano size (1 vCPU / 1 GB)', () => {
+  const live: Catalogue = {
+    // 2026-10-07: cx23 sold out everywhere, cpx02 and cpx12 in stock
+    types: [
+      type('cpx02', 1, 1, { fsn1: 5.99 }),
+      type('cpx12', 1, 2, { fsn1: 11.49 }),
+      type('cx23', 2, 4, { fsn1: 5.49 }),
+    ],
+    inStock: new Map([['fsn1', new Set(['cpx02', 'cpx12'])]]),
+  };
+
+  it('resolves to cpx02, and xs keeps its 2 GB minimum', () => {
+    expect(resolveTier(live, 'nano', 'fsn1')?.type.name).toBe('cpx02');
+    expect(resolveTier(live, 'xs', 'fsn1')?.type.name).toBe('cpx12');
+  });
+
+  it('is offered by listSizes first, ahead of xs', async () => {
+    const server_types = live.types.map((t) => ({
+      ...t,
+      locations: [{ id: 1, name: 'fsn1', available: live.inStock.get('fsn1')!.has(t.name) }],
+    }));
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ server_types }), { status: 200 })));
+    const sizes = await new HetznerProvider('token-nano').listSizes('fsn1');
+    expect(sizes[0].size).toBe('nano');
+    expect(sizes[0].specs).toMatchObject({ vcpus: 1, memoryMb: 1024 });
+    vi.unstubAllGlobals();
+  });
+
+  it('is left out when xs is in stock for the same price or less', async () => {
+    const server_types = live.types.map((t) => ({ ...t, locations: [{ id: 1, name: 'fsn1', available: true }] }));
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ server_types }), { status: 200 })));
+    const sizes = await new HetznerProvider('token-nano-cx23').listSizes('fsn1');
+    expect(sizes.map((s) => s.size)).not.toContain('nano');
+    expect(sizes[0]).toMatchObject({ size: 'xs', specs: { serverType: 'cx23' } });
+    vi.unstubAllGlobals();
+  });
+});

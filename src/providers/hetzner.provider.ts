@@ -151,6 +151,7 @@ export interface HetznerServerType {
 
 // Dynamically determine size tier based on specs
 function getServerSizeTier(cores: number, memoryGb: number): ServerSize {
+  if (cores <= 1 && memoryGb < 2) return 'nano';
   if (cores <= 2 && memoryGb <= 4) return 'xs';
   if (cores <= 2 && memoryGb <= 8) return 'sm';
   if (cores <= 4 && memoryGb <= 16) return 'md';
@@ -164,6 +165,8 @@ function getServerSizeTier(cores: number, memoryGb: number): ServerSize {
  * resizing — if they disagree, the server a customer is billed for is not the one that runs.
  */
 const TIER_SPECS: Record<Exclude<ServerSize, 'custom'>, { minCores: number; minMem: number; maxCores: number; maxMem: number }> = {
+  // cpx02 (1 vCPU / 1 GB): the one small type Hetzner stocks when cx23 is sold out
+  nano: { minCores: 1, minMem: 1, maxCores: 1, maxMem: 1 },
   xs: { minCores: 1, minMem: 2, maxCores: 2, maxMem: 4 },
   sm: { minCores: 2, minMem: 4, maxCores: 2, maxMem: 8 },
   md: { minCores: 4, minMem: 8, maxCores: 4, maxMem: 16 },
@@ -678,6 +681,13 @@ export class HetznerProvider implements ICloudProvider {
       });
     }
 
+    // nano is there for when no 2 GB+ box is cheap (cx23 sold out). When xs costs the same or
+    // less, nano is strictly the worse buy — leave it out.
+    const nano = sizes.find((s) => s.size === 'nano');
+    const xs = sizes.find((s) => s.size === 'xs');
+    if (nano && xs && xs.specs.priceMonthly <= nano.specs.priceMonthly) {
+      return sizes.filter((s) => s !== nano);
+    }
     return sizes;
   }
 
