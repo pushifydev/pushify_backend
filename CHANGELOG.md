@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.100] - 2026-10-07
+
+### Fixed
+- **Deploys can check out the repository again.** beta.98 accidentally committed `node_modules` as a symlink to a developer's local path. Checking it out tries to replace the real `node_modules` directory, so the Jenkins checkout failed with `cannot unlink 'node_modules/…': Permission denied`. The symlink is removed, and `.gitignore` now ignores `node_modules` whether it is a directory or a link.
+
 ## [0.2.0-beta.99] - 2026-10-07
 
 ### Added
