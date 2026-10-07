@@ -35,9 +35,10 @@ function fakeSsh(s: Scenario) {
       if (command.startsWith('docker run ')) {
         return s.runCode ? { code: s.runCode, stdout: '', stderr: 'run failed' } : ok('abcdef1234567890');
       }
+      if (command.includes('{{.State.ExitCode}}')) return ok(s.newRunning ? 'true 0' : 'false 1');
       if (command.includes("{{.State.Running}}")) return ok(s.newRunning ? 'true' : 'false');
       if (command.includes('nc -z 127.0.0.1')) return ok(s.probe);
-      if (command.startsWith('docker logs')) return ok('app crashed');
+      if (command.startsWith('docker logs')) return ok('Listening...\nError: Cannot find module /app/server.js');
       return ok();
     },
   };
@@ -64,7 +65,13 @@ describe('blueGreenDeploy keeps the live container when the new one fails', () =
     const result = await blueGreenDeploy(ssh, base);
 
     expect(result.success).toBe(false);
-    expect(result.logs).toContain('Container exited unexpectedly');
+    expect(result.logs).toContain('Container exited unexpectedly (exit code 1)');
+    expect(result.logs).toContain('Error: Cannot find module /app/server.js');
+    expect(commands).toContain('docker logs --tail 50 pushify-shop-green 2>&1');
+    // Exit code and logs are read before the failed container is removed
+    const inspectAt = commands.findIndex((c) => c.includes('{{.State.ExitCode}}'));
+    expect(inspectAt).toBeGreaterThanOrEqual(0);
+    expect(inspectAt).toBeLessThan(commands.indexOf('docker rm -f pushify-shop-green 2>/dev/null || true'));
     expect(touchesOld(commands, 'pushify-shop-blue')).toEqual([]);
     expect(commands).toContain('docker rm -f pushify-shop-green 2>/dev/null || true');
   });
@@ -75,6 +82,8 @@ describe('blueGreenDeploy keeps the live container when the new one fails', () =
 
     expect(result.success).toBe(false);
     expect(result.logs).toContain('health check timeout');
+    expect(result.logs).not.toContain('exit code');
+    expect(result.logs).toContain('Runtime log (last 50 lines):');
     expect(touchesOld(commands, 'pushify-shop-green')).toEqual([]);
     expect(commands).toContain('docker rm -f pushify-shop-blue 2>/dev/null || true');
   });

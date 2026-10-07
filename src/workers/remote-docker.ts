@@ -3,6 +3,31 @@ import type { SSHClient } from '../utils/ssh';
 import { env } from '../config/env';
 import { dockerBuildKitPrefix, getBuildMemoryLimit, getRunMemoryLimit } from '../lib/platform-docker';
 import { shSingleQuote } from './shell';
+import {
+  CRASH_LOG_LINES,
+  formatContainerCrashSummary,
+  parseContainerExitState,
+} from '../lib/container-crash-summary';
+
+/**
+ * Exit code and last runtime log lines of a container that died or never became healthy,
+ * formatted for the deployment's error summary. Must run before the container is removed.
+ */
+async function describeFailedContainer(
+  ssh: SSHClient,
+  containerName: string,
+  headline: string
+): Promise<string> {
+  const state = await ssh.exec(
+    `docker inspect -f '{{.State.Running}} {{.State.ExitCode}}' ${containerName} 2>/dev/null`
+  );
+  const logs = await ssh.exec(`docker logs --tail ${CRASH_LOG_LINES} ${containerName} 2>&1`);
+  return formatContainerCrashSummary({
+    headline,
+    exitCode: parseContainerExitState(state.stdout),
+    logs: logs.stdout,
+  });
+}
 
 export interface BuildImageOptions {
   workDir: string;
@@ -238,12 +263,10 @@ export async function runContainer(
   const isRunning = statusResult.stdout.trim() === 'true';
 
   if (!isRunning) {
-    // Get logs to see why it failed
-    const logsResult = await ssh.exec(`docker logs ${containerName} 2>&1 | tail -50`);
     return {
       success: false,
       containerId,
-      logs: `Container failed to start:\n${logsResult.stdout}`,
+      logs: await describeFailedContainer(ssh, containerName, 'Container failed to start'),
     };
   }
 
@@ -786,11 +809,10 @@ export async function runContainerFromImage(
   const isRunning = statusResult.stdout.trim() === 'true';
 
   if (!isRunning) {
-    const logsResult = await ssh.exec(`docker logs ${containerName} 2>&1 | tail -50`);
     return {
       success: false,
       containerId,
-      logs: `Container failed to start:\n${logsResult.stdout}`,
+      logs: await describeFailedContainer(ssh, containerName, 'Container failed to start'),
     };
   }
 
@@ -1033,12 +1055,12 @@ export async function blueGreenDeploy(
     // Check if container is running
     const statusResult = await ssh.exec(`docker inspect -f '{{.State.Running}}' ${newContainerName}`);
     if (statusResult.stdout.trim() !== 'true') {
-      const logsResult = await ssh.exec(`docker logs ${newContainerName} 2>&1 | tail -30`);
+      const summary = await describeFailedContainer(ssh, newContainerName, 'Container exited unexpectedly');
       // Cleanup failed container
       await ssh.exec(`docker rm -f ${newContainerName} 2>/dev/null || true`);
       return {
         success: false,
-        logs: `Container exited unexpectedly:\n${logsResult.stdout}`,
+        logs: summary,
       };
     }
 
@@ -1067,12 +1089,12 @@ export async function blueGreenDeploy(
   }
 
   if (!isHealthy) {
-    const logsResult = await ssh.exec(`docker logs ${newContainerName} 2>&1 | tail -30`);
+    const summary = await describeFailedContainer(ssh, newContainerName, 'Container health check timeout');
     // Cleanup unhealthy container
     await ssh.exec(`docker rm -f ${newContainerName} 2>/dev/null || true`);
     return {
       success: false,
-      logs: `Container health check timeout:\n${logsResult.stdout}`,
+      logs: summary,
     };
   }
 
