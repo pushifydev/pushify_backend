@@ -41,20 +41,21 @@ interface HetznerServer {
     cpu_type: string;
     architecture: string;
   };
-  datacenter: {
+  /** Removed by Hetzner on 2026-06-02 (datacenters deprecated); older responses may still carry it */
+  datacenter?: {
     id: number;
     name: string;
     description: string;
-    location: {
-      id: number;
-      name: string;
-      description: string;
-      country: string;
-      city: string;
-      latitude: number;
-      longitude: number;
-      network_zone: string;
-    };
+  };
+  location: {
+    id: number;
+    name: string;
+    description: string;
+    country: string;
+    city: string;
+    latitude: number;
+    longitude: number;
+    network_zone: string;
   };
   image: {
     id: number;
@@ -128,7 +129,7 @@ interface HetznerAction {
   command: string;
 }
 
-interface HetznerServerType {
+export interface HetznerServerType {
   id: number;
   name: string;
   description: string;
@@ -141,6 +142,8 @@ interface HetznerServerType {
     price_hourly: { gross: string; net: string };
     price_monthly: { gross: string; net: string };
   }>;
+  /** Where the type exists and whether it can be ordered there right now */
+  locations?: Array<{ id: number; name: string; available: boolean }>;
   storage_type: string;
   cpu_type: string;
   architecture: string;
@@ -154,12 +157,6 @@ function getServerSizeTier(cores: number, memoryGb: number): ServerSize {
   if (cores <= 8 && memoryGb <= 32) return 'lg';
   if (cores <= 16 && memoryGb <= 64) return 'xl';
   return 'custom';
-}
-
-interface HetznerDatacenter {
-  name: string;
-  location: { name: string };
-  server_types: { available: number[]; supported: number[] };
 }
 
 /**
@@ -200,9 +197,25 @@ function priceIn(t: HetznerServerType, location: string) {
 }
 
 /**
+ * location name → server types Hetzner can provision there now. Since Hetzner removed
+ * /datacenters (2026-06-02, answers 410), stock is per type in `server_types[].locations`.
+ */
+export function stockByLocation(types: HetznerServerType[]): Map<string, Set<string>> {
+  const inStock = new Map<string, Set<string>>();
+  for (const t of types) {
+    for (const loc of t.locations ?? []) {
+      const set = inStock.get(loc.name) ?? new Set<string>();
+      if (loc.available) set.add(t.name);
+      inStock.set(loc.name, set);
+    }
+  }
+  return inStock;
+}
+
+/**
  * The cheapest shared-CPU type for a tier that is in stock — in `location` if given, otherwise
  * in whichever location is cheapest. Hetzner lists prices for types it has sold out of, so
- * availability comes from /datacenters, not /server_types.
+ * availability comes from each type's `locations[].available`, not from its prices.
  */
 export function resolveTier(
   cat: Catalogue,
@@ -242,21 +255,8 @@ export class HetznerProvider implements ICloudProvider {
     const hit = catalogueCache.get(this.apiToken);
     if (hit && Date.now() - hit.at < CATALOGUE_TTL_MS) return hit.value;
 
-    const [typesRes, dcRes] = await Promise.all([
-      this.request<{ server_types: HetznerServerType[] }>('/server_types?per_page=50'),
-      this.request<{ datacenters: HetznerDatacenter[] }>('/datacenters?per_page=50'),
-    ]);
-    const byId = new Map(typesRes.server_types.map((t) => [t.id, t.name]));
-    const inStock = new Map<string, Set<string>>();
-    for (const dc of dcRes.datacenters) {
-      const set = inStock.get(dc.location.name) ?? new Set<string>();
-      for (const id of dc.server_types.available) {
-        const name = byId.get(id);
-        if (name) set.add(name);
-      }
-      inStock.set(dc.location.name, set);
-    }
-    const value = { types: typesRes.server_types, inStock };
+    const typesRes = await this.request<{ server_types: HetznerServerType[] }>('/server_types?per_page=50');
+    const value = { types: typesRes.server_types, inStock: stockByLocation(typesRes.server_types) };
     catalogueCache.set(this.apiToken, { at: Date.now(), value });
     return value;
   }
@@ -312,7 +312,7 @@ export class HetznerProvider implements ICloudProvider {
       ipv4: server.public_net.ipv4?.ip || null,
       ipv6: server.public_net.ipv6?.ip || null,
       privateIp: server.private_net[0]?.ip || null,
-      region: server.datacenter.location.name,
+      region: server.location.name,
       size: getServerSizeTier(server.server_type.cores, server.server_type.memory),
       image: server.image?.name || 'unknown',
       vcpus: server.server_type.cores,
@@ -321,9 +321,9 @@ export class HetznerProvider implements ICloudProvider {
       createdAt: new Date(server.created),
       providerData: {
         hetznerServerId: server.id,
-        datacenter: server.datacenter.name,
-        datacenterDescription: server.datacenter.description,
-        location: server.datacenter.location,
+        datacenter: server.datacenter?.name,
+        datacenterDescription: server.datacenter?.description,
+        location: server.location,
         serverType: {
           id: server.server_type.id,
           name: server.server_type.name,
