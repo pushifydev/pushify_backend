@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatDuration, nextHealthState, type HealthState } from './app-health';
+import { classifyDownReason, dueReminderStep, formatDuration, nextHealthState, type HealthState } from './app-health';
 
 const t = (minutes: number) => new Date(Date.UTC(2026, 8, 22, 12, minutes));
 const state = (overrides: Partial<HealthState> = {}): HealthState => ({
@@ -52,5 +52,83 @@ describe('nextHealthState', () => {
     expect(formatDuration(17 * 60_000)).toBe('17 minutes');
     expect(formatDuration(65 * 60_000)).toBe('1 hour 5 minutes');
     expect(formatDuration(120 * 60_000)).toBe('2 hours');
+  });
+});
+
+describe('classifyDownReason', () => {
+  it('no HTTP answer ("fetch failed") is the server or network, not the app', () => {
+    expect(classifyDownReason({ statusCode: null, error: 'fetch failed' })).toBe('server_unreachable');
+    expect(classifyDownReason({ error: 'Timeout' })).toBe('server_unreachable');
+    expect(classifyDownReason({ error: 'fetch failed', serverReachable: false })).toBe('server_unreachable');
+  });
+
+  it('an HTTP 5xx is the app', () => {
+    expect(classifyDownReason({ statusCode: 502 })).toBe('app_error');
+    expect(classifyDownReason({ statusCode: 500, serverReachable: false })).toBe('app_error');
+  });
+
+  it('no HTTP answer while SSH still works is the app (hung or not listening)', () => {
+    expect(classifyDownReason({ error: 'fetch failed', serverReachable: true })).toBe('app_error');
+  });
+
+  it('a failed latest deployment wins', () => {
+    expect(classifyDownReason({ statusCode: 502, latestDeployFailed: true })).toBe('deploy_failed');
+    expect(classifyDownReason({ error: 'fetch failed', latestDeployFailed: true })).toBe('deploy_failed');
+  });
+});
+
+describe('outage reminders', () => {
+  const HOUR = 60 * 60 * 1000;
+  const start = t(0);
+  const at = (hours: number) => new Date(start.getTime() + hours * HOUR);
+  const down = (overrides: Partial<HealthState> = {}) =>
+    state({ status: 'down', failCount: 3, downSince: start, notifiedAt: start, reminderStep: 0, ...overrides });
+
+  it('counts the 24h and 72h thresholds', () => {
+    expect(dueReminderStep(null, at(100))).toBe(0);
+    expect(dueReminderStep(start, at(23.9))).toBe(0);
+    expect(dueReminderStep(start, at(24))).toBe(1);
+    expect(dueReminderStep(start, at(71.9))).toBe(1);
+    expect(dueReminderStep(start, at(72))).toBe(2);
+    expect(dueReminderStep(start, at(24 * 15))).toBe(2);
+  });
+
+  it('sends nothing before 24h, one reminder at 24h, one at 72h, then stops', () => {
+    let s = down();
+    const sent: string[] = [];
+    // A check every 30 minutes for 15 days
+    for (let h = 0.5; h <= 24 * 15; h += 0.5) {
+      const next = nextHealthState(s, { healthy: false, error: 'fetch failed' }, 3, at(h));
+      if (next.notify) sent.push(`${next.notify}@${h}`);
+      s = next.state;
+    }
+    expect(sent).toEqual(['reminder@24', 'reminder@72']);
+    expect(s.reminderStep).toBe(2);
+  });
+
+  it('reports how long it has been down in the reminder', () => {
+    const next = nextHealthState(down(), { healthy: false }, 3, at(24));
+    expect(next.notify).toBe('reminder');
+    expect(next.downForMs).toBe(24 * HOUR);
+  });
+
+  it('sends one reminder, not two, when both thresholds passed between checks', () => {
+    const first = nextHealthState(down(), { healthy: false }, 3, at(80));
+    expect(first.notify).toBe('reminder');
+    expect(first.state.reminderStep).toBe(2);
+    expect(nextHealthState(first.state, { healthy: false }, 3, at(81)).notify).toBeNull();
+  });
+
+  it('a recovery resets reminders so the next outage starts fresh', () => {
+    const recovered = nextHealthState(down({ reminderStep: 2 }), { healthy: true }, 3, at(100));
+    expect(recovered.notify).toBe('up');
+    expect(recovered.state.reminderStep).toBe(0);
+  });
+
+  it('the first alert is still the down alert, not a reminder', () => {
+    const s = state({ failCount: 2, reminderStep: 0 });
+    const next = nextHealthState(s, { healthy: false }, 3, at(1));
+    expect(next.notify).toBe('down');
+    expect(next.state.reminderStep).toBe(0);
   });
 });

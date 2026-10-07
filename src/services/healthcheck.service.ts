@@ -230,6 +230,8 @@ export const healthCheckService = {
         error: null,
         downSince: null,
         notifiedAt: null,
+        downReason: null,
+        reminderStep: 0,
         lastCheckedAt: null,
       }
     );

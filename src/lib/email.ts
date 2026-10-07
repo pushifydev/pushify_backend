@@ -826,7 +826,20 @@ export async function sendBackupVerificationFailedEmail(
 
 export async function sendAppDownEmail(
   to: string,
-  details: { orgName: string; projectName: string; projectId: string; url: string; statusCode?: number; error?: string },
+  details: {
+    orgName: string;
+    projectName: string;
+    projectId: string;
+    url: string;
+    statusCode?: number;
+    error?: string;
+    /** Why it is down — decides where the mail sends the reader. Defaults to app_error. */
+    reason?: 'server_unreachable' | 'app_error' | 'deploy_failed';
+    /** The project runs on the customer's own server */
+    byos?: boolean;
+    /** Set for the 24h / 72h reminders: how long it has been down */
+    downFor?: string;
+  },
   locale: 'en' | 'tr' = 'en'
 ): Promise<void> {
   if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
@@ -834,30 +847,72 @@ export async function sendAppDownEmail(
     return;
   }
 
-  const { orgName, projectName, projectId, url, statusCode, error } = details;
+  const { orgName, projectName, projectId, url, statusCode, error, byos = false, downFor } = details;
+  const kind = details.reason ?? 'app_error';
   const projectUrl = `${env.FRONTEND_URL}/dashboard/projects/${projectId}`;
   const reason = statusCode ? `HTTP ${statusCode}` : error || 'no answer';
-  const subjects = {
-    en: `${projectName} is not answering (${orgName})`,
-    tr: `${projectName} cevap vermiyor (${orgName})`,
+  const name = escapeHtml(String(projectName));
+  const site = escapeHtml(String(url));
+  const subjects = downFor
+    ? {
+        en: `Still down after ${downFor}: ${projectName} (${orgName})`,
+        tr: `${downFor} sonra hâlâ kapalı: ${projectName} (${orgName})`,
+      }
+    : kind === 'server_unreachable'
+      ? {
+          en: `${projectName}: server not reachable (${orgName})`,
+          tr: `${projectName}: sunucuya ulaşılamıyor (${orgName})`,
+        }
+      : {
+          en: `${projectName} is not answering (${orgName})`,
+          tr: `${projectName} cevap vermiyor (${orgName})`,
+        };
+  const whyByReason = {
+    en: {
+      server_unreachable: byos
+        ? 'Pushify could not connect to your server at all — not the app, the machine or its network. Check your server: is it powered on (your provider’s console), is its IP unchanged, does the firewall allow ports 22, 80 and 443, and is the disk not full? Once it is back, the app starts again on its own.'
+        : 'Pushify could not connect to the server running this app — the machine or its network is down, not the app itself. Check the server page in Pushify for its status.',
+      app_error: 'The server is up but the app is failing. It may have crashed, run out of memory or be stuck starting. Its logs in Pushify usually say which.',
+      deploy_failed: 'The latest deployment failed. Open its logs in Pushify to see why, then redeploy or roll back to the last working version.',
+    },
+    tr: {
+      server_unreachable: byos
+        ? 'Pushify sunucuna hiç bağlanamadı — sorun uygulamada değil, makinede ya da ağında. Sunucunu kontrol et: açık mı (sağlayıcının paneli), IP’si değişmedi mi, güvenlik duvarı 22, 80 ve 443 portlarına izin veriyor mu, disk dolu değil mi? Sunucu geri geldiğinde uygulama kendiliğinden başlar.'
+        : 'Pushify bu uygulamanın çalıştığı sunucuya bağlanamadı — sorun uygulamada değil, makinede ya da ağında. Durumunu Pushify’daki sunucu sayfasından kontrol et.',
+      app_error: 'Sunucu ayakta ama uygulama hata veriyor. Çökmüş, belleği dolmuş ya da başlangıçta takılmış olabilir. Pushify’daki logları genelde sebebini gösterir.',
+      deploy_failed: 'Son deploy başarısız oldu. Sebebini görmek için Pushify’da loglarını aç, sonra yeniden deploy et ya da çalışan son sürüme geri dön.',
+    },
   };
   const copy = {
     en: {
-      lead: `<strong>${escapeHtml(String(projectName))}</strong> stopped answering at ${escapeHtml(String(url))} — three checks in a row failed (${escapeHtml(String(reason))}).`,
-      why: 'The app may have crashed, run out of memory or be stuck starting. Its logs in Pushify usually say which. You get one more email when it answers again.',
+      lead: downFor
+        ? `<strong>${name}</strong> at ${site} has been down for ${escapeHtml(downFor)} (${escapeHtml(String(reason))}).`
+        : `<strong>${name}</strong> stopped answering at ${site} — three checks in a row failed (${escapeHtml(String(reason))}).`,
+      why: whyByReason.en[kind],
+      after: 'You get one more email when it answers again.',
       cta: 'Open the project',
     },
     tr: {
-      lead: `<strong>${escapeHtml(String(projectName))}</strong> ${escapeHtml(String(url))} adresinde cevap vermiyor — üst üste üç kontrol başarısız oldu (${escapeHtml(String(reason))}).`,
-      why: 'Uygulama çökmüş, belleği dolmuş ya da başlangıçta takılmış olabilir. Pushify’daki logları genelde sebebini gösterir. Tekrar cevap verdiğinde bir e-posta daha göndereceğiz.',
+      lead: downFor
+        ? `<strong>${name}</strong> (${site}) ${escapeHtml(downFor)} süredir kapalı (${escapeHtml(String(reason))}).`
+        : `<strong>${name}</strong> ${site} adresinde cevap vermiyor — üst üste üç kontrol başarısız oldu (${escapeHtml(String(reason))}).`,
+      why: whyByReason.tr[kind],
+      after: 'Tekrar cevap verdiğinde bir e-posta daha göndereceğiz.',
       cta: 'Projeyi aç',
     },
   }[locale];
 
   const html = renderTransactionalEmail({
-    eyebrow: locale === 'tr' ? 'Uygulama cevap vermiyor' : 'App down',
+    eyebrow:
+      kind === 'server_unreachable'
+        ? locale === 'tr'
+          ? 'Sunucuya ulaşılamıyor'
+          : 'Server unreachable'
+        : locale === 'tr'
+          ? 'Uygulama cevap vermiyor'
+          : 'App down',
     tone: 'danger',
-    bodyHtml: [copy.lead, copy.why],
+    bodyHtml: [copy.lead, copy.why, copy.after],
     button: { href: projectUrl, label: copy.cta },
   });
 

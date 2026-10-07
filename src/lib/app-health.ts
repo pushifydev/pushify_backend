@@ -14,6 +14,43 @@ export interface HealthState {
   failCount: number;
   downSince: Date | null;
   notifiedAt: Date | null;
+  /** Reminders already sent for the current outage (0 = only the first alert) */
+  reminderStep?: number;
+}
+
+/**
+ * Why an app is down, so the alert says where to look. An HTTP error is the app; no answer at
+ * all is the server or the network in front of it — on a customer's own server (BYOS) that is
+ * theirs to fix, and an "app crashed" mail sends them to the wrong place.
+ */
+export type DownReason = 'server_unreachable' | 'app_error' | 'deploy_failed';
+
+export interface DownReasonSignals {
+  statusCode?: number | null;
+  error?: string | null;
+  /** The project's most recent deployment failed */
+  latestDeployFailed?: boolean;
+  /** SSH to the project's server worked (true), failed (false) or was not tried (undefined) */
+  serverReachable?: boolean;
+}
+
+export function classifyDownReason(signals: DownReasonSignals): DownReason {
+  if (signals.latestDeployFailed) return 'deploy_failed';
+  // Any HTTP status means something on the server answered: the app is the problem.
+  if (signals.statusCode && signals.statusCode > 0) return 'app_error';
+  // No HTTP answer, but we can still log into the server: the app is hung or not listening.
+  if (signals.serverReachable === true) return 'app_error';
+  return 'server_unreachable';
+}
+
+/** Reminders while an outage lasts, counted from when it was confirmed. Never more than these. */
+export const DOWN_REMINDER_AFTER_MS = [24 * 60 * 60 * 1000, 72 * 60 * 60 * 1000] as const;
+
+/** How many reminder thresholds an outage of this length has passed (0..DOWN_REMINDER_AFTER_MS.length). */
+export function dueReminderStep(downSince: Date | null, now: Date): number {
+  if (!downSince) return 0;
+  const downFor = now.getTime() - downSince.getTime();
+  return DOWN_REMINDER_AFTER_MS.filter((after) => downFor >= after).length;
 }
 
 export interface HealthCheckResult {
@@ -24,9 +61,12 @@ export interface HealthCheckResult {
 
 export interface HealthTransition {
   state: HealthState;
-  /** 'down' the moment it is confirmed down, 'up' when it answers again after being down */
-  notify: 'down' | 'up' | null;
-  /** How long it had been down, for the recovery message */
+  /**
+   * 'down' the moment it is confirmed down, 'reminder' at 24h and 72h if it is still down,
+   * 'up' when it answers again after being down
+   */
+  notify: 'down' | 'reminder' | 'up' | null;
+  /** How long it had been down, for the recovery and reminder messages */
   downForMs: number | null;
 }
 
@@ -39,7 +79,7 @@ export function nextHealthState(
   if (result.healthy) {
     const wasDown = previous.status === 'down';
     return {
-      state: { status: 'up', failCount: 0, downSince: null, notifiedAt: null },
+      state: { status: 'up', failCount: 0, downSince: null, notifiedAt: null, reminderStep: 0 },
       notify: wasDown && previous.notifiedAt ? 'up' : null,
       downForMs: wasDown && previous.downSince ? now.getTime() - previous.downSince.getTime() : null,
     };
@@ -48,17 +88,31 @@ export function nextHealthState(
   const failCount = previous.failCount + 1;
   const confirmed = failCount >= Math.max(1, threshold);
   const downSince = previous.downSince ?? (confirmed ? now : null);
-  // Tell them once per outage; a check that keeps failing doesn't keep mailing.
-  const notify = confirmed && !previous.notifiedAt ? 'down' : null;
+  const previousStep = previous.reminderStep ?? 0;
+  // Tell them once per outage; a check that keeps failing doesn't keep mailing — only a reminder
+  // at 24h and 72h. If several thresholds passed at once (worker was off), one reminder covers them.
+  let notify: HealthTransition['notify'] = null;
+  let reminderStep = previousStep;
+  if (confirmed && !previous.notifiedAt) {
+    notify = 'down';
+    reminderStep = 0;
+  } else if (confirmed && previous.notifiedAt) {
+    const due = dueReminderStep(downSince, now);
+    if (due > previousStep) {
+      notify = 'reminder';
+      reminderStep = due;
+    }
+  }
   return {
     state: {
       status: confirmed ? 'down' : previous.status === 'down' ? 'down' : previous.status,
       failCount,
       downSince,
       notifiedAt: notify ? now : previous.notifiedAt,
+      reminderStep,
     },
     notify,
-    downForMs: null,
+    downForMs: notify === 'reminder' && downSince ? now.getTime() - downSince.getTime() : null,
   };
 }
 
