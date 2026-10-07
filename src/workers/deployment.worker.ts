@@ -18,9 +18,12 @@ import {
   runContainer,
   isDockerAvailable,
   isContainerRunning,
+  getContainerExitCode,
+  getContainerLogs,
   findAvailablePort,
 } from './docker';
 import { extractLogTail } from '../lib/log-tail';
+import { CRASH_LOG_LINES, formatContainerCrashSummary } from '../lib/container-crash-summary';
 import { generateDockerfile, hasDockerfile, writeDockerfile } from './dockerfile';
 import { deployToRemoteServer, canDeployToServer, quickRollbackToDeployment } from './remote-deployment';
 import { publishStaticSite } from '../lib/static-site-publish';
@@ -1275,7 +1278,13 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
     const containerRunning = await isContainerRunning(containerName);
 
     if (!containerRunning) {
-      throw new Error('Container failed to start');
+      throw new Error(
+        formatContainerCrashSummary({
+          headline: 'Container failed to start',
+          exitCode: await getContainerExitCode(containerName),
+          logs: await getContainerLogs(containerName, { tail: CRASH_LOG_LINES }),
+        })
+      );
     }
 
     // Create auto subdomain if no domain exists
@@ -1466,7 +1475,8 @@ server {
       });
     }
   } catch (error) {
-    const rawError = error instanceof Error ? error.message : String(error);
+    // Start-up failures carry the container's runtime log tail, which may print env values.
+    const rawError = logMasker.mask(error instanceof Error ? error.message : String(error));
     const classified = classifyDeployFailure(logBuffer.join('\n'), rawError);
     addLog(failureCategoryLogLine(classified.category));
     addLog(`💡 ${classified.userHint}`);

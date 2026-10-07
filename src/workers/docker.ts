@@ -1,6 +1,7 @@
 import { execStreamingCommand, execCommand, shSingleQuote, type StreamingCommandOptions } from './shell';
 import { env } from '../config/env';
 import net from 'net';
+import { parseContainerExitState } from '../lib/container-crash-summary';
 
 /**
  * Find an available port starting from a base port
@@ -219,6 +220,17 @@ export async function isContainerRunning(containerName: string): Promise<boolean
     `docker inspect --format='{{.State.Running}}' ${containerName}`
   );
   return result.stdout.trim() === 'true';
+}
+
+/**
+ * Exit code of a stopped container (null while it is running or if it cannot be inspected)
+ */
+export async function getContainerExitCode(containerName: string): Promise<number | null> {
+  const result = await execCommand(
+    `docker inspect --format='{{.State.Running}} {{.State.ExitCode}}' ${containerName}`
+  );
+  if (result.exitCode !== 0) return null;
+  return parseContainerExitState(result.stdout);
 }
 
 /**
