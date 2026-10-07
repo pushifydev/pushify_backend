@@ -56,6 +56,8 @@ export interface HealthCheckResultEvent {
   consecutiveFailures: number;
   /** up | down | unknown — what monitoring says right now (services/app-health.service.ts) */
   status?: string;
+  /** server_unreachable | app_error | deploy_failed while down, null otherwise */
+  downReason?: string | null;
 }
 
 export interface NotificationNewEvent {

@@ -1,7 +1,8 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { projects } from '../db/schema/projects';
 import { deployments } from '../db/schema/deployments';
+import { servers } from '../db/schema/servers';
 import { healthChecks, healthCheckLogs, projectHealthState } from '../db/schema/healthchecks';
 import { organizationRepository } from '../repositories/organization.repository';
 import { deploymentAlertRepository } from '../repositories/deployment-alert.repository';
@@ -9,7 +10,15 @@ import { healthCheckService } from './healthcheck.service';
 import { notificationService } from './notification.service';
 import { restartPushifyContainer } from '../lib/container-resolve';
 import { sendAppDownEmail, sendAppRecoveredEmail } from '../lib/email';
-import { formatDuration, nextHealthState, type HealthState } from '../lib/app-health';
+import {
+  classifyDownReason,
+  formatDuration,
+  nextHealthState,
+  type DownReason,
+  type HealthState,
+} from '../lib/app-health';
+import { decrypt } from '../lib/encryption';
+import { getSSHConnection } from '../utils/ssh';
 import { wsManager } from '../lib/ws';
 import { logger } from '../lib/logger';
 
@@ -24,6 +33,29 @@ const DEFAULT_INTERVAL_SECONDS = 60;
 const DEFAULT_THRESHOLD = 3;
 const DEFAULT_TIMEOUT_SECONDS = 10;
 const CHECK_CONCURRENCY = 8;
+/** SSH probe used only when an alert is about to go out and the app gave no HTTP answer. */
+const SSH_PROBE_TIMEOUT_MS = 10_000;
+
+/** One line on what the reason means, for the notification channels. */
+export function describeDownReason(reason: DownReason, byos: boolean): string {
+  switch (reason) {
+    case 'server_unreachable':
+      return byos
+        ? 'Your server is not reachable (no connection, SSH not answering). Check that the server is powered on, has network access and that its firewall allows ports 22, 80 and 443.'
+        : 'The server running this app is not reachable (no connection). Pushify is looking into it; check the server page for its status.';
+    case 'deploy_failed':
+      return 'The latest deployment failed. Open the deployment logs to see why, then redeploy or roll back.';
+    case 'app_error':
+    default:
+      return 'The app is answering with errors or not at all while its server is up. It may have crashed, run out of memory or be stuck starting — its logs usually say which.';
+  }
+}
+
+interface ServerInfo {
+  byos: boolean;
+  ipv4: string | null;
+  sshPrivateKey: string | null;
+}
 
 interface Candidate {
   projectId: string;
@@ -48,6 +80,7 @@ function toState(row: typeof projectHealthState.$inferSelect | undefined): Healt
     failCount: row?.failCount ?? 0,
     downSince: row?.downSince ?? null,
     notifiedAt: row?.notifiedAt ?? null,
+    reminderStep: row?.reminderStep ?? 0,
   };
 }
 
@@ -120,6 +153,14 @@ export const appHealthService = {
     const previous = toState(existing);
     const transition = nextHealthState(previous, result, candidate.threshold, now);
 
+    // Why it is down — worked out only when someone is about to be told, since it may SSH.
+    let downReason: DownReason | null = transition.state.status === 'down' ? ((existing?.downReason as DownReason | null) ?? null) : null;
+    let server: ServerInfo | null = null;
+    if (transition.notify === 'down' || transition.notify === 'reminder') {
+      server = await this.serverInfo(candidate.serverId);
+      downReason = await this.diagnose(candidate, result, server);
+    }
+
     const values = {
       projectId: candidate.projectId,
       url,
@@ -130,6 +171,8 @@ export const appHealthService = {
       error: result.error ?? null,
       downSince: transition.state.downSince,
       notifiedAt: transition.state.notifiedAt,
+      downReason,
+      reminderStep: transition.state.reminderStep ?? 0,
       lastCheckedAt: now,
       updatedAt: now,
     };
@@ -164,13 +207,23 @@ export const appHealthService = {
           responseTimeMs: result.responseTimeMs,
           consecutiveFailures: transition.state.failCount,
           status: transition.state.status,
+          downReason,
         },
       })
       .catch(() => {});
 
+    if (transition.notify === 'down' || transition.notify === 'reminder') {
+      await this.announce(candidate, transition.notify, {
+        statusCode: result.statusCode,
+        error: result.error,
+        reason: downReason ?? 'app_error',
+        byos: server?.byos ?? false,
+        downForMs: transition.downForMs ?? undefined,
+      });
+    }
     if (transition.notify === 'down') {
-      await this.announce(candidate, 'down', { statusCode: result.statusCode, error: result.error });
-      if (candidate.autoRestart && candidate.serverId !== undefined) {
+      // Restarting a container on a server we cannot reach is pointless.
+      if (candidate.autoRestart && candidate.serverId !== undefined && downReason !== 'server_unreachable') {
         const restarted = await restartPushifyContainer(candidate.slug, candidate.serverId).catch(() => false);
         logger.info({ projectId: candidate.projectId, restarted }, 'Auto-restart after failed health checks');
       }
@@ -181,22 +234,73 @@ export const appHealthService = {
     return transition.state.status;
   },
 
+  /** The project's server: is it the customer's own (BYOS), and how to SSH into it. */
+  async serverInfo(serverId: string | null): Promise<ServerInfo | null> {
+    if (!serverId) return null;
+    const [row] = await db
+      .select({ provider: servers.provider, isManaged: servers.isManaged, ipv4: servers.ipv4, sshPrivateKey: servers.sshPrivateKey })
+      .from(servers)
+      .where(eq(servers.id, serverId));
+    if (!row) return null;
+    return { byos: row.provider === 'self_hosted' || !row.isManaged, ipv4: row.ipv4, sshPrivateKey: row.sshPrivateKey };
+  },
+
+  /** Can we still log into the server? undefined when we have no way to try. */
+  async probeServer(server: ServerInfo | null): Promise<boolean | undefined> {
+    if (!server?.ipv4 || !server.sshPrivateKey) return undefined;
+    const probe = (async () => {
+      const ssh = await getSSHConnection({ host: server.ipv4!, port: 22, username: 'root', privateKey: decrypt(server.sshPrivateKey!) });
+      const res = await ssh.exec('true');
+      return res.code === 0;
+    })();
+    const timeout = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), SSH_PROBE_TIMEOUT_MS).unref?.());
+    return Promise.race([probe, timeout]).catch(() => false);
+  },
+
+  /** server_unreachable / app_error / deploy_failed for the alert and the API. */
+  async diagnose(
+    candidate: Candidate,
+    result: { statusCode?: number; error?: string },
+    server: ServerInfo | null
+  ): Promise<DownReason> {
+    try {
+      const [latest] = await db
+        .select({ status: deployments.status })
+        .from(deployments)
+        .where(eq(deployments.projectId, candidate.projectId))
+        .orderBy(desc(deployments.createdAt))
+        .limit(1);
+      const hasAnswer = !!result.statusCode && result.statusCode > 0;
+      return classifyDownReason({
+        statusCode: result.statusCode,
+        error: result.error,
+        latestDeployFailed: latest?.status === 'failed',
+        serverReachable: hasAnswer ? undefined : await this.probeServer(server),
+      });
+    } catch (err) {
+      logger.warn({ err, projectId: candidate.projectId }, 'Could not work out why the app is down');
+      return classifyDownReason({ statusCode: result.statusCode, error: result.error });
+    }
+  },
+
   /** Email everyone who keeps deployment alerts on, plus the project's own channels. */
   async announce(
     candidate: Candidate,
-    kind: 'down' | 'up',
-    details: { statusCode?: number; error?: string; downForMs?: number }
+    kind: 'down' | 'reminder' | 'up',
+    details: { statusCode?: number; error?: string; downForMs?: number; reason?: DownReason; byos?: boolean }
   ): Promise<void> {
+    const isDown = kind !== 'up';
+    const reason = details.reason ?? 'app_error';
+    const answer = details.statusCode ? ` (HTTP ${details.statusCode})` : details.error ? ` (${details.error})` : '';
     try {
       await notificationService.sendNotifications(
         candidate.projectId,
-        kind === 'down' ? 'health.unhealthy' : 'health.recovered',
+        isDown ? 'health.unhealthy' : 'health.recovered',
         {
-          status: kind === 'down' ? 'unhealthy' : 'healthy',
-          message:
-            kind === 'down'
-              ? `${candidate.url} is not answering${details.statusCode ? ` (HTTP ${details.statusCode})` : details.error ? ` (${details.error})` : ''}`
-              : `${candidate.url} is answering again`,
+          status: isDown ? 'unhealthy' : 'healthy',
+          message: isDown
+            ? `${kind === 'reminder' ? `Still down after ${formatDuration(details.downForMs ?? 0)}: ` : ''}${candidate.url} is not answering${answer} — ${reason}. ${describeDownReason(reason, details.byos ?? false)}`
+            : `${candidate.url} is answering again`,
         }
       );
     } catch (err) {
@@ -209,7 +313,7 @@ export const appHealthService = {
         organizationRepository.findById(candidate.organizationId),
       ]);
       for (const recipient of recipients) {
-        if (kind === 'down') {
+        if (isDown) {
           await sendAppDownEmail(recipient.email, {
             orgName: org?.name ?? '',
             projectName: candidate.name,
@@ -217,6 +321,9 @@ export const appHealthService = {
             url: candidate.url,
             statusCode: details.statusCode,
             error: details.error,
+            reason,
+            byos: details.byos ?? false,
+            downFor: kind === 'reminder' ? formatDuration(details.downForMs ?? 0) : undefined,
           });
         } else {
           await sendAppRecoveredEmail(recipient.email, {
