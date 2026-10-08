@@ -25,7 +25,10 @@ function escapeRegExp(value: string): string {
 
 export interface LogMasker {
   mask(text: string): string;
-  /** Register additional secrets discovered mid-flow (e.g. git access tokens). */
+  /**
+   * Register values that are always masked regardless of key name or length — git access
+   * tokens, and env vars the user marked `isSecret`.
+   */
   addSecrets(values: Array<string | null | undefined>): void;
   /** Register env vars through the sensitive-key / long-value heuristic. */
   addEnvVars(envVars: Record<string, string>): void;
@@ -79,11 +82,15 @@ export function createLogMasker(envVars: Record<string, string> = {}): LogMasker
     },
     addSecrets(values) {
       for (const value of values) {
-        const trimmed = value?.trim();
-        if (trimmed && trimmed.length >= MIN_SECRET_LENGTH && !TRIVIAL_VALUE_PATTERN.test(trimmed)) {
-          if (!secrets.has(trimmed)) {
-            secrets.add(trimmed);
-            dirty = true;
+        if (!value) continue;
+        // Multi-line values (PEM keys): occurrences in logs are line-by-line.
+        for (const line of value.split('\n')) {
+          const trimmed = line.trim();
+          if (trimmed.length >= MIN_SECRET_LENGTH && !TRIVIAL_VALUE_PATTERN.test(trimmed)) {
+            if (!secrets.has(trimmed)) {
+              secrets.add(trimmed);
+              dirty = true;
+            }
           }
         }
       }

@@ -50,4 +50,21 @@ describe('createLogMasker', () => {
     const m = createLogMasker({ MY_TOKEN: 'tok_12345' });
     expect(m.mask('tok_12345 tok_12345')).toBe('•••••• ••••••');
   });
+
+  it('masks a value marked secret even when the key/length heuristic would skip it', () => {
+    // Short value, innocuous key: the heuristic alone lets it through.
+    const envVars = { SHOP_ID: 'k9x2mq' };
+    const m = createLogMasker(envVars);
+    expect(m.mask('shop k9x2mq ready')).toBe('shop k9x2mq ready');
+    // Marked isSecret → registered explicitly, as the deploy worker and log collector do.
+    m.addSecrets([envVars.SHOP_ID]);
+    expect(m.mask('shop k9x2mq ready')).toBe('shop •••••• ready');
+  });
+
+  it('addSecrets masks each line of a multi-line secret', () => {
+    const m = createLogMasker();
+    m.addSecrets(['line-one-abc\nline-two-def']);
+    expect(m.mask('got line-one-abc')).toBe('got ••••••');
+    expect(m.mask('got line-two-def')).toBe('got ••••••');
+  });
 });
