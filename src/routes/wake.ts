@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { projects } from '../db/schema/projects';
+import { deployments } from '../db/schema/deployments';
 import { requestWake } from '../workers/app-sleep.worker';
 import { authMiddleware } from '../middleware/auth';
 import { organizationRepository } from '../repositories/organization.repository';
@@ -39,6 +40,31 @@ ${refresh ? '<div class="spin"></div>' : ''}
 </html>`;
 }
 
+/**
+ * A first deploy whose build failed has nothing to serve: say so instead of "not responding",
+ * which reads like a crash. Only when no deployment of the project ever ran — if one did, the
+ * outage is a runtime problem (the old container died) and the generic page is the honest one.
+ */
+export async function neverServedBecauseBuildFailed(projectId: string): Promise<boolean> {
+  try {
+    const [latest] = await db
+      .select({ status: deployments.status })
+      .from(deployments)
+      .where(eq(deployments.projectId, projectId))
+      .orderBy(desc(deployments.createdAt))
+      .limit(1);
+    if (latest?.status !== 'failed') return false;
+    const [served] = await db
+      .select({ id: deployments.id })
+      .from(deployments)
+      .where(and(eq(deployments.projectId, projectId), inArray(deployments.status, ['running', 'stopped'])))
+      .limit(1);
+    return !served;
+  } catch {
+    return false;
+  }
+}
+
 // ── Public wake endpoint ─────────────────────────────────────────────────────
 // nginx routes a 502 (container down) here via the @pushify_wake fallback. If the app
 // is sleeping we start it and serve an auto-refreshing "waking up" page; a genuine crash
@@ -51,6 +77,16 @@ wakeRouter.all('/:slug', async (c) => {
   const project = await db.query.projects.findFirst({ where: eq(projects.slug, slug) });
 
   if (!project || !project.sleepEnabled || project.sleepState === 'awake') {
+    if (project && (await neverServedBecauseBuildFailed(project.id))) {
+      return c.html(
+        wakePage({
+          title: 'Deployment failed',
+          message:
+            'This application has not been deployed successfully yet — its latest build failed. The owner can see why in the deployment logs.',
+        }),
+        503
+      );
+    }
     return c.html(
       wakePage({
         title: 'Application unavailable',

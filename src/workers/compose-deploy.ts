@@ -149,19 +149,32 @@ export async function deployComposeFromRepo(
     `cd ${shSingleQuote(composeDir)} && ${dockerConfigPrefix(dockerConfig)}docker compose ${envFileFlags} ` +
     `-f ${shSingleQuote(deployablePath)} -p ${shSingleQuote(stackName)} ${args}`;
 
-  // A previous stack of this project, if any — its containers hold the ports
-  onProgress('🛑 Stopping the previous stack (if any)...');
-  await ssh.exec(`${compose('down --remove-orphans')} 2>&1 || true`);
-
+  // Pull and build while the previous stack is still serving: a broken `build:` step must fail
+  // the deploy before anything that is live is taken down (otherwise nginx answers 502 until
+  // the next good deploy). Neither step needs the ports the running stack holds.
   onProgress('⬇️ Pulling images...');
   const pull = await ssh.exec(`${compose('pull --ignore-pull-failures')} 2>&1`);
   if (pull.code !== 0) onProgress('⚠️ Some images could not be pulled; they will be built or already exist');
+
+  onProgress('🔨 Building images...');
+  const build = await ssh.exec(`${compose('build')} 2>&1`);
+  if (build.code !== 0) {
+    const buildOutput = `${build.stdout}\n${build.stderr}`;
+    throw new Error(
+      `Docker build failed for the compose stack; the previous stack (if any) keeps serving:\n${buildOutput.slice(-1200)}`
+    );
+  }
+
+  // A previous stack of this project, if any — its containers hold the ports
+  onProgress('🛑 Stopping the previous stack (if any)...');
+  await ssh.exec(`${compose('down --remove-orphans')} 2>&1 || true`);
 
   const { openFirewallPort } = await import('./remote-deployment');
   if (!sharedHost) await openFirewallPort(ssh, hostPort, onProgress);
 
   onProgress('🚀 Starting the stack...');
-  const up = await ssh.exec(`${compose('up -d --build --remove-orphans')} 2>&1`);
+  // Images were built above; `up` only starts them, so nothing can fail to build after `down`.
+  const up = await ssh.exec(`${compose('up -d --remove-orphans')} 2>&1`);
   const upOutput = `${up.stdout}\n${up.stderr}`;
   if (up.code !== 0) {
     throw new Error(`Docker Compose could not start the stack:\n${upOutput.slice(-1200)}`);

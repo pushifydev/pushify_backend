@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+- **A failed build no longer takes a Docker Compose project offline.** The repository-compose deploy (`compose_path`) ran `docker compose down` before `up -d --build`, so a broken `build:` step left no container and nginx answered 502 until the next good deploy — the one path the blue-green "old container stays live" guarantee did not cover. Images are now pulled and built (`compose build`) while the previous stack keeps serving; only a successful build stops it, and `up` no longer rebuilds. A build failure is reported as `Docker build failed` (classified as a build error, not a crash).
+- **A first deploy that failed to build shows "Deployment failed", not a crash page.** When nginx falls back to the wake endpoint and the project's latest deployment failed with none ever running, visitors get a 503 "Deployment failed" page instead of the generic 502 "not responding".
+
 ## [0.2.0-beta.100] - 2026-10-07
 
 ### Fixed
