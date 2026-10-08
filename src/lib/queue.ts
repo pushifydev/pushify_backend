@@ -233,6 +233,10 @@ function getPriority(event: string): number {
     'health.unhealthy': 1,
     'deployment.success': 2,
     'health.recovered': 2,
+    'backup.failed': 1,
+    'backup.missed': 1,
+    'backup.warning': 2,
+    'backup.success': 3,
     'deployment.started': 3,
     'test': 5,
   };

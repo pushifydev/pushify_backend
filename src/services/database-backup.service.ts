@@ -25,6 +25,13 @@ import { sendBackupVerificationFailedEmail } from '../lib/email';
 import { resolveBillingNotifyEmail } from '../lib/billing-notify';
 import { adminNotify } from './admin-notify.service';
 import { buildDumpCommand, buildRestoreCommand } from '../lib/database-backup-commands';
+import {
+  BACKUP_EVENTS,
+  BACKUP_STUCK_AFTER_MS,
+  completedBackupEvent,
+  isBackupOverdue,
+  type BackupEvent,
+} from '../lib/backup-alerts';
 
 // ============ Helpers ============
 
@@ -276,6 +283,14 @@ export const databaseBackupService = {
         lastBackupAt: new Date(),
       });
 
+      const event = completedBackupEvent(copy.status);
+      await this.notifyBackupEvent(databaseId, event, {
+        message:
+          event === BACKUP_EVENTS.warning
+            ? `Backup ${fileName} completed, but the off-site copy failed — it exists only on the database server.`
+            : `Backup ${fileName} completed (${Math.max(1, Math.round(sizeMb))} MB).`,
+      });
+
       // Publish completed status
       wsManager.publish(`database:${databaseId}`, {
         type: 'backup:status',
@@ -309,9 +324,88 @@ export const databaseBackupService = {
       }).catch(() => {});
 
       logger.error({ error, databaseId, backupId }, 'Backup failed');
+
+      await this.notifyBackupEvent(databaseId, BACKUP_EVENTS.failed, {
+        message: `Backup ${fileName} failed: ${errorMessage}`,
+      });
     } finally {
       ssh.disconnect();
     }
+  },
+
+  /**
+   * Tell the notification channels of every project this database is connected to. Channels
+   * opt in per event. Never throws — a notification problem must not fail or retry a backup.
+   */
+  async notifyBackupEvent(
+    databaseId: string,
+    event: BackupEvent,
+    details: { message: string }
+  ): Promise<void> {
+    try {
+      const database = await databaseRepository.findById(databaseId);
+      if (!database) return;
+      const connections = await databaseRepository.findConnectionsByDatabase(databaseId);
+      if (connections.length === 0) return;
+
+      const { notificationService } = await import('./notification.service');
+      const projectIds = [...new Set(connections.map((c) => c.projectId))];
+      for (const projectId of projectIds) {
+        await notificationService.sendNotifications(projectId, event, {
+          status: event,
+          message: `Database "${database.name}": ${details.message}`,
+        });
+      }
+    } catch (error) {
+      logger.warn({ error, databaseId, event }, 'Could not send backup notification');
+    }
+  },
+
+  /**
+   * Worker entry: backups whose process died mid-dump stay 'creating' forever and look like
+   * work in progress. Mark them failed and report it.
+   */
+  async failStuckBackups(now: Date = new Date()): Promise<number> {
+    const stuck = await databaseRepository.findStuckBackups(new Date(now.getTime() - BACKUP_STUCK_AFTER_MS));
+    for (const backup of stuck) {
+      const errorMessage = 'Backup did not finish in time and was marked as failed';
+      await databaseRepository.updateBackup(backup.id, { status: 'failed', errorMessage, completedAt: now });
+      await this.notifyBackupEvent(backup.databaseId, BACKUP_EVENTS.failed, {
+        message: `Backup ${backup.name} did not finish and was marked as failed.`,
+      });
+    }
+    return stuck.length;
+  },
+
+  /**
+   * Worker entry: "the expected backup never arrived". Returns the databases that are overdue
+   * — no successful backup for MISSED_BACKUP_GRACE_FACTOR intervals — and notifies once per
+   * database per last-backup timestamp (`alreadyAlerted` is the caller's memory of that).
+   */
+  async alertMissedBackups(
+    alreadyAlerted: Map<string, number>,
+    now: Date = new Date()
+  ): Promise<number> {
+    const databases = await databaseRepository.findDatabasesWithBackupEnabled();
+    let alerted = 0;
+    for (const database of databases) {
+      if (!isBackupOverdue(database.lastBackupAt, database.createdAt, database.backupIntervalHours, now)) {
+        alreadyAlerted.delete(database.id);
+        continue;
+      }
+      const marker = database.lastBackupAt?.getTime() ?? 0;
+      if (alreadyAlerted.get(database.id) === marker) continue;
+      alreadyAlerted.set(database.id, marker);
+
+      const since = database.lastBackupAt
+        ? `since ${database.lastBackupAt.toISOString()}`
+        : 'since it was created';
+      await this.notifyBackupEvent(database.id, BACKUP_EVENTS.missed, {
+        message: `No successful backup ${since} (expected every ${database.backupIntervalHours || 24}h).`,
+      });
+      alerted++;
+    }
+    return alerted;
   },
 
   // Restore database from backup

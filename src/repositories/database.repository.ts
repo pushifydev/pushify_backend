@@ -163,6 +163,16 @@ export const databaseRepository = {
     });
   },
 
+  // Backups still 'creating' that started before `startedBefore` (their process died)
+  async findStuckBackups(startedBefore: Date): Promise<DatabaseBackup[]> {
+    return db.query.databaseBackups.findMany({
+      where: and(
+        eq(databaseBackups.status, 'creating'),
+        lte(databaseBackups.startedAt, startedBefore)
+      ),
+    });
+  },
+
   // ============ Connections ============
 
   // Find connections by database
