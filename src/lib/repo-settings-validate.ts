@@ -110,5 +110,8 @@ export function firstProjectSettingsError(settings: Record<string, unknown> | nu
   }
   const framework = str('framework');
   if (framework && !/^[A-Za-z0-9.+-]{1,50}$/.test(framework)) return 'Framework name is not valid';
+  if (settings.trafficAnalytics !== undefined && typeof settings.trafficAnalytics !== 'boolean') {
+    return 'trafficAnalytics must be true or false';
+  }
   return null;
 }

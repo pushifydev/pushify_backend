@@ -154,6 +154,15 @@ const envSchema = z.object({
     .optional()
     .transform((v) => (v === undefined || v.trim() === '' ? undefined : /^(true|1|yes|on)$/i.test(v.trim()))),
 
+  /**
+   * Per-app traffic analytics (requests, 4xx/5xx, bandwidth) from each app's Nginx access log.
+   * On by default; `false` stops writing the per-app log and stops collecting it.
+   */
+  TRAFFIC_ANALYTICS_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => !v || !/^(false|0|no|off)$/i.test(v.trim())),
+
   // Rate Limiting (see middleware/rate-limit.ts)
   // Not z.coerce.boolean(): Boolean('false') is true, so RATE_LIMIT_ENABLED=false never disabled it.
   RATE_LIMIT_ENABLED: z

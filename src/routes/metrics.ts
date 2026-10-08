@@ -3,6 +3,8 @@ import { requireScope } from '../middleware/apikey-auth';
 import { getMemberAllowedProjectIds } from '../lib/member-project-scope';
 import { requireOrgMember } from '../lib/org-access';
 import { metricsService } from '../services/metrics.service';
+import { trafficAnalyticsService } from '../services/traffic-analytics.service';
+import { parseTrafficRange } from '../lib/traffic-analytics';
 import { projectRepository } from '../repositories/project.repository';
 import { authMiddleware } from '../middleware/auth';
 import { t, type SupportedLocale } from '../i18n';
@@ -18,6 +20,7 @@ metricsRouter.use('*', authMiddleware);
 metricsRouter.use('/overview', requireScope('metrics:read'));
 metricsRouter.use('/:projectId/metrics', requireScope('metrics:read'));
 metricsRouter.use('/:projectId/metrics/*', requireScope('metrics:read'));
+metricsRouter.use('/:projectId/analytics', requireScope('metrics:read'));
 
 /**
  * Verify project access
@@ -84,6 +87,23 @@ metricsRouter.get('/:projectId/metrics/timeseries', async (c) => {
   const timeSeries = await metricsService.getTimeSeriesData(projectId, hours);
 
   return c.json({ data: timeSeries });
+});
+
+// Hourly traffic for an app: requests, 4xx/5xx and bytes sent (?range=24h|7d, default 24h)
+metricsRouter.get('/:projectId/analytics', async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const projectId = c.req.param('projectId');
+
+  await verifyProjectAccess(projectId, organizationId, c.get('userId')!, locale);
+
+  const range = parseTrafficRange(c.req.query('range'));
+  if (!range) {
+    throw new HTTPException(400, { message: 'range must be one of: 24h, 7d' });
+  }
+
+  const analytics = await trafficAnalyticsService.getProjectAnalytics(projectId, range);
+  return c.json({ data: analytics });
 });
 
 export { metricsRouter as metricsRoutes };
