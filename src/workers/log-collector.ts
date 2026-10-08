@@ -426,15 +426,20 @@ export async function getProjectLogMasker(projectId: string): Promise<LogMasker>
     .where(eq(environmentVariables.projectId, projectId));
 
   const envVars: Record<string, string> = {};
+  const markedSecrets: string[] = [];
   for (const row of envRows) {
     try {
-      envVars[row.key] = decrypt(row.valueEncrypted);
+      const value = decrypt(row.valueEncrypted);
+      envVars[row.key] = value;
+      if (row.isSecret) markedSecrets.push(value);
     } catch {
       // skip undecryptable values
     }
   }
 
   const masker = createLogMasker(envVars);
+  // Marked secret: masked even when the key name / length heuristic would let it through.
+  masker.addSecrets(markedSecrets);
   maskerCache.set(projectId, { masker, builtAt: Date.now() });
   return masker;
 }

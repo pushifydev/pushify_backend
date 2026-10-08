@@ -602,6 +602,8 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       const envVarsDecrypted: Record<string, string> = {};
       for (const envVar of selectDeployEnvVars(envVars, { target: previewCtx ? 'preview' : environment })) {
         envVarsDecrypted[envVar.key] = decrypt(envVar.valueEncrypted);
+        // Marked secret: masked even when the key name / length heuristic would let it through.
+        if (envVar.isSecret) logMasker.addSecrets([envVarsDecrypted[envVar.key]]);
       }
       // Databases linked under Databases → Connect become variables (DATABASE_URL by default).
       // Production only: a staging copy pointing at the production database would write to it.
