@@ -58,6 +58,8 @@ export interface HealthCheckResultEvent {
   status?: string;
   /** server_unreachable | app_error | deploy_failed while down, null otherwise */
   downReason?: string | null;
+  /** SSH / Docker / ports 80-443 checks while the server gives no HTTP answer (lib/app-health.ts) */
+  diagnostics?: import('../lib/app-health').ServerDiagnostics | null;
 }
 
 export interface NotificationNewEvent {

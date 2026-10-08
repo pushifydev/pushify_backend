@@ -10,17 +10,25 @@ import { healthCheckService } from './healthcheck.service';
 import { notificationService } from './notification.service';
 import { restartPushifyContainer } from '../lib/container-resolve';
 import { sendAppDownEmail, sendAppRecoveredEmail } from '../lib/email';
+import { Socket } from 'node:net';
 import {
+  buildServerDiagnostics,
   classifyDownReason,
+  classifyProbeError,
+  diagnosticsDue,
   formatDuration,
   nextHealthState,
   type DownReason,
   type HealthState,
+  type ServerCheckOutcome,
+  type ServerDiagnostics,
+  type ServerProbeOutcomes,
 } from '../lib/app-health';
 import { decrypt } from '../lib/encryption';
 import { getSSHConnection } from '../utils/ssh';
 import { wsManager } from '../lib/ws';
 import { logger } from '../lib/logger';
+import { adminNotify } from './admin-notify.service';
 
 /**
  * Is each deployed app still answering? Every active, awake project with a URL is checked —
@@ -35,6 +43,32 @@ const DEFAULT_TIMEOUT_SECONDS = 10;
 const CHECK_CONCURRENCY = 8;
 /** SSH probe used only when an alert is about to go out and the app gave no HTTP answer. */
 const SSH_PROBE_TIMEOUT_MS = 10_000;
+/** TCP connect to the proxy ports 80/443, done from here, i.e. from the internet's side. */
+const PORT_PROBE_TIMEOUT_MS = 5_000;
+
+/** Can a TCP connection be opened to host:port? ok / refused / timeout / failed. */
+export function probeTcpPort(host: string, port: number, timeoutMs: number = PORT_PROBE_TIMEOUT_MS): Promise<ServerCheckOutcome> {
+  return new Promise((resolve) => {
+    const socket = new Socket();
+    let settled = false;
+    const done = (outcome: ServerCheckOutcome) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(outcome);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => done('ok'));
+    socket.once('timeout', () => done('timeout'));
+    socket.once('error', (err) => done(classifyProbeError(err)));
+    socket.connect(port, host);
+  });
+}
+
+function withTimeout<T>(work: Promise<T>, ms: number, onTimeout: T): Promise<T> {
+  const timer = new Promise<T>((resolve) => setTimeout(() => resolve(onTimeout), ms).unref?.());
+  return Promise.race([work, timer]);
+}
 
 /** One line on what the reason means, for the notification channels. */
 export function describeDownReason(reason: DownReason, byos: boolean): string {
@@ -51,13 +85,15 @@ export function describeDownReason(reason: DownReason, byos: boolean): string {
   }
 }
 
-interface ServerInfo {
+export interface ServerInfo {
+  id?: string;
+  name?: string;
   byos: boolean;
   ipv4: string | null;
   sshPrivateKey: string | null;
 }
 
-interface Candidate {
+export interface Candidate {
   projectId: string;
   slug: string;
   name: string;
@@ -155,10 +191,19 @@ export const appHealthService = {
 
     // Why it is down — worked out only when someone is about to be told, since it may SSH.
     let downReason: DownReason | null = transition.state.status === 'down' ? ((existing?.downReason as DownReason | null) ?? null) : null;
+    let diagnostics: ServerDiagnostics | null =
+      transition.state.status === 'down' ? ((existing?.diagnostics as ServerDiagnostics | null | undefined) ?? null) : null;
     let server: ServerInfo | null = null;
-    if (transition.notify === 'down' || transition.notify === 'reminder') {
+    const alerting = transition.notify === 'down' || transition.notify === 'reminder';
+    // A long outage without any HTTP answer gets its server checks refreshed (hourly), so the
+    // status API keeps saying which layer is still broken, not just what it was on day one.
+    const noAnswer = !result.healthy && !(result.statusCode && result.statusCode > 0);
+    const refresh = transition.state.status === 'down' && noAnswer && diagnosticsDue(diagnostics, now);
+    if (alerting || refresh) {
       server = await this.serverInfo(candidate.serverId);
-      downReason = await this.diagnose(candidate, result, server);
+      const diagnosis = await this.diagnose(candidate, result, server, now);
+      downReason = diagnosis.reason;
+      diagnostics = diagnosis.diagnostics;
     }
 
     const values = {
@@ -172,6 +217,7 @@ export const appHealthService = {
       downSince: transition.state.downSince,
       notifiedAt: transition.state.notifiedAt,
       downReason,
+      diagnostics,
       reminderStep: transition.state.reminderStep ?? 0,
       lastCheckedAt: now,
       updatedAt: now,
@@ -208,6 +254,7 @@ export const appHealthService = {
           consecutiveFailures: transition.state.failCount,
           status: transition.state.status,
           downReason,
+          diagnostics,
         },
       })
       .catch(() => {});
@@ -219,7 +266,20 @@ export const appHealthService = {
         reason: downReason ?? 'app_error',
         byos: server?.byos ?? false,
         downForMs: transition.downForMs ?? undefined,
+        advice: diagnostics?.advice ?? undefined,
       });
+      // A Pushify-managed server is ours to fix: operations hears about it, not only the customer.
+      if (downReason === 'server_unreachable' && server && !server.byos) {
+        adminNotify('server.unreachable', {
+          Project: `${candidate.name} (${candidate.projectId})`,
+          Server: server.name ? `${server.name} (${server.id ?? candidate.serverId})` : (server.id ?? candidate.serverId),
+          IP: server.ipv4,
+          'Failed check': diagnostics?.failedCheck ?? 'unknown',
+          Checks: diagnostics?.checks.map((c) => `${c.check}=${c.outcome}`).join(', '),
+          'Down since': transition.state.downSince?.toISOString(),
+          Alert: transition.notify === 'reminder' ? `reminder (${formatDuration(transition.downForMs ?? 0)})` : 'first',
+        });
+      }
     }
     if (transition.notify === 'down') {
       // Restarting a container on a server we cannot reach is pointless.
@@ -238,31 +298,66 @@ export const appHealthService = {
   async serverInfo(serverId: string | null): Promise<ServerInfo | null> {
     if (!serverId) return null;
     const [row] = await db
-      .select({ provider: servers.provider, isManaged: servers.isManaged, ipv4: servers.ipv4, sshPrivateKey: servers.sshPrivateKey })
+      .select({
+        id: servers.id,
+        name: servers.name,
+        provider: servers.provider,
+        isManaged: servers.isManaged,
+        ipv4: servers.ipv4,
+        sshPrivateKey: servers.sshPrivateKey,
+      })
       .from(servers)
       .where(eq(servers.id, serverId));
     if (!row) return null;
-    return { byos: row.provider === 'self_hosted' || !row.isManaged, ipv4: row.ipv4, sshPrivateKey: row.sshPrivateKey };
+    return {
+      id: row.id,
+      name: row.name,
+      byos: row.provider === 'self_hosted' || !row.isManaged,
+      ipv4: row.ipv4,
+      sshPrivateKey: row.sshPrivateKey,
+    };
   },
 
-  /** Can we still log into the server? undefined when we have no way to try. */
-  async probeServer(server: ServerInfo | null): Promise<boolean | undefined> {
-    if (!server?.ipv4 || !server.sshPrivateKey) return undefined;
-    const probe = (async () => {
-      const ssh = await getSSHConnection({ host: server.ipv4!, port: 22, username: 'root', privateKey: decrypt(server.sshPrivateKey!) });
-      const res = await ssh.exec('true');
-      return res.code === 0;
-    })();
-    const timeout = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), SSH_PROBE_TIMEOUT_MS).unref?.());
-    return Promise.race([probe, timeout]).catch(() => false);
+  /**
+   * SSH in (and ask Docker while there) and open TCP 80/443 from here, all at once.
+   * undefined when we have no address to try.
+   */
+  async probeServer(server: ServerInfo | null): Promise<ServerProbeOutcomes | undefined> {
+    if (!server?.ipv4) return undefined;
+    const host = server.ipv4;
+    const sshAndDocker = (async (): Promise<Pick<ServerProbeOutcomes, 'ssh' | 'docker'>> => {
+      if (!server.sshPrivateKey) return { ssh: 'skipped', docker: 'skipped' };
+      let ssh;
+      try {
+        ssh = await getSSHConnection({ host, port: 22, username: 'root', privateKey: decrypt(server.sshPrivateKey) });
+        const res = await ssh.exec('true');
+        if (res.code !== 0) return { ssh: 'failed', docker: 'skipped' };
+      } catch (err) {
+        return { ssh: classifyProbeError(err), docker: 'skipped' };
+      }
+      try {
+        const docker = await ssh.exec("docker info --format '{{.ServerVersion}}'");
+        return { ssh: 'ok', docker: docker.code === 0 ? 'ok' : 'failed' };
+      } catch {
+        return { ssh: 'ok', docker: 'failed' };
+      }
+    })().catch((err) => ({ ssh: classifyProbeError(err), docker: 'skipped' as const }));
+
+    const [sshDocker, httpPort, httpsPort] = await Promise.all([
+      withTimeout(sshAndDocker, SSH_PROBE_TIMEOUT_MS, { ssh: 'timeout' as const, docker: 'skipped' as const }),
+      probeTcpPort(host, 80),
+      probeTcpPort(host, 443),
+    ]);
+    return { ssh: sshDocker.ssh, docker: sshDocker.docker, httpPort, httpsPort };
   },
 
-  /** server_unreachable / app_error / deploy_failed for the alert and the API. */
+  /** server_unreachable / app_error / deploy_failed, plus per-check server diagnostics, for the alert and the API. */
   async diagnose(
     candidate: Candidate,
     result: { statusCode?: number; error?: string },
-    server: ServerInfo | null
-  ): Promise<DownReason> {
+    server: ServerInfo | null,
+    now: Date = new Date()
+  ): Promise<{ reason: DownReason; diagnostics: ServerDiagnostics | null }> {
     try {
       const [latest] = await db
         .select({ status: deployments.status })
@@ -271,15 +366,18 @@ export const appHealthService = {
         .orderBy(desc(deployments.createdAt))
         .limit(1);
       const hasAnswer = !!result.statusCode && result.statusCode > 0;
-      return classifyDownReason({
+      const outcomes = hasAnswer ? undefined : await this.probeServer(server);
+      const reason = classifyDownReason({
         statusCode: result.statusCode,
         error: result.error,
         latestDeployFailed: latest?.status === 'failed',
-        serverReachable: hasAnswer ? undefined : await this.probeServer(server),
+        serverReachable: outcomes && outcomes.ssh !== 'skipped' ? outcomes.ssh === 'ok' : undefined,
       });
+      const diagnostics = outcomes ? buildServerDiagnostics(outcomes, { managed: !(server?.byos ?? true), now }) : null;
+      return { reason, diagnostics };
     } catch (err) {
       logger.warn({ err, projectId: candidate.projectId }, 'Could not work out why the app is down');
-      return classifyDownReason({ statusCode: result.statusCode, error: result.error });
+      return { reason: classifyDownReason({ statusCode: result.statusCode, error: result.error }), diagnostics: null };
     }
   },
 
@@ -287,7 +385,15 @@ export const appHealthService = {
   async announce(
     candidate: Candidate,
     kind: 'down' | 'reminder' | 'up',
-    details: { statusCode?: number; error?: string; downForMs?: number; reason?: DownReason; byos?: boolean }
+    details: {
+      statusCode?: number;
+      error?: string;
+      downForMs?: number;
+      reason?: DownReason;
+      byos?: boolean;
+      /** The first failed server check's next step, when the diagnostics found one */
+      advice?: string;
+    }
   ): Promise<void> {
     const isDown = kind !== 'up';
     const reason = details.reason ?? 'app_error';
@@ -299,7 +405,7 @@ export const appHealthService = {
         {
           status: isDown ? 'unhealthy' : 'healthy',
           message: isDown
-            ? `${kind === 'reminder' ? `Still down after ${formatDuration(details.downForMs ?? 0)}: ` : ''}${candidate.url} is not answering${answer} — ${reason}. ${describeDownReason(reason, details.byos ?? false)}`
+            ? `${kind === 'reminder' ? `Still down after ${formatDuration(details.downForMs ?? 0)}: ` : ''}${candidate.url} is not answering${answer} — ${reason}. ${details.advice ?? describeDownReason(reason, details.byos ?? false)}`
             : `${candidate.url} is answering again`,
         }
       );

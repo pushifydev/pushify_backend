@@ -124,3 +124,123 @@ export function formatDuration(ms: number): string {
   const rest = minutes % 60;
   return rest ? `${hours} hour${hours === 1 ? '' : 's'} ${rest} minute${rest === 1 ? '' : 's'}` : `${hours} hour${hours === 1 ? '' : 's'}`;
 }
+
+/**
+ * Server diagnostics for an app that gives no HTTP answer at all. "Server unreachable" alone does
+ * not tell a customer what to fix, so each layer is checked on its own — SSH (is the machine up
+ * and reachable), the Docker daemon (can it run the app) and the proxy ports 80/443 (can traffic
+ * get in) — and the first one that fails comes with a concrete next step.
+ */
+export type ServerCheckName = 'ssh' | 'docker' | 'http_port' | 'https_port';
+
+/**
+ * ok: worked. timeout: no answer at all (firewall drop, machine off). refused: the host answered
+ * but nothing listens. auth_failed: SSH answered but rejected our key. failed: any other error.
+ * skipped: could not be tried (no IP/key, or SSH failed so Docker cannot be asked).
+ */
+export type ServerCheckOutcome = 'ok' | 'timeout' | 'refused' | 'auth_failed' | 'failed' | 'skipped';
+
+export interface ServerCheck {
+  check: ServerCheckName;
+  outcome: ServerCheckOutcome;
+  /** true / false, or null when the check was skipped */
+  ok: boolean | null;
+  /** What this outcome most likely means and what to do about it; null when ok or skipped */
+  advice: string | null;
+}
+
+export interface ServerDiagnostics {
+  checkedAt: string;
+  checks: ServerCheck[];
+  /** The first check that failed, in the order a person would fix them */
+  failedCheck: ServerCheckName | null;
+  /** The advice of that first failed check */
+  advice: string | null;
+  /** Managed servers are Pushify's to fix: operations is alerted instead of only the customer */
+  managed: boolean;
+}
+
+export interface ServerProbeOutcomes {
+  ssh: ServerCheckOutcome;
+  docker: ServerCheckOutcome;
+  httpPort: ServerCheckOutcome;
+  httpsPort: ServerCheckOutcome;
+}
+
+/** Re-run the diagnostics at most this often while a project stays down without an HTTP answer. */
+export const DIAGNOSTICS_REFRESH_MS = 60 * 60 * 1000;
+
+const CHECK_ORDER: ServerCheckName[] = ['ssh', 'docker', 'http_port', 'https_port'];
+
+function adviceFor(check: ServerCheckName, outcome: ServerCheckOutcome): string | null {
+  if (outcome === 'ok' || outcome === 'skipped') return null;
+  switch (check) {
+    case 'ssh':
+      if (outcome === 'timeout')
+        return 'SSH connection timed out: the server may be powered off or offline, or a firewall is dropping port 22. Check the server in your provider panel and allow inbound TCP 22.';
+      if (outcome === 'refused')
+        return 'SSH connection refused: the server is up but SSH is not listening on port 22. Start the SSH service (systemctl start ssh) from your provider console.';
+      if (outcome === 'auth_failed')
+        return "SSH login rejected: Pushify's key is no longer accepted. Re-add the Pushify public key to /root/.ssh/authorized_keys.";
+      return 'SSH connection failed: check that the server is running and reachable on port 22.';
+    case 'docker':
+      return 'Docker is not running on the server, so the app cannot run. Start it with "systemctl start docker" and check "journalctl -u docker" (a full disk is a common cause).';
+    case 'http_port':
+    case 'https_port': {
+      const port = check === 'http_port' ? 80 : 443;
+      if (outcome === 'refused')
+        return `Nothing is listening on port ${port}: the proxy is down. Check it with "docker ps -a" and restart it, or redeploy the app.`;
+      return `Port ${port} is not reachable from the internet: a firewall or security group may be blocking it. Allow inbound TCP ${port}.`;
+    }
+  }
+}
+
+/** Turn raw probe outcomes into what the status API and the alerts show. */
+export function buildServerDiagnostics(
+  outcomes: ServerProbeOutcomes,
+  options: { managed: boolean; now?: Date }
+): ServerDiagnostics {
+  const byCheck: Record<ServerCheckName, ServerCheckOutcome> = {
+    ssh: outcomes.ssh,
+    // Docker is asked over SSH: without SSH it is unknown, not broken.
+    docker: outcomes.ssh === 'ok' ? outcomes.docker : 'skipped',
+    http_port: outcomes.httpPort,
+    https_port: outcomes.httpsPort,
+  };
+  const checks: ServerCheck[] = CHECK_ORDER.map((check) => {
+    const outcome = byCheck[check];
+    return { check, outcome, ok: outcome === 'skipped' ? null : outcome === 'ok', advice: adviceFor(check, outcome) };
+  });
+  const firstFailed = checks.find((c) => c.ok === false) ?? null;
+  const managedNote = ' This is a Pushify-managed server: our operations team has been alerted.';
+  return {
+    checkedAt: (options.now ?? new Date()).toISOString(),
+    checks,
+    failedCheck: firstFailed?.check ?? null,
+    advice: firstFailed?.advice ? `${firstFailed.advice}${options.managed ? managedNote : ''}` : null,
+    managed: options.managed,
+  };
+}
+
+/** Should the stored diagnostics be refreshed now? */
+export function diagnosticsDue(previous: { checkedAt: string } | null | undefined, now: Date): boolean {
+  if (!previous?.checkedAt) return true;
+  const at = Date.parse(previous.checkedAt);
+  return Number.isNaN(at) || now.getTime() - at >= DIAGNOSTICS_REFRESH_MS;
+}
+
+/** Map a socket / SSH error to an outcome. */
+export function classifyProbeError(err: unknown): ServerCheckOutcome {
+  const e = (err ?? {}) as { code?: string; level?: string; message?: string };
+  const code = e.code ?? '';
+  const message = (e.message ?? String(err ?? '')).toLowerCase();
+  if (e.level === 'client-authentication' || message.includes('authentication')) return 'auth_failed';
+  if (code === 'ECONNREFUSED' || message.includes('econnrefused') || message.includes('refused')) return 'refused';
+  if (
+    ['ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'EHOSTDOWN'].includes(code) ||
+    message.includes('timed out') ||
+    message.includes('timeout')
+  )
+    return 'timeout';
+  return 'failed';
+}
