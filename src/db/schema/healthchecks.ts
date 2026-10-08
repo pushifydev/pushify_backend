@@ -1,5 +1,6 @@
-import { pgTable, uuid, varchar, timestamp, boolean, integer, smallint, pgEnum, text } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, boolean, integer, smallint, pgEnum, text, jsonb } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
+import type { ServerDiagnostics } from '../../lib/app-health';
 import { projects } from './projects';
 import { deployments } from './deployments';
 
@@ -87,6 +88,8 @@ export const projectHealthState = pgTable('project_health_state', {
   downReason: varchar('down_reason', { length: 32 }),
   /** Reminders sent for the current outage: 0 none, 1 after 24h, 2 after 72h */
   reminderStep: smallint('reminder_step').default(0).notNull(),
+  /** SSH / Docker / ports 80-443 checks from when the app last gave no HTTP answer (null while up) */
+  diagnostics: jsonb('diagnostics').$type<ServerDiagnostics>(),
   lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });

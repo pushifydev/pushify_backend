@@ -33,6 +33,7 @@ export type AdminEvent =
   | 'certificate.expiring'
   | 'resource.pressure'
   | 'server.disk_full'
+  | 'server.unreachable'
   | 'deletion.purge_stuck';
 
 export const ADMIN_EVENT_TITLES: Record<AdminEvent, string> = {
@@ -60,6 +61,7 @@ export const ADMIN_EVENT_TITLES: Record<AdminEvent, string> = {
   'backup.verify_failed': 'Backup restore test failed',
   'certificate.expiring': 'HTTPS certificate expiring soon',
   'resource.pressure': 'An app is running out of memory or CPU',
+  'server.unreachable': 'A managed server is unreachable',
   'server.disk_full': 'A server is running out of disk',
   'deletion.purge_stuck': 'Account deletion purge step keeps failing',
 };

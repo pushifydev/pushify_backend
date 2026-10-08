@@ -231,6 +231,7 @@ export const healthCheckService = {
         downSince: null,
         notifiedAt: null,
         downReason: null,
+        diagnostics: null,
         reminderStep: 0,
         lastCheckedAt: null,
       }
