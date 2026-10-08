@@ -622,6 +622,10 @@ export const notificationService = {
       'deployment.failed': '❌',
       'health.unhealthy': '🚨',
       'health.recovered': '💚',
+      'backup.success': '💾',
+      'backup.failed': '❌',
+      'backup.warning': '⚠️',
+      'backup.missed': '⏰',
       test: '🔔',
     };
     return emojis[event] || '📢';
@@ -634,6 +638,10 @@ export const notificationService = {
       'deployment.failed': '#e74c3c',
       'health.unhealthy': '#e74c3c',
       'health.recovered': '#2ecc71',
+      'backup.success': '#2ecc71',
+      'backup.failed': '#e74c3c',
+      'backup.warning': '#f39c12',
+      'backup.missed': '#e74c3c',
       test: '#9b59b6',
     };
     return colors[event] || '#95a5a6';
@@ -646,6 +654,10 @@ export const notificationService = {
       'deployment.failed': 'Deployment Failed',
       'health.unhealthy': 'Health Check Failed',
       'health.recovered': 'Health Check Recovered',
+      'backup.success': 'Backup Completed',
+      'backup.failed': 'Backup Failed',
+      'backup.warning': 'Backup Completed With Warnings',
+      'backup.missed': 'Expected Backup Missing',
       test: 'Test Notification',
     };
     return titles[event] || event;

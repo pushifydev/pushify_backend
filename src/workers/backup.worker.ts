@@ -2,6 +2,7 @@ import { databaseRepository } from '../repositories/database.repository';
 import { databaseBackupService } from '../services/database-backup.service';
 import { certExpiryService } from '../services/cert-expiry.service';
 import { isBackupDue } from '../lib/backup-schedule';
+import { BACKUP_EVENTS } from '../lib/backup-alerts';
 import { logger } from '../lib/logger';
 
 // Every 15 minutes, not hourly: a database set to back up every hour would otherwise wait up to
@@ -19,6 +20,8 @@ let isRunning = false;
 let lastCleanup = 0;
 let lastVerify = 0;
 let lastCertCheck = 0;
+/** databaseId → lastBackupAt (ms) already reported as missed, so the alarm fires once per gap */
+const missedAlerted = new Map<string, number>();
 
 /**
  * Start the backup worker
@@ -64,7 +67,21 @@ async function pollForBackups(): Promise<void> {
           logger.info({ databaseId: database.id, name: database.name }, 'Automatic backup started');
         } catch (error) {
           logger.error({ error, databaseId: database.id }, 'Failed to start automatic backup');
+          // A backup that never started is a failed backup, not a silent one
+          await databaseBackupService.notifyBackupEvent(database.id, BACKUP_EVENTS.failed, {
+            message: `Automatic backup could not start: ${error instanceof Error ? error.message : 'unknown error'}`,
+          });
         }
+      }
+
+      // Backups whose process died, and databases whose expected backup never arrived
+      try {
+        const stuck = await databaseBackupService.failStuckBackups();
+        if (stuck > 0) logger.warn({ stuck }, 'Marked stuck backups as failed');
+        const missed = await databaseBackupService.alertMissedBackups(missedAlerted);
+        if (missed > 0) logger.warn({ missed }, 'Missed backup alerts sent');
+      } catch (error) {
+        logger.error({ err: error }, 'Error checking stuck or missed backups');
       }
 
       // Restore-verify due backups (a few per pass, weekly per database)

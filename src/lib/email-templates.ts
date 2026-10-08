@@ -301,6 +301,10 @@ const EVENT_META: Record<string, EventMeta> = {
   'deployment.failed': { title: 'Deployment failed', tone: 'danger' },
   'health.unhealthy': { title: 'Health check failed', tone: 'danger' },
   'health.recovered': { title: 'Health check recovered', tone: 'success' },
+  'backup.success': { title: 'Backup completed', tone: 'success' },
+  'backup.failed': { title: 'Backup failed', tone: 'danger' },
+  'backup.warning': { title: 'Backup completed with warnings', tone: 'danger' },
+  'backup.missed': { title: 'Expected backup missing', tone: 'danger' },
   test: { title: 'Test notification', tone: 'neutral' },
 };
 
@@ -315,6 +319,10 @@ export function getNotificationEventEmoji(event: string): string {
     'deployment.failed': '❌',
     'health.unhealthy': '🚨',
     'health.recovered': '💚',
+    'backup.success': '💾',
+    'backup.failed': '❌',
+    'backup.warning': '⚠️',
+    'backup.missed': '⏰',
     test: '🔔',
   };
   return map[event] ?? '📢';
@@ -328,6 +336,10 @@ export function getNotificationEventColor(event: string): string {
     'deployment.failed': '#ef4444',
     'health.unhealthy': '#ef4444',
     'health.recovered': '#22c55e',
+    'backup.success': '#22c55e',
+    'backup.failed': '#ef4444',
+    'backup.warning': '#f59e0b',
+    'backup.missed': '#ef4444',
     test: '#a78bfa',
   };
   return map[event] ?? '#737373';
