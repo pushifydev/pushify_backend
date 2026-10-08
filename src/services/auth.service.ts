@@ -374,10 +374,12 @@ export const authService = {
 
     const userId = payload.sub!;
 
-    // Verify session exists
+    // Consume the session atomically before issuing anything: the DELETE is the check, so of
+    // two concurrent requests with the same refresh token only one deletes the row and the
+    // other gets 0 rows → 401. A separate find + later delete would let both through.
     const tokenHash = await hashToken(refreshToken);
-    const session = await userRepository.findSessionByTokenHash(tokenHash);
-    if (!session) {
+    const consumed = await userRepository.deleteSessionByTokenHash(tokenHash);
+    if (consumed === 0) {
       throw new HTTPException(401, { message: t(locale, 'auth', 'sessionNotFound') });
     }
 
@@ -396,8 +398,7 @@ export const authService = {
     // Generate new tokens (rotation)
     const tokens = await generateTokenPair(userId, organizationId);
 
-    // Rotate session
-    await userRepository.deleteSessionByTokenHash(tokenHash);
+    // Rotate session (the old one was already consumed above)
     await this.createSession(userId, tokens.refreshToken);
 
     return tokens;
