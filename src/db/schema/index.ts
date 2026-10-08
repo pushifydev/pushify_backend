@@ -37,6 +37,9 @@ export * from './previews';
 // Container Metrics
 export * from './metrics';
 
+// Per-app HTTP traffic (hourly)
+export * from './traffic';
+
 // API Keys
 export * from './apikeys';
 

@@ -470,6 +470,13 @@
       "when": 1787270400026,
       "tag": "0067_server_size_nano",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1787270400027,
+      "tag": "0068_project_traffic",
+      "breakpoints": true
     }
   ]
 }

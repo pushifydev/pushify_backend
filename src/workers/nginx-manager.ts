@@ -309,6 +309,27 @@ export interface ProjectSitesConfig {
   /** Every replica's host port; one entry means a single container (the usual case). */
   containerPorts?: number[];
   domains: ProjectSiteDomain[];
+  /**
+   * Project id: when set, the blocks that serve the app also log to
+   * TRAFFIC_LOG_DIR/<id>.log for traffic analytics (unset = analytics off for this site).
+   */
+  trafficLogId?: string;
+}
+
+/** Per-app access logs, collected and aggregated hourly by the traffic analytics worker. */
+export const TRAFFIC_LOG_DIR = '/var/log/nginx/pushify-traffic';
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The server-level access_log lines for an app. The http-level log is named again because a
+ * server-level access_log otherwise replaces it. `combined` is built into nginx, so no change to
+ * nginx.conf is needed on existing servers; the buffer keeps the extra write cost small.
+ */
+export function trafficLogLines(trafficLogId?: string): string {
+  if (!trafficLogId || !UUID_RE.test(trafficLogId)) return '';
+  return `
+    access_log /var/log/nginx/access.log;
+    access_log ${TRAFFIC_LOG_DIR}/${trafficLogId.toLowerCase()}.log combined buffer=64k flush=1m;`;
 }
 
 /**
@@ -434,12 +455,15 @@ function renderProjectDomain(
   containerPort: number,
   index: number,
   upstreamName?: string | null,
-  staticRoot?: string
+  staticRoot?: string,
+  trafficLogId?: string
 ) {
   // One rate-limit zone per domain: two domains of one project each with rate limiting on
   // would otherwise declare the same zone twice and fail `nginx -t`.
   const zoneKey = index === 0 ? projectSlug : `${projectSlug}_${index}`;
-  const app = appLocation(projectSlug, zoneKey, containerPort, site.nginxSettings, upstreamName, staticRoot);
+  const location = appLocation(projectSlug, zoneKey, containerPort, site.nginxSettings, upstreamName, staticRoot);
+  // Only blocks that serve the app log to the traffic file — redirects are not app traffic.
+  const app = { ...location, body: trafficLogLines(trafficLogId) + location.body };
   const blocks: string[] = [];
   const aliases = site.aliases ?? [];
   const sslAliases = (site.sslAliases ?? []).filter((a) => aliases.includes(a));
@@ -531,7 +555,15 @@ export function generateProjectSitesConfig(config: ProjectSitesConfig): string {
   const ports = config.containerPorts?.length ? config.containerPorts : [config.containerPort];
   const upstream = config.staticRoot ? { name: null, block: '' } : proxyUpstream(config.projectSlug, ports);
   const rendered = config.domains.map((site, i) =>
-    renderProjectDomain(site, config.projectSlug, config.containerPort, i, upstream.name, config.staticRoot)
+    renderProjectDomain(
+      site,
+      config.projectSlug,
+      config.containerPort,
+      i,
+      upstream.name,
+      config.staticRoot,
+      config.trafficLogId
+    )
   );
   const zones = [upstream.block, ...rendered.map((r) => r.zone)].filter(Boolean);
   const names = config.domains
@@ -558,7 +590,8 @@ export async function writeProjectSites(
   const configPath = `${NGINX_SITES_DIR}/${siteFileName}`;
   const backupPath = `${PUSHIFY_SITES_DIR}/${siteFileName}.prev`;
 
-  await ssh.exec(`mkdir -p ${PUSHIFY_SITES_DIR} ${ACME_WEBROOT}`);
+  // nginx -t fails when an access_log's directory is missing, so it exists before the vhost does.
+  await ssh.exec(`mkdir -p ${PUSHIFY_SITES_DIR} ${ACME_WEBROOT}${config.trafficLogId ? ` ${TRAFFIC_LOG_DIR}` : ''}`);
 
   if (config.domains.length === 0) {
     await removeSite(ssh, config.projectSlug);

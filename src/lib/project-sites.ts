@@ -7,6 +7,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { projects } from '../db/schema/projects';
 import { staticSiteKey } from './static-upload';
+import { isTrafficAnalyticsEnabledFor } from './traffic-analytics';
 import {
   writeProjectSites,
   reloadNginx,
@@ -143,11 +144,16 @@ export async function syncProjectSites(
   // can write an app proxy for it — which 502'd, then fell back to the wake endpoint.
   let staticRoot: string | undefined;
   let fileSlug = options.projectSlug;
+  let trafficLogId: string | undefined;
   if (environment === 'production') {
     const project = await db.query.projects.findFirst({
       where: eq(projects.id, options.projectId),
       columns: { id: true, slug: true, settings: true },
     });
+    // Traffic analytics: on unless switched off globally or in the project's settings.
+    if (project && isTrafficAnalyticsEnabledFor(project.settings as Record<string, unknown> | null)) {
+      trafficLogId = project.id;
+    }
     if ((project?.settings as Record<string, unknown> | null)?.static === true) {
       const key = staticSiteKey(project!);
       staticRoot = `/opt/pushify/site-studio/${key}`;
@@ -205,6 +211,7 @@ export async function syncProjectSites(
       containerPort: options.containerPort,
       staticRoot,
       domains: plan.map(toSite),
+      trafficLogId,
     });
     if (!result.success) return result;
     const reload = await reloadNginx(ssh);

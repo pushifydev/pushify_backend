@@ -27,6 +27,7 @@ import { startRetentionWorker, stopRetentionWorker } from '../workers/retention.
 import { startStoppedServerWorker, stopStoppedServerWorker } from '../workers/stopped-server.worker';
 import { startOnboardingWorker, stopOnboardingWorker } from '../workers/onboarding.worker';
 import { startDigestWorker, stopDigestWorker } from '../workers/digest.worker';
+import { startTrafficAnalyticsWorker, stopTrafficAnalyticsWorker } from '../workers/traffic-analytics.worker';
 import { reconcileProvisioningServers, gcOrphanedLocalDeployments } from '../services/server-reconcile.service';
 import { closeQueues } from '../lib/queue';
 import {
@@ -89,6 +90,7 @@ export async function startBackgroundWorkers(): Promise<void> {
   startStoppedServerWorker();
   startOnboardingWorker();
   startDigestWorker();
+  startTrafficAnalyticsWorker();
 
   const adminNotifyWorker = startAdminNotifyWorker();
   if (adminNotifyWorker) {
@@ -179,6 +181,7 @@ export async function stopBackgroundWorkers(): Promise<void> {
   stopStoppedServerWorker();
   stopOnboardingWorker();
   stopDigestWorker();
+  stopTrafficAnalyticsWorker();
   stopDeploymentWorker();
   stopHealthCheckWorker();
   stopMetricsWorker();
