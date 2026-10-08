@@ -130,9 +130,14 @@ export const userRepository = {
     });
   },
 
-  // Delete session by token hash
-  async deleteSessionByTokenHash(tokenHash: string) {
-    await db.delete(userSessions).where(eq(userSessions.tokenHash, tokenHash));
+  // Delete session by token hash. Returns the number of deleted rows, so callers can use it
+  // as an atomic "consume": of two concurrent deletes for the same hash only one gets 1.
+  async deleteSessionByTokenHash(tokenHash: string): Promise<number> {
+    const deleted = await db
+      .delete(userSessions)
+      .where(eq(userSessions.tokenHash, tokenHash))
+      .returning({ id: userSessions.id });
+    return deleted.length;
   },
 
   // Delete all sessions for user

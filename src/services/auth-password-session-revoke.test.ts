@@ -31,7 +31,9 @@ vi.mock('../repositories/user.repository', () => ({
     findSessionByTokenHash: async (tokenHash: string) =>
       store.sessions.find((s) => s.tokenHash === tokenHash),
     deleteSessionByTokenHash: async (tokenHash: string) => {
+      const before = store.sessions.length;
       store.sessions = store.sessions.filter((s) => s.tokenHash !== tokenHash);
+      return before - store.sessions.length;
     },
     deleteAllSessions: async (userId: string) => {
       store.sessions = store.sessions.filter((s) => s.userId !== userId);
