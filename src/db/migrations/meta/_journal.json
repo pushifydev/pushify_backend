@@ -498,6 +498,13 @@
       "when": 1787270400030,
       "tag": "0071_abuse_review",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1787270400031,
+      "tag": "0072_traffic_latency_status",
+      "breakpoints": true
     }
   ]
 }

@@ -89,7 +89,8 @@ metricsRouter.get('/:projectId/metrics/timeseries', async (c) => {
   return c.json({ data: timeSeries });
 });
 
-// Hourly traffic for an app: requests, 4xx/5xx and bytes sent (?range=24h|7d, default 24h)
+// Hourly traffic for an app: requests, 2xx/3xx/4xx/5xx, bytes sent and p95 request time
+// (?range=24h|7d, default 24h)
 metricsRouter.get('/:projectId/analytics', async (c) => {
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
