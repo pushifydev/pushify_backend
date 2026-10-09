@@ -76,6 +76,17 @@ wakeRouter.all('/:slug', async (c) => {
 
   const project = await db.query.projects.findFirst({ where: eq(projects.slug, slug) });
 
+  // Neutral on purpose: visitors learn the app is suspended, not why.
+  if (project?.suspendedAt) {
+    return c.html(
+      wakePage({
+        title: 'This app is suspended',
+        message: 'This application has been suspended by Pushify and is not available.',
+      }),
+      503
+    );
+  }
+
   if (!project || !project.sleepEnabled || project.sleepState === 'awake') {
     if (project && (await neverServedBecauseBuildFailed(project.id))) {
       return c.html(
@@ -133,6 +144,9 @@ projectWakeRouter.post('/:projectId/wake', async (c) => {
     throw new HTTPException(404, { message: 'Project not found' });
   }
 
+  if (project.suspendedAt) {
+    throw new HTTPException(403, { message: 'This project is suspended' });
+  }
   const result = await requestWake(projectId);
   return c.json({ data: { result } });
 });

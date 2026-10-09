@@ -1,0 +1,189 @@
+# Acceptable Use signals for the hosted service (pushify.dev). Read by src/lib/abuse/rules.ts;
+# active only with ABUSE_DETECTION_ENABLED=true. Changing this file needs no code change — the
+# API reloads it on restart, and `npm run abuse:scan -- --dry-run` shows what it would flag.
+#
+# A rule matches by `target`:
+#   content  regex over the text of scanned repository files (optionally only paths matching `files`)
+#   path     regex over repository-relative file paths
+#   log      regex over the (already secret-masked) build log
+#   image    regex over a Docker image reference, for projects that deploy an image
+# Matches record only the rule, file and line — never the matched text.
+#
+# `strength` decides whether a rule can flag on its own:
+#   strong  one is enough (a proxy/VPN/tunnel binary, its config or a known panel)
+#   medium  two different medium rules are needed
+#   weak    never flags, only adds to the score (websockets, the word "proxy", …)
+
+policy:
+  # Queue the project for review at or above this score — and only with one strong
+  # or two different medium signals.
+  flagScore: 40
+  # With ABUSE_AUTO_SUSPEND=true only: suspend on its own at or above this score with a strong signal.
+  autoSuspendScore: 120
+  # Weak signals add at most this much in total.
+  weakCap: 10
+
+runtime:
+  # Egress (tx) of a project's containers over 24 hours that counts as unusual.
+  egressBytes24h: 53687091200 # 50 GiB
+  # Relay pattern: inbound and outbound nearly equal (min/max) while egress is high.
+  relayMinEgressBytes24h: 10737418240 # 10 GiB
+  relayRatio: 0.8
+  # Long-lived connections: established TCP connections into the app's containers at or
+  # above this count on every sample for this long.
+  connections: 200
+  connectionsSustainedMinutes: 30
+
+scan:
+  maxFileBytes: 524288
+  maxFiles: 4000
+  maxTotalBytes: 25165824
+  # Never read: environment files, keys and secrets (values are never scanned) and lockfiles.
+  skipPaths: '(^|/)(\.git|node_modules|vendor|\.venv|venv|__pycache__|dist|build|\.next|target)(/|$)|(^|/)\.env[^/]*$|\.(pem|key|p12|pfx|crt|der|keystore)$|(^|/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|Pipfile\.lock|Cargo\.lock|go\.sum|composer\.lock|Gemfile\.lock)$'
+  textPaths: '(^|/)(Dockerfile[^/]*|Containerfile|Procfile|Makefile|torrc[^/]*|docker-compose[^/]*\.ya?ml|compose[^/]*\.ya?ml)$|\.(sh|bash|py|js|mjs|cjs|ts|go|rs|rb|php|java|kt|cs|json|jsonc|json5|ya?ml|toml|ini|cfg|conf|txt|env\.example|service)$'
+
+rules:
+  # ── Proxy / VPN / tunnel software ───────────────────────────────────────────
+  - id: xray-core
+    strength: strong
+    weight: 60
+    target: content
+    pattern: 'XTLS/Xray-core|Xray-linux-(64|arm64)|teddysun/xray|ghcr\.io/xtls/xray|xray\s+run\s+-c'
+    message: Downloads or runs Xray (VLESS/VMess proxy)
+  - id: v2ray-core
+    strength: strong
+    weight: 60
+    target: content
+    pattern: 'v2fly/v2ray-core|v2fly/docker|v2ray-linux-(64|arm64)|v2ray\s+run\s+-c'
+    message: Downloads or runs V2Ray
+  - id: sing-box
+    strength: strong
+    weight: 60
+    target: content
+    pattern: 'SagerNet/sing-box|ghcr\.io/sagernet/sing-box|sing-box\s+run\s+-c'
+    message: Downloads or runs sing-box
+  - id: hysteria
+    strength: strong
+    weight: 60
+    target: content
+    pattern: 'apernet/hysteria|tobyxdd/hysteria'
+    message: Downloads or runs Hysteria
+  - id: trojan
+    strength: strong
+    weight: 60
+    target: content
+    pattern: 'p4gefau1t/trojan-go|trojan-gfw/trojan|trojan-go\s+-config'
+    message: Downloads or runs Trojan
+  - id: shadowsocks
+    strength: strong
+    weight: 60
+    target: content
+    pattern: 'shadowsocks/shadowsocks-rust|shadowsocks-libev|shadowsocks/go-shadowsocks2|\bss-server\s+-|\bssserver\s+-'
+    message: Installs or runs a Shadowsocks server
+  - id: mtproxy
+    strength: strong
+    weight: 60
+    target: content
+    pattern: 'TelegramMessenger/MTProxy|mtproto[-_ ]?proxy|\bMTProxy\b|telegrammessenger/proxy|9seconds/mtg'
+    message: Builds or runs a Telegram MTProxy
+  - id: gost-tunnel
+    strength: strong
+    weight: 60
+    target: content
+    pattern: 'ginuerzh/gost|go-gost/gost'
+    message: Downloads or runs the GOST tunnel
+  - id: tor-relay
+    strength: strong
+    weight: 60
+    target: content
+    files: '(^|/)torrc[^/]*$|Dockerfile'
+    pattern: '^\s*(ORPort\s+\d|ExitRelay\s+1|ExitPolicy\s+accept)'
+    message: Configures a Tor relay or exit
+  - id: proxy-protocol-config
+    strength: strong
+    weight: 60
+    target: content
+    pattern: '"protocol"\s*:\s*"(vless|vmess|trojan|shadowsocks|hysteria2?|tuic)"|xtls-rprx-vision|"realitySettings"'
+    message: Contains an Xray/V2Ray inbound or outbound configuration
+  - id: proxy-share-uri
+    strength: strong
+    weight: 50
+    target: content
+    pattern: '\b(vless|vmess|hysteria2|hy2|tuic)://'
+    message: Builds VLESS/VMess/Hysteria share links
+  - id: proxy-panel
+    strength: strong
+    weight: 60
+    target: content
+    pattern: 'SpiderPanel|MHSanaei/3x-ui|vaxilu/x-ui|alireza0/x-ui|Gozargah/Marzban|hiddify-manager|hiddify/hiddify'
+    message: Matches a known proxy/VPN management panel
+
+  # ── Open proxies and scanning ───────────────────────────────────────────────
+  - id: open-proxy-server
+    strength: medium
+    weight: 25
+    target: content
+    files: 'Dockerfile|Containerfile|\.sh$|Procfile|compose[^/]*\.ya?ml$|docker-compose'
+    pattern: '\b(3proxy|microsocks|tinyproxy|dante-server|danted|privoxy)\b'
+    message: Installs or runs an HTTP/SOCKS proxy server
+  - id: socks-server-library
+    strength: medium
+    weight: 20
+    target: content
+    pattern: 'armon/go-socks5|things-go/go-socks5|pysocks5server|socks5-server|socksv5|"socks-proxy-server"'
+    message: Uses a SOCKS server library
+  - id: network-scanner
+    strength: medium
+    weight: 25
+    target: content
+    files: 'Dockerfile|Containerfile|\.sh$|\.py$|Procfile|compose[^/]*\.ya?ml$|docker-compose|requirements[^/]*\.txt$'
+    pattern: '\b(masscan|zmap|zgrab2?|naabu|rustscan)\b|apt-get install[^\n]*\bnmap\b|python-nmap'
+    message: Installs or runs a network/port scanner
+  - id: ip-sni-scanner
+    strength: medium
+    weight: 25
+    target: content
+    pattern: 'sni[-_ ]?scan|clean[-_ ]?ip[-_ ]?scan|CloudflareScanner|XIU2/CloudflareSpeedTest|ip[-_ ]?scanner'
+    message: Scans IP ranges or SNI hosts
+  - id: tunnel-routes
+    strength: medium
+    weight: 20
+    target: content
+    pattern: '["''`]/(ws|tunnel|reverse|xhttp[\w-]*)/\{?(uuid|client_id|user_id|token)\}?'
+    message: Exposes per-client tunnel routes (/ws/{uuid}, /tunnel/{uuid}, /xhttp…)
+
+  # ── Weak: common in ordinary apps; never enough on their own ────────────────
+  - id: websocket
+    strength: weak
+    weight: 5
+    target: content
+    pattern: '\bWebSocket\b|socket\.io'
+    message: Uses WebSockets
+  - id: proxy-word
+    strength: weak
+    weight: 3
+    target: content
+    pattern: '\bproxy\b'
+    message: Mentions "proxy"
+  - id: net-admin
+    strength: weak
+    weight: 5
+    target: content
+    pattern: '\bNET_ADMIN\b|/dev/net/tun|net\.ipv4\.ip_forward'
+    message: Asks for network administration or a TUN device
+
+  # ── Build output ────────────────────────────────────────────────────────────
+  - id: build-log-proxy-binary
+    strength: strong
+    weight: 60
+    target: log
+    pattern: '\b(Xray|V2Ray|sing-box|hysteria|mtproto-proxy)\b[^\n]{0,40}\b(v?\d+\.\d+\.\d+|downloaded|installed|started)'
+    message: The build downloaded or started a proxy binary
+
+  # ── Image deploys ───────────────────────────────────────────────────────────
+  - id: proxy-image
+    strength: strong
+    weight: 60
+    target: image
+    pattern: 'teddysun/(xray|v2ray|shadowsocks)|v2fly/|sagernet/sing-box|telegrammessenger/proxy|nineseconds/mtg|xtls/xray|gogost/gost|tobyxdd/hysteria|ghcr\.io/mhsanaei/3x-ui|marzban'
+    message: Deploys a known proxy/VPN image

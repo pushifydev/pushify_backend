@@ -92,6 +92,15 @@ export const projects = pgTable('projects', {
   sleepState: varchar('sleep_state', { length: 10 }).default('awake').notNull(),
   lastWakeAt: timestamp('last_wake_at', { withTimezone: true }),
 
+  /**
+   * Suspended by a platform admin under the Acceptable Use Policy. The project is also `paused`
+   * (its containers are stopped); while `suspended_at` is set the owner cannot resume or deploy it.
+   */
+  suspendedAt: timestamp('suspended_at', { withTimezone: true }),
+  suspensionReason: text('suspension_reason'),
+  suspensionClause: varchar('suspension_clause', { length: 64 }),
+  suspensionEndsAt: timestamp('suspension_ends_at', { withTimezone: true }),
+
   // Metadata
   settings: jsonb('settings').default({}).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

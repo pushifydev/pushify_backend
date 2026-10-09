@@ -163,6 +163,29 @@ const envSchema = z.object({
     .optional()
     .transform((v) => !v || !/^(false|0|no|off)$/i.test(v.trim())),
 
+  /**
+   * Acceptable Use enforcement for the hosted service (pushify.dev): scan deploys and watch
+   * runtime signals of projects on managed servers, shared runners or the platform subdomain,
+   * and queue what matches for an admin. Off unless set — self-hosted installs decide their own
+   * policy. Nothing is ever stopped automatically unless ABUSE_AUTO_SUSPEND is also on.
+   */
+  ABUSE_DETECTION_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => !!v && /^(true|1|yes|on)$/i.test(v.trim())),
+  /**
+   * Suspend a project on its own when a deploy scan scores at or above the rules file's
+   * `autoSuspendScore` with a strong signal. Off by default; v1 policy is flag-and-review.
+   */
+  ABUSE_AUTO_SUSPEND: z
+    .string()
+    .optional()
+    .transform((v) => !!v && /^(true|1|yes|on)$/i.test(v.trim())),
+  /** The rules file; defaults to config/abuse-rules.yaml in the backend directory */
+  ABUSE_RULES_PATH: z.string().optional(),
+  /** Where users send abuse reports and appeals; shown in suspension emails */
+  ABUSE_CONTACT_EMAIL: z.string().email().default('abuse@pushify.dev'),
+
   // Rate Limiting (see middleware/rate-limit.ts)
   // Not z.coerce.boolean(): Boolean('false') is true, so RATE_LIMIT_ENABLED=false never disabled it.
   RATE_LIMIT_ENABLED: z

@@ -13,6 +13,8 @@ const ActivityActionEnum = z.enum([
   'project.deleted',
   'project.paused',
   'project.resumed',
+  'project.suspended',
+  'project.unsuspended',
   'deployment.created',
   'deployment.cancelled',
   'deployment.redeployed',

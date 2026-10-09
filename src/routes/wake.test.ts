@@ -92,3 +92,25 @@ describe('wake endpoint: what a visitor sees when the app has no container', () 
     expect(res.status).toBe(502);
   });
 });
+
+describe('wake endpoint: suspended projects', () => {
+  it('shows a neutral "suspended" page, never wakes the app and never says why', async () => {
+    vi.mocked(requestWake).mockClear();
+    state.project = {
+      id: 'proj-2',
+      slug: 'relay',
+      sleepEnabled: true,
+      sleepState: 'sleeping',
+      suspendedAt: new Date(),
+      suspensionReason: 'Runs a VLESS relay',
+    };
+
+    const res = await wakeRoutes.request('/relay');
+
+    expect(res.status).toBe(503);
+    const body = await res.text();
+    expect(body).toContain('This app is suspended');
+    expect(body).not.toContain('VLESS');
+    expect(requestWake).not.toHaveBeenCalled();
+  });
+});

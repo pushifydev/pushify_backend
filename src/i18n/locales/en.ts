@@ -52,6 +52,7 @@ export interface TranslationKeys {
   };
   projects: {
     notFound: string;
+    suspended: string;
     nameRequired: string;
     created: string;
     updated: string;
@@ -420,6 +421,7 @@ export const en: TranslationKeys = {
   // Projects
   projects: {
     notFound: 'Project not found',
+    suspended: 'This project is suspended under the Acceptable Use Policy. Contact abuse@pushify.dev to appeal.',
     nameRequired: 'Project name is required',
     created: 'Project created successfully',
     updated: 'Project updated successfully',

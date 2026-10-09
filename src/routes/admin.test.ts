@@ -49,6 +49,11 @@ vi.mock('../services/admin.service', () => ({
   recordAdminAccess: mocks.recordAdminAccess,
 }));
 
+vi.mock('../services/abuse.service', () => ({
+  abuseService: new Proxy({}, { get: () => mocks.service }),
+  AUP_CLAUSES: { 'proxy-vpn': 'Acceptable Use §2.1' },
+}));
+
 vi.mock('../config/env', () => ({
   env: { ADMIN_EMAILS: 'root@example.com, ops@example.com', TRUSTED_PROXY_HOPS: 0 },
 }));
@@ -61,10 +66,17 @@ import { adminRoutes } from './admin';
 
 const endpoints = adminRoutes.routes
   .filter((r) => r.method !== 'ALL')
-  .map((r) => ({ method: r.method, path: r.path.replace(':userId', ADMIN) }));
+  .map((r) => ({ method: r.method, path: r.path.replace(/:\w+/g, ADMIN) }));
+
+// A body every write route accepts (suspend needs a reason and a clause; the rest ignore extras)
+const WRITE_BODY = JSON.stringify({ reason: 'Runs a VLESS relay on the platform subdomain', clause: 'proxy-vpn' });
 
 const call = (path: string, method: string, headers: Record<string, string> = {}) =>
-  adminRoutes.request(path, { method, headers });
+  adminRoutes.request(path, {
+    method,
+    headers: method === 'GET' ? headers : { ...headers, 'content-type': 'application/json' },
+    body: method === 'GET' ? undefined : WRITE_BODY,
+  });
 
 beforeEach(() => {
   mocks.findById.mockReset().mockImplementation(async (id: string) => USERS[id]);

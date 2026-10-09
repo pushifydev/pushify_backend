@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { authMiddleware } from '../middleware/auth';
 import { requirePlatformAdmin } from '../middleware/require-platform-admin';
 import { adminService } from '../services/admin.service';
+import { abuseService, AUP_CLAUSES, type AupClause } from '../services/abuse.service';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 
@@ -66,6 +67,76 @@ adminRouter.get('/activity', async (c) => {
 adminRouter.get('/auth-events', async (c) => {
   const query = parseQuery(c, pageSchema);
   return c.json({ data: await adminService.listAuthEvents(query) });
+});
+
+// ── Acceptable Use review queue ──────────────────────────────────────────────
+
+const flagListSchema = pageSchema.extend({
+  status: z.enum(['open', 'dismissed', 'actioned', 'all']).default('open'),
+});
+
+const suspendSchema = z.object({
+  reason: z.string().trim().min(10).max(2000),
+  clause: z.enum(Object.keys(AUP_CLAUSES) as [AupClause, ...AupClause[]]),
+  /** Days until the suspension lapses for review; null = until an appeal is resolved */
+  days: z.number().int().min(1).max(365).nullable().default(null),
+  flagId: z.string().uuid().nullable().optional(),
+});
+
+const noteSchema = z.object({ note: z.string().trim().max(2000).nullable().optional() });
+
+async function parseBody<T extends z.ZodTypeAny>(c: Context<AppEnv>, schema: T): Promise<z.infer<T>> {
+  const parsed = schema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) {
+    throw new HTTPException(400, { message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') });
+  }
+  return parsed.data;
+}
+
+function uuidParam(c: Context<AppEnv>, name: string): string {
+  const id = uuidSchema.safeParse(c.req.param(name));
+  if (!id.success) throw new HTTPException(404, { message: 'Not found' });
+  return id.data;
+}
+
+adminRouter.get('/abuse/flags', async (c) => {
+  const query = parseQuery(c, flagListSchema);
+  return c.json({ data: await abuseService.listFlags(query) });
+});
+
+adminRouter.get('/abuse/clauses', async (c) => c.json({ data: await abuseService.clauses() }));
+
+adminRouter.post('/abuse/flags/:flagId/dismiss', async (c) => {
+  const { note } = await parseBody(c, noteSchema);
+  await abuseService.dismissFlag(uuidParam(c, 'flagId'), c.get('userId')!, note ?? null);
+  return c.json({ data: { ok: true } });
+});
+
+adminRouter.post('/abuse/projects/:projectId/suspend', async (c) => {
+  const body = await parseBody(c, suspendSchema);
+  const result = await abuseService.suspendProject({
+    projectId: uuidParam(c, 'projectId'),
+    adminUserId: c.get('userId')!,
+    reason: body.reason,
+    clause: body.clause,
+    endsAt: body.days ? new Date(Date.now() + body.days * 86_400_000) : null,
+    flagId: body.flagId ?? null,
+  });
+  return c.json({ data: result });
+});
+
+adminRouter.post('/abuse/projects/:projectId/unsuspend', async (c) => {
+  const { note } = await parseBody(c, noteSchema);
+  const result = await abuseService.unsuspendProject({
+    projectId: uuidParam(c, 'projectId'),
+    adminUserId: c.get('userId')!,
+    note: note ?? null,
+  });
+  return c.json({ data: result });
+});
+
+adminRouter.get('/abuse/projects/:projectId/actions', async (c) => {
+  return c.json({ data: await abuseService.listActions([uuidParam(c, 'projectId')]) });
 });
 
 export { adminRouter as adminRoutes };
