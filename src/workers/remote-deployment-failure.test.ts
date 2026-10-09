@@ -177,6 +177,32 @@ describe('deployToRemoteServer: a failed deploy leaves the live container servin
     expectLiveUntouched('pushify-shop-blue');
   });
 
+  it('first deploy whose build fails: nothing started, never routed (wake page shows "Deployment failed")', async () => {
+    state.scenario = { existing: [], hasDockerfile: true, buildExit: 1, newRunning: true };
+
+    const result = await deploy();
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Docker build failed');
+    expect(result.deploymentUrl).toBeUndefined();
+    expect(state.commands.some((c) => c.startsWith('docker run '))).toBe(false);
+    expect(routeChanges()).toEqual([]);
+    expect(syncProjectSites).not.toHaveBeenCalled();
+    expect(addAutoSubdomainSite).not.toHaveBeenCalled();
+  });
+
+  it('build fails while the old container is already stopped (crash/sleep): it is not removed or re-routed', async () => {
+    // The fake reports the slot as existing regardless of its run state — exactly what the
+    // deploy sees for a container the sleep sweeper or a crash stopped earlier.
+    state.scenario = { existing: ['green'], hasDockerfile: false, buildExit: 1, newRunning: false };
+
+    const result = await deploy();
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Docker build failed');
+    expectLiveUntouched('pushify-shop-green');
+  });
+
   it('first deploy whose container crashes: reported as failed, never routed', async () => {
     state.scenario = { existing: [], hasDockerfile: false, buildExit: 0, newRunning: false };
 

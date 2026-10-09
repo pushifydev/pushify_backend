@@ -150,6 +150,24 @@ export async function requestWake(projectId: string): Promise<'started' | 'in-pr
   return 'failed';
 }
 
+/**
+ * A deploy marks a sleeping app awake before it builds (the new container is meant to come up
+ * running). When that deploy fails — typically a Docker build error — no new container exists
+ * and the old one is still stopped by the sweeper, yet the project reads `awake`: the wake
+ * endpoint then answers a permanent 502 instead of starting it, and the sweeper never touches
+ * it again. Put the project back to sleeping (only if nothing else changed it meanwhile) and
+ * wake it, so the previous container serves again.
+ */
+export async function wakeAfterFailedDeploy(
+  projectId: string
+): Promise<'started' | 'in-progress' | 'awake' | 'failed'> {
+  await db
+    .update(projects)
+    .set({ sleepState: 'sleeping' })
+    .where(and(eq(projects.id, projectId), eq(projects.sleepState, 'awake')));
+  return requestWake(projectId);
+}
+
 /** Find awake, sleep-enabled projects with no meaningful traffic across their idle window. */
 export async function sweepIdleProjects(): Promise<{ slept: number }> {
   const candidates = await db

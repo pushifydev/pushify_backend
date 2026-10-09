@@ -27,6 +27,7 @@ import { CRASH_LOG_LINES, formatContainerCrashSummary } from '../lib/container-c
 import { generateDockerfile, hasDockerfile, writeDockerfile } from './dockerfile';
 import { deployToRemoteServer, canDeployToServer, quickRollbackToDeployment } from './remote-deployment';
 import { publishStaticSite } from '../lib/static-site-publish';
+import { wakeAfterFailedDeploy } from './app-sleep.worker';
 import { staticUploadService, isUploadProject } from '../services/static-upload.service';
 import { staticSiteKey, type SiteFile } from '../lib/static-upload';
 import { buildMarketplaceDeployConfig } from '../marketplace/deploy-config';
@@ -401,6 +402,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
 
   let workDir: string | null = null;
   let githubStatusCtx: GitHubStatusContext | null = null;
+  let wasSleepingBeforeDeploy = false;
 
   try {
     addLog('🚀 Starting deployment...');
@@ -429,8 +431,10 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
     let volumeMounts = await getProjectVolumeMounts(project.id, deploySlug);
 
     // A deploy starts a fresh container — clear any sleep state and give the idle
-    // sweeper a fresh grace window.
+    // sweeper a fresh grace window. If the deploy fails, the stopped old container is
+    // woken again in the catch block (see wakeAfterFailedDeploy).
     if (project.sleepEnabled) {
+      wasSleepingBeforeDeploy = project.sleepState === 'sleeping';
       await db
         .update(projects)
         .set({ sleepState: 'awake', lastWakeAt: new Date() })
@@ -1494,6 +1498,11 @@ server {
       .then((r) => r[0]);
 
     await markDeploymentFailed(job.id, errorMessage, logBuffer.join('\n'));
+
+    if (wasSleepingBeforeDeploy) {
+      const woke = await wakeAfterFailedDeploy(job.projectId).catch(() => 'failed' as const);
+      logger.info({ deploymentId: job.id, projectId: job.projectId, woke }, 'Failed deploy: woke the previous container');
+    }
 
     if (job.isPreview && job.previewPrNumber != null) {
       await previewService.updatePreviewStatus(job.projectId, job.previewPrNumber, 'failed');
