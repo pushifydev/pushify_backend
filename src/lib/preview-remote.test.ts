@@ -57,8 +57,9 @@ describe('project teardown also drops the nginx vhosts the deployer writes', () 
 
   it('removes the production auto-subdomain site and every PR preview site', () => {
     expect(script).toContain('/etc/nginx/sites-enabled/pushify-shop ');
-    expect(script).toContain('/etc/nginx/sites-enabled/pushify-shop-pr-*');
-    expect(script).toContain('/etc/nginx/sites-available/pushify-shop-pr-*');
-    expect(script).toContain('/opt/pushify/nginx/pushify-shop-pr-*.conf');
+    // PR previews by exact number — a glob would also remove another project's "shop-pr-x" site
+    expect(script).toContain('/etc/nginx/sites-enabled /etc/nginx/sites-available /opt/pushify/nginx /etc/nginx/conf.d');
+    expect(script).toContain("-regex '.*/(pushify-shop-pr-[0-9]+(\\.conf)?|preview-shop-pr-[0-9]+\\.conf)' -delete");
+    expect(script).not.toContain('/etc/nginx/sites-enabled/pushify-shop-pr-*');
   });
 });

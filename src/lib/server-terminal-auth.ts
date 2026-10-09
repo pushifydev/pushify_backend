@@ -5,6 +5,7 @@ import { projects } from '../db/schema/projects';
 import { organizationMembers } from '../db/schema';
 import { decrypt } from './encryption';
 import { resolveProjectServerId } from './runner-routing';
+import { runnerSlugConflicts } from './project-containers';
 
 export class ServerTerminalAuthError extends Error {
   constructor(
@@ -118,6 +119,15 @@ export async function authorizeProjectShellAccess(
   // Defense in depth: the slug is interpolated into the remote docker-exec command.
   if (!/^[a-z0-9-]+$/.test(project.slug)) {
     throw new ServerTerminalAuthError('Invalid project slug', 'FORBIDDEN', 403);
+  }
+
+  // On a shared runner another organization's project may answer to the same container names
+  if ((await runnerSlugConflicts(project)).length > 0) {
+    throw new ServerTerminalAuthError(
+      'Shell is unavailable for this project: its name conflicts with another project on the shared runner. Contact support.',
+      'SLUG_CONFLICT',
+      409,
+    );
   }
 
   const targetServerId = resolveProjectServerId(project);

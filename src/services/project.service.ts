@@ -480,7 +480,8 @@ export const projectService = {
     const { exec } = await import('child_process');
     const { promisify } = await import('util');
     const execAsync = promisify(exec);
-    const cmd = buildRemoteTeardownScript(project.slug, !!isCompose);
+    const { projectContainerNames } = await import('../lib/project-containers');
+    const cmd = buildRemoteTeardownScript(project.slug, !!isCompose, await projectContainerNames(project.id, project.slug));
     await execAsync(cmd).catch((err) => {
       logger.warn({ projectId: project.id, err }, 'Local container cleanup had errors');
     });

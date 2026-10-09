@@ -10,6 +10,12 @@ import { projectImageReferenceFilters } from './project-image-names';
 import { staticSiteKey } from './static-upload';
 import { pickRunnerServerId } from './runner-routing';
 import { env } from '../config/env';
+import {
+  projectContainerPattern,
+  projectContainerNames,
+  runnerSlugConflicts,
+  type ProjectContainerNames,
+} from './project-containers';
 
 type ProjectRow = typeof projects.$inferSelect;
 
@@ -31,17 +37,22 @@ export function buildStaticTeardownScript(siteKey: string): string {
   ].join('; ');
 }
 
-export function buildRemoteTeardownScript(slug: string, isCompose: boolean): string {
+/**
+ * Remove everything a project put on a host. Matches by exact names only (project-containers.ts):
+ * on a shared runner, "anything starting with pushify-<slug>-" is other organizations' apps.
+ * `names` carries the project's worker and volume names from the database; without it, workers
+ * and named volumes are left alone rather than guessed.
+ */
+export function buildRemoteTeardownScript(slug: string, isCompose: boolean, names?: ProjectContainerNames): string {
   const safeSlug = shellEscapeSlug(slug);
   const base = `pushify-${safeSlug}`;
   const projectDir = `/opt/pushify/apps/${safeSlug}`;
+  const pattern = projectContainerPattern(safeSlug, names?.workers ?? []);
 
   const stopAllMatching = [
-    `ids=$(docker ps -aq --format '{{.Names}}' | grep -E '^${base}(-|$)|^pushify-preview-${safeSlug}' || true)`,
+    `ids=$(docker ps -a --format '{{.Names}}' | grep -E '${pattern}' || true)`,
     'if [ -n "$ids" ]; then docker rm -f $ids 2>/dev/null || true; fi',
-    `docker rm -f ${base} ${base}-blue ${base}-green ${base}-db 2>/dev/null || true`,
-    `docker rm -f $(docker ps -aq --filter "name=pushify-preview-${safeSlug}" 2>/dev/null) 2>/dev/null || true`,
-    `docker network rm ${base}-net pushify-${safeSlug}-net 2>/dev/null || true`,
+    `docker network rm ${base}-net 2>/dev/null || true`,
   ].join('; ');
 
   const composeDown = isCompose
@@ -49,7 +60,8 @@ export function buildRemoteTeardownScript(slug: string, isCompose: boolean): str
         `cd ${projectDir} 2>/dev/null && docker compose -p ${base} down -v 2>/dev/null || true`,
         // A customer's own compose file lives in their checkout, not in the project directory
         `cd ${projectDir}/repo 2>/dev/null && docker compose -p ${base} down -v --remove-orphans 2>/dev/null || true`,
-        `docker rm -f $(docker ps -aq --filter "name=${base}-" 2>/dev/null) 2>/dev/null || true`,
+        // Compose labels its containers with the project name — exact, unlike a name prefix
+        `docker ps -aq --filter label=com.docker.compose.project=${base} | xargs -r docker rm -f 2>/dev/null || true`,
         // Compose names its own network <project>_default and leaves it behind
         `docker network rm ${base}_default 2>/dev/null || true`,
       ].join('; ')
@@ -65,8 +77,12 @@ export function buildRemoteTeardownScript(slug: string, isCompose: boolean): str
 
   // Remove the project's persistent named volumes (pushify-vol-<slug>-*) — data is gone
   // with the project, matching user expectation on delete.
-  const removeVolumes =
-    `docker volume ls -q --filter name='^pushify-vol-${safeSlug}-' | xargs -r docker volume rm 2>/dev/null || true`;
+  // By exact name only: pushify-vol-<slug>-<name> cannot tell slug "a" + volume "shop-data"
+  // from slug "a-shop" + volume "data", so a prefix filter deleted other projects' data.
+  const volumeNames = (names?.volumes ?? []).filter((v) => /^pushify-vol-[a-z0-9-]+$/.test(v));
+  const removeVolumes = volumeNames.length
+    ? `docker volume rm ${volumeNames.join(' ')} 2>/dev/null || true`
+    : 'true';
 
   const filesystemAndNginx = [
     `rm -rf ${projectDir}`,
@@ -76,7 +92,8 @@ export function buildRemoteTeardownScript(slug: string, isCompose: boolean): str
     `rm -f /etc/nginx/sites-enabled/pushify-${safeSlug} /etc/nginx/sites-available/pushify-${safeSlug} /opt/pushify/nginx/pushify-${safeSlug}.conf 2>/dev/null || true`,
     // A domain-less app's public-port site (workers/public-port-proxy.ts)
     `rm -f /etc/nginx/sites-enabled/pushify-${safeSlug}.port /etc/nginx/sites-available/pushify-${safeSlug}.port /etc/nginx/sites-available/pushify-${safeSlug}.port.prev 2>/dev/null || true`,
-    `rm -f /etc/nginx/sites-enabled/pushify-${safeSlug}-pr-* /etc/nginx/sites-available/pushify-${safeSlug}-pr-* /opt/pushify/nginx/pushify-${safeSlug}-pr-*.conf /etc/nginx/conf.d/preview-${safeSlug}-pr-*.conf 2>/dev/null || true`,
+    // PR previews: -pr-<number> exactly (a glob would also take another project's "<slug>-pr-x")
+    `find /etc/nginx/sites-enabled /etc/nginx/sites-available /opt/pushify/nginx /etc/nginx/conf.d -maxdepth 1 -regextype posix-extended -regex '.*/(pushify-${safeSlug}-pr-[0-9]+(\\.conf)?|preview-${safeSlug}-pr-[0-9]+\\.conf)' -delete 2>/dev/null || true`,
     'nginx -t 2>/dev/null && nginx -s reload 2>/dev/null || true',
   ].join('; ');
 
@@ -90,7 +107,6 @@ async function serverHasProjectContainers(
   if (!server.ipv4 || !server.sshPrivateKey) return false;
 
   const safeSlug = shellEscapeSlug(slug);
-  const base = `pushify-${safeSlug}`;
   const ssh = await getSSHConnection({
     host: server.ipv4,
     port: 22,
@@ -99,7 +115,7 @@ async function serverHasProjectContainers(
   });
   try {
     const check = await ssh.exec(
-      `docker ps -a --format '{{.Names}}' | grep -E '^${base}(-|$)|^pushify-preview-${safeSlug}' || true`
+      `docker ps -a --format '{{.Names}}' | grep -E '${projectContainerPattern(safeSlug)}' || true`
     );
     return !!check.stdout.trim();
   } catch {
@@ -188,41 +204,67 @@ export async function resolveDeployServerForCleanup(
  * Stop running containers for a project (pause) without removing them. True when none of the
  * project's containers is left running afterwards.
  */
-export async function pauseProjectContainersOnServer(ssh: SSHClient, slug: string): Promise<boolean> {
+export async function pauseProjectContainersOnServer(
+  ssh: SSHClient,
+  slug: string,
+  workerNames: string[] = [],
+): Promise<boolean> {
   const safeSlug = shellEscapeSlug(slug);
   const base = `pushify-${safeSlug}`;
   const projectDir = `/opt/pushify/apps/${safeSlug}`;
-  const stopNames = `docker ps -q --format '{{.Names}}' | grep -E '^${base}(-|$)|^${base}-blue$|^${base}-green$' || true`;
+  const running =
+    `{ docker ps --format '{{.Names}}' | grep -E '${projectContainerPattern(safeSlug, workerNames)}'; ` +
+    `docker ps --filter label=com.docker.compose.project=${base} --format '{{.Names}}'; } | sort -u || true`;
   await ssh.exec(
     [
       `cd ${projectDir} 2>/dev/null && docker compose -p ${base} stop 2>/dev/null || true`,
-      `ids=$(${stopNames}); if [ -n "$ids" ]; then docker stop $ids 2>/dev/null; fi`,
+      `ids=$(${running}); if [ -n "$ids" ]; then docker stop $ids 2>/dev/null; fi`,
     ].join('; ')
   );
-  const left = await ssh.exec(stopNames);
+  const left = await ssh.exec(running);
   return !left.stdout.trim();
 }
 
 /** Start stopped containers for a project (resume). */
-export async function resumeProjectContainersOnServer(ssh: SSHClient, slug: string): Promise<boolean> {
+export async function resumeProjectContainersOnServer(
+  ssh: SSHClient,
+  slug: string,
+  workerNames: string[] = [],
+): Promise<boolean> {
   const safeSlug = shellEscapeSlug(slug);
   const base = `pushify-${safeSlug}`;
   const projectDir = `/opt/pushify/apps/${safeSlug}`;
+  const pattern = projectContainerPattern(safeSlug, workerNames);
   const result = await ssh.exec(
     [
       `cd ${projectDir} 2>/dev/null && docker compose -p ${base} start 2>/dev/null || true`,
-      `ids=$(docker ps -aq --filter "name=${base}" 2>/dev/null); if [ -n "$ids" ]; then docker start $ids 2>/dev/null; fi`,
+      `ids=$(docker ps -a --format '{{.Names}}' | grep -E '${pattern}' || true); if [ -n "$ids" ]; then docker start $ids 2>/dev/null; fi`,
     ].join('; ')
   );
-  const check = await ssh.exec(
-    `docker ps -q --filter "name=${base}" 2>/dev/null | head -1`
-  );
+  const check = await ssh.exec(`docker ps --format '{{.Names}}' | grep -E '${pattern}' | head -1 || true`);
   return !!check.stdout.trim() || result.code === 0;
 }
 
+/**
+ * On a shared runner, refuse to act on a slug another live project also answers to — its
+ * containers, files and ports carry the same names, so "this project's" would include theirs.
+ */
+async function blockedBySlugConflict(project: ProjectRow, action: string, activeOnly: boolean): Promise<boolean> {
+  const conflicts = await runnerSlugConflicts(project, { activeOnly });
+  if (conflicts.length === 0) return false;
+  logger.error(
+    { projectId: project.id, slug: project.slug, conflicts: conflicts.map((c) => ({ id: c.id, slug: c.slug, status: c.status })) },
+    `${action} skipped on the shared runner: another project uses a conflicting slug`,
+  );
+  return true;
+}
+
 export async function pauseProjectContainers(project: ProjectRow): Promise<boolean> {
+  // Pausing a slug an active project elsewhere shares would stop that project too
+  if (await blockedBySlugConflict(project, 'Pause', true)) return false;
   const remoteServer = await resolveDeployServerForCleanup(project);
   if (remoteServer?.ipv4 && remoteServer.sshPrivateKey) {
+    const { workers } = await projectContainerNames(project.id, project.slug);
     const ssh = await getSSHConnection({
       host: remoteServer.ipv4,
       port: 22,
@@ -230,7 +272,7 @@ export async function pauseProjectContainers(project: ProjectRow): Promise<boole
       privateKey: decrypt(remoteServer.sshPrivateKey),
     });
     try {
-      const stopped = await pauseProjectContainersOnServer(ssh, project.slug);
+      const stopped = await pauseProjectContainersOnServer(ssh, project.slug, workers);
       logger.info({ projectId: project.id, slug: project.slug, stopped }, 'Paused remote containers');
       return stopped;
     } finally {
@@ -248,16 +290,18 @@ export async function pauseProjectContainers(project: ProjectRow): Promise<boole
   const { promisify } = await import('util');
   const execAsync = promisify(exec);
   const safeSlug = shellEscapeSlug(project.slug);
-  const base = `pushify-${safeSlug}`;
   await execAsync(
-    `ids=$(docker ps -q --filter "name=${base}" 2>/dev/null); if [ -n "$ids" ]; then docker stop $ids; fi`
+    `ids=$(docker ps --format '{{.Names}}' | grep -E '${projectContainerPattern(safeSlug)}' || true); if [ -n "$ids" ]; then docker stop $ids; fi`
   ).catch(() => undefined);
   return true;
 }
 
 export async function resumeProjectContainers(project: ProjectRow): Promise<boolean> {
+  // Starting a shared slug could start someone else's stopped (or suspended) containers
+  if (await blockedBySlugConflict(project, 'Resume', false)) return false;
   const remoteServer = await resolveDeployServerForCleanup(project);
   if (remoteServer?.ipv4 && remoteServer.sshPrivateKey) {
+    const { workers } = await projectContainerNames(project.id, project.slug);
     const ssh = await getSSHConnection({
       host: remoteServer.ipv4,
       port: 22,
@@ -265,7 +309,7 @@ export async function resumeProjectContainers(project: ProjectRow): Promise<bool
       privateKey: decrypt(remoteServer.sshPrivateKey),
     });
     try {
-      return await resumeProjectContainersOnServer(ssh, project.slug);
+      return await resumeProjectContainersOnServer(ssh, project.slug, workers);
     } finally {
       ssh.disconnect();
     }
@@ -273,12 +317,12 @@ export async function resumeProjectContainers(project: ProjectRow): Promise<bool
 
   const { execCommand } = await import('../workers/shell');
   const safeSlug = shellEscapeSlug(project.slug);
-  const base = `pushify-${safeSlug}`;
+  const pattern = projectContainerPattern(safeSlug);
   await execCommand(
-    `ids=$(docker ps -aq --filter "name=${base}" 2>/dev/null); if [ -n "$ids" ]; then docker start $ids; fi`,
+    `ids=$(docker ps -a --format '{{.Names}}' | grep -E '${pattern}' || true); if [ -n "$ids" ]; then docker start $ids; fi`,
     { timeout: 30000 }
   ).catch(() => undefined);
-  const { stdout } = await execCommand(`docker ps -q --filter "name=${base}" | head -1`, {
+  const { stdout } = await execCommand(`docker ps --format '{{.Names}}' | grep -E '${pattern}' | head -1 || true`, {
     timeout: 5000,
   });
   return !!stdout.trim();
@@ -297,9 +341,13 @@ export async function teardownProjectOnRemoteServer(
   const isCompose = settings.deploymentType === 'docker-compose' || !!project.composePath;
   // A static site has no container: remove its files and vhost only. The container teardown
   // matches by slug, which on a shared runner could hit another organisation's project.
+  if (settings.static !== true && (await blockedBySlugConflict(project, 'Teardown', false))) {
+    // Leave the files and containers in place: removing them would remove the other project's.
+    return;
+  }
   const script = settings.static === true
     ? buildStaticTeardownScript(staticSiteKey(project))
-    : buildRemoteTeardownScript(project.slug, isCompose);
+    : buildRemoteTeardownScript(project.slug, isCompose, await projectContainerNames(project.id, project.slug));
 
   const ssh = await getSSHConnection({
     host: server.ipv4,

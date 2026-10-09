@@ -10,14 +10,14 @@ import {
 } from '../lib/server-terminal-auth';
 
 /**
- * Remote command that attaches to the project's running app container: resolves the
- * blue/green/plain container name on the host, then docker-execs an interactive shell
- * (bash when the image has it, sh otherwise). Slug is validated to [a-z0-9-] upstream.
+ * Remote command that attaches to the project's running production app container — exactly
+ * `pushify-<slug>`, `-blue` or `-green` — then docker-execs an interactive shell (bash when the
+ * image has it, sh otherwise). There is deliberately no looser fallback: "first container
+ * starting with pushify-<slug>-" is, on a shared runner, another organization's app.
+ * Slug is validated to [a-z0-9-] upstream.
  */
-function buildAppShellCommand(slug: string): string {
-  const resolve =
-    `c=$(docker ps --format "{{.Names}}" | grep -E "^pushify-${slug}(-blue|-green)?$" | head -1); ` +
-    `[ -z "$c" ] && c=$(docker ps --format "{{.Names}}" | grep -E "^pushify-${slug}(-|$)" | head -1); `;
+export function buildAppShellCommand(slug: string): string {
+  const resolve = `c=$(docker ps --format "{{.Names}}" | grep -E "^pushify-${slug}(-blue|-green)?$" | head -1); `;
   const attach =
     `if [ -n "$c" ]; then exec docker exec -it "$c" sh -c "command -v bash >/dev/null 2>&1 && exec bash || exec sh"; ` +
     `else echo "App container is not running - deploy the project first."; exit 1; fi`;
