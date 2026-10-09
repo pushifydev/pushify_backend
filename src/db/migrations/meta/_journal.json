@@ -484,6 +484,13 @@
       "when": 1787270400028,
       "tag": "0069_health_diagnostics",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1787270400029,
+      "tag": "0070_secret_provider_connections",
+      "breakpoints": true
     }
   ]
 }
