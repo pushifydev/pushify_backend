@@ -80,7 +80,7 @@ else
 fi
 
 # Name lookups go to the host's resolvers, which may sit in a private range.
-NAMESERVERS=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf /run/systemd/resolve/resolv.conf 2>/dev/null | grep -v ':' | grep -v '^127\.' | sort -u)
+NAMESERVERS=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf /run/systemd/resolve/resolv.conf 2>/dev/null | grep -v ':' | grep -v '^127\\.' | sort -u)
 
 ipt -N DOCKER-USER 2>/dev/null || true
 ipt -N PUSHIFY-FWD 2>/dev/null || true

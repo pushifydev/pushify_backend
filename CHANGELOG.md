@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.107] - 2026-10-10
+
+### Fixed
+- **Flaky tests.** The tests against a real Postgres (`*.db.test.ts`) share one database, and the deletion purge sweeps every organization that is due, so another file's rows sometimes showed up in its counts and it failed at random. `vitest.workspace.ts` now runs those files one at a time; unit tests still run in parallel. `npm run test -- --run` (CI) picks this up unchanged.
+- **Lint is clean** (`eslint src`, 0 errors):
+  - unused imports removed from `sso.service.ts`;
+  - the resolver filter in `runner-isolation.ts` now sends the intended `^127\.` to the shell. Same effect for IPv4 nameservers.
+
 ## [0.2.0-beta.106] - 2026-10-10
 
 ### Security
