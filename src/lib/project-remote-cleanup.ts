@@ -8,6 +8,8 @@ import { getSSHConnection, SSHClient } from '../utils/ssh';
 import { releasePort } from '../workers/port-manager';
 import { projectImageReferenceFilters } from './project-image-names';
 import { staticSiteKey } from './static-upload';
+import { pickRunnerServerId } from './runner-routing';
+import { env } from '../config/env';
 
 type ProjectRow = typeof projects.$inferSelect;
 
@@ -109,11 +111,24 @@ async function serverHasProjectContainers(
 
 /**
  * Find the server that still hosts this project's containers.
- * Falls back when project.serverId is null (e.g. server row deleted).
+ *
+ * A project without a server runs on a Pushify shared runner (`pickRunnerServerId`, the same
+ * sticky choice the deploy made). The runner belongs to Pushify, not to the customer's
+ * organization, so the organization fallbacks below can never find it — before this check,
+ * pausing, suspending or deleting a runner project silently did nothing to its containers.
  */
 export async function resolveDeployServerForCleanup(
   project: ProjectRow
 ): Promise<typeof servers.$inferSelect | null> {
+  if (!project.serverId) {
+    const runnerId = pickRunnerServerId(project.id);
+    if (runnerId) {
+      const runner = await db.query.servers.findFirst({ where: eq(servers.id, runnerId) });
+      if (runner?.ipv4 && runner.sshPrivateKey) return runner;
+      logger.warn({ projectId: project.id, runnerId }, 'Shared runner missing SSH or IP — trying fallbacks');
+    }
+  }
+
   if (project.serverId) {
     const byId = await db.query.servers.findFirst({
       where: eq(servers.id, project.serverId),
@@ -169,8 +184,11 @@ export async function resolveDeployServerForCleanup(
   return null;
 }
 
-/** Stop running containers for a project (pause) without removing them. */
-export async function pauseProjectContainersOnServer(ssh: SSHClient, slug: string): Promise<void> {
+/**
+ * Stop running containers for a project (pause) without removing them. True when none of the
+ * project's containers is left running afterwards.
+ */
+export async function pauseProjectContainersOnServer(ssh: SSHClient, slug: string): Promise<boolean> {
   const safeSlug = shellEscapeSlug(slug);
   const base = `pushify-${safeSlug}`;
   const projectDir = `/opt/pushify/apps/${safeSlug}`;
@@ -181,6 +199,8 @@ export async function pauseProjectContainersOnServer(ssh: SSHClient, slug: strin
       `ids=$(${stopNames}); if [ -n "$ids" ]; then docker stop $ids 2>/dev/null; fi`,
     ].join('; ')
   );
+  const left = await ssh.exec(stopNames);
+  return !left.stdout.trim();
 }
 
 /** Start stopped containers for a project (resume). */
@@ -210,14 +230,20 @@ export async function pauseProjectContainers(project: ProjectRow): Promise<boole
       privateKey: decrypt(remoteServer.sshPrivateKey),
     });
     try {
-      await pauseProjectContainersOnServer(ssh, project.slug);
-      logger.info({ projectId: project.id, slug: project.slug }, 'Paused remote containers');
-      return true;
+      const stopped = await pauseProjectContainersOnServer(ssh, project.slug);
+      logger.info({ projectId: project.id, slug: project.slug, stopped }, 'Paused remote containers');
+      return stopped;
     } finally {
       ssh.disconnect();
     }
   }
 
+  // No server found. In production the control plane runs no customer containers, so there is
+  // nothing local to stop — report it instead of claiming success.
+  if (!(env.PUSHIFY_ALLOW_LOCAL_DEPLOYS ?? env.NODE_ENV !== 'production')) {
+    logger.warn({ projectId: project.id, slug: project.slug }, 'Pause: no server found for the project; nothing was stopped');
+    return false;
+  }
   const { exec } = await import('child_process');
   const { promisify } = await import('util');
   const execAsync = promisify(exec);

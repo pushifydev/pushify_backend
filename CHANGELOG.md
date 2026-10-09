@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.103] - 2026-10-10
+
+### Fixed
+- **Pausing, suspending or deleting a project on a shared runner left its containers running.** `resolveDeployServerForCleanup` searched only the customer organization's servers, and the runner belongs to Pushify, so nothing was found. Pause then fell back to the control plane's local Docker, stopped nothing and still reported success. It now resolves a project without a server to the runner the deploy used (`pickRunnerServerId`). Pause checks that none of the project's containers is still running and reports `false` otherwise. In production, a project with no server found is reported as not stopped instead of "paused". A suspension now shows the real result ("containers could not be reached") in the admin panel.
+- **Suspensions are enforced continuously.** Every 5 minutes the containers of every suspended project are stopped again. This catches a pause that failed at the time, a container started by hand, and projects suspended before this fix. It runs whether or not Acceptable Use detection is on.
+
+### Note
+- Projects on shared runners that were **paused** (by their owner, for non-payment, or for account deletion) or **deleted** before this release may still have running containers on the runner. Suspended ones are stopped automatically within 5 minutes of deploying this.
+
 ## [0.2.0-beta.102] - 2026-10-10
 
 ### Fixed
