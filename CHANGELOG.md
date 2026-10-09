@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.104] - 2026-10-10
+
+### Fixed
+- **Container metrics and logs of projects on shared runners.** Projects without a server of their own (free projects on *.pushify.dev) run on a shared runner. The metrics worker grouped them under "local" and looked for their containers on the control plane. It didn't find them, so every 15 seconds it recorded them as **stopped**, with CPU, memory and traffic at 0. The container log collector did the same and stored no runtime logs for them. Both now use the runner the deploy used (`resolveProjectServerId` / `pickRunnerServerId`).
+  - Side effects of the zeros, now gone: auto-sleep could judge such a project idle however busy it was, autoscale saw 0 % CPU, and Acceptable Use egress fell back to nginx bytes only.
+
 ## [0.2.0-beta.103] - 2026-10-10
 
 ### Fixed

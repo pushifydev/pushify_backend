@@ -5,6 +5,7 @@ import { execCommand } from './shell';
 import { db } from '../db';
 import { servers } from '../db/schema/servers';
 import { eq } from 'drizzle-orm';
+import { resolveProjectServerId } from '../lib/runner-routing';
 import { getSSHConnection, SSHClient } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
 import { logger } from '../lib/logger';
@@ -75,6 +76,11 @@ export function stopMetricsWorker(): void {
   logger.info('Metrics worker stopped');
 }
 
+/** Where a monitored project's containers run: its own server, else its shared runner, else local. */
+export function metricsServerKey(p: { projectId: string; serverId: string | null }): string | null {
+  return resolveProjectServerId({ id: p.projectId, serverId: p.serverId });
+}
+
 /**
  * Poll for container metrics
  */
@@ -92,10 +98,12 @@ async function pollForMetrics(): Promise<void> {
       const projectsToMonitor = await metricsService.getProjectsForMetricsCollection();
 
       if (projectsToMonitor.length > 0) {
-        // Group projects by server (null = local)
+        // Group projects by the server their containers run on (null = local). A project
+        // without a server of its own runs on a shared runner: grouping it under "local" made
+        // the control plane look for its container, miss it, and record it as stopped.
         const serverGroups = new Map<string | null, typeof projectsToMonitor>();
         for (const p of projectsToMonitor) {
-          const key = p.serverId || null;
+          const key = metricsServerKey(p);
           if (!serverGroups.has(key)) serverGroups.set(key, []);
           serverGroups.get(key)!.push(p);
         }
