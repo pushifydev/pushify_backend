@@ -38,7 +38,7 @@ export function buildPreviewTeardownScript(slug: string, prNumber: number): stri
   const deploySlug = previewDeploySlug(slug, prNumber);
   const site = `pushify-${deploySlug}`;
   return [
-    `ids=$(docker ps -aq --format '{{.Names}}' | grep -E '^pushify-${deploySlug}(-|$)|^pushify-preview-${deploySlug}$' || true)`,
+    `ids=$(docker ps -a --format '{{.Names}}' | grep -E '^pushify-${deploySlug}(-(blue|green)(-[0-9]+)?)?$|^pushify-preview-${deploySlug}$' || true)`,
     'if [ -n "$ids" ]; then docker rm -f $ids 2>/dev/null || true; fi',
     `{ docker images -q --filter=reference='pushify-${deploySlug}'; docker images -q --filter=reference='pushify/${deploySlug}'; } | sort -u | xargs -r docker rmi -f 2>/dev/null || true`,
     `rm -f /etc/nginx/sites-enabled/${site} /etc/nginx/sites-available/${site} /opt/pushify/nginx/${site}.conf /etc/nginx/conf.d/preview-${deploySlug}.conf 2>/dev/null || true`,

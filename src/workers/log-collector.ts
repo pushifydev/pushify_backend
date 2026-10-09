@@ -5,6 +5,7 @@ import { deployments } from '../db/schema/deployments';
 import { projects } from '../db/schema/projects';
 import { servers } from '../db/schema/servers';
 import { pickRunnerServerId } from '../lib/runner-routing';
+import { projectContainerNames, projectContainerPattern } from '../lib/project-containers';
 import { getSSHConnection, SSHClient } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
 import { environmentVariables } from '../db/schema/projects';
@@ -143,7 +144,8 @@ async function collectDeploymentLogs(
       });
     }
 
-    for (const containerName of await projectContainers(ssh, project.slug)) {
+    const { workers } = await projectContainerNames(project.id, project.slug);
+    for (const containerName of await projectContainers(ssh, project.slug, workers)) {
       const running = ssh
         ? await isRemoteContainerRunning(ssh, containerName)
         : await isLocalContainerRunning(containerName);
@@ -184,19 +186,19 @@ async function collectDeploymentLogs(
 }
 
 /**
- * The project's containers on that host: the app in whichever blue/green slot it holds, its
- * replicas (`-blue-2`, …), its workers (`-worker-<name>`) and its staging copy.
+ * The project's containers on that host, by exact name (lib/project-containers.ts): the app in
+ * whichever blue/green slot it holds, its replicas (`-blue-2`, …), its staging copy and previews,
+ * and its own workers (`-worker-<name>`, names from the database). A prefix match also took
+ * another organization's `pushify-<slug>-store-…` on a shared runner — and stored its logs here.
  */
-export async function projectContainers(ssh: SSHClient | null, slug: string): Promise<string[]> {
-  const command = `docker ps --format '{{.Names}}' 2>/dev/null | grep -E '^pushify-${slug}(-|$)' || true`;
+export async function projectContainers(ssh: SSHClient | null, slug: string, workerNames: string[] = []): Promise<string[]> {
+  const pattern = new RegExp(projectContainerPattern(slug, workerNames));
+  const command = `docker ps --format '{{.Names}}' 2>/dev/null || true`;
   const output = ssh ? (await ssh.exec(command)).stdout : (await execCommand(command)).stdout;
   const names: string[] = output
     .split('\n')
     .map((name) => name.trim())
-    .filter(Boolean)
-    // `pushify-app` must not pick up `pushify-app-2`'s containers, and never a database
-    .filter((name) => name === `pushify-${slug}` || name.startsWith(`pushify-${slug}-`))
-    .filter((name) => !name.startsWith('pushify-db-'));
+    .filter((name) => name && pattern.test(name));
   return names.length > 0 ? names : [`pushify-${slug}`];
 }
 

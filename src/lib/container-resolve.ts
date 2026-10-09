@@ -7,6 +7,7 @@ import { execCommand } from '../workers/shell';
 import { isContainerRunning } from '../workers/docker';
 import { isContainerRunning as isRemoteContainerRunning } from '../workers/remote-docker';
 import { getSSHConnection, SSHClient } from '../utils/ssh';
+import { appContainerPattern } from './project-containers';
 
 /** Sidecar / data containers we should not use for app-level metrics */
 const SIDECAR_NAME_PATTERN = /-(db|redis|postgres|mysql|kong|mail)(-\d+)?$/i;
@@ -29,7 +30,8 @@ export async function resolvePushifyContainerName(
     if (running) return name;
   }
 
-  const listCmd = `docker ps --format '{{.Names}}' | grep -E '^${base}(-|$)' || true`;
+  // Exact app names only — a prefix would return another project's container on a shared runner
+  const listCmd = `docker ps --format '{{.Names}}' | grep -E '${appContainerPattern(slug)}' || true`;
   let names: string[] = [];
   if (ssh) {
     const r = await ssh.exec(listCmd);

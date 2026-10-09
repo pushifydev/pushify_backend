@@ -1,4 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
+
+vi.mock('../db', () => ({ db: {} }));
+
 import { projectContainers } from './log-collector';
 
 /**
@@ -12,8 +15,12 @@ const ssh = (stdout: string) =>
 
 describe('projectContainers', () => {
   it('lists every container of the project, replicas included', async () => {
-    const names = await projectContainers(ssh('pushify-shop-blue\npushify-shop-blue-2\npushify-shop-worker\n'), 'shop');
-    expect(names).toEqual(['pushify-shop-blue', 'pushify-shop-blue-2', 'pushify-shop-worker']);
+    const names = await projectContainers(
+      ssh('pushify-shop-blue\npushify-shop-blue-2\npushify-shop-worker-queue\npushify-shop-staging-blue\n'),
+      'shop',
+      ['queue'],
+    );
+    expect(names).toEqual(['pushify-shop-blue', 'pushify-shop-blue-2', 'pushify-shop-worker-queue', 'pushify-shop-staging-blue']);
   });
 
   it('leaves other projects alone — a prefix is not a match', async () => {
@@ -28,5 +35,14 @@ describe('projectContainers', () => {
 
   it('falls back to the plain name when nothing is running, so a stopped app is still asked', async () => {
     expect(await projectContainers(ssh('\n'), 'shop')).toEqual(['pushify-shop']);
+  });
+
+  it("never collects another organization's containers that merely start with the slug (shared runner)", async () => {
+    const names = await projectContainers(
+      ssh('pushify-shop-blue\npushify-shop-store-blue\npushify-shop-store-worker-mail\npushify-shop-worker-other\n'),
+      'shop',
+      ['queue'],
+    );
+    expect(names).toEqual(['pushify-shop-blue']);
   });
 });

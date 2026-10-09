@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.106] - 2026-10-10
+
+### Security
+- Further isolation between projects on shared runners: container log collection, the metrics container lookup and PR-preview teardown now use a project's exact container names as well. Details will be published after rollout.
+
 ## [0.2.0-beta.105] - 2026-10-10
 
 ### Security
