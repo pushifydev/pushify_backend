@@ -23,14 +23,17 @@ describe('buildPreviewTeardownScript', () => {
   });
 
   it('removes only that PR\'s containers — not PR 4, not production', () => {
-    expect(script).toContain("grep -E '^pushify-shop-pr-42(-|$)|^pushify-preview-shop-pr-42$'");
-    const re = new RegExp('^pushify-shop-pr-42(-|$)|^pushify-preview-shop-pr-42$');
+    const pattern = '^pushify-shop-pr-42(-(blue|green)(-[0-9]+)?)?$|^pushify-preview-shop-pr-42$';
+    expect(script).toContain(`grep -E '${pattern}'`);
+    const re = new RegExp(pattern);
     expect(re.test('pushify-shop-pr-42')).toBe(true);
     expect(re.test('pushify-shop-pr-42-blue')).toBe(true);
     expect(re.test('pushify-preview-shop-pr-42')).toBe(true);
     expect(re.test('pushify-shop-pr-4')).toBe(false);
     expect(re.test('pushify-shop-pr-420')).toBe(false);
     expect(re.test('pushify-shop')).toBe(false);
+    // Another project whose slug merely starts with this preview's name
+    expect(re.test('pushify-shop-pr-42-store-blue')).toBe(false);
   });
 
   it('removes the preview image in both naming forms', () => {
