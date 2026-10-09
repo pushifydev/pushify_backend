@@ -138,11 +138,6 @@ export const githubAppService = {
   },
 
   /**
-   * Fill in account details straight from GitHub. The post-install redirect records an
-   * installation as 'pending' when the webhook has not arrived yet (or never will — wrong
-   * secret); without the account type we cannot even build the right "manage" link.
-   */
-  /**
    * Uninstall the app from the GitHub account (organization deletion). An installation that is
    * already gone counts as done.
    */
@@ -162,6 +157,74 @@ export const githubAppService = {
     await this.removeInstallation(installationId);
   },
 
+  /**
+   * Ask GitHub (as the App) whether an installation exists. Returns null when GitHub answers
+   * 404 — the id was never issued, was uninstalled, or belongs to another App.
+   */
+  async fetchInstallation(installationId: number): Promise<{
+    accountLogin: string;
+    accountId: number | null;
+    accountType: string | null;
+    repositorySelection: string | null;
+    suspended: boolean;
+  } | null> {
+    const jwt = await createAppJwt(appConfig());
+    const response = await fetch(`${GITHUB_API_URL}/app/installations/${installationId}`, {
+      headers: {
+        Authorization: `Bearer ${jwt}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      throw new Error(`GitHub: fetching installation ${installationId} failed (${response.status})`);
+    }
+    const data = (await response.json()) as {
+      account?: { login?: string; id?: number; type?: string };
+      repository_selection?: string;
+      suspended_at?: string | null;
+    };
+    return {
+      accountLogin: data.account?.login ?? 'unknown',
+      accountId: data.account?.id ?? null,
+      accountType: data.account?.type ?? null,
+      repositorySelection: data.repository_selection ?? null,
+      suspended: Boolean(data.suspended_at),
+    };
+  },
+
+  /**
+   * Proof of ownership: does GitHub list this installation among those the user can reach with
+   * their own token? Knowing (or guessing) an installation id proves nothing; this does.
+   * Any non-OK answer counts as "no" — the caller refuses rather than guesses.
+   */
+  async userCanAccessInstallation(userToken: string, installationId: number): Promise<boolean> {
+    // 100 per page, capped at 10 pages: bounds the call for accounts in many organisations.
+    for (let page = 1; page <= 10; page += 1) {
+      const response = await fetch(`${GITHUB_API_URL}/user/installations?per_page=100&page=${page}`, {
+        headers: {
+          Authorization: `Bearer ${userToken}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      });
+      if (!response.ok) {
+        logger.warn({ installationId, status: response.status }, 'Could not list user installations');
+        return false;
+      }
+      const payload = (await response.json()) as { installations?: { id: number }[] };
+      const batch = payload.installations ?? [];
+      if (batch.some((installation) => installation.id === installationId)) return true;
+      if (batch.length < 100) return false;
+    }
+    return false;
+  },
+
+  /**
+   * Fill in account details straight from GitHub, for rows recorded before the account type
+   * was known; without it we cannot even build the right "manage" link.
+   */
   async hydrateInstallation(installationId: number): Promise<GithubAppInstallation | null> {
     const jwt = await createAppJwt(appConfig());
     const response = await fetch(`${GITHUB_API_URL}/app/installations/${installationId}`, {
