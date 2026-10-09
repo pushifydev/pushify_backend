@@ -8,6 +8,8 @@
  *   npm run abuse:scan -- --dry-run              projects the hosted-service rules cover
  *   npm run abuse:scan -- --dry-run --all        also BYOS projects on their own domains (for information)
  *   npm run abuse:scan -- --dry-run --project <slug>
+ *   npm run abuse:scan -- --enqueue              put flagged covered projects into the admin review
+ *                                                queue (and email the operators); never suspends
  *
  * Run on the API host: it reads the production database and clones with the projects' Git credentials.
  */
@@ -18,10 +20,11 @@ import { loadAbuseRules, abuseRulesPath } from '../src/lib/abuse/rules';
 import { readRepositoryForScan, scanForAbuse, scoreReasons, type ScanResult } from '../src/lib/abuse/scan';
 import { cloneRepository, cleanupRepository } from '../src/workers/git';
 import { getProjectGitAccessToken } from '../src/services/git-provider-access.service';
-import { projectIsCovered } from '../src/services/abuse.service';
+import { abuseService, projectIsCovered } from '../src/services/abuse.service';
 
 const args = process.argv.slice(2);
 const includeAll = args.includes('--all');
+const enqueue = args.includes('--enqueue');
 const onlySlug = args.includes('--project') ? args[args.indexOf('--project') + 1] : null;
 
 interface Row {
@@ -75,14 +78,18 @@ async function scanProject(p: typeof projects.$inferSelect): Promise<{ result: S
 }
 
 async function main() {
-  if (!args.includes('--dry-run')) {
-    console.error('This report only runs as a dry run: npm run abuse:scan -- --dry-run');
+  if (args.includes('--dry-run') === enqueue) {
+    console.error('Choose one: --dry-run (report only) or --enqueue (queue flagged projects for review).');
     process.exitCode = 2;
     return;
   }
   const rules = loadAbuseRules();
   console.log(`Rules: ${abuseRulesPath()} (${rules.rules.length} rules, flag score ${rules.policy.flagScore})`);
-  console.log('DRY RUN — nothing is written, no project is changed.\n');
+  console.log(
+    enqueue
+      ? 'ENQUEUE — flagged covered projects go to the review queue; nothing is suspended or stopped.\n'
+      : 'DRY RUN — nothing is written, no project is changed.\n',
+  );
 
   const live = await db
     .select({ project: projects, org: organizations.name })
@@ -97,6 +104,15 @@ async function main() {
     if (!covered && !includeAll) continue;
     const { result, note } = await scanProject(project);
     rows.push({ slug: project.slug, org, covered, result, note });
+    if (enqueue && covered && result?.flagged) {
+      const queued = await abuseService.recordFinding({
+        projectId: project.id,
+        organizationId: project.organizationId,
+        source: 'deploy_scan',
+        result,
+      });
+      console.log(`  queued ${project.slug} (${queued?.created ? 'new flag' : 'updated open flag'})`);
+    }
   }
 
   const flagged = rows.filter((r) => r.result?.flagged);
