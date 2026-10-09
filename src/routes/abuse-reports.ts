@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { createRateLimiter } from '../middleware/rate-limit';
 import { abuseDetectionEnabled, abuseService } from '../services/abuse.service';
+import { env } from '../config/env';
 import type { AppEnv } from '../types';
 
 /**
@@ -14,7 +15,7 @@ const reportRateLimiter = createRateLimiter({
   namespace: 'abuse-report',
   windowMs: 60 * 60 * 1000,
   maxRequests: 10,
-  message: 'Too many reports from this address, please try again later or email abuse@pushify.dev',
+  message: `Too many reports from this address, please try again later or email ${env.ABUSE_CONTACT_EMAIL}`,
 });
 
 export const ABUSE_REPORT_CATEGORIES = ['proxy-vpn', 'phishing', 'malware', 'spam', 'scanning', 'copyright', 'illegal', 'other'] as const;

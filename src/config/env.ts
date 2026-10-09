@@ -183,7 +183,10 @@ const envSchema = z.object({
     .transform((v) => !!v && /^(true|1|yes|on)$/i.test(v.trim())),
   /** The rules file; defaults to config/abuse-rules.yaml in the backend directory */
   ABUSE_RULES_PATH: z.string().optional(),
-  /** Where users send abuse reports and appeals; shown in suspension emails */
+  /**
+   * Where users send abuse reports and appeals; shown in suspension emails and API errors. Keep it
+   * equal to the frontend's NEXT_PUBLIC_ABUSE_CONTACT_EMAIL. Some mail hosts reserve `abuse@`.
+   */
   ABUSE_CONTACT_EMAIL: z.string().email().default('abuse@pushify.dev'),
 
   // Rate Limiting (see middleware/rate-limit.ts)

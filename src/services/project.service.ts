@@ -22,6 +22,7 @@ import {
   validateRepoRelativePath,
 } from '../lib/repo-settings-validate';
 import { validateImageReference } from '../lib/registry';
+import { env } from '../config/env';
 
 // Types
 interface CreateProjectInput {
@@ -514,7 +515,7 @@ export const projectService = {
 
     // An Acceptable Use suspension is lifted by an admin, not by resuming
     if (existing.suspendedAt && status === 'active') {
-      throw new HTTPException(403, { message: t(locale, 'projects', 'suspended') });
+      throw new HTTPException(403, { message: `${t(locale, 'projects', 'suspended')} ${env.ABUSE_CONTACT_EMAIL}` });
     }
 
     const { pauseProjectContainers, resumeProjectContainers } = await import(
