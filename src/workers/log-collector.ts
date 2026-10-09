@@ -4,6 +4,7 @@ import { containerLogs } from '../db/schema/container-logs';
 import { deployments } from '../db/schema/deployments';
 import { projects } from '../db/schema/projects';
 import { servers } from '../db/schema/servers';
+import { pickRunnerServerId } from '../lib/runner-routing';
 import { getSSHConnection, SSHClient } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
 import { environmentVariables } from '../db/schema/projects';
@@ -81,9 +82,22 @@ export async function collectAllDeploymentLogs(): Promise<void> {
     .leftJoin(servers, eq(projects.serverId, servers.id))
     .where(eq(deployments.status, 'running'));
 
+  // A project without a server runs on a shared runner — the join finds nothing for it, and
+  // collecting "locally" on the control plane found no container, so its logs were never stored.
+  const runners = new Map<string, typeof servers.$inferSelect | null>();
+  const runnerFor = async (projectId: string) => {
+    const id = pickRunnerServerId(projectId);
+    if (!id) return null;
+    if (!runners.has(id)) {
+      runners.set(id, (await db.query.servers.findFirst({ where: eq(servers.id, id) })) ?? null);
+    }
+    return runners.get(id) ?? null;
+  };
+
   for (const { deployment, project, server } of runningDeployments) {
     try {
-      await collectDeploymentLogs(deployment, project, server);
+      const host = server ?? (project.serverId ? null : await runnerFor(project.id));
+      await collectDeploymentLogs(deployment, project, host);
     } catch (error) {
       logger.error(
         { err: error, deploymentId: deployment.id },
