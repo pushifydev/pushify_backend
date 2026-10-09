@@ -32,6 +32,7 @@ vi.mock('../repositories/organization.repository', () => ({ organizationReposito
 vi.mock('../repositories/project.repository', () => ({ projectRepository: {} }));
 
 const { wakeRoutes } = await import('./wake');
+const { requestWake } = await import('../workers/app-sleep.worker');
 
 const awake = { id: 'proj-1', slug: 'shop', sleepEnabled: false, sleepState: 'awake' };
 
@@ -70,6 +71,17 @@ describe('wake endpoint: what a visitor sees when the app has no container', () 
 
     expect(res.status).toBe(502);
     expect(await res.text()).toContain('Application unavailable');
+  });
+
+  it('sleeping app whose latest deploy failed: the old container is woken, not "Deployment failed"', async () => {
+    state.project = { id: 'proj-1', slug: 'shop', sleepEnabled: true, sleepState: 'sleeping' };
+    state.selects = [[{ status: 'failed' }], [{ id: 'dep-old' }]];
+
+    const res = await wakeRoutes.request('/shop');
+
+    expect(res.status).toBe(503);
+    expect(await res.text()).toContain('Waking up');
+    expect(requestWake).toHaveBeenCalledWith('proj-1');
   });
 
   it('unknown slug: generic unavailable page', async () => {
