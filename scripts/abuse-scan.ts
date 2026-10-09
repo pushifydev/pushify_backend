@@ -21,6 +21,7 @@ import { readRepositoryForScan, scanForAbuse, scoreReasons, type ScanResult } fr
 import { cloneRepository, cleanupRepository } from '../src/workers/git';
 import { getProjectGitAccessToken } from '../src/services/git-provider-access.service';
 import { abuseService, projectIsCovered } from '../src/services/abuse.service';
+import { closeQueues } from '../src/lib/queue';
 
 const args = process.argv.slice(2);
 const includeAll = args.includes('--all');
@@ -142,4 +143,11 @@ main()
     console.error(err instanceof Error ? err.message : err);
     process.exitCode = 1;
   })
-  .finally(() => closeDatabasePool());
+  .finally(async () => {
+    // --enqueue emails the operators through the Redis queue (fire-and-forget). Give those
+    // sends a moment, then close the queue connection too — an open one keeps the process alive.
+    if (enqueue) await new Promise((resolve) => setTimeout(resolve, 2000));
+    await closeQueues().catch(() => undefined);
+    await closeDatabasePool();
+    process.exit(process.exitCode ?? 0);
+  });

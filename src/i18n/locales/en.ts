@@ -421,7 +421,7 @@ export const en: TranslationKeys = {
   // Projects
   projects: {
     notFound: 'Project not found',
-    suspended: 'This project is suspended under the Acceptable Use Policy. Contact abuse@pushify.dev to appeal.',
+    suspended: 'This project is suspended under the Acceptable Use Policy. To appeal, email',
     nameRequired: 'Project name is required',
     created: 'Project created successfully',
     updated: 'Project updated successfully',

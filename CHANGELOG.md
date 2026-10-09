@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.102] - 2026-10-10
+
+### Fixed
+- `npm run abuse:scan -- --enqueue` now exits when it is done. The operator emails it queues opened a Redis connection that kept the process running; the flags had already been written.
+
+### Changed
+- The appeals address is no longer hard-coded: the "project is suspended" API error and the report rate-limit message use `ABUSE_CONTACT_EMAIL`, as the suspension email already did. Some mail hosts reserve `abuse@`; set the variable to the address you can receive (and the frontend's `NEXT_PUBLIC_ABUSE_CONTACT_EMAIL` to the same).
+
 ## [0.2.0-beta.101] - 2026-10-10
 
 ### Added
