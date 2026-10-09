@@ -10,6 +10,9 @@ export * from './projects';
 // Private container registries
 export * from './registry-credentials';
 
+// External secret managers (Infisical)
+export * from './secret-providers';
+
 // Single sign-on
 export * from './sso';
 

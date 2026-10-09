@@ -9,8 +9,10 @@ import { decrypt } from '../lib/encryption';
 import { logger } from '../lib/logger';
 import { pickRunnerServerId } from '../lib/runner-routing';
 import { getProjectVolumeMounts } from '../lib/project-volumes';
-import { createLogMasker } from '../lib/log-masking';
+import { createLogMasker, type LogMasker } from '../lib/log-masking';
 import { selectDeployEnvVars } from '../lib/deploy-env-vars';
+import { hasSecretReferences } from '../lib/secret-references';
+import { secretProviderService } from '../services/secret-provider.service';
 import { previewHostname } from '../lib/preview-remote';
 import { cloneRepository, cleanupRepository } from './git';
 import {
@@ -99,6 +101,26 @@ export interface DeploymentJob {
   isPreview: boolean;
   previewPrNumber: number | null;
   status?: string;
+}
+
+/**
+ * Replace `{{infisical.KEY}}` references in the deploy's env (in place) with values from the
+ * connected secret manager. The values are masked before anything else is logged and are never
+ * written to the database. An unresolvable reference throws, which fails the deploy with a
+ * message naming the variable — never a value.
+ */
+async function resolveExternalSecrets(
+  organizationId: string,
+  projectId: string,
+  envVars: Record<string, string>,
+  masker: LogMasker,
+  addLog: (message: string) => void
+): Promise<void> {
+  if (!hasSecretReferences(envVars)) return;
+  const resolved = await secretProviderService.resolveDeployEnv(organizationId, projectId, envVars);
+  masker.addSecrets(resolved.resolvedValues);
+  Object.assign(envVars, resolved.envVars);
+  addLog(`🔐 Resolved ${resolved.resolvedKeys.length} variable(s) from Infisical: ${resolved.resolvedKeys.join(', ')}`);
 }
 
 /**
@@ -609,6 +631,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         // Marked secret: masked even when the key name / length heuristic would let it through.
         if (envVar.isSecret) logMasker.addSecrets([envVarsDecrypted[envVar.key]]);
       }
+      await resolveExternalSecrets(project.organizationId, job.projectId, envVarsDecrypted, logMasker, addLog);
       // Databases linked under Databases → Connect become variables (DATABASE_URL by default).
       // Production only: a staging copy pointing at the production database would write to it.
       const linkedDatabases =
@@ -1069,7 +1092,9 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
     const envVarsDecrypted: Record<string, string> = {};
     for (const ev of selectDeployEnvVars(localEnvVars, { target: previewCtx ? 'preview' : environment })) {
       envVarsDecrypted[ev.key] = decrypt(ev.valueEncrypted);
+      if (ev.isSecret) logMasker.addSecrets([envVarsDecrypted[ev.key]]);
     }
+    await resolveExternalSecrets(project.organizationId, job.projectId, envVarsDecrypted, logMasker, addLog);
 
     // Check Docker availability for local deployment
     const dockerAvailable = await isDockerAvailable();
