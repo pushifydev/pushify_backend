@@ -13,6 +13,13 @@ const mocks = vi.hoisted(() => ({
   pickRunner: vi.fn(() => 'runner-1' as string | null),
   exec: vi.fn(async (_cmd: string) => ({ code: 0, stdout: '', stderr: '' })),
   env: { NODE_ENV: 'production', PUSHIFY_ALLOW_LOCAL_DEPLOYS: undefined as boolean | undefined },
+  conflicts: vi.fn(async () => [] as { id: string; slug: string; status: string }[]),
+}));
+
+vi.mock('./project-containers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./project-containers')>()),
+  runnerSlugConflicts: mocks.conflicts,
+  projectContainerNames: vi.fn(async () => ({ workers: [], volumes: [] })),
 }));
 
 vi.mock('../db', () => ({ db: { query: { servers: { findFirst: mocks.findFirst, findMany: mocks.findMany } } } }));
@@ -33,6 +40,7 @@ beforeEach(() => {
   mocks.findMany.mockReset().mockResolvedValue([]);
   mocks.pickRunner.mockReset().mockReturnValue('runner-1');
   mocks.exec.mockReset().mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+  mocks.conflicts.mockReset().mockResolvedValue([]);
 });
 
 describe('projects on a shared runner', () => {
@@ -49,7 +57,7 @@ describe('projects on a shared runner', () => {
 
     // A container that is still up after the stop is reported, not hidden
     mocks.exec.mockImplementation(async (cmd: string) =>
-      cmd.startsWith('docker ps') ? { code: 0, stdout: 'pushify-spiderpanel-blue\n', stderr: '' } : { code: 0, stdout: '', stderr: '' },
+      cmd.includes('docker ps') && !cmd.includes('docker stop') ? { code: 0, stdout: 'pushify-spiderpanel-blue\n', stderr: '' } : { code: 0, stdout: '', stderr: '' },
     );
     expect(await pauseProjectContainers(runnerProject)).toBe(false);
   });
@@ -61,3 +69,26 @@ describe('projects on a shared runner', () => {
     expect(await pauseProjectContainers(runnerProject)).toBe(false);
   });
 });
+
+describe('slug conflicts on a shared runner', () => {
+  it('pause refuses to touch a slug another active project shares, and says nothing was stopped', async () => {
+    mocks.conflicts.mockResolvedValue([{ id: 'other', slug: 'spiderpanel', status: 'active' }]);
+    expect(await pauseProjectContainers(runnerProject)).toBe(false);
+    expect(mocks.exec).not.toHaveBeenCalled();
+  });
+
+  it('teardown leaves everything in place when the slug is shared', async () => {
+    mocks.conflicts.mockResolvedValue([{ id: 'other', slug: 'spiderpanel', status: 'paused' }]);
+    const { teardownProjectOnRemoteServer } = await import('./project-remote-cleanup');
+    await teardownProjectOnRemoteServer(RUNNER as never, runnerProject);
+    expect(mocks.exec).not.toHaveBeenCalled();
+  });
+
+  it('pause no longer stops containers that merely start with the slug', async () => {
+    await pauseProjectContainers(runnerProject);
+    const commands = mocks.exec.mock.calls.map((c) => c[0]).join('\n');
+    expect(commands).not.toMatch(/\^pushify-spiderpanel\(-\|\$\)/);
+    expect(commands).toContain('^pushify-spiderpanel(-staging|-pr-[0-9]+)?(-(blue|green)(-[0-9]+)?)?$');
+  });
+});
+

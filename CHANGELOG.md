@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.105] - 2026-10-10
+
+### Security
+- Tighter isolation between projects on shared runners: container, volume and site operations (web shell, delete, pause, resume) now act on a project's exact resources only, and projects whose names collide on a shared runner can no longer be deployed or opened in a shell there. Details will be published after rollout.
+
 ## [0.2.0-beta.104] - 2026-10-10
 
 ### Fixed

@@ -6,6 +6,7 @@ import { eq, and, count } from 'drizzle-orm';
 import type { PgColumn, PgTable } from 'drizzle-orm/pg-core';
 import { PROJECT_LIMITS } from '../lib/project-limits';
 import { abuseAfterClone, abuseAfterBuild } from '../lib/abuse/deploy-check';
+import { runnerSlugConflicts } from '../lib/project-containers';
 import { decrypt } from '../lib/encryption';
 import { logger } from '../lib/logger';
 import { pickRunnerServerId } from '../lib/runner-routing';
@@ -446,6 +447,19 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
     // runner (PUSHIFY_RUNNER_SERVER_ID) so free/unassigned deploys never run on the control
     // plane. Falls back to the local host only when no runner is configured.
     const deployTargetServerId = project.serverId || pickRunnerServerId(project.id);
+    // A shared runner names containers, files, ports and vhosts after the slug, and slugs are
+    // only unique within an organization: deploying a slug another project on the same runner
+    // answers to would replace that project's app. Refuse instead.
+    if (!project.serverId && deployTargetServerId) {
+      const conflicts = await runnerSlugConflicts(project);
+      if (conflicts.length > 0) {
+        logger.error({ projectId: project.id, slug: project.slug, conflicts: conflicts.map((c) => c.id) }, 'Deploy refused: slug conflict on shared runner');
+        throw new Error(
+          `Another project on the shared build server already uses the name "${project.slug}". ` +
+            'Create the project again under a different name, or assign your own server to it.',
+        );
+      }
+    }
     // Staging: a second copy of the project beside production, with its own container, port,
     // domains and `staging` environment variables (lib/deploy-env-vars.ts).
     const environment = job.environment === 'staging' ? 'staging' : 'production';
