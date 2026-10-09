@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { projects, domains } from '../db/schema/projects';
 import { servers } from '../db/schema/servers';
@@ -164,15 +164,41 @@ export async function sweepRuntimeSignals(): Promise<{ checked: number; flagged:
   return { checked: candidates.length, flagged };
 }
 
+/**
+ * A suspension must stay a suspension: stop the containers of every suspended project again.
+ * Covers a pause that could not reach the server at the time, a container someone started by
+ * hand, and projects suspended before the shared-runner fix. Stopping a stopped container is a
+ * no-op, so this is safe to repeat.
+ */
+export async function enforceSuspensions(): Promise<{ checked: number; notStopped: number }> {
+  const suspended = await db.select().from(projects).where(isNotNull(projects.suspendedAt));
+  if (suspended.length === 0) return { checked: 0, notStopped: 0 };
+  const { pauseProjectContainers } = await import('../lib/project-remote-cleanup');
+  let notStopped = 0;
+  for (const project of suspended) {
+    try {
+      if (!(await pauseProjectContainers(project))) notStopped++;
+    } catch (err) {
+      notStopped++;
+      logger.warn({ err, projectId: project.id }, 'Suspension enforcement: could not stop containers');
+    }
+  }
+  if (notStopped > 0) logger.warn({ checked: suspended.length, notStopped }, 'Suspended projects still running');
+  return { checked: suspended.length, notStopped };
+}
+
 let interval: ReturnType<typeof setInterval> | null = null;
 let running = false;
 
 export function startAbuseRuntimeWorker(): void {
-  if (interval || !env.ABUSE_DETECTION_ENABLED) return;
+  if (interval) return;
   interval = setInterval(() => {
     if (running) return;
     running = true;
-    sweepRuntimeSignals()
+    // Suspensions are enforced whether or not detection is on: an admin may suspend by hand.
+    enforceSuspensions()
+      .catch((err) => logger.error({ err }, 'Suspension enforcement failed'))
+      .then(() => (env.ABUSE_DETECTION_ENABLED ? sweepRuntimeSignals() : { checked: 0, flagged: 0 }))
       .then((r) => {
         if (r.flagged > 0) logger.warn(r, 'Abuse runtime sweep flagged projects');
       })
@@ -181,7 +207,11 @@ export function startAbuseRuntimeWorker(): void {
         running = false;
       });
   }, SWEEP_INTERVAL_MS);
-  logger.info('🛡️ Acceptable Use runtime worker started');
+  logger.info(
+    env.ABUSE_DETECTION_ENABLED
+      ? '🛡️ Acceptable Use runtime worker started'
+      : '🛡️ Suspension enforcement started (Acceptable Use detection off)',
+  );
 }
 
 export function stopAbuseRuntimeWorker(): void {

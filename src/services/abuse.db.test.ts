@@ -59,7 +59,7 @@ import { loadAbuseRules } from '../lib/abuse/rules';
 import { scanForAbuse } from '../lib/abuse/scan';
 import { abuseService, projectIsCovered } from './abuse.service';
 import { projectService } from './project.service';
-import { sweepRuntimeSignals } from '../workers/abuse-runtime.worker';
+import { enforceSuspensions, sweepRuntimeSignals } from '../workers/abuse-runtime.worker';
 
 const PREFIX = 'abuse-test-';
 const ctx = {} as { orgId: string; userId: string; adminId: string; runnerProject: string; byosOwnDomain: string; byosSubdomain: string; managedProject: string };
@@ -175,6 +175,17 @@ describe.skipIf(!TEST_URL)('Acceptable Use enforcement (real Postgres)', () => {
     await expect(
       abuseService.suspendProject({ projectId: ctx.managedProject, adminUserId: ctx.adminId, reason: 'again and again', clause: 'other', endsAt: null }),
     ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it('keeps a suspension enforced: stops the suspended project again, and says when it cannot', async () => {
+    const first = await enforceSuspensions();
+    expect(first.checked).toBeGreaterThanOrEqual(1);
+    expect(mocks.pause).toHaveBeenCalledWith(expect.objectContaining({ id: ctx.managedProject }));
+    expect(first.notStopped).toBe(0);
+
+    mocks.pause.mockResolvedValueOnce(false);
+    const second = await enforceSuspensions();
+    expect(second.notStopped).toBeGreaterThanOrEqual(1);
   });
 
   it('unsuspends: starts the app again, notifies the owner and logs it', async () => {

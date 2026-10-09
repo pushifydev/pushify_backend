@@ -272,9 +272,9 @@ export const abuseService = {
     if (project.suspendedAt) throw new HTTPException(409, { message: 'Project is already suspended' });
 
     const { pauseProjectContainers } = await import('../lib/project-remote-cleanup');
-    let containersStopped = true;
+    let containersStopped = false;
     try {
-      await pauseProjectContainers(project);
+      containersStopped = await pauseProjectContainers(project);
     } catch (err) {
       containersStopped = false;
       logger.error({ err, projectId: project.id }, 'Suspension: stopping containers failed');
