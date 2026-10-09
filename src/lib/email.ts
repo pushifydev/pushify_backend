@@ -2351,3 +2351,65 @@ export async function sendStoppedServerDeletedEmail(
     logger.error({ error, to }, 'Failed to send stopped server deleted email');
   }
 }
+
+/**
+ * A project was suspended under the Acceptable Use Policy. States what happened, which clause,
+ * for how long and how to appeal — and nothing about how it was detected.
+ */
+export async function sendProjectSuspendedEmail(
+  to: string,
+  details: { projectName: string; reason: string; clause: string; endsAt: Date | null; appealEmail: string },
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping project suspended email');
+    return;
+  }
+  const policyUrl = `${env.FRONTEND_URL}/acceptable-use`;
+  const duration = details.endsAt
+    ? `Until ${details.endsAt.toUTCString()}, unless resolved sooner`
+    : 'Until the appeal is resolved';
+  const html = renderTransactionalEmail({
+    eyebrow: 'Acceptable Use',
+    title: 'Your project has been suspended',
+    bodyHtml: [
+      `<strong>${escapeHtml(details.projectName)}</strong> has been suspended because it does not comply with the Pushify Acceptable Use Policy. Its containers are stopped and its address shows a "suspended" page. Your other projects and your data are not affected.`,
+      `If you think this is a mistake, reply to <a href="mailto:${escapeHtml(details.appealEmail)}">${escapeHtml(details.appealEmail)}</a> with the project name and why. A person reviews every appeal.`,
+    ],
+    details: [
+      { label: 'Project', value: details.projectName },
+      { label: 'Reason', value: details.reason },
+      { label: 'Policy section', value: details.clause },
+      { label: 'Duration', value: duration },
+    ],
+    button: { href: policyUrl, label: 'Read the Acceptable Use Policy' },
+  });
+  try {
+    await transporter.sendMail({ from: FROM_ADDRESS, to, subject: `Project suspended — ${details.projectName}`, html });
+    logger.info({ to }, 'Project suspended email sent');
+  } catch (error) {
+    logger.error({ error, to }, 'Failed to send project suspended email');
+  }
+}
+
+/** The suspension was lifted; the project is running again. */
+export async function sendProjectReinstatedEmail(to: string, details: { projectName: string; note: string | null }): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping project reinstated email');
+    return;
+  }
+  const html = renderTransactionalEmail({
+    eyebrow: 'Acceptable Use',
+    title: 'Your project is running again',
+    bodyHtml: [
+      `The suspension of <strong>${escapeHtml(details.projectName)}</strong> has been lifted and its containers have been started again.`,
+      ...(details.note ? [escapeHtml(details.note)] : []),
+    ],
+    button: { href: `${env.FRONTEND_URL}/dashboard/projects`, label: 'Open your projects' },
+  });
+  try {
+    await transporter.sendMail({ from: FROM_ADDRESS, to, subject: `Project reinstated — ${details.projectName}`, html });
+    logger.info({ to }, 'Project reinstated email sent');
+  } catch (error) {
+    logger.error({ error, to }, 'Failed to send project reinstated email');
+  }
+}

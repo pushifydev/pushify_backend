@@ -5,6 +5,7 @@ import { organizations } from '../db/schema/organizations';
 import { eq, and, count } from 'drizzle-orm';
 import type { PgColumn, PgTable } from 'drizzle-orm/pg-core';
 import { PROJECT_LIMITS } from '../lib/project-limits';
+import { abuseAfterClone, abuseAfterBuild } from '../lib/abuse/deploy-check';
 import { decrypt } from '../lib/encryption';
 import { logger } from '../lib/logger';
 import { pickRunnerServerId } from '../lib/runner-routing';
@@ -782,6 +783,15 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         workDir = localClone.workDir;
       }
 
+      // Acceptable Use scan of the source (hosted service only; silent, never fails the deploy)
+      const abuseSource = await abuseAfterClone({
+        projectId: job.projectId,
+        organizationId: project.organizationId,
+        deploymentId: job.id,
+        workDir: localClone?.workDir,
+        image: deployImage,
+      });
+
       // Update commit info
       if (localClone) {
         await db
@@ -1033,6 +1043,14 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         job.projectId,
         job.id
       );
+
+      await abuseAfterBuild({
+        projectId: job.projectId,
+        organizationId: project.organizationId,
+        deploymentId: job.id,
+        source: abuseSource,
+        buildLog: logBuffer.join('\n'),
+      });
 
       // Update GitHub status to success
       if (githubStatusCtx) {

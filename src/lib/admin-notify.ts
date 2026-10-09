@@ -34,7 +34,10 @@ export type AdminEvent =
   | 'resource.pressure'
   | 'server.disk_full'
   | 'server.unreachable'
-  | 'deletion.purge_stuck';
+  | 'deletion.purge_stuck'
+  | 'abuse.flagged'
+  | 'abuse.reported'
+  | 'abuse.auto_suspended';
 
 export const ADMIN_EVENT_TITLES: Record<AdminEvent, string> = {
   'user.registered': 'New user registered',
@@ -64,6 +67,9 @@ export const ADMIN_EVENT_TITLES: Record<AdminEvent, string> = {
   'server.unreachable': 'A managed server is unreachable',
   'server.disk_full': 'A server is running out of disk',
   'deletion.purge_stuck': 'Account deletion purge step keeps failing',
+  'abuse.flagged': 'A project was flagged for Acceptable Use review',
+  'abuse.reported': 'An abuse report was received',
+  'abuse.auto_suspended': 'A project was suspended automatically (Acceptable Use)',
 };
 
 /** Parse ADMIN_NOTIFY_EMAILS into a clean recipient list. */

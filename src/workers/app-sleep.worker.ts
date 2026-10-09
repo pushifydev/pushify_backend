@@ -1,4 +1,4 @@
-import { eq, and, gte, asc } from 'drizzle-orm';
+import { eq, and, gte, asc, isNull } from 'drizzle-orm';
 import { db } from '../db';
 import { projects } from '../db/schema/projects';
 import { servers } from '../db/schema/servers';
@@ -114,7 +114,8 @@ export async function requestWake(projectId: string): Promise<'started' | 'in-pr
   const claimed = await db
     .update(projects)
     .set({ sleepState: 'waking' })
-    .where(and(eq(projects.id, projectId), eq(projects.sleepState, 'sleeping')))
+    // Never start a suspended project, whatever its sleep state says
+    .where(and(eq(projects.id, projectId), eq(projects.sleepState, 'sleeping'), isNull(projects.suspendedAt)))
     .returning({ id: projects.id });
 
   if (claimed.length === 0) {

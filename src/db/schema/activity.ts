@@ -12,6 +12,8 @@ export const activityActionEnum = pgEnum('activity_action', [
   'project.deleted',
   'project.paused',
   'project.resumed',
+  'project.suspended',
+  'project.unsuspended',
   // Deployment actions
   'deployment.created',
   'deployment.cancelled',

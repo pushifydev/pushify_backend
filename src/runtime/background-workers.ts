@@ -19,6 +19,7 @@ import {
 import { startNotificationWorker, stopNotificationWorker } from '../workers/notification.worker';
 import { startScheduledTaskWorker, stopScheduledTaskWorker } from '../workers/scheduled-task.worker';
 import { startAppSleepWorker, stopAppSleepWorker } from '../workers/app-sleep.worker';
+import { startAbuseRuntimeWorker, stopAbuseRuntimeWorker } from '../workers/abuse-runtime.worker';
 import { startAdminNotifyWorker, stopAdminNotifyWorker } from '../workers/admin-notify.worker';
 import { startDomainRenewalWorker, stopDomainRenewalWorker } from '../workers/domain-renewal.worker';
 import { startBillingReconcileWorker, stopBillingReconcileWorker } from '../workers/billing-reconcile.worker';
@@ -83,6 +84,7 @@ export async function startBackgroundWorkers(): Promise<void> {
 
   startScheduledTaskWorker();
   startAppSleepWorker();
+  startAbuseRuntimeWorker();
   startDomainRenewalWorker();
   startBillingReconcileWorker();
   startDeletionPurgeWorker();
@@ -174,6 +176,7 @@ export async function stopBackgroundWorkers(): Promise<void> {
   stopScheduledTaskWorker();
   void stopAdminNotifyWorker();
   stopAppSleepWorker();
+  stopAbuseRuntimeWorker();
   stopDomainRenewalWorker();
   stopBillingReconcileWorker();
   stopDeletionPurgeWorker();

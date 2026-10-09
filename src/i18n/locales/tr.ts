@@ -60,6 +60,7 @@ export const tr: TranslationKeys = {
   // Projects
   projects: {
     notFound: 'Proje bulunamadı',
+    suspended: 'Bu proje Kabul Edilebilir Kullanım Politikası kapsamında askıya alındı. İtiraz için abuse@pushify.dev adresine yazın.',
     nameRequired: 'Proje adı zorunludur',
     created: 'Proje başarıyla oluşturuldu',
     updated: 'Proje başarıyla güncellendi',

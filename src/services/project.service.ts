@@ -512,6 +512,11 @@ export const projectService = {
 
     await assertMemberProjectScope(membership, organizationId, userId, projectId, locale);
 
+    // An Acceptable Use suspension is lifted by an admin, not by resuming
+    if (existing.suspendedAt && status === 'active') {
+      throw new HTTPException(403, { message: t(locale, 'projects', 'suspended') });
+    }
+
     const { pauseProjectContainers, resumeProjectContainers } = await import(
       '../lib/project-remote-cleanup'
     );
