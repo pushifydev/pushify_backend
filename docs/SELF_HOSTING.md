@@ -103,6 +103,25 @@ authentication still applies on top.
 The redirect URI is derived from `API_BASE_URL` (falling back to `FRONTEND_URL`), so set that to
 the address the dashboard actually reaches before configuring a connection.
 
+### Traffic analytics and visitor IPs
+
+Traffic analytics stores **no visitor IP addresses**, so there is no IP-retention setting
+(full / anonymized / none). What is stored in the Pushify database (`project_traffic_hourly`) is
+one row per app per hour with totals only: request count, 4xx, 5xx and bytes sent — no IPs,
+paths or user agents.
+
+How it works on each server: Nginx writes a per-app access log
+(`/var/log/nginx/pushify-traffic/<projectId>.log`, standard `combined` format, which does contain
+the client IP). Once an hour the worker rotates the file, aggregates it **on the server** with awk
+into the hourly totals above, and deletes the raw file after the totals are stored. Only the
+totals cross the SSH connection; a raw file lives on the server for roughly an hour (longer only
+if collection fails and is retried). Hourly rows are kept for 14 days.
+
+Not part of traffic analytics: Nginx's own `/var/log/nginx/access.log` on each server, which is
+standard Nginx behaviour and is handled by the server's own log rotation. Set
+`TRAFFIC_ANALYTICS_ENABLED=false` to stop writing and collecting the per-app logs entirely, or turn
+analytics off for a single project in its settings.
+
 ## Configuration
 
 Everything lives in `pushify/.env`. Required values are generated for you; optional integrations
