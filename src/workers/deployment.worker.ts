@@ -936,6 +936,9 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       const effPort = fileConfig?.port ?? (project.port || 3000);
 
       const deployRegistries = await registryCredentialService.forDeploy(project.organizationId);
+      // A registry's error output (or a build step echoing its config) must never put the
+      // token in the deploy log — register it with the masker before anything runs.
+      logMasker.addSecrets(deployRegistries.map((credential) => credential.password));
 
       const remoteResult = await deployToRemoteServer({
         serverId: deployTargetServerId,

@@ -67,4 +67,13 @@ describe('createLogMasker', () => {
     expect(m.mask('got line-one-abc')).toBe('got ••••••');
     expect(m.mask('got line-two-def')).toBe('got ••••••');
   });
+
+  it('masks a registry token that shows up in a failed docker login message', () => {
+    const m = createLogMasker();
+    m.addSecrets(['ghp_registryToken123']);
+    const line =
+      'Could not sign in to ghcr.io as "GHCR": Error response from daemon: denied for ghp_registryToken123';
+    expect(m.mask(line)).not.toContain('ghp_registryToken123');
+    expect(m.mask(line)).toContain('••••••');
+  });
 });
