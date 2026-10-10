@@ -321,15 +321,33 @@ export const TRAFFIC_LOG_DIR = '/var/log/nginx/pushify-traffic';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
+ * Name of the app's traffic log format. Each vhost file declares its own (log_format is an
+ * http-level directive and a name may be declared only once), so nothing has to be added to
+ * nginx.conf or conf.d on existing servers.
+ */
+export function trafficLogFormatName(trafficLogId: string): string {
+  return `pushify_traffic_${trafficLogId.toLowerCase().replace(/-/g, '')}`;
+}
+
+/**
+ * `combined` plus `$request_time` (seconds, ms resolution) at the end, so the collector can
+ * build a latency histogram. Lines without it (older `combined` logs) are still counted.
+ */
+export function trafficLogFormat(trafficLogId?: string): string {
+  if (!trafficLogId || !UUID_RE.test(trafficLogId)) return '';
+  return `log_format ${trafficLogFormatName(trafficLogId)} '$remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" $request_time';`;
+}
+
+/**
  * The server-level access_log lines for an app. The http-level log is named again because a
- * server-level access_log otherwise replaces it. `combined` is built into nginx, so no change to
- * nginx.conf is needed on existing servers; the buffer keeps the extra write cost small.
+ * server-level access_log otherwise replaces it. The format is declared at the top of the same
+ * vhost file (trafficLogFormat); the buffer keeps the extra write cost small.
  */
 export function trafficLogLines(trafficLogId?: string): string {
   if (!trafficLogId || !UUID_RE.test(trafficLogId)) return '';
   return `
     access_log /var/log/nginx/access.log;
-    access_log ${TRAFFIC_LOG_DIR}/${trafficLogId.toLowerCase()}.log combined buffer=64k flush=1m;`;
+    access_log ${TRAFFIC_LOG_DIR}/${trafficLogId.toLowerCase()}.log ${trafficLogFormatName(trafficLogId)} buffer=64k flush=1m;`;
 }
 
 /**
@@ -565,7 +583,13 @@ export function generateProjectSitesConfig(config: ProjectSitesConfig): string {
       config.trafficLogId
     )
   );
-  const zones = [upstream.block, ...rendered.map((r) => r.zone)].filter(Boolean);
+  // Declared before any server block that uses it; only when some block actually logs.
+  const logsTraffic = rendered.some((r) => r.blocks.some((b) => b.includes(`${TRAFFIC_LOG_DIR}/`)));
+  const zones = [
+    logsTraffic ? trafficLogFormat(config.trafficLogId) : '',
+    upstream.block,
+    ...rendered.map((r) => r.zone),
+  ].filter(Boolean);
   const names = config.domains
     .map((d) => [d.domain, ...(d.aliases ?? [])].join(' + '))
     .join(', ');

@@ -39,6 +39,10 @@ export const trafficAnalyticsService = {
         target: [projectTrafficHourly.projectId, projectTrafficHourly.hour],
         set: {
           requests: sql`${projectTrafficHourly.requests} + excluded.requests`,
+          status2xx: sql`${projectTrafficHourly.status2xx} + excluded.status_2xx`,
+          status3xx: sql`${projectTrafficHourly.status3xx} + excluded.status_3xx`,
+          // Element-wise sum of the histograms; a shorter (or empty) array counts as zeros.
+          latencyBuckets: sql`ARRAY(SELECT COALESCE(x, 0) + COALESCE(y, 0) FROM unnest(${projectTrafficHourly.latencyBuckets}, excluded.latency_buckets) WITH ORDINALITY AS t(x, y, i) ORDER BY i)::bigint[]`,
           status4xx: sql`${projectTrafficHourly.status4xx} + excluded.status_4xx`,
           status5xx: sql`${projectTrafficHourly.status5xx} + excluded.status_5xx`,
           bytesSent: sql`${projectTrafficHourly.bytesSent} + excluded.bytes_sent`,
@@ -102,9 +106,12 @@ export const trafficAnalyticsService = {
       .select({
         hour: projectTrafficHourly.hour,
         requests: projectTrafficHourly.requests,
+        status2xx: projectTrafficHourly.status2xx,
+        status3xx: projectTrafficHourly.status3xx,
         status4xx: projectTrafficHourly.status4xx,
         status5xx: projectTrafficHourly.status5xx,
         bytesSent: projectTrafficHourly.bytesSent,
+        latencyBuckets: projectTrafficHourly.latencyBuckets,
       })
       .from(projectTrafficHourly)
       .where(and(eq(projectTrafficHourly.projectId, projectId), gte(projectTrafficHourly.hour, since)));
