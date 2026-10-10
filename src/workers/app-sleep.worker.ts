@@ -1,8 +1,9 @@
-import { eq, and, gte, asc, isNull } from 'drizzle-orm';
+import { eq, and, gte, asc, desc, isNull, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { projects } from '../db/schema/projects';
 import { servers } from '../db/schema/servers';
 import { containerMetrics } from '../db/schema/metrics';
+import { deployments } from '../db/schema/deployments';
 import { getSSHConnection } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
 import { resolveProjectServerId } from '../lib/runner-routing';
@@ -169,6 +170,71 @@ export async function wakeAfterFailedDeploy(
   return requestWake(projectId);
 }
 
+/**
+ * Projects left in the state `wakeAfterFailedDeploy` now prevents, from before that fix (or from
+ * a worker that died before its catch block ran): sleep-enabled, marked `awake`, latest production
+ * deployment `failed`, and an earlier deployment that did serve — so the old container exists but
+ * was stopped by the sweeper. The wake endpoint answers 502 for them forever, since only
+ * `sleeping` projects get woken, and the sweeper never stops an `awake` app that has no traffic
+ * samples. A deploy still in progress is the latest deployment, so those are not picked.
+ */
+export async function findProjectsStuckAfterFailedDeploy(): Promise<string[]> {
+  const candidates = await db
+    .select({ id: projects.id })
+    .from(projects)
+    .where(
+      and(
+        eq(projects.sleepEnabled, true),
+        eq(projects.sleepState, 'awake'),
+        eq(projects.status, 'active'),
+        isNull(projects.suspendedAt)
+      )
+    );
+
+  const stuck: string[] = [];
+  for (const { id } of candidates) {
+    const production = and(
+      eq(deployments.projectId, id),
+      eq(deployments.environment, 'production'),
+      eq(deployments.isPreview, false)
+    );
+    const [latest] = await db
+      .select({ status: deployments.status })
+      .from(deployments)
+      .where(production)
+      .orderBy(desc(deployments.createdAt))
+      .limit(1);
+    if (latest?.status !== 'failed') continue;
+    const [served] = await db
+      .select({ id: deployments.id })
+      .from(deployments)
+      .where(and(production, inArray(deployments.status, ['running', 'stopped'])))
+      .limit(1);
+    if (served) stuck.push(id);
+  }
+  return stuck;
+}
+
+/**
+ * One-off, idempotent repair run when the worker starts: wake every project found by
+ * `findProjectsStuckAfterFailedDeploy`. `docker start` on a container that is already running is
+ * a no-op, and once woken (or put back to `sleeping` when the start fails, so the next visit
+ * retries) a project is no longer `awake` with stopped containers — running it again changes
+ * nothing.
+ */
+export async function recoverProjectsStuckAfterFailedDeploy(): Promise<{ checked: number; started: number; failed: number }> {
+  const stuck = await findProjectsStuckAfterFailedDeploy();
+  let started = 0;
+  let failed = 0;
+  for (const projectId of stuck) {
+    const result = await wakeAfterFailedDeploy(projectId).catch(() => 'failed' as const);
+    if (result === 'failed') failed++;
+    else started++;
+    logger.info({ projectId, result }, 'Startup repair: woke previous container after failed deploy');
+  }
+  return { checked: stuck.length, started, failed };
+}
+
 /** Find awake, sleep-enabled projects with no meaningful traffic across their idle window. */
 export async function sweepIdleProjects(): Promise<{ slept: number }> {
   const candidates = await db
@@ -224,6 +290,11 @@ let isSweeping = false;
 
 export function startAppSleepWorker(): void {
   if (sweepInterval) return;
+  recoverProjectsStuckAfterFailedDeploy()
+    .then((res) => {
+      if (res.checked > 0) logger.info(res, 'Startup repair: projects stuck awake after a failed deploy');
+    })
+    .catch((error) => logger.error({ err: error }, 'Startup repair after failed deploy failed'));
   sweepInterval = setInterval(() => {
     if (isSweeping) return;
     isSweeping = true;
