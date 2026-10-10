@@ -23,6 +23,73 @@ describe('classifyDeployFailure — native addon compile failures', () => {
     expect(result.category).toBe('platform_native');
   });
 
+  it('names the missing build tools in the hint', () => {
+    const log = [
+      'npm ERR! gyp ERR! stack Error: not found: make',
+      'npm ERR! gyp ERR! find Python Python is not set from command line or npm configuration',
+    ].join('\n');
+    const { userHint } = classifyDeployFailure(log, `Docker build failed: ${log}`);
+    expect(userHint).toContain('Missing build tools: make, python3');
+    expect(userHint).toContain('build-essential');
+  });
+
+  it('names the missing header and its Debian package (canvas → cairo)', () => {
+    const log = [
+      '#12 [builder 5/9] RUN npm rebuild',
+      "#12 4.1 ../src/CanvasRenderingContext2d.cc:9:10: fatal error: cairo.h: No such file or directory",
+      '#12 4.1 gyp ERR! build error',
+    ].join('\n');
+    const result = classifyDeployFailure(log, `Docker build failed: ${log}`);
+    expect(result.category).toBe('platform_native');
+    expect(result.blame).toBe('pushify');
+    expect(result.userHint).toContain('"cairo.h"');
+    expect(result.userHint).toContain('libcairo2-dev');
+    expect(result.userHint).toContain('Dockerfile');
+  });
+
+  it('names a library pkg-config could not find', () => {
+    const log = [
+      "Package pixman-1 was not found in the pkg-config search path.",
+      'gyp ERR! configure error',
+    ].join('\n');
+    const { userHint } = classifyDeployFailure(log, `Docker build failed: ${log}`);
+    expect(userHint).toContain('"pixman-1"');
+    expect(userHint).toContain('libpixman-1-dev');
+  });
+
+  it('explains a sharp prebuilt binary missing for linux-x64', () => {
+    const err = [
+      'Error: Could not load the "sharp" module using the linux-x64 runtime',
+      'Possible solutions:',
+      '- Ensure optional dependencies can be installed:',
+    ].join('\n');
+    const result = classifyDeployFailure('', err);
+    expect(result.category).toBe('platform_native');
+    expect(result.label).toBe('Native module build');
+    expect(result.userHint).toContain('npm install --os=linux --cpu=x64 sharp');
+  });
+
+  it('explains a glibc version mismatch of a prebuilt binary', () => {
+    const err =
+      "Error: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found (required by /app/node_modules/foo/prebuilds/linux-x64/foo.node)";
+    const result = classifyDeployFailure('', err);
+    expect(result.category).toBe('platform_native');
+    expect(result.userHint).toContain('libc mismatch');
+  });
+
+  it('suggests bcryptjs when bcrypt never got built', () => {
+    const { userHint } = classifyDeployFailure(
+      '',
+      "Error: Cannot find module '/app/node_modules/bcrypt/build/Release/bcrypt_lib.node'"
+    );
+    expect(userHint).toContain('bcryptjs');
+  });
+
+  it('falls back to the generic native hint when no cause is recognisable', () => {
+    const { userHint } = classifyDeployFailure('', 'gyp ERR! build error');
+    expect(userHint).toContain('python3, make, g++ and pkg-config');
+  });
+
   it('does not match on the generated Node install steps alone', () => {
     const result = classifyDeployFailure(nodeInstallLines('npm ci'), 'Deployment failed');
     expect(result.category).toBe('unknown');
