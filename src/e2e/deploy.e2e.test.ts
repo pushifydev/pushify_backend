@@ -1261,4 +1261,105 @@ describe.skipIf(!E2E)('deploy to a real server (e2e)', () => {
     },
     900_000
   );
+
+  // PR previews go through the same server deployer whatever the build type: a static site is
+  // an nginx image serving its output folder, a node app its own server. Both must answer on
+  // the preview URL with the PR branch's content, leave production alone, and be gone when the
+  // PR closes.
+  const previewCases = [
+    {
+      kind: 'static',
+      files: (v: string) => ({
+        'public/index.html': `<!doctype html><title>E2E</title><h1>E2E-PREVIEW-STATIC ${v}</h1>`,
+        'public/about.html': `<!doctype html>E2E-PREVIEW-ABOUT ${v}`,
+      }),
+      extraChecks: (url: string) => {
+        // Output folder only, with its routing: /about → about.html, never the repo itself
+        expect(request(`${url}/about`).body).toContain('E2E-PREVIEW-ABOUT pr');
+        expect(request(`${url}/.git/config`).status).toBe(404);
+      },
+    },
+    {
+      kind: 'node',
+      files: (v: string) => ({
+        'package.json': JSON.stringify({ name: 'e2e-preview', version: '1.0.0', private: true, scripts: { start: 'node server.js' } }),
+        'server.js': `require('http').createServer((q, s) => s.end('E2E-PREVIEW-NODE ${v}')).listen(process.env.PORT || 3000);\n`,
+      }),
+      extraChecks: () => {},
+    },
+  ] as const;
+
+  for (const c of previewCases) {
+    it(
+      `PR preview (${c.kind}): created on PR open, answers 200, removed on PR close`,
+      async () => {
+        onTestFailed(() => console.error(serverState()));
+        const domain = `preview-${c.kind}-${run}.127.0.0.1.nip.io`;
+        const repo = await fixtureRepo(c.files('main'));
+        execSync('git checkout -q -b feature/preview', { cwd: repo });
+        await fixtureRepo(c.files('pr'), repo);
+        execSync('git checkout -q main', { cwd: repo });
+        const project = await createProject(`pv-${c.kind}`, repo, domain);
+        await deploy(project.id);
+        expect(request(`https://${domain}/`).body).toContain('main');
+
+        // "PR opened": the rows previewService.createOrUpdatePreview writes, then the worker.
+        const prNumber = 7;
+        const { previewRepository } = await import('../repositories/preview.repository');
+        const { previewService } = await import('../services/preview.service');
+        const [dep] = await db
+          .insert(schema.deployments)
+          .values({
+            projectId: project.id,
+            status: 'pending',
+            trigger: 'git_push',
+            branch: 'feature/preview',
+            isPreview: true,
+            previewPrNumber: prNumber,
+          })
+          .returning();
+        await previewRepository.create({
+          projectId: project.id,
+          deploymentId: dep.id,
+          prNumber,
+          prBranch: 'feature/preview',
+          baseBranch: 'main',
+          previewUrl: previewService.generatePreviewUrl(project.slug, prNumber),
+          containerName: `pushify-preview-${project.slug}-pr-${prNumber}`,
+          status: 'pending',
+        });
+        await executeDeploymentJob((await loadDeploymentJobById(dep.id))!);
+
+        const done = await db.query.deployments.findFirst({ where: (d, { eq }) => eq(d.id, dep.id) });
+        if (done?.status !== 'running') console.error(`--- preview deploy ${done?.status}: ${done?.errorMessage}\n${done?.buildLogs ?? ''}`);
+        expect(done?.status).toBe('running');
+
+        const preview = await previewRepository.findByProjectAndPr(project.id, prNumber);
+        expect(preview?.status).toBe('running');
+        expect(preview?.hostPort).toBeTruthy();
+        const url = preview!.previewUrl!;
+        const page = request(`${url}/`);
+        expect(page.status).toBe(200);
+        expect(page.body).toContain('pr');
+        expect(page.body).not.toContain('main');
+        c.extraChecks(url);
+        // Production still serves main
+        expect(request(`https://${domain}/`).body).toContain('main');
+
+        // "PR closed"
+        const previewContainers = () =>
+          execSync(`docker ps -a --format '{{.Names}}'`, { encoding: 'utf8' })
+            .split('\n')
+            .filter((n) => n.startsWith(`pushify-${project.slug}-pr-${prNumber}`));
+        expect(previewContainers().length).toBeGreaterThan(0);
+        await previewService.cleanupPreview(project.id, prNumber);
+
+        expect(previewContainers()).toEqual([]);
+        expect((await previewRepository.findByProjectAndPr(project.id, prNumber))?.status).toBe('stopped');
+        expect(tryExec(`curl -s -o /dev/null -w '%{http_code}' --max-time 5 ${url}/`) ?? '000').toBe('000');
+        expect(request(`https://${domain}/`).body).toContain('main');
+      },
+      900_000
+    );
+  }
 });

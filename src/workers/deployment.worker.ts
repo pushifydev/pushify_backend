@@ -48,7 +48,7 @@ import { githubService } from '../services/github.service';
 import { notificationService } from '../services/notification.service';
 import { adminNotify } from '../services/admin-notify.service';
 import { activityService } from '../services/activity.service';
-import { previewService } from '../services/preview.service';
+import { previewService, isPublishedStaticSite } from '../services/preview.service';
 import { previewRepository } from '../repositories/preview.repository';
 import { resolveProjectGitAccess, noRepoAccessMessage } from '../services/git-provider-access.service';
 import { firstRepoSettingsError, firstProjectSettingsError } from '../lib/repo-settings-validate';
@@ -514,7 +514,12 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
     // ── Static Site Studio site: render the editor's HTML and serve it via Nginx ──
     // No container build — "deploying" here means upload + Nginx config + open port.
     const earlySettings = project.settings as Record<string, unknown>;
-    if (earlySettings?.static === true || earlySettings?.siteStudioStack === 'static') {
+    if (isPublishedStaticSite(earlySettings)) {
+      // This path publishes the site's stored files to its production slug/domain — a PR
+      // preview through here would overwrite production. Fail the preview instead.
+      if (previewCtx) {
+        throw new Error('Preview deployments are not supported for Site Studio or uploaded static sites');
+      }
       addLog(isUploadProject(earlySettings) ? '📁 Uploaded site — publishing files...' : '🎨 Static site — publishing rendered HTML...');
       if (!deployTargetServerId) {
         throw new Error('Static site has no server assigned');
