@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Apps already stuck at 502 after a failed deploy are recovered.** The beta.101 fix wakes the previous container only when a deploy fails *from now on*. A sleep-enabled app whose deploy failed before it (or whose worker died before the failure handler ran) stayed `awake` with its old container stopped, so the wake endpoint kept answering 502. When the worker starts, it now looks for apps that are sleep-enabled, `awake`, not suspended, whose latest production deployment failed after one that served, and wakes the previous container (`recoverProjectsStuckAfterFailedDeploy`). Safe to run repeatedly: `docker start` on a running container does nothing, and an app whose container will not start is left `sleeping`, so the next visit retries.
+
 ## [0.2.0-beta.107] - 2026-10-10
 
 ### Fixed
