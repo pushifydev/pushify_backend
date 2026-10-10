@@ -5,6 +5,7 @@ import { authMiddleware } from '../middleware/auth';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 import { HTTPException } from 'hono/http-exception';
+import { decrypt } from '../lib/encryption';
 import { githubAppService } from '../services/github-app.service';
 import {
   createOAuthState,
@@ -548,15 +549,41 @@ githubRouter.openapi(appSetupRoute, async (c) => {
     throw new HTTPException(400, { message: t(locale, 'integrations', 'invalidState') });
   }
 
-  // The webhook usually arrives first; fetching here would need an extra API call, so an
-  // installation we have not seen yet is recorded with what we know and filled in on sync.
-  const existing = await githubAppService.findByInstallationId(installationId);
-  if (!existing) {
-    await githubAppService.syncInstallation({
-      installationId,
-      accountLogin: 'pending',
+  if (!githubAppService.isConfigured()) {
+    throw new HTTPException(400, { message: 'GitHub App is not configured' });
+  }
+
+  // The id comes from the request body and installation ids are sequential, so it proves
+  // nothing on its own. First: does GitHub know this installation at all?
+  let remote;
+  try {
+    remote = await githubAppService.fetchInstallation(installationId);
+  } catch {
+    throw new HTTPException(502, { message: 'Could not reach GitHub to verify the installation' });
+  }
+  if (!remote) {
+    throw new HTTPException(404, { message: 'Installation not found' });
+  }
+
+  // Second: can this user reach it with their own GitHub token? Otherwise anyone could claim
+  // someone else's (not yet linked) installation by guessing its id.
+  const integration = await githubService.getIntegration(userId);
+  if (!integration) {
+    throw new HTTPException(403, {
+      message: 'Connect your GitHub account to link a GitHub App installation',
     });
   }
+  const ownsInstallation = await githubAppService.userCanAccessInstallation(
+    decrypt(integration.accessToken),
+    installationId
+  );
+  if (!ownsInstallation) {
+    throw new HTTPException(403, {
+      message: 'Your GitHub account does not have access to this installation',
+    });
+  }
+
+  await githubAppService.syncInstallation({ installationId, ...remote });
 
   const claimed = await githubAppService.claimInstallation(installationId, organizationId, userId);
   const installation = claimed ?? (await githubAppService.findByInstallationId(installationId));
