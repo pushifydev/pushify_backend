@@ -1,6 +1,6 @@
 import { HTTPException } from 'hono/http-exception';
-import { and, eq } from 'drizzle-orm';
-import { createRemoteJWKSet, decodeJwt, jwtVerify } from 'jose';
+import { eq } from 'drizzle-orm';
+import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { db } from '../db';
 import { ssoConnections } from '../db/schema/sso';
 import { users } from '../db/schema/users';
@@ -9,7 +9,6 @@ import { userRepository } from '../repositories/user.repository';
 import { encrypt, decrypt } from '../lib/encryption';
 import {
   buildAuthorizationUrl,
-  connectionAcceptsEmail,
   createPkcePair,
   discoveryUrl,
   emailDomainOf,
