@@ -15,6 +15,7 @@ import {
   buildServerDiagnostics,
   classifyDownReason,
   classifyProbeError,
+  describeEdgeStatus,
   diagnosticsDue,
   formatDuration,
   nextHealthState,
@@ -213,7 +214,8 @@ export const appHealthService = {
       statusCode: result.statusCode ?? null,
       responseTimeMs: result.responseTimeMs ?? null,
       failCount: transition.state.failCount,
-      error: result.error ?? null,
+      // A bare Cloudflare 52x says nothing to a customer: store what it means for the status screen.
+      error: result.error ?? (result.healthy ? null : describeEdgeStatus(result.statusCode)),
       downSince: transition.state.downSince,
       notifiedAt: transition.state.notifiedAt,
       downReason,
@@ -405,7 +407,7 @@ export const appHealthService = {
         {
           status: isDown ? 'unhealthy' : 'healthy',
           message: isDown
-            ? `${kind === 'reminder' ? `Still down after ${formatDuration(details.downForMs ?? 0)}: ` : ''}${candidate.url} is not answering${answer} — ${reason}. ${details.advice ?? describeDownReason(reason, details.byos ?? false)}`
+            ? `${kind === 'reminder' ? `Still down after ${formatDuration(details.downForMs ?? 0)}: ` : ''}${candidate.url} is not answering${answer} — ${reason}. ${details.advice ?? describeEdgeStatus(details.statusCode) ?? describeDownReason(reason, details.byos ?? false)}`
             : `${candidate.url} is answering again`,
         }
       );

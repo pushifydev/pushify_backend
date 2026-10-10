@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyDownReason, dueReminderStep, formatDuration, nextHealthState, type HealthState } from './app-health';
+import { classifyDownReason, describeEdgeStatus, dueReminderStep, formatDuration, nextHealthState, type HealthState } from './app-health';
 
 const t = (minutes: number) => new Date(Date.UTC(2026, 8, 22, 12, minutes));
 const state = (overrides: Partial<HealthState> = {}): HealthState => ({
@@ -74,6 +74,20 @@ describe('classifyDownReason', () => {
   it('a failed latest deployment wins', () => {
     expect(classifyDownReason({ statusCode: 502, latestDeployFailed: true })).toBe('deploy_failed');
     expect(classifyDownReason({ error: 'fetch failed', latestDeployFailed: true })).toBe('deploy_failed');
+  });
+});
+
+describe('describeEdgeStatus', () => {
+  it('names a Cloudflare 520 as an empty response from the app', () => {
+    expect(describeEdgeStatus(520)).toMatch(/^App returned an empty response \(HTTP 520\)/);
+  });
+
+  it('explains the other Cloudflare origin errors', () => {
+    for (const code of [521, 522, 523, 524, 525, 526]) expect(describeEdgeStatus(code)).toContain(`HTTP ${code}`);
+  });
+
+  it('leaves ordinary statuses alone', () => {
+    for (const code of [undefined, null, 0, 200, 404, 500, 502, 503]) expect(describeEdgeStatus(code)).toBeNull();
   });
 });
 

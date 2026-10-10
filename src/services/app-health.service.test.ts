@@ -155,3 +155,25 @@ describe('appHealthService.checkProject when the server gives no answer', () => 
     expect(h.adminNotify).not.toHaveBeenCalled();
   });
 });
+
+describe('appHealthService.checkProject when Cloudflare answers 520', () => {
+  it('stores and announces it as an empty response from the app, not a bare status code', async () => {
+    h.performHealthCheck.mockResolvedValue({ healthy: false, statusCode: 520, responseTimeMs: 40 });
+    h.selects.push(
+      [{ status: 'up', failCount: 2, downSince: null, notifiedAt: null, reminderStep: 0, downReason: null, diagnostics: null }],
+      [{ id: 'srv-1', name: 'web-1', ipv4: '127.0.0.1', sshPrivateKey: 'key', provider: 'hetzner', isManaged: true }],
+      [{ status: 'running' }]
+    );
+    const status = await appHealthService.checkProject(candidate, new Date('2026-10-09T21:12:38Z'));
+    expect(status).toBe('down');
+
+    const state = h.inserted.find((v) => 'diagnostics' in v)!;
+    expect(state.statusCode).toBe(520);
+    expect(state.downReason).toBe('app_error');
+    expect(state.error).toMatch(/App returned an empty response \(HTTP 520\)/);
+    // An HTTP answer means the server is up: no SSH probing, no operations alert.
+    expect(h.getSSHConnection).not.toHaveBeenCalled();
+    expect(h.adminNotify).not.toHaveBeenCalled();
+    expect(JSON.stringify(h.sendNotifications.mock.calls[0])).toMatch(/App returned an empty response/);
+  });
+});

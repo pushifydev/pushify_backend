@@ -43,6 +43,33 @@ export function classifyDownReason(signals: DownReasonSignals): DownReason {
   return 'server_unreachable';
 }
 
+/**
+ * Cloudflare sits in front of auto subdomains (and many custom domains), and it answers with its
+ * own 52x codes when the origin misbehaves. nginx never sends these itself (an upstream that dies
+ * mid-response is a 502 from nginx), so a 52x means Cloudflare reached the server but got
+ * something it could not use. "HTTP 520" alone tells a customer nothing; this says what it means.
+ * null for every other status.
+ */
+export function describeEdgeStatus(statusCode: number | null | undefined): string | null {
+  switch (statusCode) {
+    case 520:
+      return 'App returned an empty response (HTTP 520): the server accepted the connection but closed it without a valid HTTP answer. The app most likely crashed or reset the connection mid-request; check its logs. If it persists after a redeploy, the server may have no site configured for this domain on HTTPS.';
+    case 521:
+      return 'Server refused the connection (HTTP 521): nothing is accepting connections on ports 80/443. Check that the proxy is running and the firewall allows them.';
+    case 522:
+      return 'Connection to the server timed out (HTTP 522): the server did not answer in time. It may be overloaded, off, or a firewall is dropping the traffic.';
+    case 523:
+      return 'Server unreachable (HTTP 523): the address this domain points at cannot be reached. Check the DNS record and the server IP.';
+    case 524:
+      return 'App took too long to answer (HTTP 524): the connection worked but no response came within 100 seconds. A slow request or a stuck app is the usual cause.';
+    case 525:
+    case 526:
+      return `TLS handshake with the server failed (HTTP ${statusCode}): the certificate on the server is missing or invalid for this domain. Re-issue it from the domain settings.`;
+    default:
+      return null;
+  }
+}
+
 /** Reminders while an outage lasts, counted from when it was confirmed. Never more than these. */
 export const DOWN_REMINDER_AFTER_MS = [24 * 60 * 60 * 1000, 72 * 60 * 60 * 1000] as const;
 
