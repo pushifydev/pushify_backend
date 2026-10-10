@@ -20,6 +20,11 @@ import type { PreviewDeployment } from '../db/schema';
 import { canOrganizationDeploy } from './organization-billing.service';
 import { planLimitsService } from './plan-limits.service';
 
+/** Site Studio / uploaded static sites: published from stored files, not built from git. */
+export function isPublishedStaticSite(settings: Record<string, unknown> | null | undefined): boolean {
+  return settings?.static === true || settings?.siteStudioStack === 'static';
+}
+
 interface CreatePreviewInput {
   prNumber: number;
   prTitle?: string;
@@ -456,6 +461,11 @@ This preview will be automatically updated when you push new commits to this mer
     if (!project) return false;
 
     const settings = project.settings as Record<string, unknown> | null;
+    // Site Studio / uploaded static sites have no PR branch to build: the worker's static
+    // path publishes the stored site, so a "preview" there would overwrite production.
+    // Git-based static frameworks (Vite, Astro, …) are not flagged `static` and build an
+    // nginx container like any other project, so their previews work as usual.
+    if (isPublishedStaticSite(settings)) return false;
     return settings?.previewDeploymentsEnabled === true;
   },
 };
