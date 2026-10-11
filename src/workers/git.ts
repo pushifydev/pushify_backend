@@ -79,6 +79,15 @@ export async function cloneRepository(options: CloneOptions): Promise<CloneResul
 
   let result = await execStreamingCommand('git', cloneArgs, streamOptions);
 
+  // A pinned commit (promotion) must never silently become the default branch's HEAD.
+  if (result.exitCode !== 0 && branch && commit) {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+    throw new Error(
+      `Branch "${branch}" not found in the repository; refusing to fall back to the default branch ` +
+        `because commit ${commit.substring(0, 7)} was requested`
+    );
+  }
+
   // If branch was specified and clone failed, try without branch (use default)
   if (result.exitCode !== 0 && branch) {
     onProgress?.(`⚠️ Branch "${branch}" not found, trying default branch...`);
