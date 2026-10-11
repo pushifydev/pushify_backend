@@ -3,6 +3,7 @@ import { db } from '../db';
 import { classifyDeployFailure, type DeployFailureBlame } from '../lib/deploy-failure-classify';
 import { stripFailurePrefix, summarizeDeployFailures } from '../lib/deploy-failure-summary';
 import { scrubSecrets } from '../lib/ops-scrub';
+import { classifySiteDown, type SiteDownBlame } from '../lib/site-down-classify';
 
 /**
  * Operational signals for the operations agent (pushify-hq). Read-only and platform-wide.
@@ -34,7 +35,16 @@ export interface OpsSignals {
     /** Projects whose last deploy failed and that failed at least twice in the window. */
     failingProjects: Array<{ projectId: string; failures: number; lastFailedAt: string; blame: DeployFailureBlame; label: string; error: string | null }>;
   };
-  sitesDown: Array<{ projectId: string; downSince: string | null; statusCode: number | null; error: string | null }>;
+  /**
+   * Sites down that Pushify may have to act on: a managed server or Pushify's host gives no
+   * answer, the app errors, or the reason is not known yet.
+   */
+  sitesDown: SiteDown[];
+  /**
+   * Sites down because the customer's own (BYOS) server gives no answer — off, deleted at the
+   * provider, or firewalled. Theirs to fix (they were already told), so kept out of `sitesDown`.
+   */
+  userServersUnreachable: SiteDown[];
   servers: Array<{
     serverId: string;
     managed: boolean;
@@ -46,6 +56,19 @@ export interface OpsSignals {
     message: string | null;
   }>;
   databases: Array<{ databaseId: string; type: string; status: string; since: string }>;
+}
+
+export interface SiteDown {
+  projectId: string;
+  downSince: string | null;
+  statusCode: number | null;
+  error: string | null;
+  /** server_unreachable | app_error | deploy_failed, null when not worked out yet */
+  downReason: string | null;
+  /** First server check that failed (ssh | docker | http_port | https_port), when diagnosed */
+  failedCheck: string | null;
+  blame: SiteDownBlame;
+  label: string;
 }
 
 async function rows<T>(query: ReturnType<typeof sql>): Promise<T[]> {
@@ -91,12 +114,19 @@ export const opsSignalsService = {
          WHERE r.rn = 1 AND r.status = 'failed'
            AND (SELECT count(*) FROM recent f WHERE f.project_id = r.project_id AND f.status = 'failed') >= 2
          ORDER BY r.created_at DESC LIMIT ${LIST_LIMIT}`),
-      rows<{ projectId: string; downSince: string | null; statusCode: number | null; error: string | null }>(sql`
-        SELECT project_id AS "projectId", ${iso('down_since')} AS "downSince",
-               status_code AS "statusCode", error
-          FROM project_health_state
-         WHERE status = 'down' AND down_since < now() - ${sql.raw(`interval '${SITE_DOWN_GRACE_MIN} minutes'`)}
-         ORDER BY down_since ASC LIMIT ${LIST_LIMIT}`),
+      rows<{
+        projectId: string; downSince: string | null; statusCode: number | null; error: string | null;
+        downReason: string | null; failedCheck: string | null; serverProvider: string | null; serverManaged: boolean | null;
+      }>(sql`
+        SELECT h.project_id AS "projectId", ${iso('h.down_since')} AS "downSince",
+               h.status_code AS "statusCode", h.error, h.down_reason AS "downReason",
+               h.diagnostics->>'failedCheck' AS "failedCheck",
+               s.provider::text AS "serverProvider", s.is_managed AS "serverManaged"
+          FROM project_health_state h
+          JOIN projects p ON p.id = h.project_id
+          LEFT JOIN servers s ON s.id = p.server_id
+         WHERE h.status = 'down' AND h.down_since < now() - ${sql.raw(`interval '${SITE_DOWN_GRACE_MIN} minutes'`)}
+         ORDER BY h.down_since ASC LIMIT ${LIST_LIMIT}`),
       rows<{
         serverId: string; managed: boolean; provider: string; status: string; setupStatus: string;
         diskUsedPercent: number | null; message: string | null;
@@ -115,6 +145,19 @@ export const opsSignalsService = {
           FROM databases WHERE status = 'error'
          ORDER BY updated_at DESC LIMIT ${LIST_LIMIT}`),
     ]);
+
+    const sites: SiteDown[] = down.map((d) => ({
+      projectId: d.projectId,
+      downSince: d.downSince,
+      statusCode: d.statusCode,
+      error: scrubSecrets(d.error),
+      downReason: d.downReason,
+      failedCheck: d.failedCheck,
+      ...classifySiteDown({
+        downReason: d.downReason,
+        server: d.serverProvider ? { provider: d.serverProvider, managed: d.serverManaged ?? true } : null,
+      }),
+    }));
 
     const sinceFailed = sinceRows?.filter((r) => r.status === 'failed') ?? [];
     return {
@@ -152,7 +195,8 @@ export const opsSignalsService = {
           };
         }),
       },
-      sitesDown: down.map((d) => ({ ...d, error: scrubSecrets(d.error) })),
+      sitesDown: sites.filter((s) => s.blame !== 'server'),
+      userServersUnreachable: sites.filter((s) => s.blame === 'server'),
       servers: servers.map((s) => ({
         ...s,
         problem: s.status === 'error' ? 'error' : s.setupStatus === 'failed' ? 'setup_failed' : 'disk',
