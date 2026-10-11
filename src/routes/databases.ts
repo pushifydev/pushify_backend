@@ -4,6 +4,9 @@ import { databaseService } from '../services/database.service';
 import { databaseStudioRoutes } from './database-studio';
 import { nosqlStudioRoutes } from './nosql-studio';
 import { databaseBackupService } from '../services/database-backup.service';
+import { databaseImportService } from '../services/database-import.service';
+import { MAX_IMPORT_BYTES } from '../lib/database-import';
+import { HTTPException } from 'hono/http-exception';
 import { combinedAuthMiddleware } from '../middleware/auth';
 import { requireScope } from '../middleware/apikey-auth';
 import { t } from '../i18n';
@@ -320,6 +323,61 @@ databasesRouter.get('/:id/backups/:backupId/download', requireScope('databases:r
       'Content-Length': buffer.length.toString(),
     },
   });
+});
+
+// ============ Dump import (PostgreSQL) ============
+
+// Import an uploaded pg_dump archive (multipart: `file`, optional `clean=true`). Owner/admin.
+// Returns a job; poll GET /:id/imports/:jobId for status and the pg_restore log.
+databasesRouter.post('/:id/imports', requireScope('databases:write'), async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const databaseId = c.req.param('id');
+
+  // Refuse oversized bodies before reading them into memory (1 MB slack for multipart framing).
+  const declared = Number(c.req.header('content-length') || 0);
+  if (declared > MAX_IMPORT_BYTES + 1024 * 1024) {
+    throw new HTTPException(413, { message: `A dump can be at most ${MAX_IMPORT_BYTES / 1024 / 1024} MB` });
+  }
+
+  const body = await c.req.parseBody();
+  const file = body.file;
+  if (!(file instanceof File)) {
+    throw new HTTPException(400, { message: 'Upload the pg_dump archive in the `file` field' });
+  }
+  if (file.size > MAX_IMPORT_BYTES) {
+    throw new HTTPException(413, { message: `A dump can be at most ${MAX_IMPORT_BYTES / 1024 / 1024} MB` });
+  }
+  const clean = body.clean === 'true' || body.clean === '1';
+
+  const job = await databaseImportService.startImport(
+    databaseId,
+    organizationId,
+    userId,
+    { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) },
+    { clean },
+    locale
+  );
+
+  return c.json({ data: job }, 202);
+});
+
+// Import status and log
+databasesRouter.get('/:id/imports/:jobId', requireScope('databases:read'), async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+
+  const job = await databaseImportService.getImport(
+    c.req.param('id'),
+    c.req.param('jobId'),
+    organizationId,
+    userId,
+    locale
+  );
+
+  return c.json({ data: job });
 });
 
 // Data browser (tables, rows, SQL console) for PostgreSQL/MySQL databases
