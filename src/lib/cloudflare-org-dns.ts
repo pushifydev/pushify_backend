@@ -1,0 +1,138 @@
+/**
+ * DNS records for an organization's own custom domains, with the organization's own Cloudflare
+ * API token (dns-provider.service). Unlike lib/cloudflare-dns.ts — the platform's zone, configured
+ * by env — the zone here is found from the domain itself, and the token comes from the caller.
+ *
+ * The token is only ever sent in the Authorization header: it never appears in an error message
+ * or a log line (use maskToken when a hint is needed).
+ *
+ * Records are only created, never changed or deleted: an existing record with the same name and
+ * type is someone's decision and is reported as a conflict instead of being overwritten.
+ */
+
+const API = 'https://api.cloudflare.com/client/v4';
+export const ORG_RECORD_COMMENT = 'pushify:custom-domain';
+
+export class CloudflareDnsError extends Error {
+  constructor(message: string, readonly code: 'invalid_token' | 'zone_not_found' | 'conflict' | 'api_error') {
+    super(message);
+    this.name = 'CloudflareDnsError';
+  }
+}
+
+/** `abcd…wxyz` — enough to tell tokens apart, useless to anyone reading a log. */
+export function maskToken(token: string | null | undefined): string {
+  if (!token) return '';
+  if (token.length <= 8) return '****';
+  return `${token.slice(0, 4)}…${token.slice(-4)}`;
+}
+
+async function cf<T>(token: string, path: string, init: RequestInit = {}): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${API}${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        ...(init.headers || {}),
+      },
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (err) {
+    throw new CloudflareDnsError(`Could not reach Cloudflare: ${(err as Error).message}`, 'api_error');
+  }
+  const body = (await res.json().catch(() => null)) as
+    | { success?: boolean; result?: T; errors?: Array<{ code?: number; message: string }> }
+    | null;
+  if (!res.ok || !body?.success) {
+    const detail = body?.errors?.[0]?.message || `HTTP ${res.status}`;
+    if (res.status === 401 || res.status === 403) {
+      throw new CloudflareDnsError(`Cloudflare rejected the API token: ${detail}`, 'invalid_token');
+    }
+    throw new CloudflareDnsError(`Cloudflare ${init.method || 'GET'} request failed: ${detail}`, 'api_error');
+  }
+  return body.result as T;
+}
+
+/** True when Cloudflare reports the token as active. */
+export async function verifyCloudflareToken(token: string): Promise<boolean> {
+  try {
+    const result = await cf<{ status?: string }>(token, '/user/tokens/verify');
+    return result?.status === 'active';
+  } catch (err) {
+    if (err instanceof CloudflareDnsError && err.code === 'invalid_token') return false;
+    throw err;
+  }
+}
+
+/** `a.b.example.com` → [`a.b.example.com`, `b.example.com`, `example.com`] */
+export function zoneCandidates(domain: string): string[] {
+  const labels = domain.toLowerCase().replace(/\.$/, '').split('.');
+  const out: string[] = [];
+  for (let i = 0; i <= labels.length - 2; i++) out.push(labels.slice(i).join('.'));
+  return out;
+}
+
+/** The most specific zone the token can see that contains `domain`. */
+export async function findZone(token: string, domain: string): Promise<{ id: string; name: string } | null> {
+  for (const name of zoneCandidates(domain)) {
+    const zones = await cf<Array<{ id: string; name: string }>>(token, `/zones?name=${encodeURIComponent(name)}&per_page=5`);
+    const zone = zones?.find((z) => z.name === name);
+    if (zone) return { id: zone.id, name: zone.name };
+  }
+  return null;
+}
+
+export interface CreateRecordsInput {
+  domain: string;
+  ipv4?: string | null;
+  ipv6?: string | null;
+  proxied?: boolean;
+}
+
+export interface CreatedRecord {
+  id: string;
+  type: 'A' | 'AAAA';
+  content: string;
+  proxied: boolean;
+}
+
+/**
+ * Create the A (and AAAA, when the server has IPv6) record for `domain` in its zone. Proxy is off
+ * unless asked for. Throws CloudflareDnsError with a message fit for the user.
+ */
+export async function createCustomDomainRecords(token: string, input: CreateRecordsInput): Promise<{ zone: string; records: CreatedRecord[] }> {
+  const domain = input.domain.toLowerCase();
+  const proxied = input.proxied === true;
+  const wanted: Array<{ type: 'A' | 'AAAA'; content: string }> = [];
+  if (input.ipv4) wanted.push({ type: 'A', content: input.ipv4 });
+  if (input.ipv6) wanted.push({ type: 'AAAA', content: input.ipv6 });
+  if (wanted.length === 0) throw new CloudflareDnsError('The server has no IP address to point the record at', 'api_error');
+
+  const zone = await findZone(token, domain);
+  if (!zone) {
+    throw new CloudflareDnsError(`No Cloudflare zone for ${domain} is accessible with this API token`, 'zone_not_found');
+  }
+
+  // Check every type first so a conflict leaves the zone untouched rather than half-done.
+  for (const record of wanted) {
+    const existing = await cf<Array<{ id: string }>>(
+      token,
+      `/zones/${zone.id}/dns_records?type=${record.type}&name=${encodeURIComponent(domain)}&per_page=5`
+    );
+    if (existing && existing.length > 0) {
+      throw new CloudflareDnsError(`A ${record.type} record for ${domain} already exists in Cloudflare; it was left unchanged`, 'conflict');
+    }
+  }
+
+  const records: CreatedRecord[] = [];
+  for (const record of wanted) {
+    const created = await cf<{ id: string; proxied?: boolean }>(token, `/zones/${zone.id}/dns_records`, {
+      method: 'POST',
+      body: JSON.stringify({ type: record.type, name: domain, content: record.content, proxied, ttl: 1, comment: ORG_RECORD_COMMENT }),
+    });
+    records.push({ id: created?.id, type: record.type, content: record.content, proxied: created?.proxied ?? proxied });
+  }
+  return { zone: zone.name, records };
+}

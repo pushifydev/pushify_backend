@@ -33,8 +33,24 @@ const CreateDomainSchema = z
   .object({
     domain: z.string().min(1).max(255).openapi({ example: 'app.example.com' }),
     isPrimary: z.boolean().optional().openapi({ example: false }),
+    cloudflareProxied: z.boolean().optional().openapi({
+      example: false,
+      description: 'When the organization connected Cloudflare: create the record proxied (default off)',
+    }),
   })
   .openapi('CreateDomain');
+
+const DomainDnsResultSchema = z
+  .object({
+    status: z.enum(['created', 'skipped', 'failed']),
+    proxied: z.boolean(),
+    zone: z.string().optional(),
+    records: z
+      .array(z.object({ id: z.string(), type: z.enum(['A', 'AAAA']), content: z.string(), proxied: z.boolean() }))
+      .optional(),
+    message: z.string().optional(),
+  })
+  .openapi('DomainDnsResult');
 
 // A field sent as null (or '' / {}) is removed; a field left out keeps its current value.
 const NginxSettingsSchema = z
@@ -120,6 +136,7 @@ const createDomainRoute = createRoute({
         'application/json': {
           schema: z.object({
             data: DomainSchema,
+            dns: DomainDnsResultSchema,
             message: z.string(),
           }),
         },
@@ -369,7 +386,7 @@ domainRouter.openapi(createDomainRoute, async (c) => {
   const { projectId } = c.req.valid('param');
   const input = c.req.valid('json');
 
-  const domain = await domainService.create(projectId, organizationId, userId, input, locale);
+  const { dns, ...domain } = await domainService.create(projectId, organizationId, userId, input, locale);
 
   // Log activity
   await activityService.logDomainAdded(
@@ -384,6 +401,7 @@ domainRouter.openapi(createDomainRoute, async (c) => {
   return c.json(
     {
       data: domain,
+      dns,
       message: t(locale, 'domains', 'created'),
     },
     201

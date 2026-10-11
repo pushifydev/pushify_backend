@@ -12,6 +12,7 @@ export * from './registry-credentials';
 
 // External secret managers (Infisical)
 export * from './secret-providers';
+export * from './dns-providers';
 
 // Single sign-on
 export * from './sso';

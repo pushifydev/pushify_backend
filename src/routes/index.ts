@@ -13,6 +13,7 @@ import { scheduledTaskRoutes } from './scheduled-tasks';
 import { projectVolumeRoutes } from './project-volumes';
 import { registryRoutes } from './registries';
 import { secretProviderRoutes } from './secret-providers';
+import { dnsProviderRoutes } from './dns-providers';
 import { ssoRoutes } from './sso';
 import { projectWorkerRoutes } from './project-workers';
 import { projectLogsRoutes } from './project-logs';
@@ -78,6 +79,7 @@ export function registerRoutes(app: OpenAPIHono<any>) {
   app.route('/api/v1/abuse', abuseReportRoutes);
   app.route('/api/v1/registries', registryRoutes);
   app.route('/api/v1/secret-providers', secretProviderRoutes);
+  app.route('/api/v1/dns-providers', dnsProviderRoutes);
   app.route('/api/v1/sso', ssoRoutes);
   app.route('/api/v1/domains', registrarDomainRoutes);
   app.route('/api/v1/auth', onboardingRoutes);

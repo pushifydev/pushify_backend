@@ -19,6 +19,7 @@ import { logger } from '../lib/logger';
 import { env } from '../config/env';
 import { RESERVED_SUBDOMAIN_LABELS, deleteAutoSubdomainRecordQuietly } from '../lib/cloudflare-dns';
 import { planLimitsService } from './plan-limits.service';
+import { dnsProviderService, type DomainDnsResult } from './dns-provider.service';
 
 /**
  * Resolve the host port the app is actually published on, so a domain's Nginx vhost
@@ -94,6 +95,8 @@ export function mergeNginxSettings(
 interface CreateDomainInput {
   domain: string;
   isPrimary?: boolean;
+  /** Proxy the Cloudflare record (orange cloud). Only used when the organization connected Cloudflare. */
+  cloudflareProxied?: boolean;
 }
 
 interface DnsSetupInfo {
@@ -318,7 +321,7 @@ export const domainService = {
     input: CreateDomainInput,
     locale: SupportedLocale
   ) {
-    await this.checkProjectAccess(projectId, organizationId, userId, locale, true);
+    const project = await this.checkProjectAccess(projectId, organizationId, userId, locale, true);
 
     // Validate domain format
     const domainName = input.domain.toLowerCase().trim();
@@ -350,7 +353,30 @@ export const domainService = {
       await domainRepository.setPrimary(projectId, domain.id);
     }
 
-    return domain;
+    // With a Cloudflare connection, create the DNS record too. Best effort: on any problem the
+    // domain stays added and `dns.message` says to set the record up by hand (verify as usual).
+    const dns = await this.createDnsRecords(project, organizationId, domainName, input.cloudflareProxied === true);
+
+    return { ...domain, dns };
+  },
+
+  async createDnsRecords(
+    project: Parameters<typeof resolveProjectServerId>[0],
+    organizationId: string,
+    domainName: string,
+    proxied: boolean
+  ): Promise<DomainDnsResult> {
+    let server: { ipv4: string | null; ipv6: string | null } | null = null;
+    try {
+      const targetServerId = resolveProjectServerId(project);
+      if (targetServerId) {
+        const row = await db.query.servers.findFirst({ where: eq(servers.id, targetServerId) });
+        server = row ? { ipv4: row.ipv4, ipv6: row.ipv6 } : null;
+      }
+    } catch (err) {
+      logger.warn({ organizationId, domain: domainName, err }, 'Could not resolve server for Cloudflare DNS');
+    }
+    return dnsProviderService.createRecordsForDomain(organizationId, domainName, server, proxied);
   },
 
   /**
