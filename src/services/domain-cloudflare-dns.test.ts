@@ -1,0 +1,145 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+/**
+ * Adding a custom domain with the organization's Cloudflare connection, end to end through
+ * domainService.create → dnsProviderService → the Cloudflare client, against a fake Cloudflare
+ * API. The token is stored encrypted (real lib/encryption) and must never reach a log unmasked.
+ */
+
+const TOKEN = 'cf-org-token-abcdefghijklmnop';
+
+const h = vi.hoisted(() => ({
+  connection: null as null | { id: string; organizationId: string; provider: string; apiTokenEncrypted: string; updatedAt: Date },
+  server: { ipv4: '203.0.113.7', ipv6: null as string | null },
+  createdDomain: vi.fn(),
+  logs: [] as unknown[],
+}));
+
+vi.mock('../db', () => {
+  const chain = {
+    select: () => chain,
+    from: () => chain,
+    where: () => chain,
+    limit: async () => (h.connection ? [h.connection] : []),
+  };
+  return {
+    db: {
+      ...chain,
+      query: { servers: { findFirst: async () => ({ id: 'srv-1', ipv4: h.server.ipv4, ipv6: h.server.ipv6 }) } },
+    },
+  };
+});
+vi.mock('../lib/logger', () => {
+  const log = (...args: unknown[]) => h.logs.push(args);
+  return { logger: { info: log, warn: log, error: log, debug: log } };
+});
+vi.mock('../repositories/organization.repository', () => ({
+  organizationRepository: { findMember: async () => ({ role: 'owner' }) },
+}));
+vi.mock('../repositories/project.repository', () => ({
+  projectRepository: {
+    findById: async () => ({ id: 'proj-1', organizationId: 'org-1', status: 'active', serverId: 'srv-1', slug: 'shop' }),
+  },
+}));
+vi.mock('../repositories/domain.repository', () => ({
+  domainRepository: {
+    findByDomain: async () => null,
+    findByProject: async () => [],
+    create: async (values: Record<string, unknown>) => {
+      h.createdDomain(values);
+      return { id: 'dom-1', ...values };
+    },
+    setPrimary: async () => undefined,
+  },
+}));
+vi.mock('./plan-limits.service', () => ({ planLimitsService: { assertCustomDomainsQuota: async () => undefined } }));
+vi.mock('../lib/member-project-scope', () => ({ assertMemberProjectScope: async () => undefined }));
+
+import { encrypt } from '../lib/encryption';
+import { domainService } from './domain.service';
+
+type Call = { method: string; url: string; body?: Record<string, unknown> };
+
+function fakeCloudflare(opts: { fail?: boolean } = {}) {
+  const calls: Call[] = [];
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init: RequestInit = {}) => {
+      const method = init.method || 'GET';
+      calls.push({ method, url, body: init.body ? JSON.parse(String(init.body)) : undefined });
+      if (opts.fail) {
+        return new Response(JSON.stringify({ success: false, errors: [{ message: 'Authentication error' }] }), { status: 403 });
+      }
+      const u = new URL(url);
+      let result: unknown = [];
+      if (u.pathname.endsWith('/zones')) {
+        result = u.searchParams.get('name') === 'example.com' ? [{ id: 'z1', name: 'example.com' }] : [];
+      } else if (method === 'POST') {
+        const body = JSON.parse(String(init.body));
+        result = { id: 'rec-1', proxied: body.proxied };
+      }
+      return new Response(JSON.stringify({ success: true, result }), { status: 200 });
+    })
+  );
+  return calls;
+}
+
+beforeEach(() => {
+  h.connection = { id: 'c1', organizationId: 'org-1', provider: 'cloudflare', apiTokenEncrypted: encrypt(TOKEN), updatedAt: new Date() };
+  h.server = { ipv4: '203.0.113.7', ipv6: null };
+  h.logs.length = 0;
+  h.createdDomain.mockClear();
+});
+afterEach(() => vi.unstubAllGlobals());
+
+const add = (input: { domain: string; cloudflareProxied?: boolean }) =>
+  domainService.create('proj-1', 'org-1', 'user-1', input, 'en');
+
+describe('adding a domain with Cloudflare connected', () => {
+  it('creates the record to the server IP, unproxied by default', async () => {
+    const calls = fakeCloudflare();
+    const domain = await add({ domain: 'app.example.com' });
+    expect(domain.dns).toMatchObject({ status: 'created', proxied: false, zone: 'example.com' });
+    expect(calls.find((c) => c.method === 'POST')?.body).toMatchObject({
+      type: 'A',
+      name: 'app.example.com',
+      content: '203.0.113.7',
+      proxied: false,
+    });
+  });
+
+  it('applies the proxy flag when requested', async () => {
+    const calls = fakeCloudflare();
+    const domain = await add({ domain: 'app.example.com', cloudflareProxied: true });
+    expect(domain.dns.status).toBe('created');
+    expect(calls.find((c) => c.method === 'POST')?.body).toMatchObject({ proxied: true });
+  });
+
+  it('on a Cloudflare error still adds the domain and returns a clear message for the manual flow', async () => {
+    fakeCloudflare({ fail: true });
+    const domain = await add({ domain: 'app.example.com' });
+    expect(h.createdDomain).toHaveBeenCalledOnce();
+    expect(domain.id).toBe('dom-1');
+    expect(domain.dns.status).toBe('failed');
+    expect(domain.dns.message).toMatch(/Cloudflare rejected the API token.*Add the DNS record manually/);
+  });
+
+  it('never logs the token in full', async () => {
+    fakeCloudflare();
+    await add({ domain: 'app.example.com' });
+    fakeCloudflare({ fail: true });
+    await add({ domain: 'app.example.com' });
+    const logged = JSON.stringify(h.logs);
+    expect(h.logs.length).toBeGreaterThan(0);
+    expect(logged).not.toContain(TOKEN);
+    expect(logged).toContain('cf-o…mnop');
+  });
+
+  it('does nothing in Cloudflare when the organization has not connected it', async () => {
+    h.connection = null;
+    const calls = fakeCloudflare();
+    const domain = await add({ domain: 'app.example.com' });
+    expect(domain.dns.status).toBe('skipped');
+    expect(calls).toEqual([]);
+  });
+});
