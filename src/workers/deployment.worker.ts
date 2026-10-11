@@ -106,7 +106,7 @@ export interface DeploymentJob {
 }
 
 /**
- * Replace `{{infisical.KEY}}` references in the deploy's env (in place) with values from the
+ * Replace `{{infisical.KEY}}` / `{{doppler.KEY}}` references in the deploy's env (in place) with values from the
  * connected secret manager. The values are masked before anything else is logged and are never
  * written to the database. An unresolvable reference throws, which fails the deploy with a
  * message naming the variable — never a value.
@@ -122,7 +122,9 @@ async function resolveExternalSecrets(
   const resolved = await secretProviderService.resolveDeployEnv(organizationId, projectId, envVars);
   masker.addSecrets(resolved.resolvedValues);
   Object.assign(envVars, resolved.envVars);
-  addLog(`🔐 Resolved ${resolved.resolvedKeys.length} variable(s) from Infisical: ${resolved.resolvedKeys.join(', ')}`);
+  addLog(
+    `🔐 Resolved ${resolved.resolvedKeys.length} variable(s) from the secret manager: ${resolved.resolvedKeys.join(', ')}`
+  );
 }
 
 /**

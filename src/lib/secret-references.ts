@@ -6,17 +6,20 @@
  * reference is what Pushify stores; the real value is fetched at deploy time, handed to the
  * container and never written back to the database.
  *
- * Only Infisical is supported for now. Doppler and Vault are meant to plug in as further
- * providers with the same syntax (`{{doppler.KEY}}`, `{{vault.KEY}}`).
+ * Infisical (`{{infisical.KEY}}`) and Doppler (`{{doppler.KEY}}`) are supported. Further
+ * providers (e.g. Vault) plug in with the same syntax.
  */
 
-export type SecretProvider = 'infisical';
+export type SecretProvider = 'infisical' | 'doppler';
 
-export const SUPPORTED_SECRET_PROVIDERS: readonly SecretProvider[] = ['infisical'];
+export const SUPPORTED_SECRET_PROVIDERS: readonly SecretProvider[] = ['infisical', 'doppler'];
 
-/** Secret names as Infisical accepts them: letters, digits, `_`, `-` and `.`. */
+/** Secret names as the providers accept them: letters, digits, `_`, `-` and `.`. */
 const KEY = '[A-Za-z0-9_][A-Za-z0-9_.-]*';
-const REFERENCE_PATTERN = new RegExp(`\\{\\{\\s*(infisical)\\.(${KEY})\\s*\\}\\}`, 'g');
+const REFERENCE_PATTERN = new RegExp(
+  `\\{\\{\\s*(${SUPPORTED_SECRET_PROVIDERS.join('|')})\\.(${KEY})\\s*\\}\\}`,
+  'g'
+);
 
 export interface SecretReference {
   /** The environment variable whose value holds the reference */
@@ -120,6 +123,8 @@ export async function resolveSecretReferences(
   return { envVars: out, resolvedValues: [...resolvedValues], resolvedKeys: [...resolvedKeys] };
 }
 
-function providerLabel(provider: SecretProvider): string {
-  return provider === 'infisical' ? 'Infisical' : provider;
+export function providerLabel(provider: SecretProvider): string {
+  if (provider === 'infisical') return 'Infisical';
+  if (provider === 'doppler') return 'Doppler';
+  return provider;
 }
