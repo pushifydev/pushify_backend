@@ -70,6 +70,29 @@ describe('resolveSecretReferences', () => {
     ).rejects.toThrow('Could not load secrets from Infisical for A, B: no Infisical connection is set up');
   });
 
+  it('resolves Doppler references, loading each provider separately', async () => {
+    const load = vi.fn(
+      async (provider: string): Promise<Record<string, string>> =>
+        provider === 'doppler' ? { API_TOKEN: 'dop-value-1' } : { DB_PASSWORD: 'inf-value-2' }
+    );
+    const result = await resolveSecretReferences(
+      { API_TOKEN: '{{doppler.API_TOKEN}}', DATABASE_URL: 'pg://u:{{infisical.DB_PASSWORD}}@db/app' },
+      load
+    );
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(result.envVars).toEqual({ API_TOKEN: 'dop-value-1', DATABASE_URL: 'pg://u:inf-value-2@db/app' });
+    const masker = createLogMasker({});
+    masker.addSecrets(result.resolvedValues);
+    expect(masker.mask('token=dop-value-1')).not.toContain('dop-value-1');
+  });
+
+  it('fails clearly when the Doppler token is rejected', async () => {
+    const load = vi.fn().mockRejectedValue(new Error('Doppler rejected the token (HTTP 401)'));
+    await expect(resolveSecretReferences({ A: '{{doppler.A}}' }, load)).rejects.toThrow(
+      'Could not load secrets from Doppler for A: Doppler rejected the token (HTTP 401)'
+    );
+  });
+
   it('resolved values are masked by the existing log masker', async () => {
     const result = await resolveSecretReferences(
       { SHORT_FLAG: '{{infisical.FLAG}}' },

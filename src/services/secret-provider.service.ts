@@ -13,8 +13,16 @@ import {
   type InfisicalConnection,
 } from '../lib/infisical';
 import {
+  DOPPLER_API_URL,
+  fetchDopplerSecrets,
+  validateDopplerConnection,
+  type DopplerConnection,
+} from '../lib/doppler';
+import {
   hasSecretReferences,
+  providerLabel,
   resolveSecretReferences,
+  SUPPORTED_SECRET_PROVIDERS,
   type ResolvedEnv,
   type SecretProvider,
 } from '../lib/secret-references';
@@ -40,10 +48,15 @@ export interface PublicSecretProviderConnection {
   secretPath: string;
   lastUsedAt: Date | null;
   createdAt: Date;
+  /** Doppler only: project and config slugs (same values as workspaceId / environment) */
+  project?: string;
+  config?: string;
 }
 
 function toPublic(row: ConnectionRow): PublicSecretProviderConnection {
+  const doppler = row.provider === 'doppler' ? { project: row.workspaceId, config: row.environment } : {};
   return {
+    ...doppler,
     id: row.id,
     provider: row.provider,
     projectId: row.projectId,
@@ -91,6 +104,51 @@ export interface SecretProviderInput {
   workspaceId?: string;
   environment?: string;
   secretPath?: string;
+  /** Doppler access token (service token, service account or personal token) */
+  token?: string;
+  /** Doppler project slug */
+  project?: string;
+  /** Doppler config slug */
+  config?: string;
+}
+
+/**
+ * A decrypted connection as the deploy worker uses it. Doppler rows reuse the table's columns:
+ * `workspace_id` holds the Doppler project, `environment` the config and
+ * `client_secret_encrypted` the token (see db/schema/secret-providers.ts).
+ */
+export type DeployConnection =
+  | ({ provider: 'infisical'; id: string } & InfisicalConnection)
+  | ({ provider: 'doppler'; id: string } & DopplerConnection);
+
+type StoredValues = Pick<
+  ConnectionRow,
+  'siteUrl' | 'clientId' | 'clientSecretEncrypted' | 'workspaceId' | 'environment' | 'secretPath'
+>;
+
+function storedValues(provider: SecretProvider, input: SecretProviderInput): StoredValues {
+  if (provider === 'doppler') {
+    const problem = validateDopplerConnection(input);
+    if (problem) throw new HTTPException(400, { message: problem });
+    return {
+      siteUrl: DOPPLER_API_URL,
+      clientId: '',
+      clientSecretEncrypted: encrypt(input.token!.trim()),
+      workspaceId: input.project!.trim(),
+      environment: input.config!.trim(),
+      secretPath: '/',
+    };
+  }
+  const problem = validateInfisicalConnection(input);
+  if (problem) throw new HTTPException(400, { message: problem });
+  return {
+    siteUrl: normalizeSiteUrl(input.siteUrl),
+    clientId: input.clientId!.trim(),
+    clientSecretEncrypted: encrypt(input.clientSecret!),
+    workspaceId: input.workspaceId!.trim(),
+    environment: input.environment!.trim(),
+    secretPath: normalizeSecretPath(input.secretPath),
+  };
 }
 
 export const secretProviderService = {
@@ -116,24 +174,16 @@ export const secretProviderService = {
   ): Promise<PublicSecretProviderConnection> {
     await assertCanManage(organizationId, userId, locale);
 
-    const provider = input.provider ?? 'infisical';
-    if (provider !== 'infisical') {
-      throw new HTTPException(400, { message: 'Only the "infisical" provider is supported' });
+    const provider = (input.provider ?? 'infisical') as SecretProvider;
+    if (!SUPPORTED_SECRET_PROVIDERS.includes(provider)) {
+      throw new HTTPException(400, {
+        message: `Unsupported provider; use one of: ${SUPPORTED_SECRET_PROVIDERS.join(', ')}`,
+      });
     }
     const projectId = input.projectId || null;
     if (projectId) await assertProjectInOrg(projectId, organizationId, locale);
 
-    const problem = validateInfisicalConnection(input);
-    if (problem) throw new HTTPException(400, { message: problem });
-
-    const values = {
-      siteUrl: normalizeSiteUrl(input.siteUrl),
-      clientId: input.clientId!.trim(),
-      clientSecretEncrypted: encrypt(input.clientSecret!),
-      workspaceId: input.workspaceId!.trim(),
-      environment: input.environment!.trim(),
-      secretPath: normalizeSecretPath(input.secretPath),
-    };
+    const values = storedValues(provider, input);
 
     const [existing] = await db
       .select({ id: secretProviderConnections.id })
@@ -174,7 +224,7 @@ export const secretProviderService = {
     organizationId: string,
     projectId: string,
     provider: SecretProvider
-  ): Promise<(InfisicalConnection & { id: string }) | null> {
+  ): Promise<DeployConnection | null> {
     const [projectRow] = await db
       .select()
       .from(secretProviderConnections)
@@ -195,9 +245,21 @@ export const secretProviderService = {
     try {
       clientSecret = decrypt(row.clientSecretEncrypted);
     } catch {
-      throw new Error('the stored Infisical client secret could not be decrypted — reconnect Infisical');
+      const label = providerLabel(provider);
+      const what = provider === 'doppler' ? 'token' : 'client secret';
+      throw new Error(`the stored ${label} ${what} could not be decrypted — reconnect ${label}`);
+    }
+    if (provider === 'doppler') {
+      return {
+        provider: 'doppler',
+        id: row.id,
+        token: clientSecret,
+        project: row.workspaceId,
+        config: row.environment,
+      };
     }
     return {
+      provider: 'infisical',
       id: row.id,
       siteUrl: row.siteUrl,
       clientId: row.clientId,
@@ -226,10 +288,12 @@ export const secretProviderService = {
     const resolved = await resolveSecretReferences(envVars, async (provider) => {
       const connection = await secretProviderService.connectionForDeploy(organizationId, projectId, provider);
       if (!connection) {
-        throw new Error('no Infisical connection is set up for this project or organization');
+        throw new Error(`no ${providerLabel(provider)} connection is set up for this project or organization`);
       }
       usedConnections.push(connection.id);
-      return fetchInfisicalSecrets(connection);
+      return connection.provider === 'doppler'
+        ? fetchDopplerSecrets(connection)
+        : fetchInfisicalSecrets(connection);
     });
     for (const id of usedConnections) {
       db.update(secretProviderConnections)
