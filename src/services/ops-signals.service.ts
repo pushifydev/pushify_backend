@@ -91,12 +91,20 @@ export const opsSignalsService = {
          WHERE r.rn = 1 AND r.status = 'failed'
            AND (SELECT count(*) FROM recent f WHERE f.project_id = r.project_id AND f.status = 'failed') >= 2
          ORDER BY r.created_at DESC LIMIT ${LIST_LIMIT}`),
+      // Only projects monitoring still checks (the same filter as appHealthService.candidates()).
+      // A project that left monitoring — paused, asleep, no running deployment, no URL — is never
+      // checked again, so its row keeps the last 'down' forever and would stay on this list after
+      // the site is fixed. A monitored site that recovers is reset by its next successful check.
       rows<{ projectId: string; downSince: string | null; statusCode: number | null; error: string | null }>(sql`
-        SELECT project_id AS "projectId", ${iso('down_since')} AS "downSince",
-               status_code AS "statusCode", error
-          FROM project_health_state
-         WHERE status = 'down' AND down_since < now() - ${sql.raw(`interval '${SITE_DOWN_GRACE_MIN} minutes'`)}
-         ORDER BY down_since ASC LIMIT ${LIST_LIMIT}`),
+        SELECT h.project_id AS "projectId", ${iso('h.down_since')} AS "downSince",
+               h.status_code AS "statusCode", h.error
+          FROM project_health_state h
+          JOIN projects p ON p.id = h.project_id
+         WHERE h.status = 'down' AND h.down_since < now() - ${sql.raw(`interval '${SITE_DOWN_GRACE_MIN} minutes'`)}
+           AND p.status = 'active' AND p.sleep_state = 'awake'
+           AND jsonb_typeof(p.settings -> 'productionUrl') = 'string'
+           AND EXISTS (SELECT 1 FROM deployments d WHERE d.project_id = h.project_id AND d.status = 'running')
+         ORDER BY h.down_since ASC LIMIT ${LIST_LIMIT}`),
       rows<{
         serverId: string; managed: boolean; provider: string; status: string; setupStatus: string;
         diskUsedPercent: number | null; message: string | null;

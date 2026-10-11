@@ -177,3 +177,37 @@ describe('appHealthService.checkProject when Cloudflare answers 520', () => {
     expect(JSON.stringify(h.sendNotifications.mock.calls[0])).toMatch(/App returned an empty response/);
   });
 });
+
+describe('appHealthService.checkProject when a down site answers again', () => {
+  it('clears status, downSince and the outage details on the first successful check', async () => {
+    h.performHealthCheck.mockResolvedValue({ healthy: true, statusCode: 200, responseTimeMs: 30 });
+    h.selects.push([
+      {
+        status: 'down',
+        failCount: 40,
+        statusCode: 502,
+        downSince: new Date('2026-10-01T08:00:00Z'),
+        notifiedAt: new Date('2026-10-01T08:00:00Z'),
+        reminderStep: 2,
+        downReason: 'app_error',
+        diagnostics: { failedCheck: 'ssh', advice: 'x', managed: true, checks: [] },
+      },
+    ]);
+    const status = await appHealthService.checkProject(candidate, new Date('2026-10-11T09:00:00Z'));
+    expect(status).toBe('up');
+
+    const state = h.inserted.find((v) => 'diagnostics' in v)!;
+    expect(state).toMatchObject({
+      status: 'up',
+      statusCode: 200,
+      failCount: 0,
+      error: null,
+      downSince: null,
+      notifiedAt: null,
+      downReason: null,
+      diagnostics: null,
+      reminderStep: 0,
+    });
+    expect(JSON.stringify(h.sendNotifications.mock.calls[0])).toMatch(/answering again/);
+  });
+});
