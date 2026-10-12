@@ -332,6 +332,17 @@ envVarRouter.openapi(bulkCreateRoute, async (c) => {
 
   const results = await envVarService.bulkCreate(projectId, organizationId, userId, input, locale);
 
+  // One entry per variable that actually changed; values are never logged.
+  const ip = c.req.header('x-forwarded-for') || c.req.header('x-real-ip');
+  const ua = c.req.header('user-agent');
+  for (const r of results) {
+    if (r.action === 'created') {
+      await activityService.logEnvVarCreated(organizationId, userId, projectId, r.key, ip, ua);
+    } else if (r.action === 'updated') {
+      await activityService.logEnvVarUpdated(organizationId, userId, projectId, r.key, ['value'], ip, ua);
+    }
+  }
+
   return c.json({
     data: results,
     message: t(locale, 'envVars', 'bulkUpdated'),
@@ -365,6 +376,19 @@ envVarRouter.openapi(updateEnvVarRoute, async (c) => {
     userId,
     input,
     locale
+  );
+
+  const changed: Array<'value' | 'isSecret'> = [];
+  if (input.value !== undefined) changed.push('value');
+  if (input.isSecret !== undefined) changed.push('isSecret');
+  await activityService.logEnvVarUpdated(
+    organizationId,
+    userId,
+    projectId,
+    envVar.key,
+    changed,
+    c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
+    c.req.header('user-agent')
   );
 
   return c.json({
