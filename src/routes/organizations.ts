@@ -4,6 +4,8 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import { organizationService } from '../services/organization.service';
 import { authService } from '../services/auth.service';
+import { activityService } from '../services/activity.service';
+import { organizationRepository } from '../repositories/organization.repository';
 import { authMiddleware } from '../middleware/auth';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
@@ -129,6 +131,16 @@ organizationRouter.post('/members', async (c) => {
     locale
   );
 
+  await activityService.logMemberAdded(
+    organizationId,
+    userId,
+    member.userId,
+    email,
+    member.role,
+    c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
+    c.req.header('user-agent')
+  );
+
   return c.json({
     data: member,
     message: t(locale, 'organizations', 'memberAdded'),
@@ -143,12 +155,25 @@ organizationRouter.patch('/members/:userId', async (c) => {
   const targetUserId = c.req.param('userId');
   const { role } = await c.req.json();
 
+  // Read the role before the change so the audit entry can show from -> to.
+  const before = await organizationRepository.findMember(organizationId, targetUserId);
+
   const member = await organizationService.updateMemberRole(
     organizationId,
     currentUserId,
     targetUserId,
     role,
     locale
+  );
+
+  await activityService.logMemberRoleChanged(
+    organizationId,
+    currentUserId,
+    targetUserId,
+    before?.role,
+    role,
+    c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
+    c.req.header('user-agent')
   );
 
   return c.json({
@@ -210,11 +235,22 @@ organizationRouter.delete('/members/:userId', async (c) => {
   const locale = c.get('locale');
   const targetUserId = c.req.param('userId');
 
+  const before = await organizationRepository.findMember(organizationId, targetUserId);
+
   await organizationService.removeMember(
     organizationId,
     currentUserId,
     targetUserId,
     locale
+  );
+
+  await activityService.logMemberRemoved(
+    organizationId,
+    currentUserId,
+    targetUserId,
+    before?.role,
+    c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
+    c.req.header('user-agent')
   );
 
   return c.json({ message: t(locale, 'organizations', 'memberRemoved') });

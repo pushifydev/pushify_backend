@@ -321,6 +321,91 @@ class ActivityService {
     });
   }
 
+  /**
+   * An env var changed. Only the key and the names of the changed fields are recorded — never the
+   * value, old or new: the audit log is readable by every admin and exported as CSV, and a secret
+   * that lands here has leaked.
+   */
+  async logEnvVarUpdated(
+    organizationId: string,
+    userId: string,
+    projectId: string,
+    key: string,
+    changed: Array<'value' | 'isSecret'>,
+    ipAddress?: string,
+    userAgent?: string
+  ): Promise<void> {
+    await this.log({
+      organizationId,
+      userId,
+      projectId,
+      action: 'envvar.updated',
+      description: `Updated environment variable "${key}"`,
+      metadata: { key, changed },
+      ipAddress,
+      userAgent,
+    });
+  }
+
+  async logMemberAdded(
+    organizationId: string,
+    userId: string,
+    targetUserId: string,
+    email: string,
+    role: string,
+    ipAddress?: string,
+    userAgent?: string
+  ): Promise<void> {
+    await this.log({
+      organizationId,
+      userId,
+      action: 'member.invited',
+      description: `Added member "${email}" as ${role}`,
+      metadata: { targetUserId, email, role },
+      ipAddress,
+      userAgent,
+    });
+  }
+
+  async logMemberRoleChanged(
+    organizationId: string,
+    userId: string,
+    targetUserId: string,
+    fromRole: string | undefined,
+    toRole: string,
+    ipAddress?: string,
+    userAgent?: string
+  ): Promise<void> {
+    await this.log({
+      organizationId,
+      userId,
+      action: 'member.role_changed',
+      description: `Changed member role${fromRole ? ` from ${fromRole}` : ''} to ${toRole}`,
+      metadata: { targetUserId, changes: { role: { from: fromRole ?? null, to: toRole } } },
+      ipAddress,
+      userAgent,
+    });
+  }
+
+  async logMemberRemoved(
+    organizationId: string,
+    userId: string,
+    targetUserId: string,
+    role: string | undefined,
+    ipAddress?: string,
+    userAgent?: string
+  ): Promise<void> {
+    await this.log({
+      organizationId,
+      userId,
+      action: 'member.removed',
+      description: 'Removed member',
+      metadata: { targetUserId, role: role ?? null },
+      ipAddress,
+      userAgent,
+    });
+  }
+
   async logDomainAdded(
     organizationId: string,
     userId: string,
