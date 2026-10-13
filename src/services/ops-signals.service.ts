@@ -34,7 +34,13 @@ export interface OpsSignals {
     /** Projects whose last deploy failed and that failed at least twice in the window. */
     failingProjects: Array<{ projectId: string; failures: number; lastFailedAt: string; blame: DeployFailureBlame; label: string; error: string | null }>;
   };
-  sitesDown: Array<{ projectId: string; downSince: string | null; statusCode: number | null; error: string | null }>;
+  /**
+   * Down sites, with the facts needed to tell a platform fault from a user-side or abandoned
+   * project before anyone opens another fix: where it runs, whether that server still reports in,
+   * when it last deployed successfully and when an owner last signed in. Timestamps only — no
+   * identities. Live DNS is not here: it is not stored, the consumer must resolve it itself.
+   */
+  sitesDown: SiteDown[];
   servers: Array<{
     serverId: string;
     managed: boolean;
@@ -47,6 +53,21 @@ export interface OpsSignals {
   }>;
   databases: Array<{ databaseId: string; type: string; status: string; since: string }>;
 }
+
+export interface SiteDown {
+  projectId: string;
+  downSince: string | null;
+  statusCode: number | null;
+  error: string | null;
+  /** byos: the customer's own server; managed: a server Pushify runs for them; shared: Pushify runner/host. */
+  hosting: 'byos' | 'managed' | 'shared';
+  serverStatus: string | null;
+  serverLastSeenAt: string | null;
+  lastSuccessfulDeployAt: string | null;
+  ownerLastLoginAt: string | null;
+}
+
+type SiteDownRow = Omit<SiteDown, 'hosting'> & { managed: boolean | null };
 
 async function rows<T>(query: ReturnType<typeof sql>): Promise<T[]> {
   const result = await db.execute(query);
@@ -95,11 +116,20 @@ export const opsSignalsService = {
       // A project that left monitoring — paused, asleep, no running deployment, no URL — is never
       // checked again, so its row keeps the last 'down' forever and would stay on this list after
       // the site is fixed. A monitored site that recovers is reset by its next successful check.
-      rows<{ projectId: string; downSince: string | null; statusCode: number | null; error: string | null }>(sql`
+      rows<SiteDownRow>(sql`
         SELECT h.project_id AS "projectId", ${iso('h.down_since')} AS "downSince",
-               h.status_code AS "statusCode", h.error
+               h.status_code AS "statusCode", h.error,
+               s.is_managed AS "managed", s.status::text AS "serverStatus",
+               ${iso('s.last_seen_at')} AS "serverLastSeenAt",
+               ${iso(`(SELECT max(d.created_at) FROM deployments d
+                        WHERE d.project_id = h.project_id AND d.status IN ('running', 'stopped'))`)} AS "lastSuccessfulDeployAt",
+               ${iso(`(SELECT max(e.created_at) FROM auth_events e
+                         JOIN organization_members m ON m.user_id = e.user_id
+                        WHERE m.organization_id = p.organization_id AND m.role = 'owner'
+                          AND e.event IN ('login', 'register'))`)} AS "ownerLastLoginAt"
           FROM project_health_state h
           JOIN projects p ON p.id = h.project_id
+          LEFT JOIN servers s ON s.id = p.server_id
          WHERE h.status = 'down' AND h.down_since < now() - ${sql.raw(`interval '${SITE_DOWN_GRACE_MIN} minutes'`)}
            AND p.status = 'active' AND p.sleep_state = 'awake'
            AND jsonb_typeof(p.settings -> 'productionUrl') = 'string'
@@ -160,7 +190,11 @@ export const opsSignalsService = {
           };
         }),
       },
-      sitesDown: down.map((d) => ({ ...d, error: scrubSecrets(d.error) })),
+      sitesDown: down.map(({ managed, ...d }) => ({
+        ...d,
+        hosting: managed === null ? 'shared' : managed ? 'managed' : 'byos',
+        error: scrubSecrets(d.error),
+      })),
       servers: servers.map((s) => ({
         ...s,
         problem: s.status === 'error' ? 'error' : s.setupStatus === 'failed' ? 'setup_failed' : 'disk',
