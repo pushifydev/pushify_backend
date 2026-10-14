@@ -43,7 +43,7 @@ import { buildCalcomImageScript, calcomImageTag } from '../marketplace/calcom-im
 import { getOrAssignPort, pickFreePorts, pickSwitchPort, recordPortAssignment } from './port-manager';
 import { generateDockerfile } from './dockerfile';
 import { normalizeRootDirectory } from '../lib/normalize-root-directory';
-import { checkServerDiskSpace } from '../lib/server-disk-check';
+import { checkServerDiskSpace, deployDiskBlockReason, DISK_FULL_STATUS_PREFIX } from '../lib/server-disk-check';
 import { domainService } from '../services/domain.service';
 import { checkComposeFile, checkVolumes } from '../lib/host-access-guard';
 import { encodeRunSpec } from '../lib/run-spec';
@@ -212,6 +212,39 @@ export async function closeFirewallPort(
 
   await ssh.exec(script);
   onProgress(`🔒 Firewall port ${port} closed`);
+}
+
+/**
+ * Refuse a deploy when the host is (nearly) out of disk, and say so on the server itself
+ * (status message) as well as in the deploy log. A stale disk-full message is cleared once
+ * there is room again. Writing the status message is best-effort: it never masks the reason.
+ */
+export async function assertDiskForDeploy(
+  ssh: SSHClient,
+  server: Pick<typeof servers.$inferSelect, 'id' | 'statusMessage'>,
+  onProgress: (msg: string) => void
+): Promise<void> {
+  const disk = await checkServerDiskSpace(ssh);
+  onProgress(disk.message);
+  const reason = deployDiskBlockReason(disk);
+
+  if (reason) {
+    onProgress(`❌ ${reason}`);
+    await db
+      .update(servers)
+      .set({ statusMessage: reason, diskUsedPercent: disk.usedPercent, diskCheckedAt: new Date(), updatedAt: new Date() })
+      .where(eq(servers.id, server.id))
+      .catch((err: unknown) => logger.warn({ err, serverId: server.id }, 'Could not record disk-full status on server'));
+    throw new Error(reason);
+  }
+
+  if (server.statusMessage?.startsWith(DISK_FULL_STATUS_PREFIX)) {
+    await db
+      .update(servers)
+      .set({ statusMessage: null, updatedAt: new Date() })
+      .where(eq(servers.id, server.id))
+      .catch((err: unknown) => logger.warn({ err, serverId: server.id }, 'Could not clear disk-full status on server'));
+  }
 }
 
 /**
@@ -605,6 +638,10 @@ export async function deployToRemoteServer(
       throw new Error(`Docker is not available on server: ${dockerStatus.error}`);
     }
     onProgress(`✅ Docker ${dockerStatus.version} is available`);
+
+    // Before anything is pulled, cloned, built or started: a host without room fails halfway
+    // through with an opaque error and leaves the server card saying nothing. Refuse up front.
+    await assertDiskForDeploy(ssh, server, onProgress);
 
     // Private registries: log in for this deploy only. The logins live in a directory of
     // their own that is deleted in `finally`, so a shared runner never keeps one customer's
@@ -1187,15 +1224,6 @@ export async function deployToRemoteServer(
         }
       }
       onProgress('✅ Repository cloned');
-
-      const disk = await checkServerDiskSpace(ssh);
-      onProgress(disk.message);
-      if (!disk.ok) {
-        throw new Error(
-          `Server disk is critically full (${disk.usedPercent}% used, ${disk.availGb} GB free). Free space on the server before deploying.`
-        );
-      }
-
     }
 
     const workDir = rootDirectory === '.' ? repoDir : path.posix.join(repoDir, rootDirectory);
