@@ -1,4 +1,4 @@
-import { eq, and, desc, lte } from 'drizzle-orm';
+import { eq, and, desc, lte, gte } from 'drizzle-orm';
 import { db } from '../db';
 import {
   databases,
@@ -169,6 +169,20 @@ export const databaseRepository = {
       where: and(
         eq(databaseBackups.status, 'creating'),
         lte(databaseBackups.startedAt, startedBefore)
+      ),
+    });
+  },
+
+  /**
+   * A `missed` row for this database recorded at or after `since` — i.e. the current gap has
+   * already been reported. Persisted, so a worker restart does not alert the same gap twice.
+   */
+  async findMissedBackupSince(databaseId: string, since: Date): Promise<DatabaseBackup | undefined> {
+    return db.query.databaseBackups.findFirst({
+      where: and(
+        eq(databaseBackups.databaseId, databaseId),
+        eq(databaseBackups.status, 'missed'),
+        gte(databaseBackups.startedAt, since)
       ),
     });
   },

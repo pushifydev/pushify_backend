@@ -103,7 +103,7 @@ export const databaseBackups = pgTable('database_backups', {
   // Backup info
   name: varchar('name', { length: 255 }).notNull(),
   type: varchar('type', { length: 50 }).default('automatic').notNull(), // automatic, manual
-  status: varchar('status', { length: 50 }).default('creating').notNull(), // creating, completed, failed, deleted
+  status: varchar('status', { length: 50 }).default('creating').notNull(), // creating, completed, failed, missed, deleted
   sizeMb: integer('size_mb'),
   filePath: text('file_path'), // Path to backup file on server
 

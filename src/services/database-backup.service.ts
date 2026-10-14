@@ -395,14 +395,30 @@ export const databaseBackupService = {
       }
       const marker = database.lastBackupAt?.getTime() ?? 0;
       if (alreadyAlerted.get(database.id) === marker) continue;
+
+      // The gap is recorded as a `missed` backup row so it shows up in the backup list (API)
+      // next to failed ones, and so the alert survives a worker restart without repeating.
+      const gapStart = database.lastBackupAt ?? database.createdAt;
+      if (await databaseRepository.findMissedBackupSince(database.id, gapStart)) {
+        alreadyAlerted.set(database.id, marker);
+        continue;
+      }
       alreadyAlerted.set(database.id, marker);
 
       const since = database.lastBackupAt
         ? `since ${database.lastBackupAt.toISOString()}`
         : 'since it was created';
-      await this.notifyBackupEvent(database.id, BACKUP_EVENTS.missed, {
-        message: `No successful backup ${since} (expected every ${database.backupIntervalHours || 24}h).`,
+      const message = `No successful backup ${since} (expected every ${database.backupIntervalHours || 24}h).`;
+      await databaseRepository.createBackup({
+        databaseId: database.id,
+        name: `missed_${now.toISOString().replace(/[:.]/g, '-')}`,
+        type: 'automatic',
+        status: 'missed',
+        errorMessage: message,
+        startedAt: now,
+        completedAt: now,
       });
+      await this.notifyBackupEvent(database.id, BACKUP_EVENTS.missed, { message });
       alerted++;
     }
     return alerted;
