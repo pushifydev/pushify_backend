@@ -228,6 +228,8 @@ const envSchema = z.object({
   /** Root FS usage % on deploy servers — warn / block deploy */
   SERVER_DISK_WARN_PERCENT: z.coerce.number().default(85),
   SERVER_DISK_CRITICAL_PERCENT: z.coerce.number().default(95),
+  /** Root FS usage % at which the periodic disk check runs a safe Docker cleanup on the server */
+  SERVER_DISK_CLEANUP_PERCENT: z.coerce.number().default(80),
 
   // Stripe (optional — for payment processing)
   STRIPE_SECRET_KEY: z.string().optional(),

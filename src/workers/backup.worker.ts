@@ -117,6 +117,7 @@ async function pollForBackups(): Promise<void> {
           const { serverDiskService } = await import('../services/server-disk.service');
           const disks = await serverDiskService.checkAll();
           if (disks.warned > 0) logger.warn(disks, 'Server disk warnings sent');
+          else if (disks.cleaned > 0) logger.info(disks, 'Server Docker cleanup completed');
         } catch (error) {
           logger.error({ err: error }, 'Server disk check failed');
         }
