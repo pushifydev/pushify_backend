@@ -228,6 +228,10 @@ const envSchema = z.object({
   /** Root FS usage % on deploy servers — warn / block deploy */
   SERVER_DISK_WARN_PERCENT: z.coerce.number().default(85),
   SERVER_DISK_CRITICAL_PERCENT: z.coerce.number().default(95),
+  /** A deploy / container start is refused at or above this root FS usage % */
+  SERVER_DISK_DEPLOY_BLOCK_PERCENT: z.coerce.number().default(90),
+  /** …or when less than this many GB are free on the root FS */
+  SERVER_DISK_DEPLOY_MIN_FREE_GB: z.coerce.number().default(2),
 
   // Stripe (optional — for payment processing)
   STRIPE_SECRET_KEY: z.string().optional(),
