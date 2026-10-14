@@ -4,6 +4,8 @@ import { servers } from '../db/schema/servers';
 import { getSSHConnection } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
 import { checkServerDiskSpace } from '../lib/server-disk-check';
+import { runDockerCleanup } from '../lib/server-docker-cleanup';
+import { env } from '../config/env';
 import { organizationRepository } from '../repositories/organization.repository';
 import { deploymentAlertRepository } from '../repositories/deployment-alert.repository';
 import { sendServerDiskEmail } from '../lib/email';
@@ -27,7 +29,7 @@ const RENOTIFY_AFTER_MS = 24 * 60 * 60 * 1000;
 
 export const serverDiskService = {
   /** Check every running server with SSH credentials. Never throws — one bad host is not the run. */
-  async checkAll(now: Date = new Date()): Promise<{ checked: number; warned: number }> {
+  async checkAll(now: Date = new Date()): Promise<{ checked: number; warned: number; cleaned: number }> {
     const rows = await db
       .select()
       .from(servers)
@@ -35,6 +37,7 @@ export const serverDiskService = {
 
     let checked = 0;
     let warned = 0;
+    let cleaned = 0;
 
     for (const server of rows) {
       if (!server.ipv4 || !server.sshPrivateKey) continue;
@@ -44,8 +47,29 @@ export const serverDiskService = {
           username: 'root',
           privateKey: decrypt(server.sshPrivateKey),
         });
-        const result = await checkServerDiskSpace(ssh);
+        let result = await checkServerDiskSpace(ssh);
         checked++;
+
+        // Past the cleanup line: reclaim what Docker can safely give back before anyone is
+        // warned (see server-docker-cleanup.ts for what is and is not removed).
+        if (result.usedPercent >= env.SERVER_DISK_CLEANUP_PERCENT) {
+          try {
+            const cleanup = await runDockerCleanup(ssh);
+            cleaned++;
+            logger.info(
+              {
+                serverId: server.id,
+                server: server.name,
+                beforePercent: cleanup.beforePercent,
+                afterPercent: cleanup.afterPercent,
+              },
+              'Server Docker cleanup ran'
+            );
+            result = await checkServerDiskSpace(ssh);
+          } catch (err) {
+            logger.error({ err, serverId: server.id }, 'Server Docker cleanup failed');
+          }
+        }
 
         const values: Partial<typeof servers.$inferInsert> = {
           diskUsedPercent: result.usedPercent,
@@ -74,7 +98,7 @@ export const serverDiskService = {
       }
     }
 
-    return { checked, warned };
+    return { checked, warned, cleaned };
   },
 
   async announce(
