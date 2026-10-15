@@ -4,12 +4,16 @@ const h = vi.hoisted(() => ({
   findById: vi.fn(),
   create: vi.fn(),
   schedule: vi.fn(),
+  isPreviewEnabled: vi.fn(),
+  createOrUpdatePreview: vi.fn(),
 }));
 
 vi.mock('../repositories/project.repository', () => ({ projectRepository: { findById: h.findById } }));
 vi.mock('../repositories/deployment.repository', () => ({ deploymentRepository: { create: h.create } }));
 vi.mock('../services/github-app.service', () => ({ githubAppService: {} }));
-vi.mock('../services/preview.service', () => ({ previewService: {} }));
+vi.mock('../services/preview.service', () => ({
+  previewService: { isPreviewEnabled: h.isPreviewEnabled, createOrUpdatePreview: h.createOrUpdatePreview },
+}));
 vi.mock('../services/organization-billing.service', () => ({ canOrganizationDeploy: async () => true }));
 vi.mock('../lib/push-deploy-gate', () => ({
   checkPushDeployAllowed: async () => ({ allowed: true }),
@@ -73,5 +77,58 @@ describe('GitLab push webhook', () => {
     const res = await push('refs/heads/feature');
     expect(((await res.json()) as { message: string }).message).toContain('ignored');
     expect(h.create).not.toHaveBeenCalled();
+  });
+});
+
+const mergeRequest = (action: string, sourceProjectId: number | undefined, targetProjectId: number | undefined) =>
+  webhookRoutes.request(`/gitlab/${PROJECT_ID}`, {
+    method: 'POST',
+    headers: { 'X-Gitlab-Token': 'secret', 'X-Gitlab-Event': 'Merge Request Hook', 'content-type': 'application/json' },
+    body: JSON.stringify({
+      object_kind: 'merge_request',
+      object_attributes: {
+        action,
+        iid: 3,
+        title: 'MR',
+        source_branch: 'main',
+        target_branch: 'main',
+        state: 'opened',
+        last_commit: { id: 'abc123' },
+        source_project_id: sourceProjectId,
+        target_project_id: targetProjectId,
+      },
+    }),
+  });
+
+describe('GitLab merge_request webhook fork protection', () => {
+  beforeEach(() => {
+    h.findById.mockReset().mockResolvedValue({
+      id: PROJECT_ID,
+      name: 'p',
+      organizationId: 'org-1',
+      status: 'active',
+      webhookSecret: 'secret',
+      autoDeploy: true,
+      gitBranch: 'main',
+    });
+    h.isPreviewEnabled.mockReset().mockResolvedValue(true);
+    h.createOrUpdatePreview.mockReset().mockResolvedValue({ id: 'prev-1' });
+  });
+
+  it('builds a preview for an MR from the same project', async () => {
+    const res = await mergeRequest('open', 42, 42);
+    expect(h.createOrUpdatePreview).toHaveBeenCalledOnce();
+    expect(await res.json()).toMatchObject({ previewId: 'prev-1' });
+  });
+
+  it.each(['open', 'update', 'reopen'])('ignores a fork MR on %s', async (action) => {
+    const res = await mergeRequest(action, 99, 42);
+    expect(h.createOrUpdatePreview).not.toHaveBeenCalled();
+    expect(((await res.json()) as { message: string }).message).toContain('fork MR ignored');
+  });
+
+  it('fails closed when project ids are missing', async () => {
+    await mergeRequest('open', undefined, undefined);
+    expect(h.createOrUpdatePreview).not.toHaveBeenCalled();
   });
 });

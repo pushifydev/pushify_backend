@@ -21,8 +21,9 @@ export interface GitHubPullRequestPayload {
   number: number;
   pull_request: {
     title: string;
-    head: { ref: string; sha: string };
-    base: { ref: string };
+    /** `head.repo` is null when the fork the PR came from has been deleted. */
+    head: { ref: string; sha: string; repo?: { full_name?: string } | null };
+    base: { ref: string; repo?: { full_name?: string } | null };
   };
   repository?: { full_name?: string };
 }
@@ -126,6 +127,19 @@ export async function handlePushEvent(
   return { message: `Deployment triggered (${environment})`, deploymentId: deployment.id };
 }
 
+/**
+ * True when the PR's head lives in a different repository than its base (a fork), or when the
+ * head repository is unknown (missing, or null because the fork was deleted). Previews run with
+ * the project's production + preview env vars, so code from someone else's repository must never
+ * be built as a preview. Fails closed: an undeterminable origin counts as a fork.
+ */
+export function isForkPullRequest(payload: GitHubPullRequestPayload): boolean {
+  const headRepo = payload.pull_request.head.repo?.full_name;
+  const baseRepo = payload.pull_request.base.repo?.full_name ?? payload.repository?.full_name;
+  if (!headRepo || !baseRepo) return true;
+  return headRepo.toLowerCase() !== baseRepo.toLowerCase();
+}
+
 export async function handlePullRequestEvent(
   project: DeployTargetProject,
   payload: GitHubPullRequestPayload
@@ -142,6 +156,21 @@ export async function handlePullRequestEvent(
     case 'opened':
     case 'synchronize':
     case 'reopened': {
+      // Fork PRs are refused by default: building them would run untrusted code with the
+      // project's secrets. (A per-project opt-in could be added later.)
+      if (isForkPullRequest(payload)) {
+        logger.warn(
+          {
+            projectId: project.id,
+            prNumber,
+            headRepo: pr.head.repo?.full_name ?? null,
+            baseRepo: pr.base.repo?.full_name ?? payload.repository?.full_name ?? null,
+          },
+          'Ignoring pull_request from a fork; previews are not built for fork PRs'
+        );
+        return { message: `Preview not created: fork PR ignored (PR #${prNumber})` };
+      }
+
       const preview = await previewService.createOrUpdatePreview(project.id, {
         prNumber,
         prTitle: pr.title,
