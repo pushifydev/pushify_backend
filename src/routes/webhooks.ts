@@ -193,6 +193,8 @@ interface GitLabMergeRequestPayload {
     action: string;
     iid: number;
     title: string;
+    source_project_id?: number;
+    target_project_id?: number;
     source_branch: string;
     target_branch: string;
     state: string;
@@ -271,6 +273,18 @@ webhookRouter.openapi(gitlabWebhookRoute, async (c) => {
       logger.info({ projectId, prNumber, action }, 'Processing GitLab merge_request event');
 
       if (action === 'open' || action === 'update' || action === 'reopen') {
+        // MRs from a fork are refused: a preview runs with the project's production + preview
+        // env vars, so building someone else's code would hand them the secrets. Fails closed
+        // when either project id is missing.
+        const { source_project_id: sourceId, target_project_id: targetId } = mr.object_attributes;
+        if (sourceId == null || targetId == null || sourceId !== targetId) {
+          logger.warn(
+            { projectId, prNumber, sourceProjectId: sourceId ?? null, targetProjectId: targetId ?? null },
+            'Ignoring merge_request from a fork; previews are not built for fork MRs'
+          );
+          return c.json({ message: `Preview not created: fork MR ignored (MR !${prNumber})` });
+        }
+
         const preview = await previewService.createOrUpdatePreview(project.id, {
           prNumber,
           prTitle: mr.object_attributes.title,
