@@ -64,4 +64,40 @@ describe('opsSignalsService sitesDown query', () => {
     expect(sitesDown[0]).not.toHaveProperty('managed');
     expect(sitesDown[0]).toMatchObject({ projectId: 'a', statusCode: 502, serverStatus: 'running' });
   });
+
+  it('selects the down reason and the latest deployment for each down site', async () => {
+    await opsSignalsService.getSignals();
+    const query = h.queries.map(render).find((q) => q.includes('project_health_state'))!;
+    expect(query).toContain('h.down_reason AS "downReason"');
+    expect(query).toContain('LEFT JOIN LATERAL');
+    expect(query).toContain('ORDER BY d.created_at DESC LIMIT 1) ld ON true');
+  });
+
+  it('classifies a failed latest build so a user-side build failure is not a platform outage', async () => {
+    const base = {
+      downSince: '2026-09-22T22:54:41Z', statusCode: null, error: 'fetch failed', managed: true,
+      serverStatus: 'running', serverLastSeenAt: null, lastSuccessfulDeployAt: '2026-09-01T00:00:00Z', ownerLastLoginAt: null,
+      latestCreatedAt: '2026-09-22T22:50:00Z',
+    };
+    h.downRows = [
+      { ...base, projectId: 'user', downReason: 'deploy_failed', latestStatus: 'failed',
+        latestError: "[Project] Application build failed: Failed to compile.\n./src/app.tsx Type error" },
+      { ...base, projectId: 'platform', downReason: 'deploy_failed', latestStatus: 'failed',
+        latestError: '[Server] Out of memory: Killed' },
+      { ...base, projectId: 'running', downReason: 'app_error', latestStatus: 'running', latestError: null },
+      { ...base, projectId: 'none', downReason: undefined, latestStatus: null, latestCreatedAt: null, latestError: null },
+    ];
+    const { sitesDown } = await opsSignalsService.getSignals();
+    const [user, platform, running, none] = sitesDown;
+    expect(user.downReason).toBe('deploy_failed');
+    expect(user.latestDeploy).toMatchObject({ status: 'failed', blame: 'project', label: 'Application build failed' });
+    expect(user.latestDeploy?.error).toContain('Failed to compile.');
+    expect(user.latestDeploy?.error).not.toContain('Type error');
+    expect(platform.latestDeploy).toMatchObject({ status: 'failed', blame: 'server' });
+    expect(running.latestDeploy).toEqual({ status: 'running', createdAt: base.latestCreatedAt, blame: null, label: null, error: null });
+    expect(none.downReason).toBeNull();
+    expect(none.latestDeploy).toBeNull();
+    expect(user).not.toHaveProperty('latestStatus');
+    expect(user).not.toHaveProperty('latestError');
+  });
 });
