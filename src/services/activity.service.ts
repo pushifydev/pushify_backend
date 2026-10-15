@@ -5,6 +5,7 @@ import { projects } from '../db/schema/projects';
 import { eq, desc, and, inArray, sql } from 'drizzle-orm';
 import { logger } from '../lib/logger';
 import { normalizeClientIp } from '../lib/utils';
+import { sanitizeChanges, type AuditChanges, type AuditSource } from '../lib/audit';
 
 export interface ActivityLogInput {
   organizationId: string;
@@ -15,6 +16,10 @@ export interface ActivityLogInput {
   metadata?: Record<string, unknown>;
   ipAddress?: string;
   userAgent?: string;
+  /** ui | api | webhook | system. Defaults to `system` when there is no acting user. */
+  source?: AuditSource;
+  /** Field-level before/after diff (build it with `diffChanges`; secrets are `{ changed: true }`). */
+  changes?: AuditChanges;
 }
 
 export interface ActivityLogFilters {
@@ -30,6 +35,10 @@ export interface ActivityLogWithDetails {
   action: ActivityAction;
   description: string;
   metadata: Record<string, unknown>;
+  /** ui | api | webhook | system; null for entries recorded before the source was tracked */
+  source: AuditSource | null;
+  /** Field-level before/after diff, null when the action has none */
+  changes: AuditChanges | null;
   createdAt: Date;
   /** Where the action came from — what a compliance review asks for */
   ipAddress: string | null;
@@ -59,6 +68,9 @@ class ActivityService {
         action: input.action,
         description: input.description,
         metadata: input.metadata || {},
+        source: input.source ?? (input.userId ? null : 'system'),
+        // Defence in depth: whatever a caller passes, sensitive keys and URL credentials are stripped.
+        changes: sanitizeChanges(input.changes),
         ipAddress: normalizeClientIp(input.ipAddress),
         userAgent: input.userAgent,
       });
@@ -109,6 +121,8 @@ class ActivityService {
         action: activityLogs.action,
         description: activityLogs.description,
         metadata: activityLogs.metadata,
+        source: activityLogs.source,
+        changes: activityLogs.changes,
         createdAt: activityLogs.createdAt,
         ipAddress: activityLogs.ipAddress,
         userId: activityLogs.userId,
@@ -133,6 +147,8 @@ class ActivityService {
         action: log.action,
         description: log.description,
         metadata: log.metadata as Record<string, unknown>,
+        source: (log.source as AuditSource | null) ?? null,
+        changes: (log.changes as AuditChanges | null) ?? null,
         createdAt: log.createdAt,
         ipAddress: log.ipAddress,
         user: log.userId
@@ -174,7 +190,8 @@ class ActivityService {
     projectId: string,
     projectName: string,
     ipAddress?: string,
-    userAgent?: string
+    userAgent?: string,
+    source?: AuditSource
   ): Promise<void> {
     await this.log({
       organizationId,
@@ -185,6 +202,7 @@ class ActivityService {
       metadata: { projectName },
       ipAddress,
       userAgent,
+      source,
     });
   }
 
@@ -193,20 +211,23 @@ class ActivityService {
     userId: string,
     projectId: string,
     projectName: string,
-    changes: Record<string, unknown>,
+    changes: AuditChanges,
     ipAddress?: string,
-    userAgent?: string
+    userAgent?: string,
+    source?: AuditSource
   ): Promise<void> {
-    const changedFields = Object.keys(changes).join(', ');
+    const fields = Object.keys(changes);
     await this.log({
       organizationId,
       userId,
       projectId,
       action: 'project.updated',
-      description: `Updated project "${projectName}" (${changedFields})`,
-      metadata: { projectName, changes },
+      description: `Updated project "${projectName}"${fields.length ? ` (${fields.join(', ')})` : ''}`,
+      metadata: { projectName, fields },
+      changes,
       ipAddress,
       userAgent,
+      source,
     });
   }
 
@@ -216,7 +237,8 @@ class ActivityService {
     projectId: string,
     projectName: string,
     ipAddress?: string,
-    userAgent?: string
+    userAgent?: string,
+    source?: AuditSource
   ): Promise<void> {
     await this.log({
       organizationId,
@@ -227,6 +249,7 @@ class ActivityService {
       metadata: { projectName },
       ipAddress,
       userAgent,
+      source,
     });
   }
 
@@ -238,7 +261,8 @@ class ActivityService {
     branch?: string,
     trigger?: string,
     ipAddress?: string,
-    userAgent?: string
+    userAgent?: string,
+    source?: AuditSource
   ): Promise<void> {
     await this.log({
       organizationId,
@@ -249,6 +273,7 @@ class ActivityService {
       metadata: { deploymentId, branch, trigger },
       ipAddress,
       userAgent,
+      source,
     });
   }
 
@@ -287,7 +312,8 @@ class ActivityService {
     projectId: string,
     key: string,
     ipAddress?: string,
-    userAgent?: string
+    userAgent?: string,
+    source?: AuditSource
   ): Promise<void> {
     await this.log({
       organizationId,
@@ -298,6 +324,7 @@ class ActivityService {
       metadata: { key },
       ipAddress,
       userAgent,
+      source,
     });
   }
 
@@ -307,7 +334,8 @@ class ActivityService {
     projectId: string,
     key: string,
     ipAddress?: string,
-    userAgent?: string
+    userAgent?: string,
+    source?: AuditSource
   ): Promise<void> {
     await this.log({
       organizationId,
@@ -318,32 +346,41 @@ class ActivityService {
       metadata: { key },
       ipAddress,
       userAgent,
+      source,
     });
   }
 
   /**
-   * An env var changed. Only the key and the names of the changed fields are recorded — never the
-   * value, old or new: the audit log is readable by every admin and exported as CSV, and a secret
-   * that lands here has leaked.
+   * An env var changed. The value is never recorded, old or new, secret or not: the audit log is
+   * readable by every admin and exported as CSV, and a secret that lands here has leaked. A value
+   * change is written as `{ value: { changed: true } }`; the secret flag is a plain from/to.
    */
   async logEnvVarUpdated(
     organizationId: string,
     userId: string,
     projectId: string,
     key: string,
-    changed: Array<'value' | 'isSecret'>,
+    diff: { valueChanged: boolean; isSecret?: { from: boolean; to: boolean } },
     ipAddress?: string,
-    userAgent?: string
+    userAgent?: string,
+    source?: AuditSource
   ): Promise<void> {
+    const changes: AuditChanges = {};
+    if (diff.valueChanged) changes.value = { changed: true };
+    if (diff.isSecret && diff.isSecret.from !== diff.isSecret.to) {
+      changes.isSecret = { from: diff.isSecret.from, to: diff.isSecret.to };
+    }
     await this.log({
       organizationId,
       userId,
       projectId,
       action: 'envvar.updated',
       description: `Updated environment variable "${key}"`,
-      metadata: { key, changed },
+      metadata: { key, changed: Object.keys(changes) },
+      changes,
       ipAddress,
       userAgent,
+      source,
     });
   }
 
@@ -354,7 +391,8 @@ class ActivityService {
     email: string,
     role: string,
     ipAddress?: string,
-    userAgent?: string
+    userAgent?: string,
+    source?: AuditSource
   ): Promise<void> {
     await this.log({
       organizationId,
@@ -364,6 +402,7 @@ class ActivityService {
       metadata: { targetUserId, email, role },
       ipAddress,
       userAgent,
+      source,
     });
   }
 
@@ -374,7 +413,8 @@ class ActivityService {
     fromRole: string | undefined,
     toRole: string,
     ipAddress?: string,
-    userAgent?: string
+    userAgent?: string,
+    source?: AuditSource
   ): Promise<void> {
     await this.log({
       organizationId,
@@ -382,8 +422,10 @@ class ActivityService {
       action: 'member.role_changed',
       description: `Changed member role${fromRole ? ` from ${fromRole}` : ''} to ${toRole}`,
       metadata: { targetUserId, changes: { role: { from: fromRole ?? null, to: toRole } } },
+      changes: { role: { from: fromRole ?? null, to: toRole } },
       ipAddress,
       userAgent,
+      source,
     });
   }
 
@@ -393,7 +435,8 @@ class ActivityService {
     targetUserId: string,
     role: string | undefined,
     ipAddress?: string,
-    userAgent?: string
+    userAgent?: string,
+    source?: AuditSource
   ): Promise<void> {
     await this.log({
       organizationId,
@@ -403,6 +446,7 @@ class ActivityService {
       metadata: { targetUserId, role: role ?? null },
       ipAddress,
       userAgent,
+      source,
     });
   }
 
@@ -412,7 +456,8 @@ class ActivityService {
     projectId: string,
     domain: string,
     ipAddress?: string,
-    userAgent?: string
+    userAgent?: string,
+    source?: AuditSource
   ): Promise<void> {
     await this.log({
       organizationId,
@@ -423,6 +468,7 @@ class ActivityService {
       metadata: { domain },
       ipAddress,
       userAgent,
+      source,
     });
   }
 
@@ -432,7 +478,8 @@ class ActivityService {
     projectId: string,
     domain: string,
     ipAddress?: string,
-    userAgent?: string
+    userAgent?: string,
+    source?: AuditSource
   ): Promise<void> {
     await this.log({
       organizationId,
@@ -443,6 +490,7 @@ class ActivityService {
       metadata: { domain },
       ipAddress,
       userAgent,
+      source,
     });
   }
 
@@ -452,7 +500,8 @@ class ActivityService {
     keyName: string,
     keyPrefix: string,
     ipAddress?: string,
-    userAgent?: string
+    userAgent?: string,
+    source?: AuditSource
   ): Promise<void> {
     await this.log({
       organizationId,
@@ -462,6 +511,7 @@ class ActivityService {
       metadata: { keyName, keyPrefix },
       ipAddress,
       userAgent,
+      source,
     });
   }
 
@@ -470,7 +520,8 @@ class ActivityService {
     userId: string,
     keyName: string,
     ipAddress?: string,
-    userAgent?: string
+    userAgent?: string,
+    source?: AuditSource
   ): Promise<void> {
     await this.log({
       organizationId,
@@ -480,6 +531,7 @@ class ActivityService {
       metadata: { keyName },
       ipAddress,
       userAgent,
+      source,
     });
   }
 
@@ -494,7 +546,8 @@ class ActivityService {
     connection: { issuer: string; clientId: string; emailDomains: string[]; enforced: boolean; defaultRole: string },
     clientSecretChanged: boolean,
     ipAddress?: string,
-    userAgent?: string
+    userAgent?: string,
+    source?: AuditSource
   ): Promise<void> {
     await this.log({
       organizationId,
@@ -513,6 +566,7 @@ class ActivityService {
       },
       ipAddress,
       userAgent,
+      source,
     });
   }
 
@@ -520,7 +574,8 @@ class ActivityService {
     organizationId: string,
     userId: string,
     ipAddress?: string,
-    userAgent?: string
+    userAgent?: string,
+    source?: AuditSource
   ): Promise<void> {
     await this.log({
       organizationId,
@@ -530,6 +585,7 @@ class ActivityService {
       metadata: { setting: 'sso', operation: 'removed' },
       ipAddress,
       userAgent,
+      source,
     });
   }
 
@@ -539,7 +595,9 @@ class ActivityService {
     projectId: string,
     setting: string,
     ipAddress?: string,
-    userAgent?: string
+    userAgent?: string,
+    source?: AuditSource,
+    changes?: AuditChanges
   ): Promise<void> {
     await this.log({
       organizationId,
@@ -548,8 +606,10 @@ class ActivityService {
       action: 'settings.updated',
       description: `Updated ${setting}`,
       metadata: { setting },
+      changes,
       ipAddress,
       userAgent,
+      source,
     });
   }
 }

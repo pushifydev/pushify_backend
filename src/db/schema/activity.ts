@@ -75,6 +75,11 @@ export const activityLogs = pgTable('activity_logs', {
   // Additional metadata (JSON)
   metadata: jsonb('metadata').default({}).notNull(),
 
+  // Where the action came from: ui | api | webhook | system (null on entries written before it existed)
+  source: varchar('source', { length: 20 }),
+  // Field-level before/after diff; secret values are only ever recorded as { changed: true }
+  changes: jsonb('changes'),
+
   // IP and user agent for audit
   ipAddress: varchar('ip_address', { length: 45 }),
   userAgent: varchar('user_agent', { length: 500 }),

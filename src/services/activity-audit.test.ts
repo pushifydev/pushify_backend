@@ -16,16 +16,78 @@ beforeEach(() => {
 });
 
 describe('activity service audit helpers', () => {
-  it('envvar.updated stores the key and changed field names only', async () => {
-    await activityService.logEnvVarUpdated('org-A', 'user-1', 'p-1', 'STRIPE_KEY', ['value', 'isSecret']);
+  it('envvar.updated stores the key and a diff with the value as changed only', async () => {
+    await activityService.logEnvVarUpdated(
+      'org-A', 'user-1', 'p-1', 'STRIPE_KEY',
+      { valueChanged: true, isSecret: { from: false, to: true } },
+      undefined, undefined, 'api'
+    );
     expect(inserted[0]).toMatchObject({
       organizationId: 'org-A',
       userId: 'user-1',
       projectId: 'p-1',
       action: 'envvar.updated',
+      source: 'api',
       metadata: { key: 'STRIPE_KEY', changed: ['value', 'isSecret'] },
+      changes: { value: { changed: true }, isSecret: { from: false, to: true } },
     });
     expect(Object.keys(inserted[0].metadata as object).sort()).toEqual(['changed', 'key']);
+  });
+
+  it('envvar.updated leaves an unchanged secret flag out of the diff', async () => {
+    await activityService.logEnvVarUpdated('org-A', 'user-1', 'p-1', 'K', {
+      valueChanged: true,
+      isSecret: { from: true, to: true },
+    });
+    expect(inserted[0].changes).toEqual({ value: { changed: true } });
+  });
+
+  it('project.updated stores the field diff in changes', async () => {
+    await activityService.logProjectUpdated(
+      'org-A', 'user-1', 'p-1', 'web',
+      { gitBranch: { from: 'main', to: 'prod' } },
+      undefined, undefined, 'ui'
+    );
+    expect(inserted[0]).toMatchObject({
+      action: 'project.updated',
+      source: 'ui',
+      description: 'Updated project "web" (gitBranch)',
+      metadata: { projectName: 'web', fields: ['gitBranch'] },
+      changes: { gitBranch: { from: 'main', to: 'prod' } },
+    });
+  });
+
+  it('settings.updated stores the settings diff', async () => {
+    await activityService.logSettingsUpdated(
+      'org-A', 'user-1', 'p-1', 'forceHttps', undefined, undefined, 'ui',
+      { forceHttps: { from: false, to: true } }
+    );
+    expect(inserted[0]).toMatchObject({
+      action: 'settings.updated',
+      source: 'ui',
+      changes: { forceHttps: { from: false, to: true } },
+    });
+  });
+
+  it('log() redacts sensitive keys in changes even if a caller passes them in clear', async () => {
+    await activityService.log({
+      organizationId: 'org-A',
+      userId: 'user-1',
+      action: 'settings.updated',
+      description: 'x',
+      changes: { webhookSecret: { from: 'old-secret-1', to: 'new-secret-2' } },
+    });
+    const text = JSON.stringify(inserted[0]);
+    expect(text).not.toContain('old-secret-1');
+    expect(text).not.toContain('new-secret-2');
+  });
+
+  it('source defaults to system when there is no acting user, unknown (null) otherwise', async () => {
+    await activityService.logDeploymentSucceeded('org-A', 'p-1', 'dep-1');
+    await activityService.log({ organizationId: 'org-A', userId: 'user-1', action: 'project.created', description: 'x' });
+    expect(inserted[0].source).toBe('system');
+    expect(inserted[1].source).toBeNull();
+    expect(inserted[1].changes).toBeNull();
   });
 
   it('member.invited records the target user, email and role', async () => {
@@ -43,6 +105,7 @@ describe('activity service audit helpers', () => {
     expect(inserted[0]).toMatchObject({
       action: 'member.role_changed',
       metadata: { targetUserId: 'user-2', changes: { role: { from: 'member', to: 'admin' } } },
+      changes: { role: { from: 'member', to: 'admin' } },
     });
   });
 

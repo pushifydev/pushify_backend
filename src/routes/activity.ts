@@ -4,6 +4,7 @@ import { activityService } from '../services/activity.service';
 import { combinedAuthMiddleware } from '../middleware/auth';
 import type { ActivityAction } from '../db/schema/activity';
 import type { AppEnv } from '../types';
+import { AUDIT_SOURCES } from '../lib/audit';
 
 // ============ Schemas ============
 
@@ -65,6 +66,15 @@ const ActivityLogSchema = z.object({
   action: ActivityActionEnum,
   description: z.string(),
   metadata: z.record(z.string(), z.unknown()),
+  /** Where the action came from; null for entries recorded before this was tracked */
+  source: z.enum(AUDIT_SOURCES).nullable(),
+  /** Field-level diff. Secret values appear only as { changed: true }, never in clear. */
+  changes: z
+    .record(
+      z.string(),
+      z.union([z.object({ from: z.unknown(), to: z.unknown() }), z.object({ changed: z.literal(true) })])
+    )
+    .nullable(),
   createdAt: z.coerce.date(),
   user: UserSchema,
   project: ProjectSchema,
@@ -150,7 +160,7 @@ activityRouter.get('/export', async (c) => {
 
   const { toCsvRows } = await import('../lib/csv');
   const body = toCsvRows(
-    ['time', 'action', 'description', 'user', 'user_email', 'project', 'ip_address', 'metadata'],
+    ['time', 'action', 'description', 'user', 'user_email', 'project', 'ip_address', 'metadata', 'source', 'changes'],
     logs
       .slice()
       .reverse()
@@ -163,6 +173,8 @@ activityRouter.get('/export', async (c) => {
         log.project?.name ?? '',
         log.ipAddress ?? '',
         log.metadata,
+        log.source ?? '',
+        log.changes ?? '',
       ])
   );
 

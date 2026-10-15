@@ -7,6 +7,7 @@ import { activityService } from '../services/activity.service';
 import { authMiddleware } from '../middleware/auth';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
+import { auditSource } from '../lib/audit';
 
 const apiKeyRouter = new Hono<AppEnv>();
 
@@ -69,7 +70,8 @@ apiKeyRouter.post('/', zValidator('json', createApiKeySchema), async (c) => {
     body.name,
     apiKey.prefix,
     c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
-    c.req.header('user-agent')
+    c.req.header('user-agent'),
+    auditSource(c)
   );
 
   return c.json(
@@ -126,7 +128,8 @@ apiKeyRouter.delete('/:keyId', async (c) => {
       userId,
       key.name,
       c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
-      c.req.header('user-agent')
+      c.req.header('user-agent'),
+      auditSource(c)
     );
   }
 
