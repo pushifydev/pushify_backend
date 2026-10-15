@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { selectDeployEnvVars } from './deploy-env-vars';
+import { describe, it, expect, vi } from 'vitest';
+import { resolveLinkedDatabaseEnv, selectDeployEnvVars } from './deploy-env-vars';
 
 const rows = [
   { key: 'DATABASE_URL', environment: 'production' as const, v: 'prod-db' },
@@ -68,5 +68,32 @@ describe('staging deploys', () => {
       'DATABASE_URL',
       'ONLY_PREVIEW',
     ]);
+  });
+});
+
+describe('resolveLinkedDatabaseEnv', () => {
+  const prodDb = { vars: { DATABASE_URL: 'postgres://app:prod-secret@db/prod' }, notes: [] };
+
+  it('a preview deploy never loads the linked (production) databases', async () => {
+    const load = vi.fn(async () => prodDb);
+    const result = await resolveLinkedDatabaseEnv('preview', load);
+    expect(load).not.toHaveBeenCalled();
+    expect(result.vars).toEqual({});
+    expect(result.notes).toHaveLength(1);
+    expect(result.notes[0]).toMatch(/preview variables/);
+  });
+
+  it('a staging deploy never loads the linked databases', async () => {
+    const load = vi.fn(async () => prodDb);
+    const result = await resolveLinkedDatabaseEnv('staging', load);
+    expect(load).not.toHaveBeenCalled();
+    expect(result.vars).toEqual({});
+    expect(result.notes[0]).toMatch(/staging variables/);
+  });
+
+  it('a production deploy gets the linked databases', async () => {
+    const load = vi.fn(async () => prodDb);
+    expect(await resolveLinkedDatabaseEnv('production', load)).toBe(prodDb);
+    expect(load).toHaveBeenCalledTimes(1);
   });
 });
