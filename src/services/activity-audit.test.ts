@@ -46,6 +46,47 @@ describe('activity service audit helpers', () => {
     });
   });
 
+  it('SSO connection saved records the configuration but never the client secret', async () => {
+    await activityService.logSsoConnectionSaved(
+      'org-A',
+      'user-1',
+      {
+        issuer: 'https://idp.example.com/realms/acme',
+        clientId: 'pushify',
+        emailDomains: ['acme.com'],
+        enforced: false,
+        defaultRole: 'member',
+        // Extra fields on the input must not leak into the log
+        ...({ clientSecret: 'super-secret' } as object),
+      } as never,
+      true
+    );
+    expect(inserted[0]).toMatchObject({
+      organizationId: 'org-A',
+      userId: 'user-1',
+      action: 'settings.updated',
+      metadata: {
+        setting: 'sso',
+        operation: 'saved',
+        issuer: 'https://idp.example.com/realms/acme',
+        clientId: 'pushify',
+        emailDomains: ['acme.com'],
+        enforced: false,
+        defaultRole: 'member',
+        clientSecretChanged: true,
+      },
+    });
+    expect(JSON.stringify(inserted[0])).not.toContain('super-secret');
+  });
+
+  it('SSO connection removed is recorded', async () => {
+    await activityService.logSsoConnectionRemoved('org-A', 'user-1');
+    expect(inserted[0]).toMatchObject({
+      action: 'settings.updated',
+      metadata: { setting: 'sso', operation: 'removed' },
+    });
+  });
+
   it('member.removed records the target user and the role they had', async () => {
     await activityService.logMemberRemoved('org-A', 'user-1', 'user-2', 'viewer');
     expect(inserted[0]).toMatchObject({
