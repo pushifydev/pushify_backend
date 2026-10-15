@@ -65,9 +65,28 @@ export interface SiteDown {
   serverLastSeenAt: string | null;
   lastSuccessfulDeployAt: string | null;
   ownerLastLoginAt: string | null;
+  /** What monitoring concluded: server_unreachable | app_error | deploy_failed (null before the first alert). */
+  downReason: string | null;
+  /**
+   * The project's most recent deployment, classified. A site down behind a failed build whose
+   * blame is 'project' is a user-side build failure, not a platform outage; 'pushify' or
+   * 'server' blame (or a reachable-server app_error) stays a platform candidate.
+   */
+  latestDeploy: {
+    status: string;
+    createdAt: string | null;
+    blame: DeployFailureBlame | null;
+    label: string | null;
+    error: string | null;
+  } | null;
 }
 
-type SiteDownRow = Omit<SiteDown, 'hosting'> & { managed: boolean | null };
+type SiteDownRow = Omit<SiteDown, 'hosting' | 'latestDeploy'> & {
+  managed: boolean | null;
+  latestStatus: string | null;
+  latestCreatedAt: string | null;
+  latestError: string | null;
+};
 
 async function rows<T>(query: ReturnType<typeof sql>): Promise<T[]> {
   const result = await db.execute(query);
@@ -118,7 +137,9 @@ export const opsSignalsService = {
       // the site is fixed. A monitored site that recovers is reset by its next successful check.
       rows<SiteDownRow>(sql`
         SELECT h.project_id AS "projectId", ${iso('h.down_since')} AS "downSince",
-               h.status_code AS "statusCode", h.error,
+               h.status_code AS "statusCode", h.error, h.down_reason AS "downReason",
+               ld.status AS "latestStatus", ${iso('ld.created_at')} AS "latestCreatedAt",
+               ld.error_message AS "latestError",
                s.is_managed AS "managed", s.status::text AS "serverStatus",
                ${iso('s.last_seen_at')} AS "serverLastSeenAt",
                ${iso(`(SELECT max(d.created_at) FROM deployments d
@@ -130,6 +151,9 @@ export const opsSignalsService = {
           FROM project_health_state h
           JOIN projects p ON p.id = h.project_id
           LEFT JOIN servers s ON s.id = p.server_id
+          LEFT JOIN LATERAL (SELECT d.status::text AS status, d.created_at, d.error_message
+                               FROM deployments d WHERE d.project_id = h.project_id
+                              ORDER BY d.created_at DESC LIMIT 1) ld ON true
          WHERE h.status = 'down' AND h.down_since < now() - ${sql.raw(`interval '${SITE_DOWN_GRACE_MIN} minutes'`)}
            AND p.status = 'active' AND p.sleep_state = 'awake'
            AND jsonb_typeof(p.settings -> 'productionUrl') = 'string'
@@ -190,11 +214,25 @@ export const opsSignalsService = {
           };
         }),
       },
-      sitesDown: down.map(({ managed, ...d }) => ({
-        ...d,
-        hosting: managed === null ? 'shared' : managed ? 'managed' : 'byos',
-        error: scrubSecrets(d.error),
-      })),
+      sitesDown: down.map(({ managed, latestStatus, latestCreatedAt, latestError, ...d }) => {
+        const failed = latestStatus === 'failed';
+        const classified = failed ? classifyDeployFailure('', latestError ?? '') : null;
+        return {
+          ...d,
+          hosting: managed === null ? 'shared' : managed ? 'managed' : 'byos',
+          error: scrubSecrets(d.error),
+          downReason: d.downReason ?? null,
+          latestDeploy: latestStatus
+            ? {
+                status: latestStatus,
+                createdAt: latestCreatedAt ?? null,
+                blame: classified?.blame ?? null,
+                label: classified?.label ?? null,
+                error: failed ? scrubSecrets(latestError ? stripFailurePrefix(latestError) : null) : null,
+              }
+            : null,
+        };
+      }),
       servers: servers.map((s) => ({
         ...s,
         problem: s.status === 'error' ? 'error' : s.setupStatus === 'failed' ? 'setup_failed' : 'disk',
