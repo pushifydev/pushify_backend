@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { rejectApiKeyAuth } from '../middleware/apikey-auth';
 import { HTTPException } from 'hono/http-exception';
 import { ssoService } from '../services/sso.service';
+import { activityService } from '../services/activity.service';
 import { authMiddleware } from '../middleware/auth';
 import { env } from '../config/env';
 import type { AppEnv } from '../types';
@@ -79,17 +80,31 @@ ssoRouter.get('/connection', async (c) => {
 });
 
 ssoRouter.put('/connection', async (c) => {
-  const connection = await ssoService.save(
-    c.get('organizationId')!,
-    c.get('userId')!,
-    await c.req.json(),
-    c.get('locale')
+  const organizationId = c.get('organizationId')!;
+  const userId = c.get('userId')!;
+  const body = await c.req.json();
+  const connection = await ssoService.save(organizationId, userId, body, c.get('locale'));
+  await activityService.logSsoConnectionSaved(
+    organizationId,
+    userId,
+    connection,
+    typeof body?.clientSecret === 'string' && body.clientSecret.length > 0,
+    c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
+    c.req.header('user-agent')
   );
   return c.json({ data: connection });
 });
 
 ssoRouter.delete('/connection', async (c) => {
-  const result = await ssoService.remove(c.get('organizationId')!, c.get('userId')!, c.get('locale'));
+  const organizationId = c.get('organizationId')!;
+  const userId = c.get('userId')!;
+  const result = await ssoService.remove(organizationId, userId, c.get('locale'));
+  await activityService.logSsoConnectionRemoved(
+    organizationId,
+    userId,
+    c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
+    c.req.header('user-agent')
+  );
   return c.json({ data: result });
 });
 

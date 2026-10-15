@@ -483,6 +483,56 @@ class ActivityService {
     });
   }
 
+  /**
+   * The organization's SSO (OIDC) connection was saved. Recorded as `settings.updated` with
+   * `setting: 'sso'` so no enum migration is needed. The client secret is never written here —
+   * only whether it was replaced.
+   */
+  async logSsoConnectionSaved(
+    organizationId: string,
+    userId: string,
+    connection: { issuer: string; clientId: string; emailDomains: string[]; enforced: boolean; defaultRole: string },
+    clientSecretChanged: boolean,
+    ipAddress?: string,
+    userAgent?: string
+  ): Promise<void> {
+    await this.log({
+      organizationId,
+      userId,
+      action: 'settings.updated',
+      description: `Saved single sign-on connection (${connection.issuer})`,
+      metadata: {
+        setting: 'sso',
+        operation: 'saved',
+        issuer: connection.issuer,
+        clientId: connection.clientId,
+        emailDomains: connection.emailDomains,
+        enforced: connection.enforced,
+        defaultRole: connection.defaultRole,
+        clientSecretChanged,
+      },
+      ipAddress,
+      userAgent,
+    });
+  }
+
+  async logSsoConnectionRemoved(
+    organizationId: string,
+    userId: string,
+    ipAddress?: string,
+    userAgent?: string
+  ): Promise<void> {
+    await this.log({
+      organizationId,
+      userId,
+      action: 'settings.updated',
+      description: 'Removed single sign-on connection',
+      metadata: { setting: 'sso', operation: 'removed' },
+      ipAddress,
+      userAgent,
+    });
+  }
+
   async logSettingsUpdated(
     organizationId: string,
     userId: string,
