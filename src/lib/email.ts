@@ -1008,6 +1008,8 @@ export async function sendServerDiskEmail(
     usedPercent: number;
     availGb: number;
     critical: boolean;
+    /** Set when the automatic cleanup already ran: GB still held by volumes (customer data) */
+    dataGb?: number;
   },
   locale: 'en' | 'tr' = 'en'
 ): Promise<void> {
@@ -1016,8 +1018,9 @@ export async function sendServerDiskEmail(
     return;
   }
 
-  const { orgName, serverName, serverId, usedPercent, availGb, critical } = details;
+  const { orgName, serverName, serverId, usedPercent, availGb, critical, dataGb } = details;
   const serverUrl = `${env.FRONTEND_URL}/dashboard/servers/${serverId}`;
+  const cleanedUp = dataGb !== undefined;
 
   const subjects = {
     en: critical
@@ -1033,6 +1036,9 @@ export async function sendServerDiskEmail(
       why: critical
         ? 'At this level deploys fail and containers start losing writes. Everything on this server is affected, databases included.'
         : 'Old Docker images are usually most of it. Running <code>docker system prune -af</code> on the server reclaims the space that unused builds are holding.',
+      data: cleanedUp
+        ? `Pushify already cleared old logs, unused images and build cache. What is left is mostly your data (${dataGb} GB in volumes, e.g. databases) — we never delete it. Resize the server's disk to make room.`
+        : null,
       cta: 'Open the server',
     },
     tr: {
@@ -1040,6 +1046,9 @@ export async function sendServerDiskEmail(
       why: critical
         ? 'Bu seviyede deploy\'lar başarısız olur ve container\'lar yazma kaybetmeye başlar. Bu sunucudaki her şey etkilenir, veritabanları dahil.'
         : 'Genelde suçlu eski Docker imajlarıdır. Sunucuda <code>docker system prune -af</code> çalıştırmak, kullanılmayan build\'lerin tuttuğu yeri geri kazandırır.',
+      data: cleanedUp
+        ? `Pushify eski logları, kullanılmayan imajları ve build cache'i zaten temizledi. Kalan alanın çoğu sizin verileriniz (volume'larda ${dataGb} GB, ör. veritabanları) — bunları asla silmeyiz. Yer açmak için sunucunun diskini büyütün.`
+        : null,
       cta: 'Sunucuyu aç',
     },
   }[locale];
@@ -1047,7 +1056,10 @@ export async function sendServerDiskEmail(
   const html = renderTransactionalEmail({
     eyebrow: locale === 'tr' ? 'Disk alanı' : 'Disk space',
     tone: critical ? 'danger' : 'warning',
-    bodyHtml: [copy.lead, copy.why],
+    // After the cleanup, "run docker system prune" is no longer the advice — the critical warning is
+    bodyHtml: copy.data
+      ? critical ? [copy.lead, copy.why, copy.data] : [copy.lead, copy.data]
+      : [copy.lead, copy.why],
     button: { href: serverUrl, label: copy.cta },
   });
 

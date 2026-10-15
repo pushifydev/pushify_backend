@@ -27,6 +27,7 @@ import { SSHClient } from '../utils/ssh';
 import { wsManager } from '../lib/ws';
 import { logger } from '../lib/logger';
 import { adminNotify } from './admin-notify.service';
+import { DOCKER_DAEMON_JSON } from '../lib/server-disk-cleanup';
 
 /**
  * Take Pushify's SSH key off a connected (BYOS) server. Never throws: an unreachable server comes
@@ -195,6 +196,15 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.
 
 wait_for_apt
 apt-get update -y
+
+# Cap every container's log (compose stacks included) before the daemon first starts:
+# Docker's default json-file log is unbounded and can fill the disk on its own.
+mkdir -p /etc/docker
+if [ ! -e /etc/docker/daemon.json ]; then
+    cat > /etc/docker/daemon.json << 'DAEMONJSON'
+${DOCKER_DAEMON_JSON}
+DAEMONJSON
+fi
 
 wait_for_apt
 apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin

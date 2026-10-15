@@ -4,6 +4,8 @@ import { servers } from '../db/schema/servers';
 import { getSSHConnection } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
 import { checkServerDiskSpace } from '../lib/server-disk-check';
+import { runServerDiskCleanup } from '../lib/server-disk-cleanup';
+import { env } from '../config/env';
 import { organizationRepository } from '../repositories/organization.repository';
 import { deploymentAlertRepository } from '../repositories/deployment-alert.repository';
 import { sendServerDiskEmail } from '../lib/email';
@@ -22,12 +24,15 @@ import { logger } from '../lib/logger';
  * So: an hourly check of every reachable server, and one email when it crosses the line.
  */
 
+/** Above this, a managed server gets the scheduled Docker cleanup before it is judged. */
+const CLEANUP_PERCENT = env.SERVER_DISK_CLEANUP_PERCENT;
+
 /** One mail per day while it stays full: enough to keep it in mind, not enough to be ignored. */
 const RENOTIFY_AFTER_MS = 24 * 60 * 60 * 1000;
 
 export const serverDiskService = {
   /** Check every running server with SSH credentials. Never throws — one bad host is not the run. */
-  async checkAll(now: Date = new Date()): Promise<{ checked: number; warned: number }> {
+  async checkAll(now: Date = new Date()): Promise<{ checked: number; warned: number; cleaned: number }> {
     const rows = await db
       .select()
       .from(servers)
@@ -35,6 +40,7 @@ export const serverDiskService = {
 
     let checked = 0;
     let warned = 0;
+    let cleaned = 0;
 
     for (const server of rows) {
       if (!server.ipv4 || !server.sshPrivateKey) continue;
@@ -44,8 +50,33 @@ export const serverDiskService = {
           username: 'root',
           privateKey: decrypt(server.sshPrivateKey),
         });
-        const result = await checkServerDiskSpace(ssh);
+        let result = await checkServerDiskSpace(ssh);
         checked++;
+
+        // Managed servers are ours to keep tidy: trim oversized container logs, dangling images
+        // and old build cache (never volumes — those are customer data), then judge the disk
+        // on what is left.
+        let dataBytes: number | undefined;
+        if (server.isManaged && result.measured && result.usedPercent >= CLEANUP_PERCENT) {
+          const cleanup = await runServerDiskCleanup(ssh);
+          cleaned++;
+          logger.info(
+            {
+              serverId: server.id,
+              ran: cleanup.ran,
+              usedPercentBefore: result.usedPercent,
+              freedBytes: cleanup.freedBytes,
+              logsTruncatedBytes: cleanup.logsTruncatedBytes,
+              volumesBytes: cleanup.volumesBytes,
+              daemonConfig: cleanup.daemonConfig,
+            },
+            'Server disk cleanup finished'
+          );
+          if (cleanup.ran) {
+            result = await checkServerDiskSpace(ssh);
+            dataBytes = cleanup.volumesBytes;
+          }
+        }
 
         const values: Partial<typeof servers.$inferInsert> = {
           diskUsedPercent: result.usedPercent,
@@ -58,7 +89,7 @@ export const serverDiskService = {
           if (due) {
             values.diskNotifiedAt = now;
             warned++;
-            await this.announce(server, result, now).catch((err) =>
+            await this.announce(server, { ...result, dataBytes }, now).catch((err) =>
               logger.error({ err, serverId: server.id }, 'Server disk alert failed to send')
             );
           }
@@ -74,12 +105,12 @@ export const serverDiskService = {
       }
     }
 
-    return { checked, warned };
+    return { checked, warned, cleaned };
   },
 
   async announce(
     server: typeof servers.$inferSelect,
-    result: { usedPercent: number; availGb: number; critical: boolean },
+    result: { usedPercent: number; availGb: number; critical: boolean; dataBytes?: number },
     _now: Date
   ): Promise<void> {
     const [recipients, org] = await Promise.all([
@@ -95,6 +126,7 @@ export const serverDiskService = {
         usedPercent: result.usedPercent,
         availGb: result.availGb,
         critical: result.critical,
+        dataGb: result.dataBytes !== undefined ? Math.round((result.dataBytes / 1e9) * 10) / 10 : undefined,
       }).catch(() => {});
     }
 
