@@ -12,7 +12,7 @@ import { logger } from '../lib/logger';
 import { pickRunnerServerId } from '../lib/runner-routing';
 import { getProjectVolumeMounts } from '../lib/project-volumes';
 import { createLogMasker, type LogMasker } from '../lib/log-masking';
-import { selectDeployEnvVars } from '../lib/deploy-env-vars';
+import { resolveLinkedDatabaseEnv, selectDeployEnvVars } from '../lib/deploy-env-vars';
 import { hasSecretReferences } from '../lib/secret-references';
 import { secretProviderService } from '../services/secret-provider.service';
 import { previewHostname } from '../lib/preview-remote';
@@ -655,11 +655,11 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       }
       await resolveExternalSecrets(project.organizationId, job.projectId, envVarsDecrypted, logMasker, addLog);
       // Databases linked under Databases → Connect become variables (DATABASE_URL by default).
-      // Production only: a staging copy pointing at the production database would write to it.
-      const linkedDatabases =
-        environment === 'production'
-          ? await linkedDatabaseEnv(job.projectId, deployTargetServerId, envVarsDecrypted)
-          : { vars: {}, notes: ['Staging does not get the project\'s linked databases — give it its own DATABASE_URL under staging variables'] };
+      // Production only — not staging, not PR previews: a copy pointing at the production
+      // database would write to it (see resolveLinkedDatabaseEnv in lib/deploy-env-vars.ts).
+      const linkedDatabases = await resolveLinkedDatabaseEnv(previewCtx ? 'preview' : environment, () =>
+        linkedDatabaseEnv(job.projectId, deployTargetServerId, envVarsDecrypted)
+      );
       Object.assign(envVarsDecrypted, linkedDatabases.vars);
       // Everything logged from here on has the project's secrets masked.
       logMasker.addEnvVars(envVarsDecrypted);

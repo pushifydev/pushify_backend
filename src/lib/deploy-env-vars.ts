@@ -40,3 +40,27 @@ export function selectDeployEnvVars<T extends DeployEnvVarLike>(
   }
   return [...byKey.values()];
 }
+
+export interface LinkedDatabaseEnvResult {
+  vars: Record<string, string>;
+  notes: string[];
+}
+
+/**
+ * The project's linked databases (Databases → Connect) carry the production database's
+ * credentials, so only a production deploy gets them. A staging copy or a PR preview pointed at
+ * the production database would write to it — a PR that runs migrations or seeds on boot could
+ * change or delete production data. Those targets get a note instead and should set their own
+ * DATABASE_URL under their own variables. `load` is only called for production.
+ */
+export async function resolveLinkedDatabaseEnv(
+  target: DeployTarget,
+  load: () => Promise<LinkedDatabaseEnvResult>
+): Promise<LinkedDatabaseEnvResult> {
+  if (target === 'production') return load();
+  const note =
+    target === 'preview'
+      ? "Preview deployments do not get the project's linked databases — give previews their own DATABASE_URL under preview variables"
+      : "Staging does not get the project's linked databases — give it its own DATABASE_URL under staging variables";
+  return { vars: {}, notes: [note] };
+}
