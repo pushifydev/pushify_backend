@@ -62,6 +62,7 @@ export async function recordRefusedPushDeploy(input: RefusedPushDeploy) {
     action: 'deployment.failed',
     description: `Deployment from git push not started: ${input.reason}`,
     metadata: { deploymentId: deployment.id, branch: input.branch, commitHash: input.commitHash },
+    source: 'webhook',
   });
 
   try {

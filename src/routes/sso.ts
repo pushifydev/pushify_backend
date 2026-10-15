@@ -6,6 +6,7 @@ import { activityService } from '../services/activity.service';
 import { authMiddleware } from '../middleware/auth';
 import { env } from '../config/env';
 import type { AppEnv } from '../types';
+import { auditSource } from '../lib/audit';
 
 /**
  * Single sign-on. The two callback-flow routes are public by necessity — the person using them
@@ -90,7 +91,8 @@ ssoRouter.put('/connection', async (c) => {
     connection,
     typeof body?.clientSecret === 'string' && body.clientSecret.length > 0,
     c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
-    c.req.header('user-agent')
+    c.req.header('user-agent'),
+    auditSource(c)
   );
   return c.json({ data: connection });
 });
@@ -103,7 +105,8 @@ ssoRouter.delete('/connection', async (c) => {
     organizationId,
     userId,
     c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
-    c.req.header('user-agent')
+    c.req.header('user-agent'),
+    auditSource(c)
   );
   return c.json({ data: result });
 });

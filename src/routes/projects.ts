@@ -7,6 +7,7 @@ import { omitWebhookSecret } from '../lib/project-public';
 import { getApiBaseUrl } from '../lib/api-base-url';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
+import { auditSource, diffChanges } from '../lib/audit';
 
 // ============ Schemas ============
 
@@ -372,7 +373,8 @@ projectRouter.openapi(createProjectRoute, async (c) => {
     project.id,
     project.name,
     c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
-    c.req.header('user-agent')
+    c.req.header('user-agent'),
+    auditSource(c)
   );
 
   return c.json(
@@ -423,17 +425,23 @@ projectRouter.openapi(updateProjectRoute, async (c) => {
   const { projectId } = c.req.valid('param');
   const input = c.req.valid('json');
 
+  const before = await projectService.getById(projectId, organizationId, userId, locale);
   const project = await projectService.update(projectId, organizationId, userId, input, locale);
 
-  // Log activity
+  // Log activity: only the fields the request touched, as a redacted before/after diff
   await activityService.logProjectUpdated(
     organizationId,
     userId,
     projectId,
     project.name,
-    input,
+    diffChanges(
+      before as unknown as Record<string, unknown>,
+      project as unknown as Record<string, unknown>,
+      { fields: Object.keys(input) }
+    ),
     c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
-    c.req.header('user-agent')
+    c.req.header('user-agent'),
+    auditSource(c)
   );
 
   return c.json({
@@ -466,7 +474,8 @@ projectRouter.openapi(deleteProjectRoute, async (c) => {
     projectId,
     project.name,
     c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
-    c.req.header('user-agent')
+    c.req.header('user-agent'),
+    auditSource(c)
   );
 
   return c.json({
@@ -502,6 +511,7 @@ projectRouter.openapi(updateStatusRoute, async (c) => {
     metadata: { status, containersSynced },
     ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
     userAgent: c.req.header('user-agent'),
+    source: auditSource(c),
   });
 
   return c.json({ data: omitWebhookSecret(project), containersSynced });
@@ -586,6 +596,7 @@ projectRouter.post('/:projectId/webhook/regenerate', async (c) => {
     description: 'Regenerated webhook secret',
     ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
     userAgent: c.req.header('user-agent'),
+    source: auditSource(c),
   });
 
   return c.json({
@@ -604,11 +615,18 @@ projectRouter.patch('/:projectId/settings', async (c) => {
   const projectId = c.req.param('projectId') as string;
   const settings = await c.req.json();
 
+  const before = await projectService.getById(projectId, organizationId, userId, locale);
   const project = await projectService.updateSettings(projectId, organizationId, userId, settings, locale);
 
   if (!project) {
     return c.json({ error: { code: 'NOT_FOUND', message: t(locale, 'projects', 'notFound') } }, 404);
   }
+
+  const settingsChanges = diffChanges(
+    (before.settings ?? {}) as Record<string, unknown>,
+    (project.settings ?? {}) as Record<string, unknown>,
+    { fields: Object.keys(settings ?? {}) }
+  );
 
   // Log activity
   const changedSettings = Object.keys(settings).join(', ');
@@ -618,7 +636,9 @@ projectRouter.patch('/:projectId/settings', async (c) => {
     projectId,
     changedSettings,
     c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
-    c.req.header('user-agent')
+    c.req.header('user-agent'),
+    auditSource(c),
+    settingsChanges
   );
 
   return c.json({

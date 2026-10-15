@@ -9,6 +9,7 @@ import { organizationRepository } from '../repositories/organization.repository'
 import { authMiddleware } from '../middleware/auth';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
+import { auditSource } from '../lib/audit';
 
 const organizationRouter = new Hono<AppEnv>();
 
@@ -138,7 +139,8 @@ organizationRouter.post('/members', async (c) => {
     email,
     member.role,
     c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
-    c.req.header('user-agent')
+    c.req.header('user-agent'),
+    auditSource(c)
   );
 
   return c.json({
@@ -173,7 +175,8 @@ organizationRouter.patch('/members/:userId', async (c) => {
     before?.role,
     role,
     c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
-    c.req.header('user-agent')
+    c.req.header('user-agent'),
+    auditSource(c)
   );
 
   return c.json({
@@ -250,7 +253,8 @@ organizationRouter.delete('/members/:userId', async (c) => {
     targetUserId,
     before?.role,
     c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
-    c.req.header('user-agent')
+    c.req.header('user-agent'),
+    auditSource(c)
   );
 
   return c.json({ message: t(locale, 'organizations', 'memberRemoved') });

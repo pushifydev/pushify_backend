@@ -16,6 +16,7 @@ vi.mock('../middleware/auth', () => {
     c.set('userId', c.req.header('x-test-user') ?? 'user-1');
     c.set('organizationId', c.req.header('x-test-org') ?? 'org-A');
     c.set('locale', 'en');
+    if (c.req.header('x-test-apikey')) c.set('isApiKeyAuth', true);
     await next();
   };
   return { combinedAuthMiddleware: mw, authMiddleware: mw };
@@ -85,6 +86,20 @@ vi.mock('../services/domain.service', () => ({
     create: vi.fn(async () => ({ id: 'd-1', projectId: 'p-1', domain: 'app.example.com', isPrimary: false, sslStatus: null, verifiedAt: null, createdAt: new Date(), dns: {} })),
     getById: vi.fn(async () => ({ id: 'd-1', domain: 'app.example.com' })),
     delete: vi.fn(async () => undefined),
+    getByProject: vi.fn(async () => [
+      { id: 'd-0', domain: 'old.example.com', isPrimary: true },
+      { id: 'd-1', domain: 'app.example.com', isPrimary: false },
+    ]),
+    setPrimary: vi.fn(async () => ({
+      id: 'd-1', projectId: 'p-1', domain: 'app.example.com', isPrimary: true, sslStatus: null,
+      verifiedAt: null, createdAt: new Date(), updatedAt: new Date(),
+    })),
+    getNginxSettings: vi.fn(async () => ({ forceHttps: false, clientMaxBodySize: '10m' })),
+    updateNginxSettings: vi.fn(async () => ({
+      forceHttps: true,
+      clientMaxBodySize: '10m',
+      customHeaders: { Authorization: 'Bearer HEADER_SECRET_XYZ', 'X-Team': 'web' },
+    })),
   },
 }));
 vi.mock('../services/organization.service', () => ({
@@ -151,7 +166,47 @@ describe('audit log: critical events are recorded', () => {
   it('env var changed: key and which fields changed, never the value', async () => {
     const res = await app.request(`/projects/${P}/env/${ID}`, json('PATCH', { value: SECRET }));
     expect(res.status).toBe(200);
-    expect(only('logEnvVarUpdated')[0].args.slice(0, 5)).toEqual(['org-A', 'user-1', P, 'STRIPE_KEY', ['value']]);
+    const args = only('logEnvVarUpdated')[0].args;
+    expect(args.slice(0, 5)).toEqual([
+      'org-A', 'user-1', P, 'STRIPE_KEY', { valueChanged: true, isSecret: { from: true, to: true } },
+    ]);
+    expect(args[7]).toBe('ui');
+  });
+
+  it('source is api when the caller used an API key', async () => {
+    const res = await app.request(`/projects/${P}/env/${ID}`, json('PATCH', { value: SECRET }, { 'x-test-apikey': '1' }));
+    expect(res.status).toBe(200);
+    expect(only('logEnvVarUpdated')[0].args[7]).toBe('api');
+  });
+
+  it('primary domain change records from -> to', async () => {
+    const res = await app.request(`/projects/${P}/domains/${ID}/primary`, json('POST'));
+    expect(res.status).toBe(200);
+    expect(only('log')[0].args[0]).toMatchObject({
+      action: 'domain.set_primary',
+      source: 'ui',
+      changes: { primaryDomain: { from: 'old.example.com', to: 'app.example.com' } },
+    });
+  });
+
+  it('nginx settings change records a redacted diff of the touched fields', async () => {
+    const res = await app.request(
+      `/projects/${P}/domains/${ID}/nginx-settings`,
+      json('PATCH', { forceHttps: true, customHeaders: { Authorization: 'Bearer HEADER_SECRET_XYZ', 'X-Team': 'web' } })
+    );
+    expect(res.status).toBe(200);
+    const entry = only('log')[0].args[0] as Record<string, unknown>;
+    expect(entry).toMatchObject({
+      action: 'domain.nginx_updated',
+      source: 'ui',
+      changes: { forceHttps: { from: false, to: true } },
+    });
+    expect(Object.keys(entry.changes as object).sort()).toEqual(['customHeaders', 'forceHttps']);
+    expect(entry.changes).not.toHaveProperty('clientMaxBodySize');
+    expect((entry.changes as Record<string, { to: unknown }>).customHeaders.to).toEqual({
+      Authorization: '[redacted]', 'X-Team': 'web',
+    });
+    expect(JSON.stringify(entry)).not.toContain('HEADER_SECRET_XYZ');
   });
 
   it('env var bulk upsert: one entry per created/updated key, unchanged keys skipped', async () => {
@@ -217,6 +272,23 @@ describe('audit log listing', () => {
     expect(getByOrganization).toHaveBeenCalledTimes(1);
     expect(getByOrganization.mock.calls[0][0]).toBe('org-A');
     expect(getByOrganization.mock.calls[0][1]).toMatchObject({ limit: 10, offset: 20 });
+  });
+
+  it('returns source and changes on every entry', async () => {
+    getByOrganization.mockResolvedValueOnce({
+      logs: [
+        {
+          id: 'a-1', action: 'envvar.updated', description: 'Updated environment variable "K"',
+          metadata: { key: 'K' }, source: 'api', changes: { value: { changed: true } },
+          createdAt: new Date(), ipAddress: null, user: null, project: null,
+        },
+      ],
+      total: 1,
+    } as never);
+    const res = await app.request('/activity');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: Array<Record<string, unknown>> };
+    expect(body.data[0]).toMatchObject({ source: 'api', changes: { value: { changed: true } } });
   });
 
   it.each(['member', 'viewer'])('is refused to a %s', async (role) => {

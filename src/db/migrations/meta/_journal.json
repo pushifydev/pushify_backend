@@ -512,6 +512,13 @@
       "when": 1787270400032,
       "tag": "0073_dns_provider_connections",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1787270400033,
+      "tag": "0074_activity_source_changes",
+      "breakpoints": true
     }
   ]
 }

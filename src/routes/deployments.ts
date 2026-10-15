@@ -20,6 +20,7 @@ import { resolvePushifyContainerName } from '../lib/container-resolve';
 import { resolveProjectServerId } from '../lib/runner-routing';
 import { getProjectLogMasker } from '../workers/log-collector';
 import { enrichDeploymentWithQueue } from '../lib/deploy-queue';
+import { auditSource } from '../lib/audit';
 
 // Rate limiter for deployment operations
 const deploymentRateLimiter = createDeploymentRateLimiter();
@@ -375,7 +376,8 @@ deploymentRouter.openapi(createDeploymentRoute, async (c) => {
     input.branch,
     'manual',
     c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
-    c.req.header('user-agent')
+    c.req.header('user-agent'),
+    auditSource(c)
   );
 
   return c.json(
@@ -430,6 +432,7 @@ deploymentRouter.openapi(cancelDeploymentRoute, async (c) => {
     metadata: { deploymentId },
     ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
     userAgent: c.req.header('user-agent'),
+    source: auditSource(c),
   });
 
   return c.json({
@@ -463,6 +466,7 @@ deploymentRouter.openapi(redeployRoute, async (c) => {
     metadata: { originalDeploymentId: deploymentId, newDeploymentId: deployment.id },
     ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
     userAgent: c.req.header('user-agent'),
+    source: auditSource(c),
   });
 
   return c.json(
@@ -499,6 +503,7 @@ deploymentRouter.openapi(rollbackRoute, async (c) => {
     metadata: { targetDeploymentId: deploymentId, newDeploymentId: deployment.id },
     ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
     userAgent: c.req.header('user-agent'),
+    source: auditSource(c),
   });
 
   return c.json(

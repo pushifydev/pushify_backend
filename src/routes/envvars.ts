@@ -5,6 +5,7 @@ import { combinedAuthMiddleware } from '../middleware/auth';
 import { requireScope } from '../middleware/apikey-auth';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
+import { auditSource } from '../lib/audit';
 
 // ============ Schemas ============
 
@@ -310,7 +311,8 @@ envVarRouter.openapi(createEnvVarRoute, async (c) => {
     projectId,
     input.key,
     c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
-    c.req.header('user-agent')
+    c.req.header('user-agent'),
+    auditSource(c)
   );
 
   return c.json(
@@ -335,11 +337,12 @@ envVarRouter.openapi(bulkCreateRoute, async (c) => {
   // One entry per variable that actually changed; values are never logged.
   const ip = c.req.header('x-forwarded-for') || c.req.header('x-real-ip');
   const ua = c.req.header('user-agent');
+  const src = auditSource(c);
   for (const r of results) {
     if (r.action === 'created') {
-      await activityService.logEnvVarCreated(organizationId, userId, projectId, r.key, ip, ua);
+      await activityService.logEnvVarCreated(organizationId, userId, projectId, r.key, ip, ua, src);
     } else if (r.action === 'updated') {
-      await activityService.logEnvVarUpdated(organizationId, userId, projectId, r.key, ['value'], ip, ua);
+      await activityService.logEnvVarUpdated(organizationId, userId, projectId, r.key, { valueChanged: true }, ip, ua, src);
     }
   }
 
@@ -369,6 +372,9 @@ envVarRouter.openapi(updateEnvVarRoute, async (c) => {
   const { projectId, envVarId } = c.req.valid('param');
   const input = c.req.valid('json');
 
+  // Read the secret flag before the change so the audit entry can show from -> to.
+  const before = await envVarService.getById(envVarId, projectId, organizationId, userId, locale);
+
   const envVar = await envVarService.update(
     envVarId,
     projectId,
@@ -378,17 +384,19 @@ envVarRouter.openapi(updateEnvVarRoute, async (c) => {
     locale
   );
 
-  const changed: Array<'value' | 'isSecret'> = [];
-  if (input.value !== undefined) changed.push('value');
-  if (input.isSecret !== undefined) changed.push('isSecret');
+  // The value itself is never passed on: only whether it was set.
   await activityService.logEnvVarUpdated(
     organizationId,
     userId,
     projectId,
     envVar.key,
-    changed,
+    {
+      valueChanged: input.value !== undefined,
+      isSecret: { from: before.isSecret, to: envVar.isSecret },
+    },
     c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
-    c.req.header('user-agent')
+    c.req.header('user-agent'),
+    auditSource(c)
   );
 
   return c.json({
@@ -416,7 +424,8 @@ envVarRouter.openapi(deleteEnvVarRoute, async (c) => {
     projectId,
     envVar.key,
     c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
-    c.req.header('user-agent')
+    c.req.header('user-agent'),
+    auditSource(c)
   );
 
   return c.json({ message: t(locale, 'envVars', 'deleted') });

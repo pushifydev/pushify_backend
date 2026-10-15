@@ -6,6 +6,7 @@ import { requireScope } from '../middleware/apikey-auth';
 import { t } from '../i18n';
 import { HEADER_NAME_RE, HEADER_VALUE_RE } from '../workers/nginx-manager';
 import type { AppEnv } from '../types';
+import { auditSource, diffChanges } from '../lib/audit';
 
 // ============ Schemas ============
 
@@ -395,7 +396,8 @@ domainRouter.openapi(createDomainRoute, async (c) => {
     projectId,
     input.domain,
     c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
-    c.req.header('user-agent')
+    c.req.header('user-agent'),
+    auditSource(c)
   );
 
   return c.json(
@@ -427,6 +429,10 @@ domainRouter.openapi(setPrimaryRoute, async (c) => {
   const locale = c.get('locale');
   const { projectId, domainId } = c.req.valid('param');
 
+  // Which domain was primary before, so the audit entry can show from -> to.
+  const previous = await domainService.getByProject(projectId, organizationId, userId, locale);
+  const previousPrimary = previous.find((d) => d.isPrimary)?.domain ?? null;
+
   const domain = await domainService.setPrimary(
     domainId,
     projectId,
@@ -443,8 +449,10 @@ domainRouter.openapi(setPrimaryRoute, async (c) => {
     action: 'domain.set_primary',
     description: `Set "${domain.domain}" as primary domain`,
     metadata: { domain: domain.domain },
+    changes: diffChanges({ primaryDomain: previousPrimary }, { primaryDomain: domain.domain }),
     ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
     userAgent: c.req.header('user-agent'),
+    source: auditSource(c),
   });
 
   return c.json({
@@ -472,6 +480,7 @@ domainRouter.openapi(verifyDomainRoute, async (c) => {
     metadata: { domain: domain.domain },
     ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
     userAgent: c.req.header('user-agent'),
+    source: auditSource(c),
   });
 
   return c.json({
@@ -512,6 +521,8 @@ domainRouter.openapi(updateNginxSettingsRoute, async (c) => {
   const { projectId, domainId } = c.req.valid('param');
   const settings = c.req.valid('json');
 
+  const previousSettings = await domainService.getNginxSettings(domainId, projectId, organizationId, userId, locale);
+
   const updatedSettings = await domainService.updateNginxSettings(
     domainId,
     projectId,
@@ -528,9 +539,15 @@ domainRouter.openapi(updateNginxSettingsRoute, async (c) => {
     projectId,
     action: 'domain.nginx_updated',
     description: 'Updated Nginx settings for domain',
-    metadata: { domainId, settings },
+    metadata: { domainId, fields: Object.keys(settings) },
+    changes: diffChanges(
+      previousSettings as Record<string, unknown>,
+      updatedSettings as Record<string, unknown>,
+      { fields: Object.keys(settings) }
+    ),
     ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
     userAgent: c.req.header('user-agent'),
+    source: auditSource(c),
   });
 
   return c.json({
@@ -558,7 +575,8 @@ domainRouter.openapi(deleteDomainRoute, async (c) => {
     projectId,
     domain.domain,
     c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
-    c.req.header('user-agent')
+    c.req.header('user-agent'),
+    auditSource(c)
   );
 
   return c.json({ message: t(locale, 'domains', 'deleted') });
