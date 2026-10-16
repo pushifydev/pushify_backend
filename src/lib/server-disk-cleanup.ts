@@ -29,11 +29,26 @@ export const LOG_TRUNCATE_THRESHOLD_MB = 100;
 /** Build cache unused for longer than this is pruned. */
 export const BUILD_CACHE_MAX_AGE = '72h';
 
+/**
+ * A container without a log cap has its json log rotated (truncated) above this size: what the
+ * daemon default would keep at most (max-size 10m × max-file 3).
+ */
+export const UNCAPPED_LOG_ROTATE_MB = 30;
+
 export const CLEANUP_MARKER = 'PUSHIFY_CLEANUP';
 
 /**
  * Shell run over SSH. Prints one machine-readable line at the end:
- *   PUSHIFY_CLEANUP before=<bytes> after=<bytes> logs=<bytes> daemon=<created|present|skipped> volumes=<docker size>
+ *   PUSHIFY_CLEANUP before=<bytes> after=<bytes> logs=<bytes> daemon=<created|present|skipped>
+ *     volumes=<docker size> images=<docker size> buildcache=<docker size> containers=<docker size>
+ *     logfiles=<bytes> uncapped=<count> rotated=<count> total=<bytes>
+ *
+ * `daemon.json` log-opts only apply to containers created after the daemon (re)loads it, so
+ * containers that already exist — typically compose stacks such as Supabase — keep an unbounded
+ * json-file log. Those are found with `docker inspect` (json-file driver, no `max-size`) and their
+ * log is rotated in place once it exceeds what the cap would allow (max-size × max-file). They
+ * are not recreated: that would restart customer services. They pick up the cap the next time
+ * they are recreated after the daemon has reloaded its config.
  *
  * `/etc/docker/daemon.json` is only written when it does not exist (a hand-tuned file is never
  * overwritten) and Docker is NOT restarted: restarting would stop every container on the host.
@@ -52,6 +67,21 @@ export function buildDiskCleanupScript(): string {
     '  then DAEMON=created; else DAEMON=skipped; fi',
     'fi',
     'LOGS=0',
+    'UNCAPPED=0',
+    'ROTATED=0',
+    // Containers created before the daemon default took effect: json-file without max-size.
+    'for id in $(docker ps -aq --no-trunc 2>/dev/null); do',
+    '  cfg=$(docker inspect --format \'{{.HostConfig.LogConfig.Type}} {{index .HostConfig.LogConfig.Config "max-size"}}\' "$id" 2>/dev/null) || continue',
+    '  drv=${cfg%% *}; cap=${cfg#* }; [ "$cap" = "$cfg" ] && cap=""',
+    '  if [ "$drv" = json-file ] && [ -z "$cap" ]; then',
+    '    UNCAPPED=$((UNCAPPED + 1))',
+    '    f=/var/lib/docker/containers/$id/$id-json.log',
+    '    s=$(stat -c %s "$f" 2>/dev/null || echo 0)',
+    `    if [ "$s" -gt $((${UNCAPPED_LOG_ROTATE_MB} * 1024 * 1024)) ] && truncate -s 0 "$f"; then`,
+    '      LOGS=$((LOGS + s)); ROTATED=$((ROTATED + 1))',
+    '    fi',
+    '  fi',
+    'done',
     'if [ -d /var/lib/docker/containers ]; then',
     `  for f in $(find /var/lib/docker/containers -name '*-json.log' -size +${LOG_TRUNCATE_THRESHOLD_MB}M 2>/dev/null); do`,
     '    s=$(stat -c %s "$f" 2>/dev/null || echo 0)',
@@ -61,8 +91,15 @@ export function buildDiskCleanupScript(): string {
     'docker image prune -f >/dev/null 2>&1 || true',
     `docker builder prune -af --filter until=${BUILD_CACHE_MAX_AGE} >/dev/null 2>&1 || true`,
     'AFTER=$(used)',
-    "VOL=$(docker system df --format '{{.Type}}\\t{{.Size}}' 2>/dev/null | awk -F'\\t' '$1==\"Local Volumes\" {print $2}' | tr -d ' ')",
-    `echo "${CLEANUP_MARKER} before=\${BEFORE:-0} after=\${AFTER:-0} logs=\${LOGS:-0} daemon=\${DAEMON} volumes=\${VOL:-0B}"`,
+    "TOTAL=$(df -P -B1 / 2>/dev/null | tail -1 | awk '{print $2}')",
+    // Where the remaining space sits: docker's own accounting plus the container log files.
+    "DF=$(docker system df --format '{{.Type}}\\t{{.Size}}' 2>/dev/null)",
+    "dfsize() { printf '%s\\n' \"$DF\" | awk -F'\\t' -v t=\"$1\" '$1==t {print $2}' | tr -d ' '; }",
+    'VOL=$(dfsize "Local Volumes"); IMG=$(dfsize Images); BC=$(dfsize "Build Cache"); CTR=$(dfsize Containers)',
+    "LOGFILES=$(find /var/lib/docker/containers -name '*-json.log*' -printf '%s\\n' 2>/dev/null | awk '{s+=$1} END {print s+0}')",
+    `echo "${CLEANUP_MARKER} before=\${BEFORE:-0} after=\${AFTER:-0} logs=\${LOGS:-0} daemon=\${DAEMON} volumes=\${VOL:-0B}` +
+      ` images=\${IMG:-0B} buildcache=\${BC:-0B} containers=\${CTR:-0B} logfiles=\${LOGFILES:-0}` +
+      ` uncapped=\${UNCAPPED:-0} rotated=\${ROTATED:-0} total=\${TOTAL:-0}"`,
   ].join('\n');
 }
 
@@ -74,7 +111,87 @@ export interface DiskCleanupResult {
   daemonConfig: 'created' | 'present' | 'skipped' | 'unknown';
   /** Space held by Docker volumes (customer data) — reported, never removed */
   volumesBytes: number;
+  imagesBytes: number;
+  buildCacheBytes: number;
+  /** Writable layers of containers */
+  containersBytes: number;
+  /** Container json log files on disk after the cleanup */
+  logsBytes: number;
+  /** Containers whose json-file log has no max-size (created before the daemon default) */
+  uncappedLogContainers: number;
+  /** Of those, how many had their log rotated in this run */
+  rotatedLogContainers: number;
+  usedBytes: number;
+  totalBytes: number;
 }
+
+/** What holds the space on a server, written to `servers.disk_breakdown` after each cleanup. */
+export interface ServerDiskBreakdown {
+  measuredAt: string;
+  usedBytes: number;
+  totalBytes: number;
+  imagesBytes: number;
+  buildCacheBytes: number;
+  containersBytes: number;
+  logsBytes: number;
+  volumesBytes: number;
+  /** Largest consumer; `other` when Docker accounts for less than half of the used space */
+  heldBy: 'images' | 'build_cache' | 'containers' | 'logs' | 'volumes' | 'other';
+  /** True when volumes (customer data) are the largest consumer: outside what cleanup may touch */
+  userData: boolean;
+  uncappedLogContainers: number;
+  cleanup: { freedBytes: number; logsTruncatedBytes: number; rotatedLogContainers: number; daemonConfig: DiskCleanupResult['daemonConfig'] };
+}
+
+export function buildDiskBreakdown(r: DiskCleanupResult, now: Date = new Date()): ServerDiskBreakdown {
+  const parts = {
+    images: r.imagesBytes,
+    build_cache: r.buildCacheBytes,
+    containers: r.containersBytes,
+    logs: r.logsBytes,
+    volumes: r.volumesBytes,
+  } as const;
+  const docker = Object.values(parts).reduce((a, b) => a + b, 0);
+  let heldBy: ServerDiskBreakdown['heldBy'] = 'other';
+  if (docker > 0 && (r.usedBytes === 0 || docker * 2 >= r.usedBytes)) {
+    heldBy = (Object.keys(parts) as Array<keyof typeof parts>).reduce((a, b) => (parts[b] > parts[a] ? b : a));
+  }
+  return {
+    measuredAt: now.toISOString(),
+    usedBytes: r.usedBytes,
+    totalBytes: r.totalBytes,
+    imagesBytes: r.imagesBytes,
+    buildCacheBytes: r.buildCacheBytes,
+    containersBytes: r.containersBytes,
+    logsBytes: r.logsBytes,
+    volumesBytes: r.volumesBytes,
+    heldBy,
+    userData: heldBy === 'volumes',
+    uncappedLogContainers: r.uncappedLogContainers,
+    cleanup: {
+      freedBytes: r.freedBytes,
+      logsTruncatedBytes: r.logsTruncatedBytes,
+      rotatedLogContainers: r.rotatedLogContainers,
+      daemonConfig: r.daemonConfig,
+    },
+  };
+}
+
+const NOT_RAN: DiskCleanupResult = {
+  ran: false,
+  freedBytes: 0,
+  logsTruncatedBytes: 0,
+  daemonConfig: 'unknown',
+  volumesBytes: 0,
+  imagesBytes: 0,
+  buildCacheBytes: 0,
+  containersBytes: 0,
+  logsBytes: 0,
+  uncappedLogContainers: 0,
+  rotatedLogContainers: 0,
+  usedBytes: 0,
+  totalBytes: 0,
+};
 
 export function parseDockerSizeToBytes(raw: string): number {
   const match = raw.trim().match(/^([\d.]+)\s*([a-zA-Z]+)?$/);
@@ -98,9 +215,7 @@ export function parseDockerSizeToBytes(raw: string): number {
 
 export function parseDiskCleanupOutput(stdout: string): DiskCleanupResult {
   const line = stdout.split('\n').find((l) => l.startsWith(CLEANUP_MARKER));
-  if (!line) {
-    return { ran: false, freedBytes: 0, logsTruncatedBytes: 0, daemonConfig: 'unknown', volumesBytes: 0 };
-  }
+  if (!line) return { ...NOT_RAN };
   const fields: Record<string, string> = {};
   for (const part of line.slice(CLEANUP_MARKER.length).trim().split(/\s+/)) {
     const eq = part.indexOf('=');
@@ -117,6 +232,14 @@ export function parseDiskCleanupOutput(stdout: string): DiskCleanupResult {
     logsTruncatedBytes: num(fields.logs),
     daemonConfig: daemon === 'created' || daemon === 'present' || daemon === 'skipped' ? daemon : 'unknown',
     volumesBytes: parseDockerSizeToBytes(fields.volumes ?? ''),
+    imagesBytes: parseDockerSizeToBytes(fields.images ?? ''),
+    buildCacheBytes: parseDockerSizeToBytes(fields.buildcache ?? ''),
+    containersBytes: parseDockerSizeToBytes(fields.containers ?? ''),
+    logsBytes: num(fields.logfiles),
+    uncappedLogContainers: num(fields.uncapped),
+    rotatedLogContainers: num(fields.rotated),
+    usedBytes: num(fields.after),
+    totalBytes: num(fields.total),
   };
 }
 
@@ -126,6 +249,6 @@ export async function runServerDiskCleanup(ssh: SSHClient): Promise<DiskCleanupR
     const result = await ssh.exec(buildDiskCleanupScript());
     return parseDiskCleanupOutput(result.stdout ?? '');
   } catch {
-    return { ran: false, freedBytes: 0, logsTruncatedBytes: 0, daemonConfig: 'unknown', volumesBytes: 0 };
+    return { ...NOT_RAN };
   }
 }

@@ -3,6 +3,7 @@ import { db } from '../db';
 import { classifyDeployFailure, type DeployFailureBlame } from '../lib/deploy-failure-classify';
 import { stripFailurePrefix, summarizeDeployFailures } from '../lib/deploy-failure-summary';
 import { scrubSecrets } from '../lib/ops-scrub';
+import type { ServerDiskBreakdown } from '../lib/server-disk-cleanup';
 
 /**
  * Operational signals for the operations agent (pushify-hq). Read-only and platform-wide.
@@ -50,6 +51,25 @@ export interface OpsSignals {
     diskUsedPercent: number | null;
     problem: 'error' | 'setup_failed' | 'disk';
     message: string | null;
+    /**
+     * What holds the disk, from the last scheduled cleanup (managed servers only, null before
+     * the first one): sizes in bytes, the largest consumer, whether that is customer data
+     * (volumes — out of cleanup scope) and how many containers still have an uncapped log.
+     */
+    disk: {
+      measuredAt: string;
+      heldBy: ServerDiskBreakdown['heldBy'];
+      userData: boolean;
+      usedBytes: number;
+      totalBytes: number;
+      imagesBytes: number;
+      buildCacheBytes: number;
+      containersBytes: number;
+      logsBytes: number;
+      volumesBytes: number;
+      uncappedLogContainers: number;
+      lastCleanupFreedBytes: number;
+    } | null;
   }>;
   databases: Array<{ databaseId: string; type: string; status: string; since: string }>;
 }
@@ -161,11 +181,12 @@ export const opsSignalsService = {
          ORDER BY h.down_since ASC LIMIT ${LIST_LIMIT}`),
       rows<{
         serverId: string; managed: boolean; provider: string; status: string; setupStatus: string;
-        diskUsedPercent: number | null; message: string | null;
+        diskUsedPercent: number | null; message: string | null; diskBreakdown: ServerDiskBreakdown | null;
       }>(sql`
         SELECT id AS "serverId", is_managed AS "managed", provider::text AS "provider",
                status::text AS "status", setup_status::text AS "setupStatus",
-               disk_used_percent AS "diskUsedPercent", status_message AS "message"
+               disk_used_percent AS "diskUsedPercent", status_message AS "message",
+               disk_breakdown AS "diskBreakdown"
           FROM servers
          WHERE status <> 'deleting'
            AND (status = 'error'
@@ -233,10 +254,26 @@ export const opsSignalsService = {
             : null,
         };
       }),
-      servers: servers.map((s) => ({
+      servers: servers.map(({ diskBreakdown, ...s }) => ({
         ...s,
         problem: s.status === 'error' ? 'error' : s.setupStatus === 'failed' ? 'setup_failed' : 'disk',
         message: scrubSecrets(s.message),
+        disk: diskBreakdown
+          ? {
+              measuredAt: diskBreakdown.measuredAt,
+              heldBy: diskBreakdown.heldBy,
+              userData: diskBreakdown.userData,
+              usedBytes: diskBreakdown.usedBytes,
+              totalBytes: diskBreakdown.totalBytes,
+              imagesBytes: diskBreakdown.imagesBytes,
+              buildCacheBytes: diskBreakdown.buildCacheBytes,
+              containersBytes: diskBreakdown.containersBytes,
+              logsBytes: diskBreakdown.logsBytes,
+              volumesBytes: diskBreakdown.volumesBytes,
+              uncappedLogContainers: diskBreakdown.uncappedLogContainers,
+              lastCleanupFreedBytes: diskBreakdown.cleanup?.freedBytes ?? 0,
+            }
+          : null,
       })),
       databases,
     };

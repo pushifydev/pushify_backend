@@ -2,14 +2,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 
-const h = vi.hoisted(() => ({ queries: [] as unknown[], downRows: [] as unknown[] }));
+const h = vi.hoisted(() => ({ queries: [] as unknown[], downRows: [] as unknown[], serverRows: [] as unknown[] }));
 
 vi.mock('../db', () => ({
   db: {
     execute: async (query: unknown) => {
       h.queries.push(query);
-      const isDown = JSON.stringify(query).includes('project_health_state');
-      return { rows: isDown ? h.downRows : [] };
+      const text = JSON.stringify(query);
+      if (text.includes('project_health_state')) return { rows: h.downRows };
+      if (text.includes('disk_breakdown')) return { rows: h.serverRows };
+      return { rows: [] };
     },
   },
 }));
@@ -99,5 +101,45 @@ describe('opsSignalsService sitesDown query', () => {
     expect(none.latestDeploy).toBeNull();
     expect(user).not.toHaveProperty('latestStatus');
     expect(user).not.toHaveProperty('latestError');
+  });
+});
+
+describe('opsSignalsService servers disk diagnosis', () => {
+  beforeEach(() => {
+    h.queries = [];
+    h.downRows = [];
+    h.serverRows = [];
+  });
+
+  const base = {
+    serverId: 's1', managed: true, provider: 'hetzner', status: 'running', setupStatus: 'completed',
+    diskUsedPercent: 86, message: null,
+  };
+
+  it('shows what holds a full disk, and whether it is customer data', async () => {
+    h.serverRows = [
+      {
+        ...base,
+        diskBreakdown: {
+          measuredAt: '2026-10-16T00:00:00.000Z', usedBytes: 33e9, totalBytes: 38e9,
+          imagesBytes: 4e9, buildCacheBytes: 0, containersBytes: 1e6, logsBytes: 6e7, volumesBytes: 25e9,
+          heldBy: 'volumes', userData: true, uncappedLogContainers: 3,
+          cleanup: { freedBytes: 1e9, logsTruncatedBytes: 9e8, rotatedLogContainers: 2, daemonConfig: 'present' },
+        },
+      },
+    ];
+    const { servers } = await opsSignalsService.getSignals();
+    expect(servers[0]).toMatchObject({
+      serverId: 's1',
+      problem: 'disk',
+      disk: { heldBy: 'volumes', userData: true, volumesBytes: 25e9, imagesBytes: 4e9, logsBytes: 6e7, uncappedLogContainers: 3, lastCleanupFreedBytes: 1e9 },
+    });
+    expect(servers[0]).not.toHaveProperty('diskBreakdown');
+  });
+
+  it('reports no diagnosis before the first cleanup', async () => {
+    h.serverRows = [{ ...base, diskBreakdown: null }];
+    const { servers } = await opsSignalsService.getSignals();
+    expect(servers[0].disk).toBeNull();
   });
 });
