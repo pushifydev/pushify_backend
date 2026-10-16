@@ -86,6 +86,8 @@ export const projectHealthState = pgTable('project_health_state', {
   notifiedAt: timestamp('notified_at', { withTimezone: true }),
   /** server_unreachable | app_error | deploy_failed — why it is down (null while up) */
   downReason: varchar('down_reason', { length: 32 }),
+  /** user_caused/build_failed | platform — whose problem the outage is (null while up), see classifyDownCause */
+  cause: varchar('cause', { length: 32 }),
   /** Reminders sent for the current outage: 0 none, 1 after 24h, 2 after 72h */
   reminderStep: smallint('reminder_step').default(0).notNull(),
   /** SSH / Docker / ports 80-443 checks from when the app last gave no HTTP answer (null while up) */

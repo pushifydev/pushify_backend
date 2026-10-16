@@ -7,6 +7,8 @@
  * lives in `project_health_state`, so one outage is reported once, and once more when it ends.
  */
 
+import { classifyDeployFailure } from './deploy-failure-classify';
+
 export type HealthStatus = 'up' | 'down' | 'unknown';
 
 export interface HealthState {
@@ -41,6 +43,59 @@ export function classifyDownReason(signals: DownReasonSignals): DownReason {
   // No HTTP answer, but we can still log into the server: the app is hung or not listening.
   if (signals.serverReachable === true) return 'app_error';
   return 'server_unreachable';
+}
+
+/**
+ * Whose problem a down site is, stored on `project_health_state.cause`:
+ * - 'user_caused/build_failed': the latest deployment failed and the failure is the project's own
+ *   (classifyDeployFailure blame 'project': compile error, bad config, repo access…). The owner
+ *   was told once; it is not a platform outage and gets no further reminders.
+ * - 'platform': everything else (Pushify build image, server, network) — stays on the operations list.
+ */
+export type DownCause = 'user_caused/build_failed' | 'platform';
+
+export interface DownCauseSignals {
+  latestDeployStatus?: string | null;
+  latestDeployError?: string | null;
+}
+
+export function classifyDownCause(signals: DownCauseSignals): DownCause {
+  if (signals.latestDeployStatus !== 'failed') return 'platform';
+  return classifyDeployFailure('', signals.latestDeployError ?? '').blame === 'project' ? 'user_caused/build_failed' : 'platform';
+}
+
+export function isUserCaused(cause: string | null | undefined): boolean {
+  return typeof cause === 'string' && cause.startsWith('user_caused');
+}
+
+export interface DeploymentFacts {
+  id?: string | null;
+  status?: string | null;
+  commitHash?: string | null;
+  branch?: string | null;
+  dockerImageId?: string | null;
+  environment?: string | null;
+  trigger?: string | null;
+}
+
+const DIFF_FIELDS = ['commitHash', 'branch', 'dockerImageId', 'environment', 'trigger'] as const;
+
+/**
+ * What changed between the last deployment that worked and the latest one, for the log line of a
+ * platform-side outage: field → [last good, latest]. Empty when there is nothing to compare.
+ */
+export function deploymentDiff(
+  lastGood: DeploymentFacts | null | undefined,
+  latest: DeploymentFacts | null | undefined
+): Record<string, [string | null, string | null]> {
+  if (!lastGood || !latest) return {};
+  const diff: Record<string, [string | null, string | null]> = {};
+  for (const field of DIFF_FIELDS) {
+    const before = lastGood[field] ?? null;
+    const after = latest[field] ?? null;
+    if (before !== after) diff[field] = [before, after];
+  }
+  return diff;
 }
 
 /**

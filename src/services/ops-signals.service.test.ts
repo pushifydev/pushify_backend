@@ -87,17 +87,34 @@ describe('opsSignalsService sitesDown query', () => {
       { ...base, projectId: 'running', downReason: 'app_error', latestStatus: 'running', latestError: null },
       { ...base, projectId: 'none', downReason: undefined, latestStatus: null, latestCreatedAt: null, latestError: null },
     ];
-    const { sitesDown } = await opsSignalsService.getSignals();
-    const [user, platform, running, none] = sitesDown;
-    expect(user.downReason).toBe('deploy_failed');
-    expect(user.latestDeploy).toMatchObject({ status: 'failed', blame: 'project', label: 'Application build failed' });
-    expect(user.latestDeploy?.error).toContain('Failed to compile.');
-    expect(user.latestDeploy?.error).not.toContain('Type error');
-    expect(platform.latestDeploy).toMatchObject({ status: 'failed', blame: 'server' });
+    const { sitesDown, sitesDownUserCaused } = await opsSignalsService.getSignals();
+    // The user-side build failure leaves the platform list and is only counted.
+    expect(sitesDown.map((s) => s.projectId)).toEqual(['platform', 'running', 'none']);
+    expect(sitesDownUserCaused).toEqual({ count: 1, projectIds: ['user'] });
+    const [platform, running, none] = sitesDown;
+    expect(platform.downReason).toBe('deploy_failed');
+    expect(platform.latestDeploy).toMatchObject({ status: 'failed', blame: 'server', label: 'Out of memory' });
+    expect(platform.latestDeploy?.error).toContain('Killed');
     expect(running.latestDeploy).toEqual({ status: 'running', createdAt: base.latestCreatedAt, blame: null, label: null, error: null });
     expect(none.downReason).toBeNull();
     expect(none.latestDeploy).toBeNull();
-    expect(user).not.toHaveProperty('latestStatus');
-    expect(user).not.toHaveProperty('latestError');
+    expect(platform).not.toHaveProperty('latestStatus');
+    expect(platform).not.toHaveProperty('latestError');
+  });
+
+  it('keeps a down site on the platform list when its failed build is the platform\'s (generic Docker build failure)', async () => {
+    h.downRows = [
+      {
+        projectId: 'b1cecd19', downSince: '2026-09-22T22:54:41Z', statusCode: null, error: 'fetch failed', managed: true,
+        serverStatus: 'running', serverLastSeenAt: null, lastSuccessfulDeployAt: null, ownerLastLoginAt: null,
+        downReason: 'deploy_failed', latestStatus: 'failed', latestCreatedAt: '2026-09-22T22:50:00Z',
+        latestError: '[Pushify] Docker build failed: failed to solve: process "/bin/sh -c apt-get install" did not complete',
+      },
+    ];
+    const { sitesDown, sitesDownUserCaused } = await opsSignalsService.getSignals();
+    expect(sitesDownUserCaused.count).toBe(0);
+    expect(sitesDown[0].latestDeploy).toMatchObject({ blame: 'pushify', label: 'Docker build failed' });
+    // The root cause travels with the entry, not just "fetch failed".
+    expect(sitesDown[0].latestDeploy?.error).toContain('failed to solve');
   });
 });
