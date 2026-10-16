@@ -46,6 +46,7 @@ vi.mock('../repositories/deployment-alert.repository', () => ({
 }));
 
 import { appHealthService, probeTcpPort, type Candidate } from './app-health.service';
+import { logger } from '../lib/logger';
 
 let listener: Server;
 let openPort: number;
@@ -209,5 +210,66 @@ describe('appHealthService.checkProject when a down site answers again', () => {
       reminderStep: 0,
     });
     expect(JSON.stringify(h.sendNotifications.mock.calls[0])).toMatch(/answering again/);
+  });
+});
+
+describe('appHealthService.checkProject when the owner\'s own build broke', () => {
+  const failedBuild = { id: 'dep-2', status: 'failed', errorMessage: '[Project] Application build failed: Failed to compile.' };
+
+  it('stores user_caused/build_failed on the monitoring row and sends the first alert', async () => {
+    h.performHealthCheck.mockResolvedValue({ healthy: false, statusCode: 502 });
+    h.selects.push(
+      [{ status: 'up', failCount: 2, downSince: null, notifiedAt: null, reminderStep: 0, downReason: null, cause: null, diagnostics: null }],
+      [{ id: 'srv-1', name: 'web-1', ipv4: '127.0.0.1', sshPrivateKey: 'key', provider: 'hetzner', isManaged: true }],
+      [failedBuild]
+    );
+    await appHealthService.checkProject(candidate, new Date('2026-09-22T23:00:00Z'));
+    const state = h.inserted.find((v) => 'diagnostics' in v)!;
+    expect(state).toMatchObject({ status: 'down', downReason: 'deploy_failed', cause: 'user_caused/build_failed' });
+    expect(h.sendNotifications).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not send the 24h/72h reminders again', async () => {
+    h.performHealthCheck.mockResolvedValue({ healthy: false, statusCode: 502 });
+    const downSince = new Date('2026-09-22T22:54:41Z');
+    h.selects.push(
+      [{ status: 'down', failCount: 500, downSince, notifiedAt: downSince, reminderStep: 0, downReason: 'deploy_failed', cause: 'user_caused/build_failed', diagnostics: null }],
+      [{ id: 'srv-1', name: 'web-1', ipv4: '127.0.0.1', sshPrivateKey: 'key', provider: 'hetzner', isManaged: true }],
+      [failedBuild]
+    );
+    await appHealthService.checkProject(candidate, new Date('2026-09-24T00:00:00Z'));
+    const state = h.inserted.find((v) => 'diagnostics' in v)!;
+    expect(state).toMatchObject({ cause: 'user_caused/build_failed', reminderStep: 1 });
+    expect(h.sendNotifications).not.toHaveBeenCalled();
+    expect(h.adminNotify).not.toHaveBeenCalled();
+  });
+
+  it('clears the cause when the site answers again', async () => {
+    h.performHealthCheck.mockResolvedValue({ healthy: true, statusCode: 200 });
+    h.selects.push([{ status: 'down', failCount: 9, downSince: new Date(), notifiedAt: new Date(), reminderStep: 1, cause: 'user_caused/build_failed' }]);
+    await appHealthService.checkProject(candidate, new Date());
+    expect(h.inserted.find((v) => 'diagnostics' in v)!.cause).toBeNull();
+  });
+});
+
+describe('appHealthService.checkProject when the cause is on the platform side', () => {
+  it('logs what changed since the last successful deployment', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
+    h.performHealthCheck.mockResolvedValue({ healthy: false, statusCode: 502 });
+    h.selects.push(
+      [{ status: 'up', failCount: 2, downSince: null, notifiedAt: null, reminderStep: 0, downReason: null, cause: null, diagnostics: null }],
+      [{ id: 'srv-1', name: 'web-1', ipv4: '127.0.0.1', sshPrivateKey: 'key', provider: 'hetzner', isManaged: true }],
+      [{ id: 'dep-2', status: 'failed', errorMessage: '[Pushify] Docker build failed: failed to solve', commitHash: 'bbb', branch: 'main' }],
+      [{ id: 'dep-1', status: 'running', commitHash: 'aaa', branch: 'main', createdAt: new Date('2026-09-01T00:00:00Z') }]
+    );
+    await appHealthService.checkProject(candidate, new Date('2026-09-22T23:00:00Z'));
+    expect(h.inserted.find((v) => 'diagnostics' in v)!.cause).toBe('platform');
+    const call = warn.mock.calls.find((c) => String(c[1]).startsWith('Platform-side outage'));
+    expect(call?.[0]).toMatchObject({
+      latestDeployment: { id: 'dep-2', error: '[Pushify] Docker build failed: failed to solve' },
+      lastSuccessfulDeployment: { id: 'dep-1' },
+      changedSinceLastSuccess: { commitHash: ['aaa', 'bbb'] },
+    });
+    warn.mockRestore();
   });
 });

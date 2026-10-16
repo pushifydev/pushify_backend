@@ -3,6 +3,7 @@ import { db } from '../db';
 import { classifyDeployFailure, type DeployFailureBlame } from '../lib/deploy-failure-classify';
 import { stripFailurePrefix, summarizeDeployFailures } from '../lib/deploy-failure-summary';
 import { scrubSecrets } from '../lib/ops-scrub';
+import { classifyDownCause, isUserCaused } from '../lib/app-health';
 
 /**
  * Operational signals for the operations agent (pushify-hq). Read-only and platform-wide.
@@ -41,6 +42,12 @@ export interface OpsSignals {
    * identities. Live DNS is not here: it is not stored, the consumer must resolve it itself.
    */
   sitesDown: SiteDown[];
+  /**
+   * Down sites left out of `sitesDown` because the cause is the project's own: its latest build
+   * failed with blame 'project' (classifyDownCause → user_caused/build_failed). Counted, not
+   * listed as platform problems; the owner was alerted once by monitoring.
+   */
+  sitesDownUserCaused: { count: number; projectIds: string[] };
   servers: Array<{
     serverId: string;
     managed: boolean;
@@ -178,6 +185,11 @@ export const opsSignalsService = {
          ORDER BY updated_at DESC LIMIT ${LIST_LIMIT}`),
     ]);
 
+    const userCaused = down.filter((d) =>
+      isUserCaused(classifyDownCause({ latestDeployStatus: d.latestStatus, latestDeployError: d.latestError }))
+    );
+    const platformDown = down.filter((d) => !userCaused.includes(d));
+
     const sinceFailed = sinceRows?.filter((r) => r.status === 'failed') ?? [];
     return {
       generatedAt: new Date().toISOString(),
@@ -214,7 +226,7 @@ export const opsSignalsService = {
           };
         }),
       },
-      sitesDown: down.map(({ managed, latestStatus, latestCreatedAt, latestError, ...d }) => {
+      sitesDown: platformDown.map(({ managed, latestStatus, latestCreatedAt, latestError, ...d }) => {
         const failed = latestStatus === 'failed';
         const classified = failed ? classifyDeployFailure('', latestError ?? '') : null;
         return {
@@ -233,6 +245,7 @@ export const opsSignalsService = {
             : null,
         };
       }),
+      sitesDownUserCaused: { count: userCaused.length, projectIds: userCaused.map((d) => d.projectId) },
       servers: servers.map((s) => ({
         ...s,
         problem: s.status === 'error' ? 'error' : s.setupStatus === 'failed' ? 'setup_failed' : 'disk',

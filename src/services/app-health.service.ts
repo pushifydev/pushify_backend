@@ -13,8 +13,12 @@ import { sendAppDownEmail, sendAppRecoveredEmail } from '../lib/email';
 import { Socket } from 'node:net';
 import {
   buildServerDiagnostics,
+  classifyDownCause,
   classifyDownReason,
   classifyProbeError,
+  deploymentDiff,
+  isUserCaused,
+  type DownCause,
   describeEdgeStatus,
   diagnosticsDue,
   formatDuration,
@@ -111,6 +115,18 @@ export interface Candidate {
   requireOk: boolean;
 }
 
+const deploymentFacts = {
+  id: deployments.id,
+  status: deployments.status,
+  errorMessage: deployments.errorMessage,
+  commitHash: deployments.commitHash,
+  branch: deployments.branch,
+  dockerImageId: deployments.dockerImageId,
+  environment: deployments.environment,
+  trigger: deployments.trigger,
+  createdAt: deployments.createdAt,
+};
+
 function toState(row: typeof projectHealthState.$inferSelect | undefined): HealthState {
   return {
     status: (row?.status as HealthState['status']) ?? 'unknown',
@@ -194,6 +210,7 @@ export const appHealthService = {
     let downReason: DownReason | null = transition.state.status === 'down' ? ((existing?.downReason as DownReason | null) ?? null) : null;
     let diagnostics: ServerDiagnostics | null =
       transition.state.status === 'down' ? ((existing?.diagnostics as ServerDiagnostics | null | undefined) ?? null) : null;
+    let cause: DownCause | null = transition.state.status === 'down' ? ((existing?.cause as DownCause | null) ?? null) : null;
     let server: ServerInfo | null = null;
     const alerting = transition.notify === 'down' || transition.notify === 'reminder';
     // A long outage without any HTTP answer gets its server checks refreshed (hourly), so the
@@ -202,10 +219,13 @@ export const appHealthService = {
     const refresh = transition.state.status === 'down' && noAnswer && diagnosticsDue(diagnostics, now);
     if (alerting || refresh) {
       server = await this.serverInfo(candidate.serverId);
-      const diagnosis = await this.diagnose(candidate, result, server, now);
+      const diagnosis = await this.diagnose(candidate, result, server, now, { logPlatformDiff: alerting || cause !== 'platform' });
       downReason = diagnosis.reason;
       diagnostics = diagnosis.diagnostics;
+      cause = diagnosis.cause;
     }
+    // The owner's own build broke: they got the first alert, reminders would only repeat it.
+    const suppressReminder = transition.notify === 'reminder' && isUserCaused(cause);
 
     const values = {
       projectId: candidate.projectId,
@@ -219,6 +239,7 @@ export const appHealthService = {
       downSince: transition.state.downSince,
       notifiedAt: transition.state.notifiedAt,
       downReason,
+      cause,
       diagnostics,
       reminderStep: transition.state.reminderStep ?? 0,
       lastCheckedAt: now,
@@ -261,7 +282,7 @@ export const appHealthService = {
       })
       .catch(() => {});
 
-    if (transition.notify === 'down' || transition.notify === 'reminder') {
+    if (transition.notify === 'down' || (transition.notify === 'reminder' && !suppressReminder)) {
       await this.announce(candidate, transition.notify, {
         statusCode: result.statusCode,
         error: result.error,
@@ -353,16 +374,21 @@ export const appHealthService = {
     return { ssh: sshDocker.ssh, docker: sshDocker.docker, httpPort, httpsPort };
   },
 
-  /** server_unreachable / app_error / deploy_failed, plus per-check server diagnostics, for the alert and the API. */
+  /**
+   * server_unreachable / app_error / deploy_failed, plus per-check server diagnostics, for the alert
+   * and the API, and whose problem it is (user_caused/build_failed | platform). A platform-side
+   * outage logs what changed since the last deployment that worked.
+   */
   async diagnose(
     candidate: Candidate,
     result: { statusCode?: number; error?: string },
     server: ServerInfo | null,
-    now: Date = new Date()
-  ): Promise<{ reason: DownReason; diagnostics: ServerDiagnostics | null }> {
+    now: Date = new Date(),
+    options: { logPlatformDiff?: boolean } = {}
+  ): Promise<{ reason: DownReason; diagnostics: ServerDiagnostics | null; cause: DownCause }> {
     try {
       const [latest] = await db
-        .select({ status: deployments.status })
+        .select(deploymentFacts)
         .from(deployments)
         .where(eq(deployments.projectId, candidate.projectId))
         .orderBy(desc(deployments.createdAt))
@@ -376,10 +402,32 @@ export const appHealthService = {
         serverReachable: outcomes && outcomes.ssh !== 'skipped' ? outcomes.ssh === 'ok' : undefined,
       });
       const diagnostics = outcomes ? buildServerDiagnostics(outcomes, { managed: !(server?.byos ?? true), now }) : null;
-      return { reason, diagnostics };
+      const cause = classifyDownCause({ latestDeployStatus: latest?.status, latestDeployError: latest?.errorMessage });
+      if (cause === 'platform' && options.logPlatformDiff !== false) {
+        const [lastGood] = await db
+          .select(deploymentFacts)
+          .from(deployments)
+          .where(and(eq(deployments.projectId, candidate.projectId), inArray(deployments.status, ['running', 'stopped'])))
+          .orderBy(desc(deployments.createdAt))
+          .limit(1);
+        logger.warn(
+          {
+            projectId: candidate.projectId,
+            reason,
+            healthError: result.error ?? null,
+            statusCode: result.statusCode ?? null,
+            failedCheck: diagnostics?.failedCheck ?? null,
+            latestDeployment: latest ? { id: latest.id, status: latest.status, error: latest.errorMessage ?? null } : null,
+            lastSuccessfulDeployment: lastGood ? { id: lastGood.id, createdAt: lastGood.createdAt ?? null } : null,
+            changedSinceLastSuccess: deploymentDiff(lastGood, latest),
+          },
+          'Platform-side outage: difference from the last successful deployment'
+        );
+      }
+      return { reason, diagnostics, cause };
     } catch (err) {
       logger.warn({ err, projectId: candidate.projectId }, 'Could not work out why the app is down');
-      return { reason: classifyDownReason({ statusCode: result.statusCode, error: result.error }), diagnostics: null };
+      return { reason: classifyDownReason({ statusCode: result.statusCode, error: result.error }), diagnostics: null, cause: 'platform' };
     }
   },
 

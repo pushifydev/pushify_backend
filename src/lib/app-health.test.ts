@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { classifyDownReason, describeEdgeStatus, dueReminderStep, formatDuration, nextHealthState, type HealthState } from './app-health';
+import {
+  classifyDownCause,
+  classifyDownReason,
+  deploymentDiff,
+  isUserCaused,
+  describeEdgeStatus, dueReminderStep, formatDuration, nextHealthState, type HealthState } from './app-health';
 
 const t = (minutes: number) => new Date(Date.UTC(2026, 8, 22, 12, minutes));
 const state = (overrides: Partial<HealthState> = {}): HealthState => ({
@@ -144,5 +149,48 @@ describe('outage reminders', () => {
     const next = nextHealthState(s, { healthy: false }, 3, at(1));
     expect(next.notify).toBe('down');
     expect(next.state.reminderStep).toBe(0);
+  });
+});
+
+describe('classifyDownCause', () => {
+  it('is user_caused/build_failed when the latest deployment failed on the project\'s own build', () => {
+    const cause = classifyDownCause({
+      latestDeployStatus: 'failed',
+      latestDeployError: '[Project] Application build failed: Failed to compile.',
+    });
+    expect(cause).toBe('user_caused/build_failed');
+    expect(isUserCaused(cause)).toBe(true);
+    expect(classifyDownCause({ latestDeployStatus: 'failed', latestDeployError: 'npm ERR! missing script: build' })).toBe(
+      'user_caused/build_failed'
+    );
+  });
+
+  it('is platform when the failed build is Pushify\'s or the server\'s', () => {
+    expect(classifyDownCause({ latestDeployStatus: 'failed', latestDeployError: 'Docker build failed: failed to solve' })).toBe('platform');
+    expect(classifyDownCause({ latestDeployStatus: 'failed', latestDeployError: 'no space left on device' })).toBe('platform');
+    expect(classifyDownCause({ latestDeployStatus: 'failed', latestDeployError: 'Cannot find native binding' })).toBe('platform');
+  });
+
+  it('is platform when the latest deployment did not fail (the running app went down)', () => {
+    expect(classifyDownCause({ latestDeployStatus: 'running', latestDeployError: null })).toBe('platform');
+    expect(classifyDownCause({})).toBe('platform');
+    expect(isUserCaused('platform')).toBe(false);
+    expect(isUserCaused(null)).toBe(false);
+  });
+});
+
+describe('deploymentDiff', () => {
+  it('lists only the fields that changed since the last successful deployment', () => {
+    expect(
+      deploymentDiff(
+        { commitHash: 'aaa', branch: 'main', dockerImageId: 'sha256:1', environment: 'production', trigger: 'git_push' },
+        { commitHash: 'bbb', branch: 'main', dockerImageId: null, environment: 'production', trigger: 'git_push' }
+      )
+    ).toEqual({ commitHash: ['aaa', 'bbb'], dockerImageId: ['sha256:1', null] });
+  });
+
+  it('is empty when there is nothing to compare', () => {
+    expect(deploymentDiff(null, { commitHash: 'a' })).toEqual({});
+    expect(deploymentDiff({ commitHash: 'a' }, undefined)).toEqual({});
   });
 });
