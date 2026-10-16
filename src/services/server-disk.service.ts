@@ -4,7 +4,7 @@ import { servers } from '../db/schema/servers';
 import { getSSHConnection } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
 import { checkServerDiskSpace } from '../lib/server-disk-check';
-import { runServerDiskCleanup } from '../lib/server-disk-cleanup';
+import { buildDiskBreakdown, runServerDiskCleanup, type ServerDiskBreakdown } from '../lib/server-disk-cleanup';
 import { env } from '../config/env';
 import { organizationRepository } from '../repositories/organization.repository';
 import { deploymentAlertRepository } from '../repositories/deployment-alert.repository';
@@ -57,6 +57,7 @@ export const serverDiskService = {
         // and old build cache (never volumes — those are customer data), then judge the disk
         // on what is left.
         let dataBytes: number | undefined;
+        let breakdown: ServerDiskBreakdown | undefined;
         if (server.isManaged && result.measured && result.usedPercent >= CLEANUP_PERCENT) {
           const cleanup = await runServerDiskCleanup(ssh);
           cleaned++;
@@ -68,6 +69,11 @@ export const serverDiskService = {
               freedBytes: cleanup.freedBytes,
               logsTruncatedBytes: cleanup.logsTruncatedBytes,
               volumesBytes: cleanup.volumesBytes,
+              imagesBytes: cleanup.imagesBytes,
+              buildCacheBytes: cleanup.buildCacheBytes,
+              logsBytes: cleanup.logsBytes,
+              uncappedLogContainers: cleanup.uncappedLogContainers,
+              rotatedLogContainers: cleanup.rotatedLogContainers,
               daemonConfig: cleanup.daemonConfig,
             },
             'Server disk cleanup finished'
@@ -75,6 +81,7 @@ export const serverDiskService = {
           if (cleanup.ran) {
             result = await checkServerDiskSpace(ssh);
             dataBytes = cleanup.volumesBytes;
+            breakdown = buildDiskBreakdown(cleanup, now);
           }
         }
 
@@ -82,6 +89,7 @@ export const serverDiskService = {
           diskUsedPercent: result.usedPercent,
           diskCheckedAt: now,
         };
+        if (breakdown) values.diskBreakdown = breakdown;
 
         if (result.warn) {
           const due =

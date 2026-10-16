@@ -23,10 +23,15 @@ vi.mock('../lib/server-disk-check', () => ({
     return { usedPercent, availGb: 5, mount: '/', measured: true, warn: usedPercent >= 85, critical: usedPercent >= 95, ok: true, message: '' };
   },
 }));
-vi.mock('../lib/server-disk-cleanup', () => ({
+vi.mock('../lib/server-disk-cleanup', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/server-disk-cleanup')>()),
   runServerDiskCleanup: async () => {
     h.cleanupCalls++;
-    return { ran: true, freedBytes: 7e9, logsTruncatedBytes: 6e9, daemonConfig: 'created', volumesBytes: 20e9 };
+    return {
+      ran: true, freedBytes: 7e9, logsTruncatedBytes: 6e9, daemonConfig: 'created', volumesBytes: 20e9,
+      imagesBytes: 3e9, buildCacheBytes: 0, containersBytes: 0, logsBytes: 1e8,
+      uncappedLogContainers: 4, rotatedLogContainers: 2, usedBytes: 30e9, totalBytes: 38e9,
+    };
   },
 }));
 vi.mock('../lib/email', () => ({ sendServerDiskEmail: async (_to: string, d: Record<string, unknown>) => { h.emails.push(d); } }));
@@ -61,6 +66,29 @@ describe('serverDiskService.checkAll cleanup', () => {
     );
     expect(h.updates[0]).toMatchObject({ diskUsedPercent: 72 });
     expect(h.emails).toHaveLength(0);
+  });
+
+  it('records what holds the disk on the server, labelled as user data when volumes dominate', async () => {
+    h.rows = [server()];
+    h.disk = [86, 86];
+    await serverDiskService.checkAll(new Date('2026-10-15T00:00:00Z'));
+    expect(h.updates[0].diskBreakdown).toMatchObject({
+      measuredAt: '2026-10-15T00:00:00.000Z',
+      heldBy: 'volumes',
+      userData: true,
+      volumesBytes: 20e9,
+      imagesBytes: 3e9,
+      logsBytes: 1e8,
+      uncappedLogContainers: 4,
+      cleanup: { freedBytes: 7e9, rotatedLogContainers: 2 },
+    });
+  });
+
+  it('does not overwrite the breakdown when no cleanup ran', async () => {
+    h.rows = [server()];
+    h.disk = [50];
+    await serverDiskService.checkAll();
+    expect(h.updates[0]).not.toHaveProperty('diskBreakdown');
   });
 
   it('when cleanup is not enough, tells the customer it is their data and to resize', async () => {

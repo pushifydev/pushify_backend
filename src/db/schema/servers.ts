@@ -12,6 +12,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 import { organizations } from './organizations';
+import type { ServerDiskBreakdown } from '../../lib/server-disk-cleanup';
 
 // Enums
 export const serverStatusEnum = pgEnum('server_status', [
@@ -117,6 +118,12 @@ export const servers = pgTable('servers', {
   diskUsedPercent: integer('disk_used_percent'),
   diskCheckedAt: timestamp('disk_checked_at', { withTimezone: true }),
   diskNotifiedAt: timestamp('disk_notified_at', { withTimezone: true }),
+  /**
+   * What holds the disk (images / build cache / logs / volumes …), written by the scheduled
+   * cleanup on managed servers. `userData: true` means volumes — customer data the cleanup
+   * never touches — are the largest consumer.
+   */
+  diskBreakdown: jsonb('disk_breakdown').$type<ServerDiskBreakdown>(),
 });
 
 // Server Snapshots Table
