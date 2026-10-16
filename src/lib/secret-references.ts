@@ -6,13 +6,13 @@
  * reference is what Pushify stores; the real value is fetched at deploy time, handed to the
  * container and never written back to the database.
  *
- * Infisical (`{{infisical.KEY}}`) and Doppler (`{{doppler.KEY}}`) are supported. Further
- * providers (e.g. Vault) plug in with the same syntax.
+ * Infisical (`{{infisical.KEY}}`), Doppler (`{{doppler.KEY}}`) and HashiCorp Vault KV v2
+ * (`{{vault.KEY}}`) are supported. Further providers plug in with the same syntax.
  */
 
-export type SecretProvider = 'infisical' | 'doppler';
+export type SecretProvider = 'infisical' | 'doppler' | 'vault';
 
-export const SUPPORTED_SECRET_PROVIDERS: readonly SecretProvider[] = ['infisical', 'doppler'];
+export const SUPPORTED_SECRET_PROVIDERS: readonly SecretProvider[] = ['infisical', 'doppler', 'vault'];
 
 /** Secret names as the providers accept them: letters, digits, `_`, `-` and `.`. */
 const KEY = '[A-Za-z0-9_][A-Za-z0-9_.-]*';
@@ -126,5 +126,6 @@ export async function resolveSecretReferences(
 export function providerLabel(provider: SecretProvider): string {
   if (provider === 'infisical') return 'Infisical';
   if (provider === 'doppler') return 'Doppler';
+  if (provider === 'vault') return 'Vault';
   return provider;
 }

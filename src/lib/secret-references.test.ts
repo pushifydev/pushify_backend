@@ -22,7 +22,7 @@ describe('findSecretReferences', () => {
   });
 
   it('ignores unknown providers and template-looking text', () => {
-    expect(hasSecretReferences({ A: '{{vault.X}}', B: '{{ .Values.x }}', C: '${FOO}', D: '' })).toBe(false);
+    expect(hasSecretReferences({ A: '{{aws.X}}', B: '{{ .Values.x }}', C: '${FOO}', D: '' })).toBe(false);
   });
 });
 
@@ -90,6 +90,28 @@ describe('resolveSecretReferences', () => {
     const load = vi.fn().mockRejectedValue(new Error('Doppler rejected the token (HTTP 401)'));
     await expect(resolveSecretReferences({ A: '{{doppler.A}}' }, load)).rejects.toThrow(
       'Could not load secrets from Doppler for A: Doppler rejected the token (HTTP 401)'
+    );
+  });
+
+  it('resolves Vault references and masks their values', async () => {
+    const load = vi.fn(async (provider: string): Promise<Record<string, string>> =>
+      provider === 'vault' ? { DB_PASSWORD: 'vault-pw-123' } : {}
+    );
+    const result = await resolveSecretReferences(
+      { DATABASE_URL: 'pg://u:{{ vault.DB_PASSWORD }}@db/app', NODE_ENV: 'production' },
+      load
+    );
+    expect(load).toHaveBeenCalledWith('vault');
+    expect(result.envVars.DATABASE_URL).toBe('pg://u:vault-pw-123@db/app');
+    const masker = createLogMasker({});
+    masker.addSecrets(result.resolvedValues);
+    expect(masker.mask('pw=vault-pw-123')).not.toContain('vault-pw-123');
+  });
+
+  it('fails clearly when Vault cannot be reached', async () => {
+    const load = vi.fn().mockRejectedValue(new Error('Vault could not be reached'));
+    await expect(resolveSecretReferences({ A: '{{vault.A}}' }, load)).rejects.toThrow(
+      'Could not load secrets from Vault for A: Vault could not be reached'
     );
   });
 

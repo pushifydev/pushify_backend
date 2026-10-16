@@ -4,14 +4,18 @@ import { organizations } from './organizations';
 import { projects } from './projects';
 
 /**
- * A connection to an external secret manager (Infisical or Doppler). Organization-wide when
+ * A connection to an external secret manager (Infisical, Doppler or HashiCorp Vault KV v2). Organization-wide when
  * `project_id` is null, or for one project — a project connection wins over the organization's.
- * Env values reference it as `{{infisical.KEY}}` / `{{doppler.KEY}}`; the secrets themselves are
+ * Env values reference it as `{{infisical.KEY}}` / `{{doppler.KEY}}` / `{{vault.KEY}}`; the secrets themselves are
  * fetched at deploy time and never stored here or anywhere else in the database.
  *
  * Doppler rows reuse the columns: `client_secret_encrypted` holds the encrypted Doppler token,
  * `workspace_id` the Doppler project, `environment` the config; `site_url` is the Doppler API,
  * `client_id` is empty and `secret_path` is `/`.
+ *
+ * Vault rows likewise: `site_url` is the Vault address, `client_secret_encrypted` the encrypted
+ * Vault token, `workspace_id` the KV v2 mount, `secret_path` the secret's path inside the mount,
+ * `client_id` the (optional) namespace and `environment` is empty.
  */
 export const secretProviderConnections = pgTable(
   'secret_provider_connections',
@@ -21,7 +25,7 @@ export const secretProviderConnections = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: 'cascade' }),
     projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
-    /** `infisical` | `doppler` */
+    /** `infisical` | `doppler` | `vault` */
     provider: varchar('provider', { length: 30 }).notNull(),
     siteUrl: varchar('site_url', { length: 500 }).notNull(),
     /** Machine identity (Universal Auth) client id */
