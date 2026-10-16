@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest';
+import { gzipSync } from 'zlib';
 import {
   appendLog,
+  buildMysqlImportCommand,
   buildPgRestoreCommand,
   createImportJobStore,
   DatabaseImportError,
+  detectMysqlDumpFormat,
   detectPgDumpFormat,
   MAX_IMPORT_BYTES,
   type ImportJob,
@@ -64,6 +67,54 @@ describe('buildPgRestoreCommand', () => {
   it('quotes every value', () => {
     const cmd = buildPgRestoreCommand("c'; rm -rf /", 'u', 'd', '/x/j.dump');
     expect(cmd).toContain("'c'\\''; rm -rf /'");
+  });
+});
+
+const mysqldump = '-- MySQL dump 10.13  Distrib 8.0.36\n/*!40101 SET NAMES utf8mb4 */;\nDROP TABLE IF EXISTS `users`;\nCREATE TABLE `users` (id int);\n';
+
+describe('detectMysqlDumpFormat', () => {
+  it('recognises plain mysqldump / mariadb-dump output', () => {
+    expect(detectMysqlDumpFormat(bytes(mysqldump))).toBe('sql');
+    expect(detectMysqlDumpFormat(bytes('-- MariaDB dump 10.19  Distrib 10.11.6-MariaDB\n'))).toBe('sql');
+    expect(detectMysqlDumpFormat(bytes('CREATE TABLE t (id int);\nINSERT INTO t VALUES (1);'))).toBe('sql');
+  });
+
+  it('recognises gzip-compressed dumps, also large ones (only the start is inflated)', () => {
+    expect(detectMysqlDumpFormat(new Uint8Array(gzipSync(mysqldump)))).toBe('sql.gz');
+    const big = mysqldump + 'INSERT INTO `users` VALUES (1);\n'.repeat(200_000);
+    expect(detectMysqlDumpFormat(new Uint8Array(gzipSync(big)))).toBe('sql.gz');
+  });
+
+  it('refuses PostgreSQL dumps, broken gzip, binaries, empty and oversized files', () => {
+    expect(code(() => detectMysqlDumpFormat(bytes('PGDMP\x01\x0e\x00rest')))).toBe('NOT_A_DUMP');
+    expect(code(() => detectMysqlDumpFormat(bytes('--\n-- PostgreSQL database dump\n--\nSET x = 0;')))).toBe('NOT_A_DUMP');
+    expect(code(() => detectMysqlDumpFormat(bytes('\x1f\x8bnot really gzip')))).toBe('NOT_A_DUMP');
+    expect(code(() => detectMysqlDumpFormat(bytes('\x89PNG\r\n\x1a\n')))).toBe('NOT_A_DUMP');
+    expect(code(() => detectMysqlDumpFormat(bytes('-- looks like sql\x00\x00binary')))).toBe('NOT_A_DUMP');
+    expect(code(() => detectMysqlDumpFormat(new Uint8Array()))).toBe('EMPTY');
+    expect(code(() => detectMysqlDumpFormat(new Uint8Array(MAX_IMPORT_BYTES + 1)))).toBe('TOO_LARGE');
+  });
+});
+
+describe('buildMysqlImportCommand', () => {
+  it('streams a plain dump into the mysql client and removes the file whatever happens', () => {
+    const cmd = buildMysqlImportCommand('pushify-db-main', 'user_main', 's3cret', 'main', '/x/j1.sql', 'sql');
+    expect(cmd).toBe(
+      "docker exec -i -e MYSQL_PWD='s3cret' 'pushify-db-main' mysql --show-warnings -u 'user_main' 'main' < '/x/j1.sql' 2>&1; " +
+        "rc=$?; rm -f '/x/j1.sql'; exit $rc",
+    );
+    expect(cmd).not.toContain('--force');
+  });
+
+  it('checks a .sql.gz whole before importing it', () => {
+    const cmd = buildMysqlImportCommand('c', 'u', 'p', 'd', '/x/j1.sql.gz', 'sql.gz');
+    expect(cmd).toMatch(/^gunzip -t '\/x\/j1.sql.gz' 2>&1 && gunzip -c '\/x\/j1.sql.gz' \| docker exec -i /);
+    expect(cmd).toMatch(/rm -f '\/x\/j1.sql.gz'; exit \$rc$/);
+  });
+
+  it('quotes every value, the password included', () => {
+    const cmd = buildMysqlImportCommand('c', 'u', "p'; rm -rf /", 'd', '/x/j.sql', 'sql');
+    expect(cmd).toContain("MYSQL_PWD='p'\\''; rm -rf /'");
   });
 });
 

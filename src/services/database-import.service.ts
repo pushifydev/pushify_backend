@@ -11,10 +11,13 @@ import { servers } from '../db/schema/servers';
 import { getOptionalRedis } from '../lib/redis-client';
 import {
   appendLog,
+  buildMysqlImportCommand,
   buildPgRestoreCommand,
   createImportJobStore,
   DatabaseImportError,
+  detectMysqlDumpFormat,
   detectPgDumpFormat,
+  type DumpFormat,
   type ImportJob,
   type ImportJobStore,
 } from '../lib/database-import';
@@ -25,17 +28,22 @@ function jobStore(): ImportJobStore {
   return store;
 }
 
-/** How often streamed pg_restore output is written to the job while it runs. */
+/** How often streamed restore output is written to the job while it runs. */
 const LOG_FLUSH_MS = 2000;
 
 function importDir(databaseName: string): string {
   return `/opt/pushify/databases/${databaseName}/imports`;
 }
 
+/** File extension on the server for each dump format. */
+function importExtension(format: DumpFormat): string {
+  return format === 'sql' ? 'sql' : format === 'sql.gz' ? 'sql.gz' : 'dump';
+}
+
 /**
- * Import an uploaded pg_dump archive into a managed PostgreSQL database. Owner/admin only, as
- * restoring a backup. Returns a job right away; the restore runs in the background and its
- * status and pg_restore log are read with `getImport`.
+ * Import an uploaded dump into a managed database: a pg_dump archive into PostgreSQL, or a
+ * `.sql` / `.sql.gz` into MySQL. Owner/admin only, as restoring a backup. Returns a job right
+ * away; the restore runs in the background and its status and log are read with `getImport`.
  */
 export const databaseImportService = {
   async startImport(
@@ -52,8 +60,13 @@ export const databaseImportService = {
     if (!database || database.organizationId !== organizationId) {
       throw new HTTPException(404, { message: t(locale, 'databases', 'notFound') });
     }
-    if (database.type !== 'postgresql') {
-      throw new HTTPException(400, { message: 'Dump import is only available for PostgreSQL databases for now' });
+    if (database.type !== 'postgresql' && database.type !== 'mysql') {
+      throw new HTTPException(400, { message: 'Dump import is only available for PostgreSQL and MySQL databases' });
+    }
+    if (database.type === 'mysql' && opts.clean) {
+      throw new HTTPException(400, {
+        message: '`clean` is only supported for PostgreSQL; mysqldump output already drops and recreates its tables',
+      });
     }
     if (database.status !== 'running') {
       throw new HTTPException(400, { message: t(locale, 'databases', 'databaseMustBeRunning') });
@@ -62,9 +75,9 @@ export const databaseImportService = {
       throw new HTTPException(400, { message: t(locale, 'databases', 'invalidContainer') });
     }
 
-    let format;
+    let format: DumpFormat;
     try {
-      format = detectPgDumpFormat(file.bytes);
+      format = database.type === 'mysql' ? detectMysqlDumpFormat(file.bytes) : detectPgDumpFormat(file.bytes);
     } catch (err) {
       if (err instanceof DatabaseImportError) {
         throw new HTTPException(err.code === 'TOO_LARGE' ? 413 : 400, { message: err.message, cause: err.code });
@@ -99,8 +112,10 @@ export const databaseImportService = {
 
     this.runImport(job, {
       server: { ipv4: server.ipv4, sshPrivateKey: server.sshPrivateKey },
+      type: database.type,
       containerName: database.containerName,
       username: database.username,
+      password: database.password,
       databaseName: database.databaseName,
       bytes: file.bytes,
     }).catch((error) => logger.error({ error, databaseId, jobId: job.id }, 'Database import crashed'));
@@ -123,13 +138,16 @@ export const databaseImportService = {
     return job;
   },
 
-  /** Internal: copy the archive to the server and pg_restore it. Never throws. */
+  /** Internal: copy the dump to the server and restore it with the engine's tool. Never throws. */
   async runImport(
     job: ImportJob,
     target: {
       server: { ipv4: string; sshPrivateKey: string };
+      type: 'postgresql' | 'mysql';
       containerName: string;
       username: string;
+      /** Encrypted, as stored on the database row. */
+      password: string;
       databaseName: string;
       bytes: Uint8Array;
     },
@@ -147,7 +165,7 @@ export const databaseImportService = {
       await ssh.connect({ host: target.server.ipv4, username: 'root', privateKey: decrypt(target.server.sshPrivateKey) });
 
       const dir = importDir(target.databaseName);
-      const hostPath = `${dir}/${job.id}.dump`;
+      const hostPath = `${dir}/${job.id}.${importExtension(job.format)}`;
       await ssh.mkdir(dir);
       await ssh.uploadFile(Buffer.from(target.bytes), hostPath);
       job.log = appendLog(job.log, `Uploaded ${job.fileName} (${job.sizeBytes} bytes, ${job.format} format)\n`);
@@ -155,9 +173,19 @@ export const databaseImportService = {
       job.status = 'restoring';
       await flush(true);
 
-      const cmd = buildPgRestoreCommand(target.containerName, target.username, target.databaseName, hostPath, {
-        clean: job.clean,
-      });
+      const isMysql = target.type === 'mysql';
+      const cmd = isMysql
+        ? buildMysqlImportCommand(
+            target.containerName,
+            target.username,
+            decrypt(target.password),
+            target.databaseName,
+            hostPath,
+            job.format as 'sql' | 'sql.gz',
+          )
+        : buildPgRestoreCommand(target.containerName, target.username, target.databaseName, hostPath, {
+            clean: job.clean,
+          });
       const onOutput = (chunk: string) => {
         job.log = appendLog(job.log, chunk);
         void flush();
@@ -166,7 +194,9 @@ export const databaseImportService = {
 
       if (code !== 0) {
         job.status = 'failed';
-        job.error = 'pg_restore failed; the import was rolled back and the database was left unchanged. See the log.';
+        job.error = isMysql
+          ? 'mysql stopped at the first error. MySQL cannot roll back schema changes, so statements before the error may already be applied. See the log.'
+          : 'pg_restore failed; the import was rolled back and the database was left unchanged. See the log.';
       } else {
         job.status = 'completed';
       }

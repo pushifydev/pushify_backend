@@ -36,7 +36,9 @@ vi.mock('../utils/ssh', () => ({
   },
 }));
 
+import { gzipSync } from 'zlib';
 import { databaseImportService } from './database-import.service';
+import { MAX_IMPORT_BYTES } from '../lib/database-import';
 
 const dump = () => new Uint8Array(Buffer.from('PGDMP\x01\x0e\x00 archive body', 'latin1'));
 
@@ -69,6 +71,7 @@ describe('databaseImportService', () => {
       serverId: 'srv-1',
       containerName: 'pushify-db-main',
       username: 'user_main',
+      password: 'enc-pass',
       databaseName: 'main',
     };
     h.execCode = 0;
@@ -119,11 +122,60 @@ describe('databaseImportService', () => {
     expect(h.uploads).toEqual([]);
   });
 
-  it('only PostgreSQL databases of the caller organization', async () => {
-    h.database = { ...h.database!, type: 'mysql' };
-    expect(await status(databaseImportService.startImport('db-1', 'org-1', 'user-1', { name: 'x.dump', bytes: dump() }, {}, 'en'))).toBe(400);
+  it('only PostgreSQL and MySQL databases of the caller organization', async () => {
+    for (const type of ['redis', 'mongodb']) {
+      h.database = { ...h.database!, type };
+      expect(await status(databaseImportService.startImport('db-1', 'org-1', 'user-1', { name: 'x.dump', bytes: dump() }, {}, 'en'))).toBe(400);
+    }
     h.database = { ...h.database!, type: 'postgresql', organizationId: 'org-2' };
     expect(await status(databaseImportService.startImport('db-1', 'org-1', 'user-1', { name: 'x.dump', bytes: dump() }, {}, 'en'))).toBe(404);
+  });
+
+  describe('MySQL', () => {
+    const sql = (s = '-- MySQL dump 10.13\nCREATE TABLE `users` (id int);\n') => new Uint8Array(Buffer.from(s));
+
+    beforeEach(() => {
+      h.database = { ...h.database!, type: 'mysql' };
+      h.execOutput = '';
+    });
+
+    it('imports a .sql with the mysql client through the same endpoint', async () => {
+      const job = await databaseImportService.startImport('db-1', 'org-1', 'user-1', { name: 'prod.sql', bytes: sql() }, {}, 'en');
+      expect(job.format).toBe('sql');
+      const done = await finished(job.id);
+      expect(done.status).toBe('completed');
+      expect(h.uploads).toEqual([`/opt/pushify/databases/main/imports/${job.id}.sql`]);
+      expect(h.commands[0]).toContain("docker exec -i -e MYSQL_PWD='enc-pass' 'pushify-db-main' mysql");
+      expect(h.commands[0]).not.toContain('pg_restore');
+    });
+
+    it('imports a .sql.gz', async () => {
+      const gz = new Uint8Array(gzipSync(sql()));
+      const job = await databaseImportService.startImport('db-1', 'org-1', 'user-1', { name: 'prod.sql.gz', bytes: gz }, {}, 'en');
+      expect(job.format).toBe('sql.gz');
+      await finished(job.id);
+      expect(h.uploads).toEqual([`/opt/pushify/databases/main/imports/${job.id}.sql.gz`]);
+      expect(h.commands[0]).toMatch(/^gunzip -t /);
+    });
+
+    it('a failing dump ends as failed with an error that does not promise a rollback', async () => {
+      h.execCode = 1;
+      h.execOutput = "ERROR 1050 (42S01) at line 2: Table 'users' already exists\n";
+      const job = await databaseImportService.startImport('db-1', 'org-1', 'user-1', { name: 'bad.sql', bytes: sql() }, {}, 'en');
+      const done = await finished(job.id);
+      expect(done.status).toBe('failed');
+      expect(done.error).toMatch(/stopped at the first error/);
+      expect(done.error).not.toMatch(/rolled back/);
+      expect(done.log).toContain('already exists');
+    });
+
+    it('refuses pg_dump archives, oversized files and `clean` before touching the server', async () => {
+      expect(await status(databaseImportService.startImport('db-1', 'org-1', 'user-1', { name: 'x.dump', bytes: dump() }, {}, 'en'))).toBe(400);
+      expect(await status(databaseImportService.startImport('db-1', 'org-1', 'user-1', { name: 'x.sql', bytes: sql() }, { clean: true }, 'en'))).toBe(400);
+      const big = new Uint8Array(MAX_IMPORT_BYTES + 1);
+      expect(await status(databaseImportService.startImport('db-1', 'org-1', 'user-1', { name: 'x.sql', bytes: big }, {}, 'en'))).toBe(413);
+      expect(h.uploads).toEqual([]);
+    });
   });
 
   it('does not show another database’s import', async () => {

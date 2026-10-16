@@ -325,10 +325,11 @@ databasesRouter.get('/:id/backups/:backupId/download', requireScope('databases:r
   });
 });
 
-// ============ Dump import (PostgreSQL) ============
+// ============ Dump import (PostgreSQL, MySQL) ============
 
-// Import an uploaded pg_dump archive (multipart: `file`, optional `clean=true`). Owner/admin.
-// Returns a job; poll GET /:id/imports/:jobId for status and the pg_restore log.
+// Import an uploaded dump (multipart: `file`, optional `clean=true` for PostgreSQL). Owner/admin.
+// PostgreSQL takes a pg_dump archive (-Fc/-Ft), MySQL a .sql or .sql.gz. Returns a job; poll
+// GET /:id/imports/:jobId for status and the restore log.
 databasesRouter.post('/:id/imports', requireScope('databases:write'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
@@ -344,7 +345,7 @@ databasesRouter.post('/:id/imports', requireScope('databases:write'), async (c) 
   const body = await c.req.parseBody();
   const file = body.file;
   if (!(file instanceof File)) {
-    throw new HTTPException(400, { message: 'Upload the pg_dump archive in the `file` field' });
+    throw new HTTPException(400, { message: 'Upload the dump in the `file` field' });
   }
   if (file.size > MAX_IMPORT_BYTES) {
     throw new HTTPException(413, { message: `A dump can be at most ${MAX_IMPORT_BYTES / 1024 / 1024} MB` });
