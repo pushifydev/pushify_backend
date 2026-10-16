@@ -19,6 +19,14 @@ import {
   type DopplerConnection,
 } from '../lib/doppler';
 import {
+  fetchVaultSecrets,
+  normalizeVaultAddress,
+  normalizeVaultSegment,
+  validateVaultConnection,
+  VAULT_DEFAULT_MOUNT,
+  type VaultConnection,
+} from '../lib/vault';
+import {
   hasSecretReferences,
   providerLabel,
   resolveSecretReferences,
@@ -51,12 +59,22 @@ export interface PublicSecretProviderConnection {
   /** Doppler only: project and config slugs (same values as workspaceId / environment) */
   project?: string;
   config?: string;
+  /** Vault only: address, KV v2 mount, secret path and namespace (see db/schema/secret-providers.ts) */
+  address?: string;
+  mount?: string;
+  path?: string;
+  namespace?: string;
 }
 
 function toPublic(row: ConnectionRow): PublicSecretProviderConnection {
   const doppler = row.provider === 'doppler' ? { project: row.workspaceId, config: row.environment } : {};
+  const vault =
+    row.provider === 'vault'
+      ? { address: row.siteUrl, mount: row.workspaceId, path: row.secretPath, namespace: row.clientId }
+      : {};
   return {
     ...doppler,
+    ...vault,
     id: row.id,
     provider: row.provider,
     projectId: row.projectId,
@@ -110,6 +128,14 @@ export interface SecretProviderInput {
   project?: string;
   /** Doppler config slug */
   config?: string;
+  /** Vault address, e.g. https://vault.example.com:8200 */
+  address?: string;
+  /** Vault KV v2 mount (default `secret`) */
+  mount?: string;
+  /** Vault secret path inside the mount */
+  path?: string;
+  /** Vault Enterprise / HCP namespace */
+  namespace?: string;
 }
 
 /**
@@ -119,7 +145,8 @@ export interface SecretProviderInput {
  */
 export type DeployConnection =
   | ({ provider: 'infisical'; id: string } & InfisicalConnection)
-  | ({ provider: 'doppler'; id: string } & DopplerConnection);
+  | ({ provider: 'doppler'; id: string } & DopplerConnection)
+  | ({ provider: 'vault'; id: string } & VaultConnection);
 
 type StoredValues = Pick<
   ConnectionRow,
@@ -137,6 +164,18 @@ function storedValues(provider: SecretProvider, input: SecretProviderInput): Sto
       workspaceId: input.project!.trim(),
       environment: input.config!.trim(),
       secretPath: '/',
+    };
+  }
+  if (provider === 'vault') {
+    const problem = validateVaultConnection(input);
+    if (problem) throw new HTTPException(400, { message: problem });
+    return {
+      siteUrl: normalizeVaultAddress(input.address),
+      clientId: normalizeVaultSegment(input.namespace),
+      clientSecretEncrypted: encrypt(input.token!.trim()),
+      workspaceId: normalizeVaultSegment(input.mount) || VAULT_DEFAULT_MOUNT,
+      environment: '',
+      secretPath: normalizeVaultSegment(input.path),
     };
   }
   const problem = validateInfisicalConnection(input);
@@ -246,7 +285,7 @@ export const secretProviderService = {
       clientSecret = decrypt(row.clientSecretEncrypted);
     } catch {
       const label = providerLabel(provider);
-      const what = provider === 'doppler' ? 'token' : 'client secret';
+      const what = provider === 'infisical' ? 'client secret' : 'token';
       throw new Error(`the stored ${label} ${what} could not be decrypted — reconnect ${label}`);
     }
     if (provider === 'doppler') {
@@ -256,6 +295,17 @@ export const secretProviderService = {
         token: clientSecret,
         project: row.workspaceId,
         config: row.environment,
+      };
+    }
+    if (provider === 'vault') {
+      return {
+        provider: 'vault',
+        id: row.id,
+        address: row.siteUrl,
+        token: clientSecret,
+        mount: row.workspaceId,
+        path: row.secretPath,
+        namespace: row.clientId,
       };
     }
     return {
@@ -271,7 +321,8 @@ export const secretProviderService = {
   },
 
   /**
-   * Replace `{{infisical.KEY}}` references in a deploy's env with the values from Infisical.
+   * Replace `{{infisical.KEY}}` / `{{doppler.KEY}}` / `{{vault.KEY}}` references in a deploy's
+   * env with the values from the connected secret manager.
    * The result lives only in the deploy worker's memory and the container's environment —
    * nothing is written back. Throws SecretReferenceError (a readable message, no values) when
    * a reference cannot be resolved, which fails the deploy.
@@ -291,9 +342,9 @@ export const secretProviderService = {
         throw new Error(`no ${providerLabel(provider)} connection is set up for this project or organization`);
       }
       usedConnections.push(connection.id);
-      return connection.provider === 'doppler'
-        ? fetchDopplerSecrets(connection)
-        : fetchInfisicalSecrets(connection);
+      if (connection.provider === 'doppler') return fetchDopplerSecrets(connection);
+      if (connection.provider === 'vault') return fetchVaultSecrets(connection);
+      return fetchInfisicalSecrets(connection);
     });
     for (const id of usedConnections) {
       db.update(secretProviderConnections)

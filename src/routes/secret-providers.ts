@@ -5,8 +5,8 @@ import { authMiddleware } from '../middleware/auth';
 import type { AppEnv } from '../types';
 
 /**
- * External secret manager connections (Infisical) for the organization or one of its projects.
- * The client secret is write-only: it goes in on create and is never returned.
+ * External secret manager connections (Infisical, Doppler, Vault) for the organization or one of its projects.
+ * The client secret / token is write-only: it goes in on create and is never returned.
  */
 const secretProviderRouter = new Hono<AppEnv>();
 
