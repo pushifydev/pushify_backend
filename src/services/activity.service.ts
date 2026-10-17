@@ -5,7 +5,7 @@ import { projects } from '../db/schema/projects';
 import { eq, desc, and, inArray, sql } from 'drizzle-orm';
 import { logger } from '../lib/logger';
 import { normalizeClientIp } from '../lib/utils';
-import { sanitizeChanges, type AuditChanges, type AuditSource } from '../lib/audit';
+import { currentAuditApiKey, sanitizeChanges, type AuditChanges, type AuditSource } from '../lib/audit';
 
 export interface ActivityLogInput {
   organizationId: string;
@@ -26,6 +26,8 @@ export interface ActivityLogFilters {
   projectId?: string;
   userId?: string;
   actions?: ActivityAction[];
+  /** Only entries from these sources (ui | api | webhook | system) */
+  sources?: AuditSource[];
   limit?: number;
   offset?: number;
 }
@@ -61,13 +63,20 @@ class ActivityService {
    */
   async log(input: ActivityLogInput): Promise<void> {
     try {
+      // API key callers: name the key that acted (id + name only, never the secret).
+      const metadata: Record<string, unknown> = { ...(input.metadata || {}) };
+      const apiKey = input.source === 'api' ? currentAuditApiKey() : undefined;
+      if (apiKey && metadata.apiKey === undefined) {
+        metadata.apiKey = { id: apiKey.id, name: apiKey.name };
+      }
+
       await db.insert(activityLogs).values({
         organizationId: input.organizationId,
         userId: input.userId,
         projectId: input.projectId,
         action: input.action,
         description: input.description,
-        metadata: input.metadata || {},
+        metadata,
         source: input.source ?? (input.userId ? null : 'system'),
         // Defence in depth: whatever a caller passes, sensitive keys and URL credentials are stripped.
         changes: sanitizeChanges(input.changes),
@@ -89,7 +98,7 @@ class ActivityService {
     organizationId: string,
     filters: ActivityLogFilters = {}
   ): Promise<{ logs: ActivityLogWithDetails[]; total: number }> {
-    const { projectId, userId, actions, limit = 50, offset = 0 } = filters;
+    const { projectId, userId, actions, sources, limit = 50, offset = 0 } = filters;
 
     // Build where conditions
     const conditions = [eq(activityLogs.organizationId, organizationId)];
@@ -104,6 +113,10 @@ class ActivityService {
 
     if (actions && actions.length > 0) {
       conditions.push(inArray(activityLogs.action, actions));
+    }
+
+    if (sources && sources.length > 0) {
+      conditions.push(inArray(activityLogs.source, sources));
     }
 
     const whereClause = and(...conditions);

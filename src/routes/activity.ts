@@ -4,7 +4,7 @@ import { activityService } from '../services/activity.service';
 import { combinedAuthMiddleware } from '../middleware/auth';
 import type { ActivityAction } from '../db/schema/activity';
 import type { AppEnv } from '../types';
-import { AUDIT_SOURCES } from '../lib/audit';
+import { AUDIT_SOURCES, type AuditSource } from '../lib/audit';
 
 // ============ Schemas ============
 
@@ -80,6 +80,16 @@ const ActivityLogSchema = z.object({
   project: ProjectSchema,
 }).openapi('ActivityLog');
 
+function isAuditSource(value: string): value is AuditSource {
+  return (AUDIT_SOURCES as readonly string[]).includes(value);
+}
+
+/** Comma-separated `source` query value -> known sources (unknown values dropped). */
+function parseSources(value: string | undefined): AuditSource[] | undefined {
+  const sources = value?.split(',').map((s) => s.trim()).filter(isAuditSource);
+  return sources && sources.length > 0 ? sources : undefined;
+}
+
 // ============ Route Definitions ============
 
 const listActivityLogsRoute = createRoute({
@@ -94,6 +104,13 @@ const listActivityLogsRoute = createRoute({
       projectId: z.string().uuid().optional(),
       userId: z.string().uuid().optional(),
       actions: z.string().optional(), // comma-separated actions
+      // comma-separated sources: ui, api, webhook, system
+      source: z
+        .string()
+        .optional()
+        .refine((v) => !v || v.split(',').filter(Boolean).every((s) => isAuditSource(s)), {
+          message: `source must be a comma-separated list of: ${AUDIT_SOURCES.join(', ')}`,
+        }),
       limit: z.coerce.number().int().min(1).max(100).optional(),
       offset: z.coerce.number().int().min(0).optional(),
     }),
@@ -125,7 +142,7 @@ activityRouter.use('*', requireMinRole('admin'));
 // List activity logs
 activityRouter.openapi(listActivityLogsRoute, async (c) => {
   const organizationId = c.get('organizationId')!;
-  const { projectId, userId, actions: actionsStr, limit, offset } = c.req.valid('query');
+  const { projectId, userId, actions: actionsStr, source, limit, offset } = c.req.valid('query');
 
   // Parse actions filter
   const actions = actionsStr?.split(',').filter(Boolean) as ActivityAction[] | undefined;
@@ -134,6 +151,7 @@ activityRouter.openapi(listActivityLogsRoute, async (c) => {
     projectId,
     userId,
     actions,
+    sources: parseSources(source),
     limit: limit ?? 50,
     offset: offset ?? 0,
   });
@@ -154,6 +172,7 @@ activityRouter.get('/export', async (c) => {
     projectId: c.req.query('projectId'),
     userId: c.req.query('userId'),
     actions,
+    sources: parseSources(c.req.query('source')),
     limit: 10_000,
     offset: 0,
   });

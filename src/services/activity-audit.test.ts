@@ -10,6 +10,7 @@ vi.mock('../db', () => ({
 }));
 
 const { activityService } = await import('./activity.service');
+const { runWithAuditApiKey } = await import('../lib/audit');
 
 beforeEach(() => {
   inserted.length = 0;
@@ -32,6 +33,26 @@ describe('activity service audit helpers', () => {
       changes: { value: { changed: true }, isSecret: { from: false, to: true } },
     });
     expect(Object.keys(inserted[0].metadata as object).sort()).toEqual(['changed', 'key']);
+  });
+
+  it('an API key request records the key id and name (never the secret) on the entry', async () => {
+    await runWithAuditApiKey(
+      { id: 'key-1', name: 'CI deploy', keyHash: 'HASH_SHOULD_NOT_LEAK' } as never,
+      () => activityService.logEnvVarUpdated('org-A', 'user-1', 'p-1', 'DB_URL', { valueChanged: true }, undefined, undefined, 'api')
+    );
+    expect(inserted[0]).toMatchObject({
+      action: 'envvar.updated',
+      source: 'api',
+      metadata: { key: 'DB_URL', apiKey: { id: 'key-1', name: 'CI deploy' } },
+    });
+    expect(JSON.stringify(inserted[0])).not.toContain('HASH_SHOULD_NOT_LEAK');
+  });
+
+  it('the API key is only attached to api-sourced entries', async () => {
+    await runWithAuditApiKey({ id: 'key-1', name: 'CI deploy' }, () =>
+      activityService.logEnvVarDeleted('org-A', 'user-1', 'p-1', 'K', undefined, undefined, 'ui')
+    );
+    expect(inserted[0].metadata).not.toHaveProperty('apiKey');
   });
 
   it('envvar.updated leaves an unchanged secret flag out of the diff', async () => {
