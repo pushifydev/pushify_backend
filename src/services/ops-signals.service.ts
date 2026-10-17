@@ -3,6 +3,8 @@ import { db } from '../db';
 import { classifyDeployFailure, type DeployFailureBlame } from '../lib/deploy-failure-classify';
 import { stripFailurePrefix, summarizeDeployFailures } from '../lib/deploy-failure-summary';
 import { scrubSecrets } from '../lib/ops-scrub';
+import { diagnoseSiteDown, type SiteDownDiagnosis } from '../lib/site-down-diagnosis';
+import type { ServerDiagnostics } from '../lib/app-health';
 import type { ServerDiskBreakdown } from '../lib/server-disk-cleanup';
 
 /**
@@ -99,10 +101,18 @@ export interface SiteDown {
     label: string | null;
     error: string | null;
   } | null;
+  /**
+   * Which layer is down, from the last health check (HTTP status / network error) and the stored
+   * server checks rather than from the latest deployment alone, plus whether that is the
+   * customer's to fix. Prefer this over downReason, which says deploy_failed whenever the latest
+   * deploy failed even when the site gives no HTTP answer at all.
+   */
+  diagnosis: SiteDownDiagnosis;
 }
 
-type SiteDownRow = Omit<SiteDown, 'hosting' | 'latestDeploy'> & {
+type SiteDownRow = Omit<SiteDown, 'hosting' | 'latestDeploy' | 'diagnosis'> & {
   managed: boolean | null;
+  diagnostics?: ServerDiagnostics | null;
   latestStatus: string | null;
   latestCreatedAt: string | null;
   latestError: string | null;
@@ -158,6 +168,7 @@ export const opsSignalsService = {
       rows<SiteDownRow>(sql`
         SELECT h.project_id AS "projectId", ${iso('h.down_since')} AS "downSince",
                h.status_code AS "statusCode", h.error, h.down_reason AS "downReason",
+               h.diagnostics AS "diagnostics",
                ld.status AS "latestStatus", ${iso('ld.created_at')} AS "latestCreatedAt",
                ld.error_message AS "latestError",
                s.is_managed AS "managed", s.status::text AS "serverStatus",
@@ -235,12 +246,20 @@ export const opsSignalsService = {
           };
         }),
       },
-      sitesDown: down.map(({ managed, latestStatus, latestCreatedAt, latestError, ...d }) => {
+      sitesDown: down.map(({ managed, latestStatus, latestCreatedAt, latestError, diagnostics, ...d }) => {
         const failed = latestStatus === 'failed';
         const classified = failed ? classifyDeployFailure('', latestError ?? '') : null;
+        const hosting: SiteDown['hosting'] = managed === null || managed === undefined ? 'shared' : managed ? 'managed' : 'byos';
+        const diagnosis = diagnoseSiteDown({
+          statusCode: d.statusCode ?? null,
+          error: d.error ?? null,
+          hosting,
+          diagnostics: diagnostics ?? null,
+          latestDeploy: latestStatus ? { status: latestStatus, blame: classified?.blame ?? null, label: classified?.label ?? null } : null,
+        });
         return {
           ...d,
-          hosting: managed === null ? 'shared' : managed ? 'managed' : 'byos',
+          hosting,
           error: scrubSecrets(d.error),
           downReason: d.downReason ?? null,
           latestDeploy: latestStatus
@@ -252,6 +271,7 @@ export const opsSignalsService = {
                 error: failed ? scrubSecrets(latestError ? stripFailurePrefix(latestError) : null) : null,
               }
             : null,
+          diagnosis: { ...diagnosis, summary: scrubSecrets(diagnosis.summary) ?? diagnosis.summary },
         };
       }),
       servers: servers.map(({ diskBreakdown, ...s }) => ({

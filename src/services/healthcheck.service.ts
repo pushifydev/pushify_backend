@@ -10,6 +10,7 @@ import { restartPushifyContainer } from '../lib/container-resolve';
 import { env } from '../config/env';
 import { assertPublicUrl } from '../lib/ssrf-guard';
 import { logger } from '../lib/logger';
+import { withCauseCode } from '../lib/site-down-diagnosis';
 import { t, type SupportedLocale } from '../i18n';
 import { planLimitsService } from './plan-limits.service';
 import type { HealthCheck, HealthCheckLog } from '../db/schema';
@@ -203,7 +204,7 @@ export const healthCheckService = {
       return {
         healthy: false,
         responseTimeMs,
-        error: errorMessage,
+        error: withCauseCode(errorMessage, error),
       };
     }
   },
