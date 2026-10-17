@@ -42,6 +42,19 @@ const NO_UPSTREAM = new Set([502, 503, 504, 521, 523]);
 
 const DNS_PATTERN = /enotfound|eai_again|eai_noname|getaddrinfo|dns/;
 const TLS_PATTERN = /cert|tls|ssl|self[_ -]signed|unable_to_verify|depth_zero|altname|hostname\/ip does not match/;
+const REFUSED_PATTERN = /econnrefused/;
+const TIMEOUT_PATTERN = /etimedout|und_err_connect_timeout|und_err_headers_timeout|\btimeout\b/;
+const RESET_PATTERN = /econnreset|epipe|und_err_socket|other side closed/;
+const NO_ROUTE_PATTERN = /ehostunreach|enetunreach|ehostdown|enetdown/;
+
+/** What a connection-level network error code says, for the summary when no server checks are stored. */
+function connectionFailure(error: string): string | null {
+  if (REFUSED_PATTERN.test(error)) return 'the server refused the connection (nothing listens on the port)';
+  if (TIMEOUT_PATTERN.test(error)) return 'the connection to the server timed out';
+  if (RESET_PATTERN.test(error)) return 'the server closed the connection without an HTTP answer';
+  if (NO_ROUTE_PATTERN.test(error)) return 'there is no network route to the server';
+  return null;
+}
 
 /**
  * Node's fetch throws a bare "fetch failed" for every network error; the reason (ENOTFOUND,
@@ -49,9 +62,26 @@ const TLS_PATTERN = /cert|tls|ssl|self[_ -]signed|unable_to_verify|depth_zero|al
  * message, which carries the host name — so DNS, TLS and refused connections can be told apart.
  */
 export function withCauseCode(message: string, error: unknown): string {
-  const cause = (error as { cause?: { code?: unknown } } | null)?.cause;
-  const code = typeof cause?.code === 'string' && /^[A-Z0-9_]{2,64}$/.test(cause.code) ? cause.code : null;
+  const code = causeCode(error);
   return code && !message.includes(code) ? `${message} (${code})` : message;
+}
+
+/**
+ * The first well-formed `code` down the cause chain. undici sometimes wraps the socket error once
+ * more (cause.cause), and a connection tried on several addresses fails with an AggregateError
+ * whose codes sit on `errors[]` — without looking there the record only says "fetch failed".
+ */
+function causeCode(error: unknown): string | null {
+  type Node = { code?: unknown; cause?: unknown; errors?: unknown } | null | undefined;
+  const queue: unknown[] = [(error as Node)?.cause];
+  for (let seen = 0; queue.length > 0 && seen < 8; seen++) {
+    const node = queue.shift() as Node;
+    if (!node || typeof node !== 'object') continue;
+    if (typeof node.code === 'string' && /^[A-Z0-9_]{2,64}$/.test(node.code)) return node.code;
+    queue.push(node.cause);
+    if (Array.isArray(node.errors)) queue.push(...node.errors.slice(0, 3));
+  }
+  return null;
 }
 
 function outcomeOf(diagnostics: SiteDownFacts['diagnostics'], check: ServerCheckName): ServerCheckOutcome | null {
@@ -131,6 +161,14 @@ export function diagnoseSiteDown(facts: SiteDownFacts): SiteDownDiagnosis {
       kind: 'container_not_running',
       userSide: null,
       summary: `No HTTP answer${said}: SSH, Docker and ports 80/443 all work, so the app container is not answering.`,
+    };
+  }
+  const connection = connectionFailure(error);
+  if (connection) {
+    return {
+      kind: 'unreachable',
+      userSide: null,
+      summary: `No HTTP answer${said}: ${connection}; no server checks stored to say which layer.`,
     };
   }
   if (facts.error || facts.statusCode === null) {

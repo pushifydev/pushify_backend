@@ -35,9 +35,13 @@ export interface DownReasonSignals {
 }
 
 export function classifyDownReason(signals: DownReasonSignals): DownReason {
-  if (signals.latestDeployFailed) return 'deploy_failed';
+  const answered = !!signals.statusCode && signals.statusCode > 0;
+  // A failed build leaves the previous container serving, so it only explains an outage when
+  // something answered over HTTP. With no answer at all ("fetch failed", statusCode null) the
+  // cause is DNS, TLS, the connection or the server — never assume the build.
+  if (signals.latestDeployFailed && answered) return 'deploy_failed';
   // Any HTTP status means something on the server answered: the app is the problem.
-  if (signals.statusCode && signals.statusCode > 0) return 'app_error';
+  if (answered) return 'app_error';
   // No HTTP answer, but we can still log into the server: the app is hung or not listening.
   if (signals.serverReachable === true) return 'app_error';
   return 'server_unreachable';
