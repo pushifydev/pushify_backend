@@ -1,4 +1,4 @@
-import { eq, and, desc, lte, gte } from 'drizzle-orm';
+import { eq, and, desc, lte, gte, ne } from 'drizzle-orm';
 import { db } from '../db';
 import {
   databases,
@@ -185,6 +185,24 @@ export const databaseRepository = {
         gte(databaseBackups.startedAt, since)
       ),
     });
+  },
+
+  /**
+   * A `failed` row for this database started at or after `since`, other than `excludeId` — i.e.
+   * the current run of failures has already been reported. Persisted, like the missed marker.
+   */
+  async findFailedBackupSince(
+    databaseId: string,
+    since: Date,
+    excludeId?: string
+  ): Promise<DatabaseBackup | undefined> {
+    const conditions = [
+      eq(databaseBackups.databaseId, databaseId),
+      eq(databaseBackups.status, 'failed'),
+      gte(databaseBackups.startedAt, since),
+    ];
+    if (excludeId) conditions.push(ne(databaseBackups.id, excludeId));
+    return db.query.databaseBackups.findFirst({ where: and(...conditions) });
   },
 
   // ============ Connections ============
