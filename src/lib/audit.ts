@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Context } from 'hono';
 
 /**
@@ -29,6 +30,27 @@ export function isSensitiveKey(key: string): boolean {
 /** The source of the current request: API key callers are `api`, everyone else signed in is `ui`. */
 export function auditSource(c: Context): AuditSource {
   return c.get('isApiKeyAuth') ? 'api' : 'ui';
+}
+
+/** The API key a request authenticated with, as recorded on audit entries (never the secret). */
+export interface AuditApiKey {
+  id: string;
+  name: string;
+}
+
+const auditApiKeyStore = new AsyncLocalStorage<AuditApiKey>();
+
+/**
+ * Run `fn` (the rest of the request) with the authenticating API key attached, so every audit entry
+ * written during it can name the key without each call site having to pass it along.
+ */
+export function runWithAuditApiKey<T>(apiKey: AuditApiKey, fn: () => T): T {
+  return auditApiKeyStore.run({ id: apiKey.id, name: apiKey.name }, fn);
+}
+
+/** The API key of the current request, if it was authenticated with one. */
+export function currentAuditApiKey(): AuditApiKey | undefined {
+  return auditApiKeyStore.getStore();
 }
 
 /** Drop `user:password@` from URLs so credentials embedded in e.g. a git remote are not recorded. */

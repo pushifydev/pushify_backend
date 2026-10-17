@@ -4,6 +4,7 @@ import { apiKeyService, hasScope } from '../services/apikey.service';
 import { t, type SupportedLocale } from '../i18n';
 import type { ApiKeyScope } from '../db/schema';
 import { applyPlanApiRateLimit } from './rate-limit';
+import { runWithAuditApiKey } from '../lib/audit';
 
 export const API_KEY_PREFIX = 'pk_live_';
 
@@ -80,7 +81,8 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
   c.set('apiKey', result.apiKey);
   c.set('isApiKeyAuth', true);
 
-  await applyPlanApiRateLimit(c, next);
+  // Audit entries written while handling this request record which key made it (id + name).
+  await runWithAuditApiKey(result.apiKey, () => applyPlanApiRateLimit(c, next));
 }
 
 /**

@@ -274,6 +274,24 @@ describe('audit log listing', () => {
     expect(getByOrganization.mock.calls[0][1]).toMatchObject({ limit: 10, offset: 20 });
   });
 
+  it('filters by source', async () => {
+    const res = await app.request('/activity?source=api,webhook');
+    expect(res.status).toBe(200);
+    expect(getByOrganization.mock.calls[0][1]).toMatchObject({ sources: ['api', 'webhook'] });
+  });
+
+  it('rejects an unknown source filter', async () => {
+    const res = await app.request('/activity?source=mcp');
+    expect(res.status).toBe(400);
+    expect(getByOrganization).not.toHaveBeenCalled();
+  });
+
+  it('export honours the source filter', async () => {
+    const res = await app.request('/activity/export?source=api');
+    expect(res.status).toBe(200);
+    expect(getByOrganization.mock.calls[0][1]).toMatchObject({ sources: ['api'] });
+  });
+
   it('returns source and changes on every entry', async () => {
     getByOrganization.mockResolvedValueOnce({
       logs: [
