@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { HetznerProvider, resolveTier, stockByLocation, type Catalogue } from './hetzner.provider';
+import { HetznerProvider, hetznerIpv6HostAddress, resolveTier, stockByLocation, type Catalogue } from './hetzner.provider';
 
 type T = Catalogue['types'][number];
 
@@ -161,6 +161,38 @@ describe('after Hetzner removed /datacenters (2026-06-02)', () => {
     expect(mapped.region).toBe('hel1');
     expect(mapped.providerData).toMatchObject({ location: { city: 'Helsinki' } });
     expect((mapped.providerData as Record<string, unknown>).datacenter).toBeUndefined();
+    expect(mapped.ipv6).toBeNull();
+  });
+
+  it('stores the ::1 host address of the /64 Hetzner hands out, not the network', async () => {
+    const server = {
+      id: 43, name: 'srv6', status: 'running',
+      public_net: { ipv4: { ip: '1.2.3.4' }, ipv6: { ip: '2a01:4f8:c0c:1234::/64' } }, private_net: [],
+      server_type: { id: 1, name: 'cpx22', description: 'CPX 22', cores: 2, memory: 4, disk: 80, deprecated: false, prices: [], storage_type: 'local', cpu_type: 'shared', architecture: 'x86' },
+      location: { id: 3, name: 'hel1', description: 'Helsinki DC Park 1', country: 'FI', city: 'Helsinki', latitude: 60.1, longitude: 24.9, network_zone: 'eu-central' },
+      image: null, created: '2026-10-01T00:00:00Z', labels: {},
+    };
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ server }), { status: 200 })));
+    const mapped = await new HetznerProvider('token-server-v6').getServer('43');
+    expect(mapped.ipv6).toBe('2a01:4f8:c0c:1234::1');
+  });
+});
+
+describe('hetznerIpv6HostAddress', () => {
+  it('turns a /64 network into its ::1 host address', () => {
+    expect(hetznerIpv6HostAddress('2a01:4f8:c0c:1234::/64')).toBe('2a01:4f8:c0c:1234::1');
+  });
+
+  it('keeps an explicit address, with or without a prefix length', () => {
+    expect(hetznerIpv6HostAddress('2a01:4f8:c0c:1234::1')).toBe('2a01:4f8:c0c:1234::1');
+    expect(hetznerIpv6HostAddress('2a01:4f8:c0c:1234::5/64')).toBe('2a01:4f8:c0c:1234::5');
+  });
+
+  it('returns null for missing or invalid values', () => {
+    expect(hetznerIpv6HostAddress(null)).toBeNull();
+    expect(hetznerIpv6HostAddress('')).toBeNull();
+    expect(hetznerIpv6HostAddress('1.2.3.4')).toBeNull();
+    expect(hetznerIpv6HostAddress('not-an-ip/64')).toBeNull();
   });
 });
 
