@@ -71,9 +71,18 @@ describe('classifyDownReason', () => {
     expect(classifyDownReason({ error: 'fetch failed', serverReachable: true })).toBe('app_error');
   });
 
-  it('a failed latest deployment wins', () => {
+  it('a failed latest deployment wins when something answered over HTTP', () => {
     expect(classifyDownReason({ statusCode: 502, latestDeployFailed: true })).toBe('deploy_failed');
-    expect(classifyDownReason({ error: 'fetch failed', latestDeployFailed: true })).toBe('deploy_failed');
+  });
+
+  it('no HTTP answer is never blamed on a failed build', () => {
+    expect(classifyDownReason({ statusCode: null, error: 'fetch failed (ENOTFOUND)', latestDeployFailed: true })).toBe(
+      'server_unreachable'
+    );
+    expect(classifyDownReason({ error: 'fetch failed', latestDeployFailed: true })).toBe('server_unreachable');
+    expect(classifyDownReason({ error: 'fetch failed (ECONNREFUSED)', latestDeployFailed: true, serverReachable: true })).toBe(
+      'app_error'
+    );
   });
 });
 
