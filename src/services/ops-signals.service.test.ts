@@ -104,6 +104,33 @@ describe('opsSignalsService sitesDown query', () => {
   });
 });
 
+describe('opsSignalsService sitesDown diagnosis', () => {
+  beforeEach(() => {
+    h.queries = [];
+    h.downRows = [];
+  });
+
+  it('diagnoses from the health check and server checks, not from a failed build alone', async () => {
+    h.downRows = [
+      {
+        projectId: 'b1cecd19', downSince: '2026-09-22T22:54:41Z', statusCode: null, error: 'fetch failed', managed: true,
+        serverStatus: 'running', serverLastSeenAt: null, lastSuccessfulDeployAt: null, ownerLastLoginAt: null,
+        downReason: 'deploy_failed', latestStatus: 'failed', latestCreatedAt: '2026-09-22T22:50:00Z',
+        latestError: '[Project] Docker build failed: exit code 1',
+        diagnostics: {
+          checkedAt: '2026-10-16T00:00:00Z', failedCheck: 'ssh', advice: null, managed: true,
+          checks: [{ check: 'ssh', outcome: 'timeout', ok: false, advice: null }],
+        },
+      },
+    ];
+    const { sitesDown } = await opsSignalsService.getSignals();
+    expect(sitesDown[0].diagnosis).toMatchObject({ kind: 'unreachable', userSide: false });
+    expect(sitesDown[0]).not.toHaveProperty('diagnostics');
+    const query = h.queries.map(render).find((q) => q.includes('project_health_state'))!;
+    expect(query).toContain('h.diagnostics AS "diagnostics"');
+  });
+});
+
 describe('opsSignalsService servers disk diagnosis', () => {
   beforeEach(() => {
     h.queries = [];
