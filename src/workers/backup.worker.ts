@@ -2,7 +2,6 @@ import { databaseRepository } from '../repositories/database.repository';
 import { databaseBackupService } from '../services/database-backup.service';
 import { certExpiryService } from '../services/cert-expiry.service';
 import { isBackupDue } from '../lib/backup-schedule';
-import { BACKUP_EVENTS } from '../lib/backup-alerts';
 import { logger } from '../lib/logger';
 
 // Every 15 minutes, not hourly: a database set to back up every hour would otherwise wait up to
@@ -68,9 +67,10 @@ async function pollForBackups(): Promise<void> {
         } catch (error) {
           logger.error({ error, databaseId: database.id }, 'Failed to start automatic backup');
           // A backup that never started is a failed backup, not a silent one
-          await databaseBackupService.notifyBackupEvent(database.id, BACKUP_EVENTS.failed, {
-            message: `Automatic backup could not start: ${error instanceof Error ? error.message : 'unknown error'}`,
-          });
+          await databaseBackupService.notifyBackupFailure(
+            database.id,
+            `Automatic backup could not start: ${error instanceof Error ? error.message : 'unknown error'}`
+          );
         }
       }
 

@@ -33,6 +33,9 @@ import {
   type BackupEvent,
 } from '../lib/backup-alerts';
 
+/** databaseId → lastBackupAt (ms, 0 = never) whose failure run has already been reported */
+const failureAlerted = new Map<string, number>();
+
 // ============ Helpers ============
 
 /**
@@ -325,9 +328,7 @@ export const databaseBackupService = {
 
       logger.error({ error, databaseId, backupId }, 'Backup failed');
 
-      await this.notifyBackupEvent(databaseId, BACKUP_EVENTS.failed, {
-        message: `Backup ${fileName} failed: ${errorMessage}`,
-      });
+      await this.notifyBackupFailure(databaseId, `Backup ${fileName} failed: ${errorMessage}`, backupId);
     } finally {
       ssh.disconnect();
     }
@@ -362,6 +363,33 @@ export const databaseBackupService = {
   },
 
   /**
+   * Report a failed backup once per run of failures. A failed backup does not move
+   * `lastBackupAt`, so the worker retries it on every poll (every 15 minutes) and each retry
+   * used to send `backup.failed` again. Only the first failure since the last successful backup
+   * (or since the database was created) is sent; the next one after a success is sent again.
+   * `backupId` is the row that just failed, which must not count as the earlier report.
+   * Returns whether a notification went out. Never throws.
+   */
+  async notifyBackupFailure(databaseId: string, message: string, backupId?: string): Promise<boolean> {
+    try {
+      const database = await databaseRepository.findById(databaseId);
+      if (!database) return false;
+      const gapStart = database.lastBackupAt ?? database.createdAt;
+      const marker = database.lastBackupAt?.getTime() ?? 0;
+      // In memory for failures with no row (the backup could not start), persisted otherwise
+      if (failureAlerted.get(databaseId) === marker) return false;
+      failureAlerted.set(databaseId, marker);
+      if (await databaseRepository.findFailedBackupSince(databaseId, gapStart, backupId)) return false;
+    } catch (error) {
+      logger.warn({ error, databaseId }, 'Could not check earlier backup failures');
+    }
+    await this.notifyBackupEvent(databaseId, BACKUP_EVENTS.failed, {
+      message: `${message} Further failures are not reported until a backup succeeds.`,
+    });
+    return true;
+  },
+
+  /**
    * Worker entry: backups whose process died mid-dump stay 'creating' forever and look like
    * work in progress. Mark them failed and report it.
    */
@@ -370,9 +398,11 @@ export const databaseBackupService = {
     for (const backup of stuck) {
       const errorMessage = 'Backup did not finish in time and was marked as failed';
       await databaseRepository.updateBackup(backup.id, { status: 'failed', errorMessage, completedAt: now });
-      await this.notifyBackupEvent(backup.databaseId, BACKUP_EVENTS.failed, {
-        message: `Backup ${backup.name} did not finish and was marked as failed.`,
-      });
+      await this.notifyBackupFailure(
+        backup.databaseId,
+        `Backup ${backup.name} did not finish and was marked as failed.`,
+        backup.id
+      );
     }
     return stuck.length;
   },
