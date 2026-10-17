@@ -1,3 +1,4 @@
+import { isIPv6 } from 'node:net';
 import type {
   ICloudProvider,
   ServerConfig,
@@ -192,6 +193,19 @@ interface ResolvedType {
   priceHourly: number;
 }
 
+/**
+ * Hetzner reports `public_net.ipv6.ip` as the server's routed /64 network (e.g. `2a01:4f8:c0c:1234::/64`),
+ * not a host address. The server answers on `<prefix>::1` by default, which is what SSH and AAAA records
+ * need. Plain addresses pass through unchanged; anything unparsable becomes null rather than being stored.
+ */
+export function hetznerIpv6HostAddress(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const [addr, prefix] = value.trim().split('/');
+  if (prefix === undefined) return isIPv6(addr) ? addr : null;
+  const host = addr.endsWith('::') ? `${addr}1` : addr;
+  return isIPv6(host) ? host : null;
+}
+
 function priceIn(t: HetznerServerType, location: string) {
   const p = t.prices.find((x) => x.location === location);
   return p
@@ -313,7 +327,7 @@ export class HetznerProvider implements ICloudProvider {
       name: server.name,
       status: this.mapStatus(server.status),
       ipv4: server.public_net.ipv4?.ip || null,
-      ipv6: server.public_net.ipv6?.ip || null,
+      ipv6: hetznerIpv6HostAddress(server.public_net.ipv6?.ip),
       privateIp: server.private_net[0]?.ip || null,
       region: server.location.name,
       size: getServerSizeTier(server.server_type.cores, server.server_type.memory),
