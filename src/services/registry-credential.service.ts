@@ -124,7 +124,8 @@ export const registryCredentialService = {
       .where(and(eq(registryCredentials.id, id), eq(registryCredentials.organizationId, organizationId)))
       .returning();
     if (!row) throw new HTTPException(404, { message: 'Registry credential not found' });
-    return { success: true };
+    // The removed credential (without its token) so the caller can audit what went away
+    return { success: true, credential: toPublic(row) };
   },
 
   /**

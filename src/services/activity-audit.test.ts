@@ -171,6 +171,54 @@ describe('activity service audit helpers', () => {
     });
   });
 
+  it('registry credential saved records host, name and username but never the token', async () => {
+    await activityService.logRegistryCredentialSaved(
+      'org-A',
+      'user-1',
+      {
+        id: 'rc-1',
+        name: 'GHCR',
+        registry: 'ghcr.io',
+        username: 'octocat',
+        // Extra fields on the input must not leak into the log
+        ...({ password: 'ghp_SHOULD_NOT_LEAK', passwordEncrypted: 'ENC_SHOULD_NOT_LEAK' } as object),
+      } as never,
+      undefined,
+      undefined,
+      'ui'
+    );
+    expect(inserted[0]).toMatchObject({
+      organizationId: 'org-A',
+      userId: 'user-1',
+      action: 'settings.updated',
+      source: 'ui',
+      metadata: {
+        setting: 'registry',
+        operation: 'saved',
+        credentialId: 'rc-1',
+        name: 'GHCR',
+        registry: 'ghcr.io',
+        username: 'octocat',
+      },
+    });
+    const serialized = JSON.stringify(inserted[0]);
+    expect(serialized).not.toContain('ghp_SHOULD_NOT_LEAK');
+    expect(serialized).not.toContain('ENC_SHOULD_NOT_LEAK');
+  });
+
+  it('registry credential removed is recorded', async () => {
+    await activityService.logRegistryCredentialRemoved('org-A', 'user-1', {
+      id: 'rc-1',
+      name: 'Docker Hub',
+      registry: 'docker.io',
+    });
+    expect(inserted[0]).toMatchObject({
+      action: 'settings.updated',
+      description: 'Removed registry credential "Docker Hub" (docker.io)',
+      metadata: { setting: 'registry', operation: 'removed', credentialId: 'rc-1', registry: 'docker.io' },
+    });
+  });
+
   it('member.removed records the target user and the role they had', async () => {
     await activityService.logMemberRemoved('org-A', 'user-1', 'user-2', 'viewer');
     expect(inserted[0]).toMatchObject({

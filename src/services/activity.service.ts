@@ -602,6 +602,64 @@ class ActivityService {
     });
   }
 
+  /**
+   * A private registry login was added (or replaced) for the organization. Recorded as
+   * `settings.updated` with `setting: 'registry'` so no enum migration is needed. Only the host,
+   * name and username are written — never the password or token.
+   */
+  async logRegistryCredentialSaved(
+    organizationId: string,
+    userId: string,
+    credential: { id: string; name: string; registry: string; username: string },
+    ipAddress?: string,
+    userAgent?: string,
+    source?: AuditSource
+  ): Promise<void> {
+    await this.log({
+      organizationId,
+      userId,
+      action: 'settings.updated',
+      description: `Saved registry credential "${credential.name}" (${credential.registry})`,
+      metadata: {
+        setting: 'registry',
+        operation: 'saved',
+        credentialId: credential.id,
+        name: credential.name,
+        registry: credential.registry,
+        username: credential.username,
+      },
+      ipAddress,
+      userAgent,
+      source,
+    });
+  }
+
+  async logRegistryCredentialRemoved(
+    organizationId: string,
+    userId: string,
+    credential: { id: string; name: string; registry: string },
+    ipAddress?: string,
+    userAgent?: string,
+    source?: AuditSource
+  ): Promise<void> {
+    await this.log({
+      organizationId,
+      userId,
+      action: 'settings.updated',
+      description: `Removed registry credential "${credential.name}" (${credential.registry})`,
+      metadata: {
+        setting: 'registry',
+        operation: 'removed',
+        credentialId: credential.id,
+        name: credential.name,
+        registry: credential.registry,
+      },
+      ipAddress,
+      userAgent,
+      source,
+    });
+  }
+
   async logSettingsUpdated(
     organizationId: string,
     userId: string,
