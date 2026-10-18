@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   CloudflareDnsError,
   createCustomDomainRecords,
+  deleteCustomDomainRecords,
   maskToken,
   verifyCloudflareToken,
   zoneCandidates,
@@ -13,7 +14,9 @@ const TOKEN = 'cf-secret-token-0123456789';
 type Call = { method: string; url: string; auth?: string; body?: Record<string, unknown> };
 
 /** A fake Cloudflare API with the given zones and records. */
-function fakeCloudflare(opts: { zones?: string[]; records?: Array<{ type: string; name: string }>; status?: number } = {}) {
+function fakeCloudflare(
+  opts: { zones?: string[]; records?: Array<{ id?: string; type: string; name: string; comment?: string }>; status?: number } = {}
+) {
   const calls: Call[] = [];
   vi.stubGlobal(
     'fetch',
@@ -99,7 +102,33 @@ describe('createCustomDomainRecords', () => {
     expect(err).toBeInstanceOf(CloudflareDnsError);
     expect(err.code).toBe('invalid_token');
     expect(err.message).toContain('Invalid API Token');
+    expect(err.message).toContain('DNS: Edit');
     expect(err.message).not.toContain(TOKEN);
+  });
+});
+
+describe('deleteCustomDomainRecords', () => {
+  it("deletes only the A/AAAA records Pushify created, leaving others' records alone", async () => {
+    const calls = fakeCloudflare({
+      zones: ['example.com'],
+      records: [
+        { id: 'ours-a', type: 'A', name: 'app.example.com', comment: ORG_RECORD_COMMENT },
+        { id: 'ours-aaaa', type: 'AAAA', name: 'app.example.com', comment: ORG_RECORD_COMMENT },
+        { id: 'theirs', type: 'A', name: 'app.example.com', comment: 'set by hand' },
+      ],
+    });
+    expect(await deleteCustomDomainRecords(TOKEN, 'App.Example.com')).toBe(2);
+    const deletes = calls.filter((c) => c.method === 'DELETE').map((c) => c.url);
+    expect(deletes).toEqual([
+      expect.stringContaining('/zones/zone-example.com/dns_records/ours-a'),
+      expect.stringContaining('/zones/zone-example.com/dns_records/ours-aaaa'),
+    ]);
+  });
+
+  it('does nothing when the token cannot see the zone', async () => {
+    const calls = fakeCloudflare({ zones: ['other.com'] });
+    expect(await deleteCustomDomainRecords(TOKEN, 'app.example.com')).toBe(0);
+    expect(calls.filter((c) => c.method === 'DELETE')).toEqual([]);
   });
 });
 

@@ -6,8 +6,9 @@
  * The token is only ever sent in the Authorization header: it never appears in an error message
  * or a log line (use maskToken when a hint is needed).
  *
- * Records are only created, never changed or deleted: an existing record with the same name and
- * type is someone's decision and is reported as a conflict instead of being overwritten.
+ * Records are created, never changed: an existing record with the same name and type is someone's
+ * decision and is reported as a conflict instead of being overwritten. When the domain is removed,
+ * only the records Pushify created (marked with ORG_RECORD_COMMENT) are deleted.
  */
 
 const API = 'https://api.cloudflare.com/client/v4';
@@ -47,8 +48,14 @@ async function cf<T>(token: string, path: string, init: RequestInit = {}): Promi
     | null;
   if (!res.ok || !body?.success) {
     const detail = body?.errors?.[0]?.message || `HTTP ${res.status}`;
-    if (res.status === 401 || res.status === 403) {
+    if (res.status === 401) {
       throw new CloudflareDnsError(`Cloudflare rejected the API token: ${detail}`, 'invalid_token');
+    }
+    if (res.status === 403) {
+      throw new CloudflareDnsError(
+        `Cloudflare rejected the API token: ${detail} (check that it is active and has the Zone → Zone: Read and Zone → DNS: Edit permissions for this zone)`,
+        'invalid_token'
+      );
     }
     throw new CloudflareDnsError(`Cloudflare ${init.method || 'GET'} request failed: ${detail}`, 'api_error');
   }
@@ -135,4 +142,28 @@ export async function createCustomDomainRecords(token: string, input: CreateReco
     records.push({ id: created?.id, type: record.type, content: record.content, proxied: created?.proxied ?? proxied });
   }
   return { zone: zone.name, records };
+}
+
+/**
+ * Delete the A/AAAA records Pushify created for `domain` (createCustomDomainRecords). Records
+ * without Pushify's comment belong to someone else and are left alone. Returns how many were
+ * deleted; 0 when the token can't see the zone. Throws CloudflareDnsError on API errors.
+ */
+export async function deleteCustomDomainRecords(token: string, domain: string): Promise<number> {
+  const name = domain.toLowerCase().replace(/\.$/, '');
+  const zone = await findZone(token, name);
+  if (!zone) return 0;
+  let deleted = 0;
+  for (const type of ['A', 'AAAA'] as const) {
+    const records = await cf<Array<{ id: string; comment?: string | null }>>(
+      token,
+      `/zones/${zone.id}/dns_records?type=${type}&name=${encodeURIComponent(name)}&per_page=20`
+    );
+    for (const record of records || []) {
+      if (record.comment !== ORG_RECORD_COMMENT) continue;
+      await cf(token, `/zones/${zone.id}/dns_records/${record.id}`, { method: 'DELETE' });
+      deleted++;
+    }
+  }
+  return deleted;
 }

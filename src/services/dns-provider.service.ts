@@ -7,6 +7,7 @@ import { encrypt, decrypt } from '../lib/encryption';
 import {
   CloudflareDnsError,
   createCustomDomainRecords,
+  deleteCustomDomainRecords,
   maskToken,
   verifyCloudflareToken,
   type CreatedRecord,
@@ -20,6 +21,17 @@ import { t, type SupportedLocale } from '../i18n';
  */
 
 const PROVIDER = 'cloudflare';
+
+/**
+ * A proxied record resolves to Cloudflare, not to the server, so Pushify's verify step (which
+ * compares the A record with the server IP) and the HTTP-01 certificate request can't see the
+ * server behind it. Returned with every proxied record so the user knows what to do.
+ */
+export const PROXIED_HTTPS_NOTE =
+  'The record is proxied through Cloudflare, so the domain resolves to Cloudflare instead of the server and ' +
+  "Pushify's DNS check and Let's Encrypt (HTTP-01) certificate cannot complete. Turn the proxy off in Cloudflare " +
+  'until the domain is verified and has its certificate, then turn it back on with SSL/TLS mode "Full (strict)". ' +
+  'A DNS-01 challenge would avoid this step, but Pushify does not issue certificates that way yet.';
 
 export interface CloudflareConnectionStatus {
   connected: boolean;
@@ -147,7 +159,9 @@ export const dnsProviderService = {
     try {
       const { zone, records } = await createCustomDomainRecords(token, { domain, ipv4: server.ipv4, ipv6: server.ipv6, proxied });
       logger.info({ organizationId, domain, zone, proxied, token: maskToken(token) }, 'Cloudflare DNS records created');
-      return { status: 'created', proxied, zone, records };
+      return proxied
+        ? { status: 'created', proxied, zone, records, message: PROXIED_HTTPS_NOTE }
+        : { status: 'created', proxied, zone, records };
     } catch (err) {
       const message = err instanceof CloudflareDnsError ? err.message : 'Unexpected error while creating the Cloudflare DNS record';
       logger.warn(
@@ -155,6 +169,36 @@ export const dnsProviderService = {
         'Cloudflare DNS record creation failed — domain continues with manual DNS'
       );
       return { status: 'failed', proxied, message: `${message}. Add the DNS record manually.` };
+    }
+  },
+
+  /**
+   * Delete the records Pushify created for a custom domain that is being removed. Never throws:
+   * the domain is already gone from Pushify, so a Cloudflare problem is only logged.
+   */
+  async deleteRecordsForDomain(organizationId: string, domain: string): Promise<{ deleted: number }> {
+    let token: string;
+    try {
+      const row = await findRow(organizationId);
+      if (!row) return { deleted: 0 };
+      token = decrypt(row.apiTokenEncrypted);
+    } catch (err) {
+      logger.warn(
+        { organizationId, domain, error: err instanceof Error ? err.message : String(err) },
+        'Could not load Cloudflare DNS connection'
+      );
+      return { deleted: 0 };
+    }
+    try {
+      const deleted = await deleteCustomDomainRecords(token, domain);
+      if (deleted > 0) logger.info({ organizationId, domain, deleted, token: maskToken(token) }, 'Cloudflare DNS records deleted');
+      return { deleted };
+    } catch (err) {
+      logger.warn(
+        { organizationId, domain, token: maskToken(token), error: err instanceof Error ? err.message : String(err) },
+        'Cloudflare DNS record deletion failed — remove the record in Cloudflare manually'
+      );
+      return { deleted: 0 };
     }
   },
 };
