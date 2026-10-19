@@ -1,6 +1,6 @@
 import { HTTPException } from 'hono/http-exception';
 import { env } from '../config/env';
-import { eq, and, desc, inArray } from 'drizzle-orm';
+import { eq, and, desc, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { organizations, infraWalletTransactions } from '../db/schema';
 import { servers } from '../db/schema/servers';
@@ -88,6 +88,32 @@ export interface SizedOptionForPlan {
   /** Stable code for clients to localize UI (prefer over disallowReason). */
   disallowCode?: 'managedNotAllowed' | 'serverTierExceeded';
   disallowReason?: string;
+}
+
+type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Add to the wallet with a relative UPDATE so a concurrent debit (which holds the row lock)
+ * is never overwritten by a stale read. Returns the balance actually stored.
+ */
+async function addToWalletBalance(
+  tx: DbTransaction,
+  organizationId: string,
+  amountCents: number,
+): Promise<number> {
+  const [row] = await tx
+    .update(organizations)
+    .set({
+      infraWalletBalanceCents: sql`${organizations.infraWalletBalanceCents} + ${amountCents}`,
+      updatedAt: new Date(),
+    })
+    .where(eq(organizations.id, organizationId))
+    .returning({ balance: organizations.infraWalletBalanceCents });
+
+  if (!row) {
+    throw new Error(`Organization ${organizationId} not found`);
+  }
+  return row.balance;
 }
 
 export const infraBillingService = {
@@ -355,18 +381,7 @@ export const infraBillingService = {
     }
 
     const balanceAfterCents = await db.transaction(async (tx) => {
-      const [org] = await tx
-        .select({ balance: organizations.infraWalletBalanceCents })
-        .from(organizations)
-        .where(eq(organizations.id, organizationId))
-        .limit(1);
-
-      const newBalance = (org?.balance ?? 0) + amountCents;
-
-      await tx
-        .update(organizations)
-        .set({ infraWalletBalanceCents: newBalance, updatedAt: new Date() })
-        .where(eq(organizations.id, organizationId));
+      const newBalance = await addToWalletBalance(tx, organizationId, amountCents);
 
       await tx.insert(infraWalletTransactions).values({
         organizationId,
@@ -533,18 +548,7 @@ export const infraBillingService = {
     serverId?: string,
   ): Promise<number> {
     return db.transaction(async (tx) => {
-      const [org] = await tx
-        .select({ balance: organizations.infraWalletBalanceCents })
-        .from(organizations)
-        .where(eq(organizations.id, organizationId))
-        .limit(1);
-
-      const newBalance = (org?.balance ?? 0) + amountCents;
-
-      await tx
-        .update(organizations)
-        .set({ infraWalletBalanceCents: newBalance, updatedAt: new Date() })
-        .where(eq(organizations.id, organizationId));
+      const newBalance = await addToWalletBalance(tx, organizationId, amountCents);
 
       await tx.insert(infraWalletTransactions).values({
         organizationId,
