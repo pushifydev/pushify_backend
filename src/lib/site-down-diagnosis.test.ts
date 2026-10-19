@@ -62,7 +62,7 @@ describe('diagnoseSiteDown', () => {
     ['DEPTH_ZERO_SELF_SIGNED_CERT', 'dns_tls', 'TLS handshake or certificate'],
     ['UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'dns_tls', 'TLS handshake or certificate'],
     ['ERR_TLS_CERT_ALTNAME_INVALID', 'dns_tls', 'TLS handshake or certificate'],
-    ['ECONNREFUSED', 'unreachable', 'refused the connection'],
+    ['ECONNREFUSED', 'container_not_running', 'nothing listens on the port'],
     ['ETIMEDOUT', 'unreachable', 'timed out'],
     ['UND_ERR_CONNECT_TIMEOUT', 'unreachable', 'timed out'],
     ['ECONNRESET', 'unreachable', 'closed the connection'],
@@ -84,6 +84,14 @@ describe('diagnoseSiteDown', () => {
     const aggregate = { cause: new AggregateError([Object.assign(new Error('a'), { code: 'ETIMEDOUT' })]) };
     expect(withCauseCode('fetch failed', aggregate)).toBe('fetch failed (ETIMEDOUT)');
     expect(withCauseCode('fetch failed', { cause: { cause: { cause: {} } } })).toBe('fetch failed');
+  });
+
+  it('a refused connection is the container layer: ours undecided, a customer server theirs', () => {
+    const error = 'fetch failed (ECONNREFUSED)';
+    expect(diagnoseSiteDown({ ...base, error, latestDeploy: failedBuild })).toMatchObject({ kind: 'container_not_running', userSide: null });
+    expect(diagnoseSiteDown({ ...base, error, hosting: 'byos' })).toMatchObject({ kind: 'container_not_running', userSide: true });
+    // Stored server checks still name the layer first.
+    expect(diagnoseSiteDown({ ...base, error, diagnostics: checks({ ssh: 'timeout' }) }).kind).toBe('unreachable');
   });
 
   it('without server checks it says so instead of guessing', () => {

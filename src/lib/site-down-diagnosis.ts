@@ -49,7 +49,6 @@ const NO_ROUTE_PATTERN = /ehostunreach|enetunreach|ehostdown|enetdown/;
 
 /** What a connection-level network error code says, for the summary when no server checks are stored. */
 function connectionFailure(error: string): string | null {
-  if (REFUSED_PATTERN.test(error)) return 'the server refused the connection (nothing listens on the port)';
   if (TIMEOUT_PATTERN.test(error)) return 'the connection to the server timed out';
   if (RESET_PATTERN.test(error)) return 'the server closed the connection without an HTTP answer';
   if (NO_ROUTE_PATTERN.test(error)) return 'there is no network route to the server';
@@ -161,6 +160,16 @@ export function diagnoseSiteDown(facts: SiteDownFacts): SiteDownDiagnosis {
       kind: 'container_not_running',
       userSide: null,
       summary: `No HTTP answer${said}: SSH, Docker and ports 80/443 all work, so the app container is not answering.`,
+    };
+  }
+  // A refused connection is an answer from the host itself (a TCP reset): the server is up and
+  // reachable, only nothing listens on the port — the container or the proxy in front of it is
+  // not running. That is the container layer, not "unreachable", and never the build.
+  if (REFUSED_PATTERN.test(error)) {
+    return {
+      kind: 'container_not_running',
+      userSide: ours ? null : true,
+      summary: `No HTTP answer${said}: the server refused the connection, so it is up but nothing listens on the port (app container or proxy not running).`,
     };
   }
   const connection = connectionFailure(error);
