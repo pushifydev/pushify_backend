@@ -90,6 +90,13 @@ function parseSources(value: string | undefined): AuditSource[] | undefined {
   return sources && sources.length > 0 ? sources : undefined;
 }
 
+/** Optional ISO date query value -> Date; null when present but unparseable. */
+function parseDate(value: string | undefined): Date | undefined | null {
+  if (!value) return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 // ============ Route Definitions ============
 
 const listActivityLogsRoute = createRoute({
@@ -97,7 +104,11 @@ const listActivityLogsRoute = createRoute({
   path: '/',
   tags: ['Activity'],
   summary: 'List activity logs',
-  description: 'Get activity logs for the current organization',
+  description:
+    'Audit log of the current organization (admin/owner only). Filter by project, user, ' +
+    'action, source (ui, api, webhook, system) and date range (`from`/`to`, inclusive ISO 8601). ' +
+    'Paginated with `limit`/`offset`. Secret values are never returned; changed secrets appear as ' +
+    '`{ changed: true }`.',
   security: [{ bearerAuth: [] }],
   request: {
     query: z.object({
@@ -111,6 +122,9 @@ const listActivityLogsRoute = createRoute({
         .refine((v) => !v || v.split(',').filter(Boolean).every((s) => isAuditSource(s)), {
           message: `source must be a comma-separated list of: ${AUDIT_SOURCES.join(', ')}`,
         }),
+      // ISO 8601 date-time bounds (inclusive) on when the entry was recorded
+      from: z.string().datetime({ offset: true }).optional(),
+      to: z.string().datetime({ offset: true }).optional(),
       limit: z.coerce.number().int().min(1).max(100).optional(),
       offset: z.coerce.number().int().min(0).optional(),
     }),
@@ -127,6 +141,10 @@ const listActivityLogsRoute = createRoute({
         },
       },
     },
+    400: {
+      description: 'Invalid filter (e.g. `from` after `to`)',
+      content: { 'application/json': { schema: z.object({ message: z.string() }) } },
+    },
   },
 });
 
@@ -142,7 +160,10 @@ activityRouter.use('*', requireMinRole('admin'));
 // List activity logs
 activityRouter.openapi(listActivityLogsRoute, async (c) => {
   const organizationId = c.get('organizationId')!;
-  const { projectId, userId, actions: actionsStr, source, limit, offset } = c.req.valid('query');
+  const { projectId, userId, actions: actionsStr, source, from, to, limit, offset } = c.req.valid('query');
+  if (from && to && new Date(from) > new Date(to)) {
+    return c.json({ message: 'from must be before or equal to to' }, 400);
+  }
 
   // Parse actions filter
   const actions = actionsStr?.split(',').filter(Boolean) as ActivityAction[] | undefined;
@@ -152,11 +173,13 @@ activityRouter.openapi(listActivityLogsRoute, async (c) => {
     userId,
     actions,
     sources: parseSources(source),
+    from: from ? new Date(from) : undefined,
+    to: to ? new Date(to) : undefined,
     limit: limit ?? 50,
     offset: offset ?? 0,
   });
 
-  return c.json({ data: logs, total });
+  return c.json({ data: logs, total }, 200);
 });
 
 /**
@@ -167,12 +190,22 @@ activityRouter.openapi(listActivityLogsRoute, async (c) => {
 activityRouter.get('/export', async (c) => {
   const organizationId = c.get('organizationId')!;
   const actions = c.req.query('actions')?.split(',').filter(Boolean) as ActivityAction[] | undefined;
+  const from = parseDate(c.req.query('from'));
+  const to = parseDate(c.req.query('to'));
+  if (from === null || to === null) {
+    return c.json({ message: 'from/to must be ISO 8601 date-times' }, 400);
+  }
+  if (from && to && from > to) {
+    return c.json({ message: 'from must be before or equal to to' }, 400);
+  }
 
   const { logs } = await activityService.getByOrganization(organizationId, {
     projectId: c.req.query('projectId'),
     userId: c.req.query('userId'),
     actions,
     sources: parseSources(c.req.query('source')),
+    from,
+    to,
     limit: 10_000,
     offset: 0,
   });

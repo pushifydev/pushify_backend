@@ -286,6 +286,50 @@ describe('audit log listing', () => {
     expect(getByOrganization).not.toHaveBeenCalled();
   });
 
+  it('filters by date range', async () => {
+    const res = await app.request('/activity?from=2026-01-01T00:00:00Z&to=2026-01-31T23:59:59Z');
+    expect(res.status).toBe(200);
+    expect(getByOrganization.mock.calls[0][1]).toMatchObject({
+      from: new Date('2026-01-01T00:00:00Z'),
+      to: new Date('2026-01-31T23:59:59Z'),
+    });
+  });
+
+  it('combines date, user and source filters within the caller organization', async () => {
+    const userId = '11111111-1111-4111-8111-111111111111';
+    const res = await app.request(`/activity?from=2026-01-01T00:00:00Z&userId=${userId}&source=webhook`, {
+      headers: { 'x-test-org': 'org-A' },
+    });
+    expect(res.status).toBe(200);
+    expect(getByOrganization.mock.calls[0][0]).toBe('org-A');
+    expect(getByOrganization.mock.calls[0][1]).toMatchObject({
+      userId,
+      sources: ['webhook'],
+      from: new Date('2026-01-01T00:00:00Z'),
+    });
+  });
+
+  it('rejects a malformed date', async () => {
+    const res = await app.request('/activity?from=yesterday');
+    expect(res.status).toBe(400);
+    expect(getByOrganization).not.toHaveBeenCalled();
+  });
+
+  it('rejects from after to', async () => {
+    const res = await app.request('/activity?from=2026-02-01T00:00:00Z&to=2026-01-01T00:00:00Z');
+    expect(res.status).toBe(400);
+    expect(getByOrganization).not.toHaveBeenCalled();
+  });
+
+  it('export honours the date range and rejects a malformed one', async () => {
+    const ok = await app.request('/activity/export?from=2026-01-01T00:00:00Z');
+    expect(ok.status).toBe(200);
+    expect(getByOrganization.mock.calls[0][1]).toMatchObject({ from: new Date('2026-01-01T00:00:00Z') });
+    const bad = await app.request('/activity/export?to=not-a-date');
+    expect(bad.status).toBe(400);
+    expect(getByOrganization).toHaveBeenCalledTimes(1);
+  });
+
   it('export honours the source filter', async () => {
     const res = await app.request('/activity/export?source=api');
     expect(res.status).toBe(200);
