@@ -5,7 +5,12 @@ import {
   createPkcePair,
   discoveryUrl,
   emailDomainOf,
+  reconcileDomainVerifications,
+  txtRecordsContainToken,
   validateEmailDomain,
+  verificationRecordName,
+  verificationRecordValue,
+  verifiedDomains,
   validateIssuer,
   verifyIdTokenClaims,
 } from './oidc';
@@ -174,5 +179,51 @@ describe('verifyIdTokenClaims', () => {
   it('falls back to the username, then to nothing, for a display name', () => {
     expect(identityOf(verifyIdTokenClaims(claims({ name: undefined, preferred_username: 'dana' }), expected)).name).toBe('dana');
     expect(identityOf(verifyIdTokenClaims(claims({ name: undefined }), expected)).name).toBeNull();
+  });
+});
+
+describe('domain ownership', () => {
+  it('puts the TXT record under _pushify-verify.<domain>', () => {
+    expect(verificationRecordName('Acme.com')).toBe('_pushify-verify.acme.com');
+    expect(verificationRecordValue('tok')).toBe('pushify-verify=tok');
+  });
+
+  it('starts new domains pending, keeps the ones that stay, forgets the removed ones', () => {
+    const existing = {
+      'acme.com': { token: 'old', verifiedAt: '2026-01-01T00:00:00.000Z' },
+      'gone.com': { token: 'gone', verifiedAt: '2026-01-01T00:00:00.000Z' },
+    };
+    const next = reconcileDomainVerifications(['acme.com', 'new.com'], existing, () => 'fresh');
+    expect(next).toEqual({
+      'acme.com': { token: 'old', verifiedAt: '2026-01-01T00:00:00.000Z' },
+      'new.com': { token: 'fresh', verifiedAt: null },
+    });
+  });
+
+  it('issues a different, unguessable token per domain by default', () => {
+    const next = reconcileDomainVerifications(['a.com', 'b.com'], {});
+    expect(next['a.com'].token).not.toBe(next['b.com'].token);
+    expect(next['a.com'].token.length).toBeGreaterThanOrEqual(32);
+  });
+
+  it('counts only the domains with a verification', () => {
+    const verifications = {
+      'acme.com': { token: 't', verifiedAt: '2026-01-01T00:00:00.000Z' },
+      'pending.com': { token: 't', verifiedAt: null },
+    };
+    expect(verifiedDomains(['acme.com', 'pending.com', 'unknown.com'], verifications)).toEqual(['acme.com']);
+    expect(verifiedDomains(['acme.com'], undefined)).toEqual([]);
+  });
+
+  it('matches the token in TXT records, joining chunked strings', () => {
+    expect(txtRecordsContainToken([['v=spf1 -all'], ['pushify-verify=', 'abc']], 'abc')).toBe(true);
+    expect(txtRecordsContainToken([['pushify-verify=abcd']], 'abc')).toBe(false);
+    expect(txtRecordsContainToken([], 'abc')).toBe(false);
+  });
+
+  it('a pending domain is not accepted from the provider, even with email_verified', () => {
+    const domains = verifiedDomains(['acme.com'], { 'acme.com': { token: 't', verifiedAt: null } });
+    const result = verifyIdTokenClaims(claims(), { ...expected, emailDomains: domains });
+    expect('error' in result && result.error).toMatch(/not in a domain this connection signs in/);
   });
 });

@@ -12,11 +12,17 @@ import {
   createPkcePair,
   discoveryUrl,
   emailDomainOf,
+  reconcileDomainVerifications,
+  txtRecordsContainToken,
   validateEmailDomain,
   validateIssuer,
+  verificationRecordName,
+  verificationRecordValue,
+  verifiedDomains,
   verifyIdTokenClaims,
   type OidcEndpoints,
 } from '../lib/oidc';
+import { promises as dns } from 'dns';
 import { env } from '../config/env';
 import { logger } from '../lib/logger';
 import { t, type SupportedLocale } from '../i18n';
@@ -44,11 +50,22 @@ export interface PublicSsoConnection {
   issuer: string;
   clientId: string;
   emailDomains: string[];
+  /** Ownership per domain, and the TXT record that proves it */
+  domains: PublicSsoDomain[];
   enforced: boolean;
   defaultRole: string;
   lastUsedAt: Date | null;
   /** What to enter as the redirect URI at the provider */
   redirectUri: string;
+}
+
+export interface PublicSsoDomain {
+  domain: string;
+  status: 'pending' | 'verified';
+  verifiedAt: string | null;
+  /** The TXT record to publish: its name, and its value */
+  recordName: string;
+  recordValue: string;
 }
 
 /** The provider's configuration, kept briefly so a login is not two round trips every time. */
@@ -67,6 +84,16 @@ function toPublic(row: ConnectionRow): PublicSsoConnection {
     issuer: row.issuer,
     clientId: row.clientId,
     emailDomains: row.emailDomains ?? [],
+    domains: (row.emailDomains ?? []).map((domain) => {
+      const entry = row.domainVerifications?.[domain];
+      return {
+        domain,
+        status: entry?.verifiedAt ? ('verified' as const) : ('pending' as const),
+        verifiedAt: entry?.verifiedAt ?? null,
+        recordName: verificationRecordName(domain),
+        recordValue: entry?.token ? verificationRecordValue(entry.token) : '',
+      };
+    }),
     enforced: row.enforced,
     defaultRole: row.defaultRole,
     lastUsedAt: row.lastUsedAt,
@@ -177,11 +204,14 @@ export const ssoService = {
       throw new HTTPException(400, { message: 'Client secret is required' });
     }
 
-    // A domain another organization already signs in would make sign-in ambiguous
+    // A domain another organization has proven it owns would make sign-in ambiguous. A merely
+    // pending claim elsewhere does not block anyone: otherwise whoever typed it first would keep
+    // the real owner out.
     const others = await db.select().from(ssoConnections);
     for (const other of others) {
       if (other.organizationId === organizationId) continue;
-      const clash = domains.find((domain) => (other.emailDomains ?? []).includes(domain));
+      const taken = verifiedDomains(other.emailDomains, other.domainVerifications);
+      const clash = domains.find((domain) => taken.includes(domain));
       if (clash) throw new HTTPException(400, { message: `${clash} is already used for SSO by another organization` });
     }
 
@@ -194,6 +224,8 @@ export const ssoService = {
       issuer,
       clientId,
       emailDomains: domains,
+      // New domains start pending; the ones kept keep their token and verification
+      domainVerifications: reconcileDomainVerifications(domains, existing?.domainVerifications),
       enforced: input.enforced ?? existing?.enforced ?? false,
       defaultRole,
       updatedAt: new Date(),
@@ -217,12 +249,74 @@ export const ssoService = {
     return { success: true };
   },
 
-  /** The connection that signs in this address, if any. Used by the login form and by the gate. */
+  /**
+   * Prove a domain: look up `_pushify-verify.<domain>` and compare it with the token issued for
+   * this connection. Until this succeeds the domain signs nobody in and enforces nothing.
+   */
+  async verifyDomain(
+    organizationId: string,
+    userId: string,
+    rawDomain: string,
+    locale: SupportedLocale = 'en'
+  ): Promise<PublicSsoConnection> {
+    await assertCanManage(organizationId, userId, locale);
+
+    const domain = String(rawDomain ?? '').trim().toLowerCase();
+    if (!domain) throw new HTTPException(400, { message: 'Domain is required' });
+
+    const [connection] = await db.select().from(ssoConnections).where(eq(ssoConnections.organizationId, organizationId));
+    if (!connection) throw new HTTPException(404, { message: 'No single sign-on connection is set up' });
+
+    const entry = connection.domainVerifications?.[domain];
+    if (!(connection.emailDomains ?? []).includes(domain) || !entry?.token) {
+      throw new HTTPException(400, { message: `${domain} is not one of this connection's email domains` });
+    }
+    if (entry.verifiedAt) return toPublic(connection);
+
+    const others = await db.select().from(ssoConnections);
+    for (const other of others) {
+      if (other.id === connection.id) continue;
+      if (verifiedDomains(other.emailDomains, other.domainVerifications).includes(domain)) {
+        throw new HTTPException(409, { message: `${domain} is already used for SSO by another organization` });
+      }
+    }
+
+    const recordName = verificationRecordName(domain);
+    let records: string[][] = [];
+    try {
+      records = await dns.resolveTxt(recordName);
+    } catch {
+      records = [];
+    }
+    if (!txtRecordsContainToken(records, entry.token)) {
+      throw new HTTPException(400, {
+        message: `No matching TXT record found. Add a TXT record at ${recordName} with the value ${verificationRecordValue(entry.token)}`,
+      });
+    }
+
+    const domainVerifications = {
+      ...connection.domainVerifications,
+      [domain]: { token: entry.token, verifiedAt: new Date().toISOString() },
+    };
+    const [row] = await db
+      .update(ssoConnections)
+      .set({ domainVerifications, updatedAt: new Date() })
+      .where(eq(ssoConnections.id, connection.id))
+      .returning();
+
+    logger.info({ organizationId, domain }, 'SSO domain verified');
+    return toPublic(row);
+  },
+
+  /**
+   * The connection that signs in this address, if any. Used by the login form and by the gate.
+   * Only a domain whose ownership was proven counts — a pending one routes nobody anywhere.
+   */
   async connectionForEmail(email: string): Promise<ConnectionRow | null> {
     const domain = emailDomainOf(email);
     if (!domain) return null;
     const rows = await db.select().from(ssoConnections);
-    return rows.find((row) => (row.emailDomains ?? []).includes(domain)) ?? null;
+    return rows.find((row) => verifiedDomains(row.emailDomains, row.domainVerifications).includes(domain)) ?? null;
   },
 
   /** Does this address have to use SSO? Checked by the password login. */
@@ -309,7 +403,9 @@ export const ssoService = {
       issuer: connection.issuer,
       clientId: connection.clientId,
       nonce: state.nonce,
-      emailDomains: connection.emailDomains ?? [],
+      // Only proven domains: a provider the organization chose may not vouch for an address in a
+      // domain the organization has not shown it owns
+      emailDomains: verifiedDomains(connection.emailDomains, connection.domainVerifications),
     });
     if ('error' in checked) throw new HTTPException(400, { message: checked.error });
     const identity = checked.identity;

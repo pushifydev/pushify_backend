@@ -97,6 +97,22 @@ ssoRouter.put('/connection', async (c) => {
   return c.json({ data: connection });
 });
 
+// ── Domain ownership (a session, and the organization's owner) ──
+ssoRouter.use('/domains/*', authMiddleware);
+ssoRouter.use('/domains/*', rejectApiKeyAuth());
+
+/** Check the `_pushify-verify.<domain>` TXT record; until it matches, the domain signs nobody in. */
+ssoRouter.post('/domains/verify', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { domain?: unknown };
+  const connection = await ssoService.verifyDomain(
+    c.get('organizationId')!,
+    c.get('userId')!,
+    typeof body?.domain === 'string' ? body.domain : '',
+    c.get('locale')
+  );
+  return c.json({ data: connection });
+});
+
 ssoRouter.delete('/connection', async (c) => {
   const organizationId = c.get('organizationId')!;
   const userId = c.get('userId')!;

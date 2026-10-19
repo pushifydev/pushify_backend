@@ -24,6 +24,16 @@ export const ssoConnections = pgTable(
     clientSecretEncrypted: text('client_secret_encrypted').notNull(),
     /** Lower-case domains, without the `@` */
     emailDomains: jsonb('email_domains').$type<string[]>().default([]).notNull(),
+    /**
+     * Proof of ownership, per domain in `email_domains`: the TXT token the organization has to
+     * publish at `_pushify-verify.<domain>`, and when that was checked. A domain without a
+     * `verifiedAt` is pending — it routes no sign-in, is not accepted from the provider and is
+     * not enforced. Without this the first organization to type `acme.com` would own it.
+     */
+    domainVerifications: jsonb('domain_verifications')
+      .$type<Record<string, { token: string; verifiedAt: string | null }>>()
+      .default({})
+      .notNull(),
     /** Members in those domains may only sign in through the provider */
     enforced: boolean('enforced').default(false).notNull(),
     /** The role someone gets when the provider sends them for the first time */

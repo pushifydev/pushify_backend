@@ -92,6 +92,69 @@ export function connectionAcceptsEmail(connection: Pick<OidcConnection, 'emailDo
   return !!domain && connection.emailDomains.map((d) => d.toLowerCase()).includes(domain);
 }
 
+/**
+ * Domain ownership. Typing `acme.com` into a form proves nothing — and the issuer is a URL the
+ * same customer chose, so the provider's `email_verified` proves nothing either. Until the
+ * organization publishes a TXT record at `_pushify-verify.<domain>`, a domain is pending: it
+ * signs nobody in and enforces nothing.
+ */
+export interface DomainVerification {
+  token: string;
+  /** ISO timestamp, null while pending */
+  verifiedAt: string | null;
+}
+
+export type DomainVerifications = Record<string, DomainVerification>;
+
+export const DOMAIN_VERIFICATION_PREFIX = '_pushify-verify';
+
+/** Where the TXT record goes. */
+export function verificationRecordName(domain: string): string {
+  return `${DOMAIN_VERIFICATION_PREFIX}.${domain.trim().toLowerCase()}`;
+}
+
+/** What the TXT record has to say. */
+export function verificationRecordValue(token: string): string {
+  return `pushify-verify=${token}`;
+}
+
+export function createVerificationToken(): string {
+  return crypto.randomBytes(24).toString('base64url');
+}
+
+/**
+ * The verification state for a new list of domains: a domain that stays keeps its token and its
+ * verification, a new one starts pending, a removed one is forgotten.
+ */
+export function reconcileDomainVerifications(
+  domains: string[],
+  existing: DomainVerifications | null | undefined,
+  newToken: () => string = createVerificationToken
+): DomainVerifications {
+  const next: DomainVerifications = {};
+  for (const domain of domains) {
+    const previous = existing?.[domain];
+    next[domain] = previous?.token
+      ? { token: previous.token, verifiedAt: previous.verifiedAt ?? null }
+      : { token: newToken(), verifiedAt: null };
+  }
+  return next;
+}
+
+/** The domains of a connection whose ownership has been proven. Only these count for sign-in. */
+export function verifiedDomains(
+  emailDomains: string[] | null | undefined,
+  verifications: DomainVerifications | null | undefined
+): string[] {
+  return (emailDomains ?? []).filter((domain) => !!verifications?.[domain]?.verifiedAt);
+}
+
+/** Does any of the TXT records (as `dns.resolveTxt` returns them, in chunks) carry the token? */
+export function txtRecordsContainToken(records: string[][], token: string): boolean {
+  const expected = verificationRecordValue(token);
+  return records.some((chunks) => chunks.join('').trim() === expected);
+}
+
 /** PKCE: a secret this side keeps, and the challenge the provider is given. */
 export function createPkcePair(): { verifier: string; challenge: string } {
   const verifier = crypto.randomBytes(32).toString('base64url');
