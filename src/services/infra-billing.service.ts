@@ -1,6 +1,6 @@
 import { HTTPException } from 'hono/http-exception';
 import { env } from '../config/env';
-import { eq, and, desc, inArray } from 'drizzle-orm';
+import { eq, and, desc, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { organizations, infraWalletTransactions } from '../db/schema';
 import { servers } from '../db/schema/servers';
@@ -336,49 +336,65 @@ export const infraBillingService = {
       throw new Error('Credit amount must be positive');
     }
 
-    if (stripeCheckoutSessionId) {
+    // Insert the ledger row first, inside the transaction. The partial unique index on
+    // (organization_id, stripe_checkout_session_id) (migration 0076) makes the webhook and the
+    // success-page confirm race-safe: the loser's insert conflicts, returns no row and credits
+    // nothing. The balance is incremented atomically only when the row was inserted.
+    const credited = await db.transaction(async (tx) => {
+      const [inserted] = await tx
+        .insert(infraWalletTransactions)
+        .values({
+          organizationId,
+          type: 'credit_topup',
+          amountCents,
+          balanceAfterCents: 0,
+          description,
+          stripeCheckoutSessionId: stripeCheckoutSessionId ?? null,
+        })
+        .onConflictDoNothing()
+        .returning({ id: infraWalletTransactions.id });
+
+      if (!inserted) {
+        return null;
+      }
+
+      const [org] = await tx
+        .update(organizations)
+        .set({
+          infraWalletBalanceCents: sql`${organizations.infraWalletBalanceCents} + ${amountCents}`,
+          updatedAt: new Date(),
+        })
+        .where(eq(organizations.id, organizationId))
+        .returning({ balance: organizations.infraWalletBalanceCents });
+
+      if (!org) {
+        throw new Error('Organization not found');
+      }
+
+      await tx
+        .update(infraWalletTransactions)
+        .set({ balanceAfterCents: org.balance })
+        .where(eq(infraWalletTransactions.id, inserted.id));
+
+      return org.balance;
+    });
+
+    if (credited === null) {
       const [existing] = await db
         .select({ balanceAfterCents: infraWalletTransactions.balanceAfterCents })
         .from(infraWalletTransactions)
         .where(
           and(
             eq(infraWalletTransactions.organizationId, organizationId),
-            eq(infraWalletTransactions.stripeCheckoutSessionId, stripeCheckoutSessionId),
+            eq(infraWalletTransactions.stripeCheckoutSessionId, stripeCheckoutSessionId ?? ''),
           ),
         )
         .limit(1);
-
-      if (existing) {
-        await this.clearInfraCreditsStoppedMessages(organizationId);
-        return { balanceAfterCents: existing.balanceAfterCents, created: false };
-      }
+      await this.clearInfraCreditsStoppedMessages(organizationId);
+      return { balanceAfterCents: existing?.balanceAfterCents ?? 0, created: false };
     }
 
-    const balanceAfterCents = await db.transaction(async (tx) => {
-      const [org] = await tx
-        .select({ balance: organizations.infraWalletBalanceCents })
-        .from(organizations)
-        .where(eq(organizations.id, organizationId))
-        .limit(1);
-
-      const newBalance = (org?.balance ?? 0) + amountCents;
-
-      await tx
-        .update(organizations)
-        .set({ infraWalletBalanceCents: newBalance, updatedAt: new Date() })
-        .where(eq(organizations.id, organizationId));
-
-      await tx.insert(infraWalletTransactions).values({
-        organizationId,
-        type: 'credit_topup',
-        amountCents,
-        balanceAfterCents: newBalance,
-        description,
-        stripeCheckoutSessionId: stripeCheckoutSessionId ?? null,
-      });
-
-      return newBalance;
-    });
+    const balanceAfterCents = credited;
 
     await this.clearInfraCreditsStoppedMessages(organizationId);
 

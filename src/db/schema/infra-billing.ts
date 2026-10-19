@@ -38,7 +38,12 @@ export const infraWalletTransactions = pgTable('infra_wallet_transactions', {
   metadata: jsonb('metadata').default({}).notNull(),
   stripeCheckoutSessionId: varchar('stripe_checkout_session_id', { length: 255 }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-});
+}, (t) => ({
+  /** One wallet credit per checkout session: webhook and success-page confirm race (migration 0076). */
+  checkoutSessionUq: uniqueIndex('infra_wallet_transactions_org_checkout_session_uq')
+    .on(t.organizationId, t.stripeCheckoutSessionId)
+    .where(sql`${t.stripeCheckoutSessionId} IS NOT NULL`),
+}));
 
 export const infraWalletTransactionsRelations = relations(infraWalletTransactions, ({ one }) => ({
   organization: one(organizations, {
