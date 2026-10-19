@@ -85,7 +85,7 @@ vi.mock('../services/domain.service', () => ({
   domainService: {
     create: vi.fn(async () => ({ id: 'd-1', projectId: 'p-1', domain: 'app.example.com', isPrimary: false, sslStatus: null, verifiedAt: null, createdAt: new Date(), dns: {} })),
     getById: vi.fn(async () => ({ id: 'd-1', domain: 'app.example.com' })),
-    delete: vi.fn(async () => undefined),
+    delete: vi.fn(async () => ({ dns: { deleted: 0 } })),
     getByProject: vi.fn(async () => [
       { id: 'd-0', domain: 'old.example.com', isPrimary: true },
       { id: 'd-1', domain: 'app.example.com', isPrimary: false },

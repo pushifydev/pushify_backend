@@ -6,9 +6,10 @@
  * The token is only ever sent in the Authorization header: it never appears in an error message
  * or a log line (use maskToken when a hint is needed).
  *
- * Records are created, never changed: an existing record with the same name and type is someone's
- * decision and is reported as a conflict instead of being overwritten. When the domain is removed,
- * only the records Pushify created (marked with ORG_RECORD_COMMENT) are deleted.
+ * An existing record with the same name and type is someone's decision and is reported as a
+ * conflict instead of being overwritten. Only the records Pushify created (marked with
+ * ORG_RECORD_COMMENT) are ever changed — re-pointed when the server's IP changes — or deleted
+ * when the domain is removed.
  */
 
 const API = 'https://api.cloudflare.com/client/v4';
@@ -166,4 +167,71 @@ export async function deleteCustomDomainRecords(token: string, domain: string): 
     }
   }
   return deleted;
+}
+
+export interface SyncRecordsResult {
+  updated: number;
+  created: number;
+  deleted: number;
+}
+
+/**
+ * Point the records Pushify created for `domain` at the server's current addresses — after the
+ * server's IP changed or the app moved to another server. Only records with Pushify's comment
+ * are touched: a name without one isn't managed by Pushify and is left as it is. Changed records
+ * keep their proxy setting. A newly gained IPv6 gets an AAAA record only when the name has no
+ * AAAA record at all; a lost one removes Pushify's AAAA record. Without an IPv4 nothing is
+ * touched. Throws CloudflareDnsError.
+ */
+export async function syncCustomDomainRecords(
+  token: string,
+  input: { domain: string; ipv4?: string | null; ipv6?: string | null }
+): Promise<SyncRecordsResult> {
+  const result: SyncRecordsResult = { updated: 0, created: 0, deleted: 0 };
+  // A server without IPv4 is unfinished or mid-change (Pushify reaches every server over IPv4),
+  // not a decision to drop the domain's DNS: leave the records as they are.
+  if (!input.ipv4) return result;
+  const name = input.domain.toLowerCase().replace(/\.$/, '');
+  const zone = await findZone(token, name);
+  if (!zone) return result;
+
+  type Rec = { id: string; content: string; proxied?: boolean; comment?: string | null };
+  const types = ['A', 'AAAA'] as const;
+  const all: Record<'A' | 'AAAA', Rec[]> = { A: [], AAAA: [] };
+  for (const type of types) {
+    all[type] =
+      (await cf<Rec[]>(token, `/zones/${zone.id}/dns_records?type=${type}&name=${encodeURIComponent(name)}&per_page=20`)) || [];
+  }
+  const ours = (type: 'A' | 'AAAA') => all[type].filter((r) => r.comment === ORG_RECORD_COMMENT);
+  const managed = [...ours('A'), ...ours('AAAA')];
+  if (managed.length === 0) return result;
+  const proxied = managed[0].proxied === true;
+
+  for (const type of types) {
+    const wanted = type === 'A' ? input.ipv4 : input.ipv6;
+    if (!wanted) {
+      for (const record of ours(type)) {
+        await cf(token, `/zones/${zone.id}/dns_records/${record.id}`, { method: 'DELETE' });
+        result.deleted++;
+      }
+      continue;
+    }
+    if (all[type].length === 0) {
+      await cf(token, `/zones/${zone.id}/dns_records`, {
+        method: 'POST',
+        body: JSON.stringify({ type, name, content: wanted, proxied, ttl: 1, comment: ORG_RECORD_COMMENT }),
+      });
+      result.created++;
+      continue;
+    }
+    for (const record of ours(type)) {
+      if (record.content === wanted) continue;
+      await cf(token, `/zones/${zone.id}/dns_records/${record.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ content: wanted }),
+      });
+      result.updated++;
+    }
+  }
+  return result;
 }
