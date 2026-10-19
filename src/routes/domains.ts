@@ -343,7 +343,16 @@ const deleteDomainRoute = createRoute({
       description: 'Domain removed',
       content: {
         'application/json': {
-          schema: MessageSchema,
+          schema: MessageSchema.extend({
+            dns: z
+              .object({
+                deleted: z.number(),
+                message: z.string().optional().openapi({
+                  description: 'Set when the Cloudflare record Pushify created could not be removed',
+                }),
+              })
+              .optional(),
+          }),
         },
       },
     },
@@ -566,7 +575,7 @@ domainRouter.openapi(deleteDomainRoute, async (c) => {
   // Get domain before deleting
   const domain = await domainService.getById(domainId, projectId, organizationId, userId, locale);
 
-  await domainService.delete(domainId, projectId, organizationId, userId, locale);
+  const { dns } = await domainService.delete(domainId, projectId, organizationId, userId, locale);
 
   // Log activity
   await activityService.logDomainRemoved(
@@ -579,7 +588,7 @@ domainRouter.openapi(deleteDomainRoute, async (c) => {
     auditSource(c)
   );
 
-  return c.json({ message: t(locale, 'domains', 'deleted') });
+  return c.json({ message: t(locale, 'domains', 'deleted'), dns });
 });
 
 export { domainRouter as domainRoutes };

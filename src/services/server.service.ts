@@ -1071,6 +1071,16 @@ export const serverService = {
       .where(eq(servers.id, serverId))
       .returning();
 
+    // The provider gave the server a new address: re-point the Cloudflare records Pushify created
+    // for the custom domains on it. In the background — it never fails the refresh.
+    const ipChanged =
+      (server.ipv4 ?? null) !== (providerServer.ipv4 ?? null) || (server.ipv6 ?? null) !== (providerServer.ipv6 ?? null);
+    if (ipChanged && providerServer.ipv4) {
+      void import('./domain.service')
+        .then(({ domainService }) => domainService.syncServerDnsRecords(serverId))
+        .catch((err) => logger.warn({ serverId, err }, 'Cloudflare DNS sync after IP change failed'));
+    }
+
     return toServerDetails(updated, organizationId);
   },
 

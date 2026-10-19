@@ -368,6 +368,10 @@ export const projectService = {
           'Old-server cleanup after move failed',
         );
       }
+      // Custom domains with Pushify-made Cloudflare records follow the app to the new server.
+      void import('./domain.service')
+        .then(({ domainService }) => domainService.syncProjectDnsRecords(project))
+        .catch((err) => logger.warn({ projectId, err }, 'Cloudflare DNS sync after server change failed'));
     }
 
     // Turning auto-sleep off while the app is asleep must actually start it again —

@@ -9,6 +9,7 @@ import {
   createCustomDomainRecords,
   deleteCustomDomainRecords,
   maskToken,
+  syncCustomDomainRecords,
   verifyCloudflareToken,
   type CreatedRecord,
 } from '../lib/cloudflare-org-dns';
@@ -45,6 +46,16 @@ export interface DomainDnsResult {
   zone?: string;
   records?: CreatedRecord[];
   /** Why it was skipped or failed — the domain is still added; DNS is then set up by hand. */
+  message?: string;
+}
+
+export interface DomainDnsSyncResult {
+  domain: string;
+  /** skipped: Cloudflare not connected or no server IP; unchanged: nothing to do (or not Pushify's records). */
+  status: 'updated' | 'unchanged' | 'skipped' | 'failed';
+  updated?: number;
+  created?: number;
+  deleted?: number;
   message?: string;
 }
 
@@ -176,7 +187,7 @@ export const dnsProviderService = {
    * Delete the records Pushify created for a custom domain that is being removed. Never throws:
    * the domain is already gone from Pushify, so a Cloudflare problem is only logged.
    */
-  async deleteRecordsForDomain(organizationId: string, domain: string): Promise<{ deleted: number }> {
+  async deleteRecordsForDomain(organizationId: string, domain: string): Promise<{ deleted: number; message?: string }> {
     let token: string;
     try {
       const row = await findRow(organizationId);
@@ -187,7 +198,7 @@ export const dnsProviderService = {
         { organizationId, domain, error: err instanceof Error ? err.message : String(err) },
         'Could not load Cloudflare DNS connection'
       );
-      return { deleted: 0 };
+      return { deleted: 0, message: `Could not load the Cloudflare connection. Remove the DNS record for ${domain} in Cloudflare manually.` };
     }
     try {
       const deleted = await deleteCustomDomainRecords(token, domain);
@@ -198,7 +209,46 @@ export const dnsProviderService = {
         { organizationId, domain, token: maskToken(token), error: err instanceof Error ? err.message : String(err) },
         'Cloudflare DNS record deletion failed — remove the record in Cloudflare manually'
       );
-      return { deleted: 0 };
+      const reason = err instanceof CloudflareDnsError ? err.message : 'Unexpected error while deleting the Cloudflare DNS record';
+      return { deleted: 0, message: `${reason}. Remove the DNS record for ${domain} in Cloudflare manually.` };
+    }
+  },
+
+  /**
+   * Re-point the records Pushify created for a custom domain at the server's current IPv4/IPv6
+   * (the server's IP changed, or the app moved to another server). Never throws: a problem comes
+   * back as status 'failed' with a message saying what to fix by hand.
+   */
+  async syncRecordsForDomain(
+    organizationId: string,
+    domain: string,
+    server: { ipv4?: string | null; ipv6?: string | null } | null
+  ): Promise<DomainDnsSyncResult> {
+    if (!server?.ipv4) return { domain, status: 'skipped' };
+    let token: string;
+    try {
+      const row = await findRow(organizationId);
+      if (!row) return { domain, status: 'skipped' };
+      token = decrypt(row.apiTokenEncrypted);
+    } catch (err) {
+      logger.warn(
+        { organizationId, domain, error: err instanceof Error ? err.message : String(err) },
+        'Could not load Cloudflare DNS connection'
+      );
+      return { domain, status: 'failed', message: `Could not load the Cloudflare connection. Update the DNS record for ${domain} manually.` };
+    }
+    try {
+      const result = await syncCustomDomainRecords(token, { domain, ipv4: server.ipv4, ipv6: server.ipv6 });
+      const changed = result.updated + result.created + result.deleted;
+      if (changed > 0) logger.info({ organizationId, domain, ...result, token: maskToken(token) }, 'Cloudflare DNS records synced');
+      return { domain, status: changed > 0 ? 'updated' : 'unchanged', ...result };
+    } catch (err) {
+      logger.warn(
+        { organizationId, domain, token: maskToken(token), error: err instanceof Error ? err.message : String(err) },
+        'Cloudflare DNS record sync failed — update the record in Cloudflare manually'
+      );
+      const reason = err instanceof CloudflareDnsError ? err.message : 'Unexpected error while updating the Cloudflare DNS record';
+      return { domain, status: 'failed', message: `${reason}. Update the DNS record for ${domain} in Cloudflare manually.` };
     }
   },
 };
