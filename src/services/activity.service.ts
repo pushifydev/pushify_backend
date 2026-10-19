@@ -2,7 +2,7 @@ import { db } from '../db';
 import { activityLogs, type ActivityAction } from '../db/schema/activity';
 import { users } from '../db/schema/users';
 import { projects } from '../db/schema/projects';
-import { eq, desc, and, inArray, sql } from 'drizzle-orm';
+import { eq, desc, and, inArray, gte, lte, sql } from 'drizzle-orm';
 import { logger } from '../lib/logger';
 import { normalizeClientIp } from '../lib/utils';
 import { currentAuditApiKey, sanitizeChanges, type AuditChanges, type AuditSource } from '../lib/audit';
@@ -28,6 +28,10 @@ export interface ActivityLogFilters {
   actions?: ActivityAction[];
   /** Only entries from these sources (ui | api | webhook | system) */
   sources?: AuditSource[];
+  /** Only entries created at or after this instant */
+  from?: Date;
+  /** Only entries created at or before this instant */
+  to?: Date;
   limit?: number;
   offset?: number;
 }
@@ -98,7 +102,7 @@ class ActivityService {
     organizationId: string,
     filters: ActivityLogFilters = {}
   ): Promise<{ logs: ActivityLogWithDetails[]; total: number }> {
-    const { projectId, userId, actions, sources, limit = 50, offset = 0 } = filters;
+    const { projectId, userId, actions, sources, from, to, limit = 50, offset = 0 } = filters;
 
     // Build where conditions
     const conditions = [eq(activityLogs.organizationId, organizationId)];
@@ -117,6 +121,14 @@ class ActivityService {
 
     if (sources && sources.length > 0) {
       conditions.push(inArray(activityLogs.source, sources));
+    }
+
+    if (from) {
+      conditions.push(gte(activityLogs.createdAt, from));
+    }
+
+    if (to) {
+      conditions.push(lte(activityLogs.createdAt, to));
     }
 
     const whereClause = and(...conditions);
