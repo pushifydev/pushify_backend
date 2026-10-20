@@ -14,6 +14,12 @@ export type SiteDownKind =
   | 'container_not_running'
   | 'dns_tls'
   | 'unreachable'
+  /**
+   * The site's server belongs to the customer and is off or does not answer: their own server
+   * (BYOS) is unreachable, or the project's server is powered off / being deleted. Never a
+   * platform outage — the site comes back when the customer's server runs again.
+   */
+  | 'user_server_unreachable'
   | 'app_error'
   | 'unknown';
 
@@ -35,7 +41,25 @@ export interface SiteDownFacts {
   hosting: 'byos' | 'managed' | 'shared';
   diagnostics: Pick<ServerDiagnostics, 'checks' | 'failedCheck'> | null;
   latestDeploy: { status: string; blame: DeployFailureBlame | null; label: string | null } | null;
+  /** The project's server row as Pushify records it (null/absent on the shared runners). */
+  serverStatus?: string | null;
+  /** servers.status_message — only the known stop codes below are ever used, never the text itself. */
+  serverStatusMessage?: string | null;
 }
+
+/** Server states in which nothing on it can answer: powered off, or on its way out. */
+const SERVER_OFF = new Set(['stopped', 'deleting']);
+
+/**
+ * Why Pushify powered a server off (servers.status_message). A managed server is only powered off
+ * through Pushify — the customer's power action, non-payment or an account ban — so a stopped
+ * server is the customer's, whichever of these it was. Anything else is not echoed.
+ */
+const STOP_REASONS = new Map<string, string>([
+  ['billing_suspended', 'stopped for non-payment'],
+  ['infra_credits_stopped', 'stopped when the infrastructure wallet ran out'],
+  ['account_banned', 'stopped by an account ban'],
+]);
 
 /** The proxy (nginx or Cloudflare in front of it) answered, but no app behind it did. */
 const NO_UPSTREAM = new Set([502, 503, 504, 521, 523]);
@@ -117,6 +141,17 @@ export function diagnoseSiteDown(facts: SiteDownFacts): SiteDownDiagnosis {
 
   const error = (facts.error ?? '').toLowerCase();
   const said = facts.error ? ` (${facts.error})` : '';
+  // A powered-off server (or one being deleted) answers nothing whatever the network error says,
+  // and nothing else can be fixed before it runs again: that is the cause, and it is the customer's.
+  const serverStatus = facts.serverStatus ?? null;
+  if (facts.hosting !== 'shared' && serverStatus && SERVER_OFF.has(serverStatus)) {
+    const reason = facts.serverStatusMessage ? STOP_REASONS.get(facts.serverStatusMessage) : undefined;
+    return {
+      kind: 'user_server_unreachable',
+      userSide: true,
+      summary: `No HTTP answer${said}: the project's server is ${serverStatus === 'deleting' ? 'being deleted' : 'powered off'} (status ${serverStatus}${reason ? `, ${reason}` : ''}).`,
+    };
+  }
   if (DNS_PATTERN.test(error)) {
     return { kind: 'dns_tls', userSide: null, summary: `No HTTP answer${said}: the site's host name does not resolve.` };
   }
@@ -127,7 +162,7 @@ export function diagnoseSiteDown(facts: SiteDownFacts): SiteDownDiagnosis {
   const failed = facts.diagnostics?.failedCheck ?? null;
   if (failed === 'ssh') {
     return {
-      kind: 'unreachable',
+      kind: ours ? 'unreachable' : 'user_server_unreachable',
       userSide: !ours,
       summary: `No HTTP answer${said}: the server does not answer SSH (${outcomeOf(facts.diagnostics, 'ssh')}).`,
     };
@@ -150,7 +185,7 @@ export function diagnoseSiteDown(facts: SiteDownFacts): SiteDownDiagnosis {
       };
     }
     return {
-      kind: 'unreachable',
+      kind: ours ? 'unreachable' : 'user_server_unreachable',
       userSide: !ours,
       summary: `No HTTP answer${said}: port ${port} is not reachable from the internet (${outcome ?? 'failed'}).`,
     };

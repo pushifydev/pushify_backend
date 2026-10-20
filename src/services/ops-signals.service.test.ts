@@ -129,6 +129,33 @@ describe('opsSignalsService sitesDown diagnosis', () => {
     const query = h.queries.map(render).find((q) => q.includes('project_health_state'))!;
     expect(query).toContain('h.diagnostics AS "diagnostics"');
   });
+
+  it("moves a user's powered-off or unreachable own server out of sitesDown, so it raises no platform alarm", async () => {
+    const base = {
+      downSince: '2026-09-22T22:54:41Z', statusCode: null, error: 'fetch failed', serverLastSeenAt: null,
+      lastSuccessfulDeployAt: null, ownerLastLoginAt: null, downReason: 'server_unreachable',
+      latestStatus: 'running', latestCreatedAt: '2026-09-01T00:00:00Z', latestError: null,
+      diagnostics: {
+        checkedAt: '2026-10-16T00:00:00Z', failedCheck: 'ssh', advice: null, managed: true,
+        checks: [{ check: 'ssh', outcome: 'timeout', ok: false, advice: null }],
+      },
+    };
+    h.downRows = [
+      { ...base, projectId: 'stopped', managed: true, serverStatus: 'stopped', serverStatusMessage: 'billing_suspended' },
+      { ...base, projectId: 'byos', managed: false, serverStatus: 'running', serverStatusMessage: null },
+      { ...base, projectId: 'ours', managed: true, serverStatus: 'running', serverStatusMessage: null },
+    ];
+    const { sitesDown, userServerUnreachable } = await opsSignalsService.getSignals();
+    expect(sitesDown.map((s) => s.projectId)).toEqual(['ours']);
+    expect(sitesDown[0].diagnosis).toMatchObject({ kind: 'unreachable', userSide: false });
+    expect(userServerUnreachable.map((s) => s.projectId)).toEqual(['stopped', 'byos']);
+    expect(userServerUnreachable[0]).toMatchObject({ hosting: 'managed', serverStatus: 'stopped', diagnosis: { kind: 'user_server_unreachable', userSide: true } });
+    expect(userServerUnreachable[0].diagnosis.summary).toContain('stopped for non-payment');
+    expect(userServerUnreachable[1]).toMatchObject({ hosting: 'byos', diagnosis: { kind: 'user_server_unreachable', userSide: true } });
+    expect(userServerUnreachable[0]).not.toHaveProperty('serverStatusMessage');
+    const query = h.queries.map(render).find((q) => q.includes('project_health_state'))!;
+    expect(query).toContain('s.status_message AS "serverStatusMessage"');
+  });
 });
 
 describe('opsSignalsService servers disk diagnosis', () => {

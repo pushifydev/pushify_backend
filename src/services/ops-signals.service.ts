@@ -44,6 +44,12 @@ export interface OpsSignals {
    * identities. Live DNS is not here: it is not stored, the consumer must resolve it itself.
    */
   sitesDown: SiteDown[];
+  /**
+   * Down sites diagnosed `user_server_unreachable`: the customer's own server does not answer, or
+   * the project's server is powered off / being deleted. Not a platform fault, so they are kept
+   * out of sitesDown (which raises the platform alarm) and only listed here for the record.
+   */
+  userServerUnreachable: SiteDown[];
   servers: Array<{
     serverId: string;
     managed: boolean;
@@ -112,6 +118,8 @@ export interface SiteDown {
 
 type SiteDownRow = Omit<SiteDown, 'hosting' | 'latestDeploy' | 'diagnosis'> & {
   managed: boolean | null;
+  /** Read only to name a known stop reason in the diagnosis; never passed through. */
+  serverStatusMessage?: string | null;
   diagnostics?: ServerDiagnostics | null;
   latestStatus: string | null;
   latestCreatedAt: string | null;
@@ -172,6 +180,7 @@ export const opsSignalsService = {
                ld.status AS "latestStatus", ${iso('ld.created_at')} AS "latestCreatedAt",
                ld.error_message AS "latestError",
                s.is_managed AS "managed", s.status::text AS "serverStatus",
+               s.status_message AS "serverStatusMessage",
                ${iso('s.last_seen_at')} AS "serverLastSeenAt",
                ${iso(`(SELECT max(d.created_at) FROM deployments d
                         WHERE d.project_id = h.project_id AND d.status IN ('running', 'stopped'))`)} AS "lastSuccessfulDeployAt",
@@ -211,6 +220,37 @@ export const opsSignalsService = {
     ]);
 
     const sinceFailed = sinceRows?.filter((r) => r.status === 'failed') ?? [];
+    const diagnosed: SiteDown[] = down.map(({ managed, latestStatus, latestCreatedAt, latestError, diagnostics, serverStatusMessage, ...d }) => {
+      const failed = latestStatus === 'failed';
+      const classified = failed ? classifyDeployFailure('', latestError ?? '') : null;
+      const hosting: SiteDown['hosting'] = managed === null || managed === undefined ? 'shared' : managed ? 'managed' : 'byos';
+      const diagnosis = diagnoseSiteDown({
+        statusCode: d.statusCode ?? null,
+        error: d.error ?? null,
+        hosting,
+        diagnostics: diagnostics ?? null,
+        latestDeploy: latestStatus ? { status: latestStatus, blame: classified?.blame ?? null, label: classified?.label ?? null } : null,
+        serverStatus: d.serverStatus ?? null,
+        serverStatusMessage: serverStatusMessage ?? null,
+      });
+      return {
+        ...d,
+        hosting,
+        error: scrubSecrets(d.error),
+        downReason: d.downReason ?? null,
+        latestDeploy: latestStatus
+          ? {
+              status: latestStatus,
+              createdAt: latestCreatedAt ?? null,
+              blame: classified?.blame ?? null,
+              label: classified?.label ?? null,
+              error: failed ? scrubSecrets(latestError ? stripFailurePrefix(latestError) : null) : null,
+            }
+          : null,
+        diagnosis: { ...diagnosis, summary: scrubSecrets(diagnosis.summary) ?? diagnosis.summary },
+      };
+    });
+    const userServer = (s: SiteDown) => s.diagnosis.kind === 'user_server_unreachable';
     return {
       generatedAt: new Date().toISOString(),
       windowHours: WINDOW_HOURS,
@@ -246,34 +286,8 @@ export const opsSignalsService = {
           };
         }),
       },
-      sitesDown: down.map(({ managed, latestStatus, latestCreatedAt, latestError, diagnostics, ...d }) => {
-        const failed = latestStatus === 'failed';
-        const classified = failed ? classifyDeployFailure('', latestError ?? '') : null;
-        const hosting: SiteDown['hosting'] = managed === null || managed === undefined ? 'shared' : managed ? 'managed' : 'byos';
-        const diagnosis = diagnoseSiteDown({
-          statusCode: d.statusCode ?? null,
-          error: d.error ?? null,
-          hosting,
-          diagnostics: diagnostics ?? null,
-          latestDeploy: latestStatus ? { status: latestStatus, blame: classified?.blame ?? null, label: classified?.label ?? null } : null,
-        });
-        return {
-          ...d,
-          hosting,
-          error: scrubSecrets(d.error),
-          downReason: d.downReason ?? null,
-          latestDeploy: latestStatus
-            ? {
-                status: latestStatus,
-                createdAt: latestCreatedAt ?? null,
-                blame: classified?.blame ?? null,
-                label: classified?.label ?? null,
-                error: failed ? scrubSecrets(latestError ? stripFailurePrefix(latestError) : null) : null,
-              }
-            : null,
-          diagnosis: { ...diagnosis, summary: scrubSecrets(diagnosis.summary) ?? diagnosis.summary },
-        };
-      }),
+      sitesDown: diagnosed.filter((s) => !userServer(s)),
+      userServerUnreachable: diagnosed.filter(userServer),
       servers: servers.map(({ diskBreakdown, ...s }) => ({
         ...s,
         problem: s.status === 'error' ? 'error' : s.setupStatus === 'failed' ? 'setup_failed' : 'disk',
