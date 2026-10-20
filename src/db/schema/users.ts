@@ -26,6 +26,13 @@ export const users = pgTable('users', {
   /** Account deletion requested: sign-in is refused (restore only) until the purge */
   deletionRequestedAt: timestamp('deletion_requested_at', { withTimezone: true }),
   deletionScheduledFor: timestamp('deletion_scheduled_for', { withTimezone: true }),
+  /**
+   * Banned by a platform admin (Acceptable Use): no sign-in, no session refresh, no API keys. Set
+   * together with rows in `banned_identifiers`, which stop the same email or OAuth account from
+   * signing up again.
+   */
+  bannedAt: timestamp('banned_at', { withTimezone: true }),
+  banReason: text('ban_reason'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });

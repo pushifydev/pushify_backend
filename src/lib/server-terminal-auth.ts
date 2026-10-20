@@ -6,6 +6,7 @@ import { organizationMembers } from '../db/schema';
 import { decrypt } from './encryption';
 import { resolveProjectServerId } from './runner-routing';
 import { runnerSlugConflicts } from './project-containers';
+import { isUserBanned } from './user-ban';
 
 export class ServerTerminalAuthError extends Error {
   constructor(
@@ -35,6 +36,10 @@ export async function authorizeServerTerminalAccess(
 
   if (!server) {
     throw new ServerTerminalAuthError('Server not found', 'NOT_FOUND', 404);
+  }
+
+  if (await isUserBanned(userId)) {
+    throw new ServerTerminalAuthError('This account is suspended', 'ACCOUNT_SUSPENDED', 403);
   }
 
   const member = await db.query.organizationMembers.findFirst({
@@ -99,6 +104,10 @@ export async function authorizeProjectShellAccess(
 
   if (!project) {
     throw new ServerTerminalAuthError('Project not found', 'NOT_FOUND', 404);
+  }
+
+  if (await isUserBanned(userId)) {
+    throw new ServerTerminalAuthError('This account is suspended', 'ACCOUNT_SUSPENDED', 403);
   }
 
   const member = await db.query.organizationMembers.findFirst({

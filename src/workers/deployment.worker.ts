@@ -804,7 +804,8 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         workDir = localClone.workDir;
       }
 
-      // Acceptable Use scan of the source (hosted service only; silent, never fails the deploy)
+      // Acceptable Use scan of the source (hosted service only; silent). It stops the deploy only
+      // with ABUSE_AUTO_SUSPEND on a strong, high score — the project is then already suspended.
       const abuseSource = await abuseAfterClone({
         projectId: job.projectId,
         organizationId: project.organizationId,
@@ -812,6 +813,12 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         workDir: localClone?.workDir,
         image: deployImage,
       });
+      if (abuseSource?.blocked) {
+        throw new Error(
+          'This deploy was stopped and the project suspended under the Pushify Acceptable Use Policy (§2.1). ' +
+            'See your email for details and how to appeal.',
+        );
+      }
 
       // Update commit info
       if (localClone) {

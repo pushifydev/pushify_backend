@@ -30,6 +30,7 @@ import { generateTokenPair, generateTwoFactorToken } from '../lib/jwt';
 import { recordAuthEvent } from './auth-event.service';
 import { authService } from './auth.service';
 import crypto from 'crypto';
+import { assertSignupAllowed } from '../lib/user-ban';
 
 /**
  * Sign-in through the organization's own identity provider (OpenID Connect).
@@ -430,6 +431,7 @@ export const ssoService = {
     };
 
     if (!user) {
+      await assertSignupAllowed({ email });
       const created = await userRepository.create({
         email,
         passwordHash: null,

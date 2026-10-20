@@ -2425,3 +2425,56 @@ export async function sendProjectReinstatedEmail(to: string, details: { projectN
     logger.error({ error, to }, 'Failed to send project reinstated email');
   }
 }
+
+/** The account was banned under the Acceptable Use Policy. */
+export async function sendAccountBannedEmail(
+  to: string,
+  details: { reason: string; clause: string; appealEmail: string },
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping account banned email');
+    return;
+  }
+  const html = renderTransactionalEmail({
+    eyebrow: 'Acceptable Use',
+    title: 'Your Pushify account has been suspended',
+    bodyHtml: [
+      'Your account has been suspended because it was used in a way the Pushify Acceptable Use Policy does not allow. You can no longer sign in, and the projects in workspaces you own have been stopped.',
+      `If you think this is a mistake, write to <a href="mailto:${escapeHtml(details.appealEmail)}">${escapeHtml(details.appealEmail)}</a>. A person reviews every appeal.`,
+    ],
+    details: [
+      { label: 'Reason', value: details.reason },
+      { label: 'Policy section', value: details.clause },
+    ],
+    button: { href: `${env.FRONTEND_URL}/acceptable-use`, label: 'Read the Acceptable Use Policy' },
+  });
+  try {
+    await transporter.sendMail({ from: FROM_ADDRESS, to, replyTo: details.appealEmail, subject: 'Your Pushify account has been suspended', html });
+    logger.info({ to }, 'Account banned email sent');
+  } catch (error) {
+    logger.error({ error, to }, 'Failed to send account banned email');
+  }
+}
+
+/** The account ban was lifted. */
+export async function sendAccountReinstatedEmail(to: string, note: string | null): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping account reinstated email');
+    return;
+  }
+  const html = renderTransactionalEmail({
+    eyebrow: 'Acceptable Use',
+    title: 'Your Pushify account is active again',
+    bodyHtml: [
+      'The suspension of your account has been lifted and you can sign in again. Projects that were stopped stay stopped until they are reviewed one by one.',
+      ...(note ? [escapeHtml(note)] : []),
+    ],
+    button: { href: `${env.FRONTEND_URL}/login`, label: 'Sign in' },
+  });
+  try {
+    await transporter.sendMail({ from: FROM_ADDRESS, to, subject: 'Your Pushify account is active again', html });
+    logger.info({ to }, 'Account reinstated email sent');
+  } catch (error) {
+    logger.error({ error, to }, 'Failed to send account reinstated email');
+  }
+}

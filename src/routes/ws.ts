@@ -5,6 +5,7 @@ import { wsManager } from '../lib/ws';
 import { logger } from '../lib/logger';
 import { randomUUID } from 'crypto';
 import type { WSClientMessage } from '../types/ws';
+import { isUserBanned } from '../lib/user-ban';
 
 export function createWSRoute(
   upgradeWebSocket: ReturnType<typeof createNodeWebSocket>['upgradeWebSocket']
@@ -31,6 +32,11 @@ export function createWSRoute(
             if (payload.type !== 'access') {
               ws.send(JSON.stringify({ type: 'error', message: 'Invalid token type' }));
               ws.close(4001, 'Unauthorized');
+              return;
+            }
+            if (payload.sub && (await isUserBanned(payload.sub))) {
+              ws.send(JSON.stringify({ type: 'error', message: 'Account suspended' }));
+              ws.close(4003, 'Forbidden');
               return;
             }
 

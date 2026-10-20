@@ -266,6 +266,8 @@ export const abuseService = {
     clause: AupClause;
     endsAt: Date | null;
     flagId?: string | null;
+    /** False when the caller sends one notice of its own (an account ban suspends every project) */
+    notifyOwner?: boolean;
   }) {
     const [project] = await db.select().from(projects).where(eq(projects.id, input.projectId)).limit(1);
     if (!project || project.status === 'deleted') throw new HTTPException(404, { message: 'Project not found' });
@@ -317,7 +319,7 @@ export const abuseService = {
       metadata: { clause: input.clause, endsAt: input.endsAt?.toISOString() ?? null, automatic: input.adminUserId === null },
     });
 
-    const to = await ownerContact(project.organizationId);
+    const to = input.notifyOwner === false ? null : await ownerContact(project.organizationId);
     if (to) {
       await sendProjectSuspendedEmail(to, {
         projectName: project.name,

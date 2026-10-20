@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+## [0.2.0-beta.108] - 2026-10-20
+
+### Added
+- **Account bans (Acceptable Use).** Admin → Users → a user → **Ban**, with a reason and policy section. `POST /admin/users/:id/ban` and `/unban`. **Needs migration 0077** (`users.banned_at`/`ban_reason`, `banned_identifiers`, `abuse_actions.user_id`; additive). A ban, in one step:
+  - marks the user banned;
+  - deletes every session and API key;
+  - suspends every project in workspaces the user owns, with no per-project emails;
+  - powers off their managed servers (stopped, never deleted);
+  - records their email, GitHub and Google ids so they cannot sign up again. The email is normalized, so Gmail dots, `+tags` and googlemail.com count as the same address;
+  - sends one email to the user with the reason and the appeal address;
+  - writes an audit row.
+
+  Unban lets the user sign in again and releases the identifiers; suspended projects stay suspended until they are reviewed one by one.
+- **Where a ban is enforced:**
+  - `createSession`, which every sign-in and refresh passes through;
+  - the auth middleware, for access tokens already issued (≤ 15 min, 30 s cache);
+  - API key validation;
+  - the realtime and terminal/shell WebSockets;
+  - every sign-up path: password, GitHub, Google and SSO.
+- **Deploys stop before the build** with `ABUSE_AUTO_SUSPEND`: a strong, high-scoring source scan now suspends the project and fails the deploy right after the clone, so the app never starts. Before, it was suspended after a successful build.
+- `ABUSE_AUTO_BAN_AFTER` (default `0` = off): ban the owner automatically once that many projects in workspaces they own have been suspended.
+
+### Fixed
+- `vitest.workspace.ts`: the db test project runs in a single fork. `fileParallelism` alone was not honoured when both projects ran together, so the db files again shared the database concurrently and failed at random.
+
 ### Fixed
 - **Removing a custom domain also removes its Cloudflare record.** With the organization's Cloudflare connection, adding a custom domain created its A/AAAA record, but removing the domain left that record in the zone. `domainService.delete` now deletes the records Pushify created (`deleteCustomDomainRecords`). Only records marked `pushify:custom-domain` are touched; records someone else added stay. A Cloudflare failure is logged with the token masked and does not block the removal. A 403 from Cloudflare now names the permissions the token needs (Zone: Read, DNS: Edit). A proxied record now comes back with a `dns.message` that explains the HTTPS step: the proxy hides the server from verify and HTTP-01, so turn the proxy off until the certificate is issued, then back on with "Full (strict)". DNS-01 is not supported yet. 7 tests.
 - **A failing database backup notifies once, not every 15 minutes.** A failed backup doesn't update `lastBackupAt`, so the worker retries it on every poll, and each retry (a failed dump, a backup that could not start, or a stuck one) sent `backup.failed` again. Now only the first failure since the last successful backup is sent (`notifyBackupFailure`); the message says further failures won't be reported until a backup succeeds. An earlier `failed` row in the same run blocks a repeat, so a worker restart doesn't send it again. Failed and missed backups are still listed with their status at `GET /api/v1/databases/:id/backups`. 5 tests.
