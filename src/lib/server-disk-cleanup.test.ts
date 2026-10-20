@@ -24,6 +24,14 @@ describe('buildDiskCleanupScript', () => {
     expect(script).not.toMatch(/image prune -a/);
   });
 
+  it('keeps images of running apps and the tagged rollback images (deploy-*, latest)', () => {
+    // The only image removal is a dangling-only prune: Docker never prunes an image a container
+    // (running or sleeping) uses, and rollback images are tagged `deploy-<id>` / `latest`.
+    const imageRemovals = script.split('\n').filter((l) => /docker (image|rmi)\b/.test(l));
+    expect(imageRemovals).toEqual(['docker image prune -f >/dev/null 2>&1 || true']);
+    expect(script).not.toMatch(/docker rmi|docker image rm\b|image prune[^\n]*\s-(a|-all|-filter)/);
+  });
+
   it('caps logs, trims dangling images and old build cache', () => {
     expect(script).toContain("-name '*-json.log' -size +100M");
     expect(script).toContain('truncate -s 0');

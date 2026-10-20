@@ -61,7 +61,9 @@ describe('serverDiskService.checkAll cleanup', () => {
     expect(res).toEqual({ checked: 1, warned: 0, cleaned: 1 });
     expect(h.cleanupCalls).toBe(1);
     expect(h.info).toHaveBeenCalledWith(
-      expect.objectContaining({ serverId: 's1', freedBytes: 7e9, logsTruncatedBytes: 6e9, usedPercentBefore: 86 }),
+      expect.objectContaining({
+        serverId: 's1', freedBytes: 7e9, logsTruncatedBytes: 6e9, usedPercentBefore: 86, usedPercentAfter: 72,
+      }),
       'Server disk cleanup finished'
     );
     expect(h.updates[0]).toMatchObject({ diskUsedPercent: 72 });

@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **The managed-server disk cleanup log has the disk percentage after the cleanup too.** `Server disk cleanup finished` was written before the disk was measured again, so it had only `usedPercentBefore`. It is now written after the new measurement and also has `usedPercentAfter`. A new test checks that the only image removal in the cleanup script is the dangling-only `docker image prune -f`: no `docker rmi`, no `-a`/`--all`. So images used by running or sleeping apps and the tagged rollback images (`deploy-*`, `latest`) are kept.
 - **New projects on the shared runners no longer get a name another account already deploys under.** Slugs were only unique within an organization, so creating `spiderpanel` without a server of its own produced a project whose every deploy was refused ("Another project on the shared build server already uses the name …"), since beta.105 stops a deploy from replacing another organization's app there. `projectService.create` now also suffixes the slug when a live project on any shared runner answers to it (`sharedRunnerSlugTaken`, same matching as the deploy check: equal slug or a deployer suffix like `-staging`, `-db`, `-pr-N`). Projects on their own server are unchanged. Existing projects that already share a name are still refused; the deploy error now says why and what to do (assign a server, or create the project again — it gets a unique name).
 
 ## [0.2.0-beta.108] - 2026-10-20
