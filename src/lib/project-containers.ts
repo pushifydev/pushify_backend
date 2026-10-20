@@ -3,7 +3,7 @@ import { db } from '../db';
 import { projects } from '../db/schema/projects';
 import { projectWorkers } from '../db/schema/project-workers';
 import { projectVolumes } from '../db/schema/project-volumes';
-import { pickRunnerServerId } from './runner-routing';
+import { hasRunnerServers, pickRunnerServerId } from './runner-routing';
 import { volumeDockerName } from './volume-validate';
 
 /**
@@ -71,6 +71,15 @@ export async function projectContainerNames(projectId: string, slug: string): Pr
   };
 }
 
+/** Rows whose slug may conflict with `slug` (narrowed further by slugsConflict). */
+function slugConflictCandidate(slug: string) {
+  return or(
+    eq(projects.slug, slug),
+    sql`${projects.slug} LIKE ${`${slug}-%`}`,
+    sql`${slug} LIKE ${projects.slug} || '-%'`,
+  );
+}
+
 /**
  * Other projects on the same shared runner whose slug conflicts with this one (see
  * slugsConflict). Empty for projects on their own server: a server belongs to one organization.
@@ -91,12 +100,23 @@ export async function runnerSlugConflicts(
         isNull(projects.serverId),
         ne(projects.id, project.id),
         opts.activeOnly ? eq(projects.status, 'active') : inArray(projects.status, ['active', 'paused']),
-        or(
-          eq(projects.slug, slug),
-          sql`${projects.slug} LIKE ${`${slug}-%`}`,
-          sql`${slug} LIKE ${projects.slug} || '-%'`,
-        ),
+        slugConflictCandidate(slug),
       ),
     );
   return candidates.filter((c) => slugsConflict(slug, c.slug) && pickRunnerServerId(c.id) === runnerId);
+}
+
+/**
+ * Whether a new project without a server of its own would get a slug that a live project on the
+ * shared runners already answers to, in any organization. The deploy would then be refused (see
+ * runnerSlugConflicts), so creation picks another slug. Asked before the project has an id, so
+ * before it has a runner: a conflict on any runner counts.
+ */
+export async function sharedRunnerSlugTaken(slug: string): Promise<boolean> {
+  if (!hasRunnerServers()) return false;
+  const candidates = await db
+    .select({ slug: projects.slug })
+    .from(projects)
+    .where(and(isNull(projects.serverId), inArray(projects.status, ['active', 'paused']), slugConflictCandidate(slug)));
+  return candidates.some((c) => slugsConflict(slug, c.slug));
 }

@@ -11,12 +11,12 @@ vi.mock('../db', async () => {
   return { db: drizzle(pool, { schema }), __pool: pool };
 });
 // Every serverless project lands on the same runner
-vi.mock('./runner-routing', () => ({ pickRunnerServerId: () => 'runner-1' }));
+vi.mock('./runner-routing', () => ({ pickRunnerServerId: () => 'runner-1', hasRunnerServers: () => true }));
 
 import { sql } from 'drizzle-orm';
 import { db } from '../db';
 import { organizations, projects, servers } from '../db/schema';
-import { runnerSlugConflicts } from './project-containers';
+import { runnerSlugConflicts, sharedRunnerSlugTaken } from './project-containers';
 
 const PREFIX = 'slugconf-test-';
 const ids = {} as Record<string, string>;
@@ -61,5 +61,13 @@ describe.skipIf(!TEST_URL)('runnerSlugConflicts (real Postgres)', () => {
 
   it('a project on its own server has no runner conflicts', async () => {
     expect(await runnerSlugConflicts({ id: ids.ownServer, slug: ids.slug, serverId: 'own' })).toEqual([]);
+  });
+
+  it('sharedRunnerSlugTaken: a new project may not take a slug a live runner project answers to', async () => {
+    expect(await sharedRunnerSlugTaken(ids.slug)).toBe(true);
+    expect(await sharedRunnerSlugTaken(`${ids.slug}-store-staging`)).toBe(true);
+    // a prefix is not a conflict, and deleted projects / own servers don't hold a name
+    expect(await sharedRunnerSlugTaken(`${ids.slug}-st`)).toBe(false);
+    expect(await sharedRunnerSlugTaken(`${ids.slug}-pr-4-db`)).toBe(false);
   });
 });

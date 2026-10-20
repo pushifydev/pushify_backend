@@ -457,8 +457,9 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       if (conflicts.length > 0) {
         logger.error({ projectId: project.id, slug: project.slug, conflicts: conflicts.map((c) => c.id) }, 'Deploy refused: slug conflict on shared runner');
         throw new Error(
-          `Another project on the shared build server already uses the name "${project.slug}". ` +
-            'Create the project again under a different name, or assign your own server to it.',
+          `The name "${project.slug}" is also used by another Pushify project on the shared build server, ` +
+            'so this deploy was stopped to keep the two apps apart. Assign your own server to this project, ' +
+            'or create it again: new projects get a name of their own on the shared build server automatically.',
         );
       }
     }
