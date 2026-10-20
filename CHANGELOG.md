@@ -1,6 +1,15 @@
 # Changelog
 
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). How to pick the next version and write an entry: [CONTRIBUTING.md](CONTRIBUTING.md#versioning-and-changelog).
+
 ## [Unreleased]
+
+## [0.3.0] - 2026-10-20
+
+### Added
+- **Semantic Versioning for the backend.** Every PR now bumps the version in `package.json` once, continuing from the current version: patch for a fix (`1.2.3` → `1.2.4`), minor for a new feature (`1.2.3` → `1.3.0`), major for a large or breaking change (`1.2.3` → `2.0.0`). The same PR adds its entry to this file. The rules are in [CONTRIBUTING.md](CONTRIBUTING.md#versioning-and-changelog), and the PR template has a checkbox for it. This replaces the `-beta.N` pre-release numbers used up to `0.2.0-beta.108`; this release is a minor bump because it adds the process. The root version in `package-lock.json` had been left at `0.2.0-beta.73` and now matches `package.json`.
 
 ### Fixed
 - **A site whose own server is off no longer shows up as a platform outage in the ops signals.** A managed server Pushify powered off (the customer's stop, non-payment, account ban) was diagnosed `unreachable` with `userSide: false`, so a site down behind it for weeks stayed on the platform's critical list. The diagnosis now reads the server's recorded state. A site with no HTTP answer whose server is `stopped` or `deleting` is `user_server_unreachable` (`userSide: true`), and the summary names a known stop reason (`billing_suspended`, `infra_credits_stopped`, `account_banned`). Unknown status text is never shown. A BYOS server that fails SSH or blocks 80/443 gets the same class. These sites move from `sitesDown` to a new `userServerUnreachable` list: still visible, but they no longer raise the platform alarm. Managed servers that run but don't answer, and the shared runners, stay in `sitesDown`. No notifications were added. Limitation: deleting a server sets the project's `server_id` to null, so a project left on a deleted server looks like a shared-runner project and stays in `sitesDown`.
