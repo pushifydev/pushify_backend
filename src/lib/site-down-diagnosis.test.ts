@@ -97,4 +97,40 @@ describe('diagnoseSiteDown', () => {
   it('without server checks it says so instead of guessing', () => {
     expect(diagnoseSiteDown(base)).toMatchObject({ kind: 'unreachable', userSide: null });
   });
+
+  it("a customer's own server that does not answer is user_server_unreachable; a Pushify one stays unreachable", () => {
+    const byos = { ...base, hosting: 'byos' as const };
+    expect(diagnoseSiteDown({ ...byos, diagnostics: checks({ ssh: 'timeout' }) })).toMatchObject({ kind: 'user_server_unreachable', userSide: true });
+    expect(diagnoseSiteDown({ ...byos, diagnostics: checks({ httpsPort: 'timeout' }) })).toMatchObject({ kind: 'user_server_unreachable', userSide: true });
+    expect(diagnoseSiteDown({ ...base, diagnostics: checks({ ssh: 'timeout' }) })).toMatchObject({ kind: 'unreachable', userSide: false });
+    // Up but nothing listening is still the container layer, not an unreachable server.
+    expect(diagnoseSiteDown({ ...byos, diagnostics: checks({ httpPort: 'refused' }) }).kind).toBe('container_not_running');
+  });
+
+  it('a powered-off or deleting server is user_server_unreachable, managed or not, with the known stop reason', () => {
+    const stopped = diagnoseSiteDown({
+      ...base,
+      latestDeploy: failedBuild,
+      diagnostics: checks({ ssh: 'timeout', httpPort: 'timeout', httpsPort: 'timeout' }),
+      serverStatus: 'stopped',
+      serverStatusMessage: 'infra_credits_stopped',
+    });
+    expect(stopped).toMatchObject({ kind: 'user_server_unreachable', userSide: true });
+    expect(stopped.summary).toContain('powered off (status stopped, stopped when the infrastructure wallet ran out)');
+    expect(stopped.summary).toContain('fetch failed');
+    expect(diagnoseSiteDown({ ...base, hosting: 'byos', serverStatus: 'deleting' })).toMatchObject({ kind: 'user_server_unreachable', userSide: true });
+    expect(diagnoseSiteDown({ ...base, error: 'fetch failed (ENOTFOUND)', serverStatus: 'stopped' }).kind).toBe('user_server_unreachable');
+  });
+
+  it('never echoes an unknown server status message, and ignores the server state when something answers', () => {
+    const d = diagnoseSiteDown({ ...base, serverStatus: 'stopped', serverStatusMessage: 'Delete failed: token abc123' });
+    expect(d.summary).toContain('(status stopped)');
+    expect(d.summary).not.toContain('abc123');
+    expect(diagnoseSiteDown({ ...base, serverStatus: 'stopped', serverStatusMessage: 'constructor' }).summary).toContain('(status stopped)');
+    // An HTTP answer means the record is stale: the server runs.
+    expect(diagnoseSiteDown({ ...base, statusCode: 500, error: null, serverStatus: 'stopped' }).kind).toBe('app_error');
+    // A running server, or the shared runners (no server row), keep the usual diagnosis.
+    expect(diagnoseSiteDown({ ...base, serverStatus: 'running' }).kind).toBe('unreachable');
+    expect(diagnoseSiteDown({ ...base, hosting: 'shared', serverStatus: 'stopped' }).kind).toBe('unreachable');
+  });
 });
