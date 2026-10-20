@@ -59,13 +59,21 @@ export const serverDiskService = {
         let dataBytes: number | undefined;
         let breakdown: ServerDiskBreakdown | undefined;
         if (server.isManaged && result.measured && result.usedPercent >= CLEANUP_PERCENT) {
+          const usedPercentBefore = result.usedPercent;
           const cleanup = await runServerDiskCleanup(ssh);
           cleaned++;
+          if (cleanup.ran) {
+            result = await checkServerDiskSpace(ssh);
+            dataBytes = cleanup.volumesBytes;
+            breakdown = buildDiskBreakdown(cleanup, now);
+          }
           logger.info(
             {
               serverId: server.id,
               ran: cleanup.ran,
-              usedPercentBefore: result.usedPercent,
+              usedPercentBefore,
+              // Re-measured only when the cleanup ran; otherwise nothing changed on the disk
+              usedPercentAfter: cleanup.ran && result.measured ? result.usedPercent : null,
               freedBytes: cleanup.freedBytes,
               logsTruncatedBytes: cleanup.logsTruncatedBytes,
               volumesBytes: cleanup.volumesBytes,
@@ -78,11 +86,6 @@ export const serverDiskService = {
             },
             'Server disk cleanup finished'
           );
-          if (cleanup.ran) {
-            result = await checkServerDiskSpace(ssh);
-            dataBytes = cleanup.volumesBytes;
-            breakdown = buildDiskBreakdown(cleanup, now);
-          }
         }
 
         const values: Partial<typeof servers.$inferInsert> = {
