@@ -204,6 +204,9 @@ export interface AdminUserDetail {
     githubLinked: boolean;
     googleLinked: boolean;
     signupMethod: SignupMethod;
+    /** Banned under the Acceptable Use Policy (null = not banned) */
+    bannedAt: string | null;
+    banReason: string | null;
   };
   organizations: AdminUserOrganization[];
   projects: AdminUserProject[];
@@ -466,6 +469,8 @@ export const adminService = {
         passwordHash: true,
         githubId: true,
         googleId: true,
+        bannedAt: true,
+        banReason: true,
       },
     });
     if (!full) return null;
@@ -632,6 +637,8 @@ export const adminService = {
         githubLinked: !!full.githubId,
         googleLinked: !!full.googleId,
         signupMethod: full.githubId ? 'github' : full.googleId ? 'google' : 'password',
+        bannedAt: toIso(full.bannedAt),
+        banReason: full.banReason,
       },
       organizations,
       projects,

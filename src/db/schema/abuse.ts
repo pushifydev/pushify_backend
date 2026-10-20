@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, timestamp, integer, text, jsonb, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, integer, text, jsonb, index, uniqueIndex } from 'drizzle-orm/pg-core';
 import { organizations } from './organizations';
 import { projects } from './projects';
 import { deployments } from './deployments';
@@ -50,6 +50,8 @@ export const abuseActions = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     projectId: uuid('project_id').references(() => projects.id, { onDelete: 'set null' }),
+    /** Set for account-level actions (ban / unban) */
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
     flagId: uuid('flag_id').references(() => abuseFlags.id, { onDelete: 'set null' }),
     adminUserId: uuid('admin_user_id').references(() => users.id, { onDelete: 'set null' }),
     action: varchar('action', { length: 16 }).notNull(),
@@ -60,6 +62,28 @@ export const abuseActions = pgTable(
   },
   (t) => ({
     projectIdx: index('abuse_actions_project_idx').on(t.projectId, t.createdAt),
+  })
+);
+
+/**
+ * Identifiers a banned account may not sign up with again. `kind`: email (normalized — case,
+ * `+tag` and Gmail dots removed) | github_id | google_id. Kept when the user row is deleted, so
+ * deleting the account does not clear the way back in.
+ */
+export const bannedIdentifiers = pgTable(
+  'banned_identifiers',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    kind: varchar('kind', { length: 16 }).notNull(),
+    value: varchar('value', { length: 255 }).notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+    reason: text('reason'),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    kindValue: uniqueIndex('banned_identifiers_kind_value_unique').on(t.kind, t.value),
+    userIdx: index('banned_identifiers_user_idx').on(t.userId),
   })
 );
 

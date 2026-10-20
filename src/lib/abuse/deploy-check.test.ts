@@ -17,6 +17,8 @@ vi.mock('../../services/abuse.service', () => ({
   abuseService: { recordFinding: mocks.recordFinding, suspendProject: mocks.suspendProject },
 }));
 vi.mock('../../services/admin-notify.service', () => ({ adminNotify: mocks.adminNotify }));
+const autoBan = vi.hoisted(() => vi.fn(async () => false));
+vi.mock('../../services/user-ban.service', () => ({ userBanService: { maybeAutoBan: autoBan } }));
 
 import { abuseAfterBuild, abuseAfterClone } from './deploy-check';
 
@@ -60,11 +62,22 @@ describe('deploy-time Acceptable Use checks', () => {
     expect(mocks.suspendProject).not.toHaveBeenCalled();
   });
 
-  it('suspend automatically only with ABUSE_AUTO_SUSPEND and a strong, high score', async () => {
+  it('with ABUSE_AUTO_SUSPEND, stops the deploy before the build: suspends, blocks, checks auto-ban', async () => {
     mocks.env.ABUSE_AUTO_SUSPEND = true;
+    autoBan.mockClear();
     const result = await abuseAfterClone({ ...ctx, workDir: dir });
-    await abuseAfterBuild({ ...ctx, source: result, buildLog: '' });
+    expect(result?.blocked).toBe(true);
+    expect(mocks.suspendProject).toHaveBeenCalledTimes(1);
     expect(mocks.suspendProject).toHaveBeenCalledWith(expect.objectContaining({ adminUserId: null, clause: 'proxy-vpn' }));
+    expect(autoBan).toHaveBeenCalledWith('p');
+  });
+
+  it('does not block when the project is already suspended (409), and never without the setting', async () => {
+    mocks.env.ABUSE_AUTO_SUSPEND = true;
+    mocks.suspendProject.mockRejectedValueOnce(Object.assign(new Error('already'), { status: 409 }));
+    expect((await abuseAfterClone({ ...ctx, workDir: dir }))?.blocked).toBeUndefined();
+    mocks.env.ABUSE_AUTO_SUSPEND = false;
+    expect((await abuseAfterClone({ ...ctx, workDir: dir }))?.blocked).toBeUndefined();
   });
 
   it('never throws into the deploy', async () => {

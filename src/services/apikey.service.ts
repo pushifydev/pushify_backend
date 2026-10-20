@@ -4,6 +4,7 @@ import { organizationRepository } from '../repositories/organization.repository'
 import { t, type SupportedLocale } from '../i18n';
 import { HTTPException } from 'hono/http-exception';
 import { API_KEY_SCOPES, type ApiKey, type ApiKeyScope } from '../db/schema';
+import { isUserBanned } from '../lib/user-ban';
 
 const MAX_KEYS_PER_USER = 10;
 const KEY_PREFIX = 'pk_live_';
@@ -158,6 +159,10 @@ export const apiKeyService = {
     // A key acts as the member who created it: once they have left the organization, it stops.
     const member = await organizationRepository.findMember(apiKey.organizationId, apiKey.userId);
     if (!member) {
+      return null;
+    }
+    // …and once they are banned (a ban deletes their keys too; this covers the gap)
+    if (await isUserBanned(apiKey.userId)) {
       return null;
     }
 

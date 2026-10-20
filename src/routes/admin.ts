@@ -5,6 +5,7 @@ import { authMiddleware } from '../middleware/auth';
 import { requirePlatformAdmin } from '../middleware/require-platform-admin';
 import { adminService } from '../services/admin.service';
 import { abuseService, AUP_CLAUSES, type AupClause } from '../services/abuse.service';
+import { userBanService } from '../services/user-ban.service';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 
@@ -132,6 +133,28 @@ adminRouter.post('/abuse/projects/:projectId/unsuspend', async (c) => {
     adminUserId: c.get('userId')!,
     note: note ?? null,
   });
+  return c.json({ data: result });
+});
+
+const banSchema = z.object({
+  reason: z.string().trim().min(10).max(2000),
+  clause: z.enum(Object.keys(AUP_CLAUSES) as [AupClause, ...AupClause[]]).default('proxy-vpn'),
+});
+
+adminRouter.post('/users/:userId/ban', async (c) => {
+  const body = await parseBody(c, banSchema);
+  const result = await userBanService.banUser({
+    userId: uuidParam(c, 'userId'),
+    adminUserId: c.get('userId')!,
+    reason: body.reason,
+    clause: body.clause,
+  });
+  return c.json({ data: result });
+});
+
+adminRouter.post('/users/:userId/unban', async (c) => {
+  const { note } = await parseBody(c, noteSchema);
+  const result = await userBanService.unbanUser({ userId: uuidParam(c, 'userId'), adminUserId: c.get('userId')!, note: note ?? null });
   return c.json({ data: result });
 });
 

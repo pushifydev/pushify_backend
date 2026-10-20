@@ -13,6 +13,15 @@ export default defineWorkspace([
     test: { ...shared, name: 'unit', include: ['src/**/*.test.ts'], exclude: ['src/**/*.db.test.ts', 'node_modules/**'] },
   },
   {
-    test: { ...shared, name: 'db', include: ['src/**/*.db.test.ts'], fileParallelism: false, maxWorkers: 1, minWorkers: 1 },
+    // One forked process for every db file: `fileParallelism` alone was not honoured when both
+    // projects run together, and the files then shared the database concurrently again.
+    test: {
+      ...shared,
+      name: 'db',
+      include: ['src/**/*.db.test.ts'],
+      fileParallelism: false,
+      pool: 'forks',
+      poolOptions: { forks: { singleFork: true } },
+    },
   },
 ]);

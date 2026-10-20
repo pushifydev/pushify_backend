@@ -16,6 +16,7 @@ import {
   sendPasswordChangedEmail,
   sendNewLoginEmail,
 } from '../lib/email';
+import { accountSuspendedError, assertSignupAllowed } from '../lib/user-ban';
 
 // Types
 interface RegisterInput {
@@ -82,6 +83,7 @@ export const authService = {
 
     // A company that enforces SSO owns its domain: nobody signs up around it with a password
     await this.assertSsoNotEnforced(email);
+    await assertSignupAllowed({ email });
 
     // Check if user already exists
     const existingUser = await userRepository.findByEmail(email);
@@ -425,6 +427,10 @@ export const authService = {
     // Every sign-in path (password, 2FA, OAuth, SSO, refresh) ends here: an account waiting to be
     // deleted gets no session, only a token to restore it.
     const account = await userRepository.findById(userId);
+    // A banned account gets no session from any path (password, 2FA, OAuth, SSO, refresh)
+    if (account?.bannedAt) {
+      throw accountSuspendedError();
+    }
     if (account?.deletionScheduledFor) {
       const { accountDeletionService } = await import('./account-deletion.service');
       throw await accountDeletionService.pendingAccountError(
@@ -698,6 +704,7 @@ export const authService = {
         });
       } else {
         // Create new user (no password for OAuth)
+        await assertSignupAllowed({ email, githubId: String(githubId) });
         const newUser = await userRepository.create({
           email: email.toLowerCase(),
           passwordHash: null,
@@ -823,6 +830,7 @@ export const authService = {
         });
       } else {
         // Create new user (no password for OAuth)
+        await assertSignupAllowed({ email: googleUser.email, googleId: String(googleId) });
         const newUser = await userRepository.create({
           email: googleUser.email.toLowerCase(),
           passwordHash: null,

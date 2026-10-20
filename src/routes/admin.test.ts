@@ -49,6 +49,10 @@ vi.mock('../services/admin.service', () => ({
   recordAdminAccess: mocks.recordAdminAccess,
 }));
 
+vi.mock('../services/user-ban.service', () => ({
+  userBanService: new Proxy({}, { get: () => mocks.service }),
+}));
+
 vi.mock('../services/abuse.service', () => ({
   abuseService: new Proxy({}, { get: () => mocks.service }),
   AUP_CLAUSES: { 'proxy-vpn': 'Acceptable Use §2.1' },

@@ -181,6 +181,11 @@ const envSchema = z.object({
     .string()
     .optional()
     .transform((v) => !!v && /^(true|1|yes|on)$/i.test(v.trim())),
+  /**
+   * Ban the owner automatically once this many projects in workspaces they own have been
+   * suspended (Acceptable Use). 0 = never; bans stay an admin decision.
+   */
+  ABUSE_AUTO_BAN_AFTER: z.coerce.number().int().min(0).max(100).default(0),
   /** The rules file; defaults to config/abuse-rules.yaml in the backend directory */
   ABUSE_RULES_PATH: z.string().optional(),
   /**

@@ -10,6 +10,7 @@ import {
 import { applyPlanApiRateLimit } from './rate-limit';
 import { t, type SupportedLocale } from '../i18n';
 import { isAllowedWhilePendingDeletion, isOrganizationPendingDeletion } from '../lib/deletion-lock';
+import { accountSuspendedError, isUserBanned } from '../lib/user-ban';
 
 export async function authMiddleware(c: Context, next: Next) {
   const locale: SupportedLocale = c.get('locale') || 'en';
@@ -35,6 +36,11 @@ export async function authMiddleware(c: Context, next: Next) {
 
     if (payload.type !== 'access') {
       throw new HTTPException(401, { message: t(locale, 'auth', 'invalidTokenType') });
+    }
+
+    // A ban revokes every session at once; this covers access tokens already issued (≤ 15 min)
+    if (payload.sub && (await isUserBanned(payload.sub))) {
+      throw accountSuspendedError();
     }
 
     c.set('userId', payload.sub);
