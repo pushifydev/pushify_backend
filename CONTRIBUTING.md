@@ -32,6 +32,30 @@ refactor: extract modal into shared component
 2. Update documentation if you've changed APIs or added features
 3. Write a clear PR description explaining what changed and why
 4. Link any related issues
+5. Bump the version and add a CHANGELOG entry (see [Versioning and Changelog](#versioning-and-changelog))
+
+## Versioning and Changelog
+
+The backend follows [Semantic Versioning](https://semver.org/). Every PR bumps the version in `package.json` once, starting from the version currently on `master`, and adds a matching entry to [CHANGELOG.md](CHANGELOG.md) in the same PR. Always update both files together.
+
+| Change | Bump | Example |
+|--------|------|---------|
+| Bug fix | patch | `1.2.3` → `1.2.4` |
+| New feature (backward compatible) | minor | `1.2.3` → `1.3.0` |
+| Large or breaking change (e.g. a removed or renamed API endpoint or field) | major | `1.2.3` → `2.0.0` |
+
+If a PR has several kinds of change, use the largest bump.
+
+1. Bump the version. This updates `package.json` and `package-lock.json` without creating a commit or tag:
+
+   ```bash
+   npm version patch --no-git-tag-version   # or: minor, major
+   ```
+
+2. In `CHANGELOG.md`, add a `## [X.Y.Z] - YYYY-MM-DD` section below `## [Unreleased]` with the new version from `package.json`. Follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and group entries under `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` or `Security`.
+3. If another PR that bumps the version merges first, rebase onto it. Then take the next version after the one now on `master` and rename your CHANGELOG section to match.
+
+Versions up to `0.2.0-beta.108` used `-beta.N` pre-release numbers. Since `0.3.0`, versions are plain `MAJOR.MINOR.PATCH`.
 
 ## Tests
 

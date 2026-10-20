@@ -16,3 +16,4 @@
 - [ ] No hardcoded colors or strings (uses constants/i18n)
 - [ ] Tested in both dark and light mode
 - [ ] Updated documentation if needed
+- [ ] Version bumped in `package.json` (semver: patch / minor / major) and `CHANGELOG.md` updated (see "Versioning and Changelog" in `CONTRIBUTING.md`)
