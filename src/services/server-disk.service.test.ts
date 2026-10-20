@@ -5,6 +5,7 @@ const h = vi.hoisted(() => ({
   updates: [] as Array<Record<string, unknown>>,
   disk: [] as number[],
   cleanupCalls: 0,
+  cleanupRan: true,
   emails: [] as Array<Record<string, unknown>>,
   info: vi.fn(),
 }));
@@ -28,7 +29,7 @@ vi.mock('../lib/server-disk-cleanup', async (importOriginal) => ({
   runServerDiskCleanup: async () => {
     h.cleanupCalls++;
     return {
-      ran: true, freedBytes: 7e9, logsTruncatedBytes: 6e9, daemonConfig: 'created', volumesBytes: 20e9,
+      ran: h.cleanupRan, freedBytes: 7e9, logsTruncatedBytes: 6e9, daemonConfig: 'created', volumesBytes: 20e9,
       imagesBytes: 3e9, buildCacheBytes: 0, containersBytes: 0, logsBytes: 1e8,
       uncappedLogContainers: 4, rotatedLogContainers: 2, usedBytes: 30e9, totalBytes: 38e9,
     };
@@ -50,7 +51,7 @@ const server = (over: Record<string, unknown> = {}) => ({
 });
 
 beforeEach(() => {
-  h.rows = []; h.updates = []; h.disk = []; h.cleanupCalls = 0; h.emails = []; h.info.mockClear();
+  h.rows = []; h.updates = []; h.disk = []; h.cleanupCalls = 0; h.cleanupRan = true; h.emails = []; h.info.mockClear();
 });
 
 describe('serverDiskService.checkAll cleanup', () => {
@@ -61,11 +62,30 @@ describe('serverDiskService.checkAll cleanup', () => {
     expect(res).toEqual({ checked: 1, warned: 0, cleaned: 1 });
     expect(h.cleanupCalls).toBe(1);
     expect(h.info).toHaveBeenCalledWith(
-      expect.objectContaining({ serverId: 's1', freedBytes: 7e9, logsTruncatedBytes: 6e9, usedPercentBefore: 86 }),
+      expect.objectContaining({
+        serverId: 's1',
+        freedBytes: 7e9,
+        logsTruncatedBytes: 6e9,
+        usedPercentBefore: 86,
+        usedPercentAfter: 72,
+      }),
       'Server disk cleanup finished'
     );
     expect(h.updates[0]).toMatchObject({ diskUsedPercent: 72 });
     expect(h.emails).toHaveLength(0);
+  });
+
+  it('logs no after-percent when the cleanup did not run, and keeps the first reading', async () => {
+    h.rows = [server()];
+    h.disk = [86, 10];
+    h.cleanupRan = false;
+    await serverDiskService.checkAll(new Date('2026-10-15T00:00:00Z'));
+    expect(h.info).toHaveBeenCalledWith(
+      expect.objectContaining({ ran: false, usedPercentBefore: 86, usedPercentAfter: null }),
+      'Server disk cleanup finished'
+    );
+    expect(h.updates[0]).toMatchObject({ diskUsedPercent: 86 });
+    expect(h.updates[0]).not.toHaveProperty('diskBreakdown');
   });
 
   it('records what holds the disk on the server, labelled as user data when volumes dominate', async () => {
