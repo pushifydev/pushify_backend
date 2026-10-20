@@ -8,6 +8,7 @@ import { projects } from '../db/schema/projects';
 import { projectRepository } from '../repositories/project.repository';
 import { organizationRepository } from '../repositories/organization.repository';
 import { generateSlug } from '../lib/utils';
+import { sharedRunnerSlugTaken } from '../lib/project-containers';
 import { logger } from '../lib/logger';
 import { adminNotify } from './admin-notify.service';
 import { t, type SupportedLocale } from '../i18n';
@@ -103,13 +104,17 @@ export const projectService = {
 
     await planLimitsService.assertProjectsQuota(organizationId, locale);
 
-    // Generate slug from name
-    let slug = generateSlug(input.name);
-
-    // Check if slug exists, append random suffix if needed
-    const slugExists = await projectRepository.slugExists(organizationId, slug);
-    if (slugExists) {
-      slug = `${slug}-${Math.random().toString(36).substring(2, 6)}`;
+    // Generate slug from name, unique within the organization. A project without a server of its
+    // own deploys to Pushify's shared runners, where containers, ports and vhosts are named after
+    // the slug across every organization — a slug another project answers to there could never
+    // be deployed, so it gets a random suffix too.
+    const baseSlug = generateSlug(input.name);
+    const slugTaken = async (candidate: string) =>
+      (await projectRepository.slugExists(organizationId, candidate)) ||
+      (!input.serverId && (await sharedRunnerSlugTaken(candidate)));
+    let slug = baseSlug;
+    for (let attempt = 0; attempt < 5 && (await slugTaken(slug)); attempt++) {
+      slug = `${baseSlug}-${Math.random().toString(36).substring(2, 6)}`;
     }
 
     // If serverId is provided, validate it belongs to the organization
