@@ -73,6 +73,32 @@ describe.skipIf(!TEST_URL)('infra wallet concurrency (real Postgres)', () => {
     expect(rows.map((r) => r.balanceAfterCents)).toContain(9_750);
   });
 
+  it('parallel credits for the same checkout session credit the wallet once', async () => {
+    const o = await makeOrg(1_000);
+    const sessionId = `cs_test_dup_${Date.now()}_${seq}`;
+
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        infraBillingService.creditWallet(o.id, 2_500, 'Stripe top-up $25.00', sessionId),
+      ),
+    );
+
+    expect(results.filter((r) => r.created)).toHaveLength(1);
+    expect(results.every((r) => r.balanceAfterCents === 3_500)).toBe(true);
+    expect(await balanceOf(o.id)).toBe(3_500);
+
+    const rows = (await ledger(o.id)).filter((r) => r.stripeCheckoutSessionId === sessionId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].balanceAfterCents).toBe(3_500);
+
+    // A later retry (webhook redelivery) is still a no-op.
+    expect(await infraBillingService.creditWallet(o.id, 2_500, 'retry', sessionId)).toEqual({
+      balanceAfterCents: 3_500,
+      created: false,
+    });
+    expect(await balanceOf(o.id)).toBe(3_500);
+  });
+
   it('a credit returns the stored balance', async () => {
     const o = await makeOrg(300);
     const res = await infraBillingService.creditWallet(o.id, 200, 'topup');

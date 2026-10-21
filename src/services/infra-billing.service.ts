@@ -362,25 +362,34 @@ export const infraBillingService = {
       throw new Error('Credit amount must be positive');
     }
 
-    if (stripeCheckoutSessionId) {
-      const [existing] = await db
-        .select({ balanceAfterCents: infraWalletTransactions.balanceAfterCents })
-        .from(infraWalletTransactions)
-        .where(
-          and(
-            eq(infraWalletTransactions.organizationId, organizationId),
-            eq(infraWalletTransactions.stripeCheckoutSessionId, stripeCheckoutSessionId),
-          ),
-        )
-        .limit(1);
+    const result = await db.transaction(async (tx) => {
+      if (stripeCheckoutSessionId) {
+        // The webhook and the success-page confirm (or parallel confirms) arrive together for
+        // the same session. Take the org row lock first and look for the session inside the
+        // transaction: a concurrent credit waits here and then sees the first one's ledger row,
+        // so a checkout session is credited once.
+        await tx
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(eq(organizations.id, organizationId))
+          .for('update');
 
-      if (existing) {
-        await this.clearInfraCreditsStoppedMessages(organizationId);
-        return { balanceAfterCents: existing.balanceAfterCents, created: false };
+        const [existing] = await tx
+          .select({ balanceAfterCents: infraWalletTransactions.balanceAfterCents })
+          .from(infraWalletTransactions)
+          .where(
+            and(
+              eq(infraWalletTransactions.organizationId, organizationId),
+              eq(infraWalletTransactions.stripeCheckoutSessionId, stripeCheckoutSessionId),
+            ),
+          )
+          .limit(1);
+
+        if (existing) {
+          return { balanceAfterCents: existing.balanceAfterCents, created: false };
+        }
       }
-    }
 
-    const balanceAfterCents = await db.transaction(async (tx) => {
       const newBalance = await addToWalletBalance(tx, organizationId, amountCents);
 
       await tx.insert(infraWalletTransactions).values({
@@ -392,11 +401,16 @@ export const infraBillingService = {
         stripeCheckoutSessionId: stripeCheckoutSessionId ?? null,
       });
 
-      return newBalance;
+      return { balanceAfterCents: newBalance, created: true };
     });
 
     await this.clearInfraCreditsStoppedMessages(organizationId);
 
+    if (!result.created) {
+      return result;
+    }
+
+    const { balanceAfterCents } = result;
     adminNotify('wallet.topup', {
       organizationId,
       amount: `$${(amountCents / 100).toFixed(2)}`,
