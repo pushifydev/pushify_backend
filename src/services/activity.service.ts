@@ -6,6 +6,7 @@ import { eq, desc, and, inArray, gte, lte, sql } from 'drizzle-orm';
 import { logger } from '../lib/logger';
 import { normalizeClientIp } from '../lib/utils';
 import { currentAuditApiKey, sanitizeChanges, type AuditChanges, type AuditSource } from '../lib/audit';
+import { providerLabel, type SecretProvider } from '../lib/secret-references';
 
 export interface ActivityLogInput {
   organizationId: string;
@@ -59,6 +60,42 @@ export interface ActivityLogWithDetails {
     name: string;
     slug: string;
   } | null;
+}
+
+/** The non-secret fields of a secret manager connection (see secret-provider.service.ts). */
+export interface SecretProviderConnectionAudit {
+  id: string;
+  provider: string;
+  projectId: string | null;
+  siteUrl: string;
+  clientId: string;
+  workspaceId: string;
+  environment: string;
+  secretPath: string;
+}
+
+function secretProviderAuditLabel(connection: SecretProviderConnectionAudit): string {
+  const scope = connection.projectId ? 'project' : 'organization';
+  return `${providerLabel(connection.provider as SecretProvider)} connection (${scope})`;
+}
+
+/** Picked field by field so a secret on the input can never reach the log. */
+function secretProviderAuditMetadata(
+  connection: SecretProviderConnectionAudit,
+  operation: 'saved' | 'removed'
+): Record<string, unknown> {
+  return {
+    setting: 'secret_provider',
+    operation,
+    connectionId: connection.id,
+    provider: connection.provider,
+    scope: connection.projectId ? 'project' : 'organization',
+    siteUrl: connection.siteUrl,
+    clientId: connection.clientId,
+    workspaceId: connection.workspaceId,
+    environment: connection.environment,
+    secretPath: connection.secretPath,
+  };
 }
 
 class ActivityService {
@@ -666,6 +703,54 @@ class ActivityService {
         name: credential.name,
         registry: credential.registry,
       },
+      ipAddress,
+      userAgent,
+      source,
+    });
+  }
+
+  /**
+   * An external secret manager connection (Infisical, Doppler, Vault) was added or replaced for
+   * the organization or one of its projects. Recorded as `settings.updated` with
+   * `setting: 'secret_provider'` so no enum migration is needed. Only where it points is written —
+   * never the client secret or token.
+   */
+  async logSecretProviderConnectionSaved(
+    organizationId: string,
+    userId: string,
+    connection: SecretProviderConnectionAudit,
+    ipAddress?: string,
+    userAgent?: string,
+    source?: AuditSource
+  ): Promise<void> {
+    await this.log({
+      organizationId,
+      userId,
+      projectId: connection.projectId ?? undefined,
+      action: 'settings.updated',
+      description: `Saved ${secretProviderAuditLabel(connection)}`,
+      metadata: secretProviderAuditMetadata(connection, 'saved'),
+      ipAddress,
+      userAgent,
+      source,
+    });
+  }
+
+  async logSecretProviderConnectionRemoved(
+    organizationId: string,
+    userId: string,
+    connection: SecretProviderConnectionAudit,
+    ipAddress?: string,
+    userAgent?: string,
+    source?: AuditSource
+  ): Promise<void> {
+    await this.log({
+      organizationId,
+      userId,
+      projectId: connection.projectId ?? undefined,
+      action: 'settings.updated',
+      description: `Removed ${secretProviderAuditLabel(connection)}`,
+      metadata: secretProviderAuditMetadata(connection, 'removed'),
       ipAddress,
       userAgent,
       source,

@@ -252,7 +252,8 @@ export const secretProviderService = {
       .where(and(eq(secretProviderConnections.id, id), eq(secretProviderConnections.organizationId, organizationId)))
       .returning();
     if (!row) throw new HTTPException(404, { message: 'Secret provider connection not found' });
-    return { success: true };
+    // The removed connection (without its secret) so the caller can audit what went away
+    return { success: true, connection: toPublic(row) };
   },
 
   /**

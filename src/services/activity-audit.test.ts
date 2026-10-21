@@ -219,6 +219,76 @@ describe('activity service audit helpers', () => {
     });
   });
 
+  it('secret provider connection saved records where it points but never the client secret', async () => {
+    await activityService.logSecretProviderConnectionSaved(
+      'org-A',
+      'user-1',
+      {
+        id: 'sp-1',
+        provider: 'infisical',
+        projectId: null,
+        siteUrl: 'https://app.infisical.com',
+        clientId: 'mi-client-1',
+        workspaceId: 'ws-1',
+        environment: 'prod',
+        secretPath: '/',
+        // Extra fields on the input must not leak into the log
+        ...({ clientSecret: 'MI_SECRET_SHOULD_NOT_LEAK', clientSecretEncrypted: 'ENC_SHOULD_NOT_LEAK' } as object),
+      } as never,
+      undefined,
+      undefined,
+      'ui'
+    );
+    expect(inserted[0]).toMatchObject({
+      organizationId: 'org-A',
+      userId: 'user-1',
+      action: 'settings.updated',
+      source: 'ui',
+      description: 'Saved Infisical connection (organization)',
+      metadata: {
+        setting: 'secret_provider',
+        operation: 'saved',
+        connectionId: 'sp-1',
+        provider: 'infisical',
+        scope: 'organization',
+        siteUrl: 'https://app.infisical.com',
+        clientId: 'mi-client-1',
+        workspaceId: 'ws-1',
+        environment: 'prod',
+        secretPath: '/',
+      },
+    });
+    expect(inserted[0].projectId).toBeUndefined();
+    const serialized = JSON.stringify(inserted[0]);
+    expect(serialized).not.toContain('MI_SECRET_SHOULD_NOT_LEAK');
+    expect(serialized).not.toContain('ENC_SHOULD_NOT_LEAK');
+  });
+
+  it('secret provider connection removed is recorded on the project it was scoped to', async () => {
+    await activityService.logSecretProviderConnectionRemoved('org-A', 'user-1', {
+      id: 'sp-2',
+      provider: 'infisical',
+      projectId: 'p-1',
+      siteUrl: 'https://infisical.example.com',
+      clientId: 'mi-client-2',
+      workspaceId: 'ws-2',
+      environment: 'staging',
+      secretPath: '/api',
+    });
+    expect(inserted[0]).toMatchObject({
+      projectId: 'p-1',
+      action: 'settings.updated',
+      description: 'Removed Infisical connection (project)',
+      metadata: {
+        setting: 'secret_provider',
+        operation: 'removed',
+        connectionId: 'sp-2',
+        provider: 'infisical',
+        scope: 'project',
+      },
+    });
+  });
+
   it('member.removed records the target user and the role they had', async () => {
     await activityService.logMemberRemoved('org-A', 'user-1', 'user-2', 'viewer');
     expect(inserted[0]).toMatchObject({

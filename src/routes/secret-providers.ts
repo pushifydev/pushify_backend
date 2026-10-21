@@ -1,7 +1,9 @@
 import { Hono } from 'hono';
 import { rejectApiKeyAuth } from '../middleware/apikey-auth';
 import { secretProviderService } from '../services/secret-provider.service';
+import { activityService } from '../services/activity.service';
 import { authMiddleware } from '../middleware/auth';
+import { auditSource } from '../lib/audit';
 import type { AppEnv } from '../types';
 
 /**
@@ -25,23 +27,43 @@ secretProviderRouter.get('/', async (c) => {
 
 // Connect a provider, or replace the connection stored for the same provider and scope
 secretProviderRouter.post('/', async (c) => {
+  const organizationId = c.get('organizationId')!;
+  const userId = c.get('userId')!;
   const connection = await secretProviderService.upsert(
-    c.get('organizationId')!,
-    c.get('userId')!,
+    organizationId,
+    userId,
     await c.req.json(),
     c.get('locale')
+  );
+  await activityService.logSecretProviderConnectionSaved(
+    organizationId,
+    userId,
+    connection,
+    c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
+    c.req.header('user-agent'),
+    auditSource(c)
   );
   return c.json({ data: connection }, 201);
 });
 
 secretProviderRouter.delete('/:id', async (c) => {
-  const result = await secretProviderService.remove(
-    c.get('organizationId')!,
-    c.get('userId')!,
+  const organizationId = c.get('organizationId')!;
+  const userId = c.get('userId')!;
+  const { connection } = await secretProviderService.remove(
+    organizationId,
+    userId,
     c.req.param('id'),
     c.get('locale')
   );
-  return c.json({ data: result });
+  await activityService.logSecretProviderConnectionRemoved(
+    organizationId,
+    userId,
+    connection,
+    c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
+    c.req.header('user-agent'),
+    auditSource(c)
+  );
+  return c.json({ data: { success: true } });
 });
 
 export { secretProviderRouter as secretProviderRoutes };

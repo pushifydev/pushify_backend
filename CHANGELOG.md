@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-21
+
+### Fixed
+- **Secret manager connections show up in the audit log.** Before, adding, replacing or removing an Infisical, Doppler or Vault connection (`POST` / `DELETE /api/v1/secret-providers`) wrote nothing to the activity log. Registry logins and SSO were already audited. Each change now writes a `settings.updated` entry with `setting: 'secret_provider'` and `operation: 'saved' | 'removed'`, so no enum migration is needed. The entry records the provider, scope (organization or project), connection id, and where the connection points: URL, client id, project/workspace, environment and path. A project-scoped connection is also recorded on that project. The client secret or token is never written. `DELETE` still returns `{ success: true }`. 5 tests.
+
 ## [0.4.1] - 2026-10-21
 
 ### Fixed
