@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-21
+
+### Fixed
+- **2FA backup codes work again.** `verifyBackupCode` passed the typed code where `verifyPassword` expects the stored hash, so argon2 threw on every check, the error was swallowed and every backup code was rejected. That blocked sign-in with a backup code, confirming 2FA disable / backup-code regeneration on OAuth-only accounts, and confirming account deletion with a backup code. A user who lost their authenticator had to contact support. The arguments are now in the right order, and the code is trimmed and uppercased first, so a code typed in lowercase is accepted too. A used code is still removed and cannot be used again. 4 tests.
+
 ## [0.4.0] - 2026-10-21
 
 ### Added

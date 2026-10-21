@@ -161,10 +161,12 @@ export const twoFactorService = {
     }
 
     const hashedCodes: string[] = JSON.parse(user.twoFactorBackupCodes);
+    // Codes are generated as uppercase hex (generateBackupCodes); accept them typed in any case.
+    const normalizedCode = code.trim().toUpperCase();
 
     // Find and verify the backup code
     for (let i = 0; i < hashedCodes.length; i++) {
-      const isValid = await verifyPassword(code, hashedCodes[i]);
+      const isValid = await verifyPassword(hashedCodes[i], normalizedCode);
       if (isValid) {
         // Remove the used backup code
         hashedCodes.splice(i, 1);
