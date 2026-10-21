@@ -4,7 +4,12 @@ import { env } from '../config/env';
 import { logger } from '../lib/logger';
 import * as schema from './schema';
 
-const pool = new pg.Pool({
+/**
+ * Exported for work that must stay on one connection, e.g. session-level advisory locks: each
+ * `db` query takes any connection from the pool, so a lock taken through `db` may be released on
+ * another one (which fails) and stay held.
+ */
+export const pool = new pg.Pool({
   connectionString: env.DATABASE_URL,
   max: env.PG_POOL_MAX,
   idleTimeoutMillis: env.PG_POOL_IDLE_TIMEOUT_MS,

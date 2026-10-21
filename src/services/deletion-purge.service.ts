@@ -1,5 +1,5 @@
 import { and, eq, isNotNull, isNull, lte, sql } from 'drizzle-orm';
-import { db } from '../db';
+import { db, pool } from '../db';
 import {
   authEvents,
   deletedOrganizations,
@@ -39,6 +39,7 @@ import { sendDeletionCompletedEmail, sendDeletionReminderEmail } from '../lib/em
 const REMINDER_DAYS_BEFORE = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ALERT_AFTER_ATTEMPTS = 3;
+const SWEEP_LOCK_KEY = 'pushify:deletion-purge';
 
 type StepResult = void;
 interface Step {
@@ -376,39 +377,67 @@ async function sendReminders(now: Date): Promise<number> {
   return sent;
 }
 
+interface SweepStats {
+  reminded: number;
+  organizations: number;
+  accounts: number;
+  pending: number;
+}
+
+/** Reminders, then every organization and account whose date has passed. */
+async function purgeDue(now: Date): Promise<SweepStats> {
+  const reminded = await sendReminders(now);
+  let purgedOrgs = 0;
+  let purgedAccounts = 0;
+  let pending = 0;
+  const dueOrgs = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(and(isNotNull(organizations.deletionScheduledFor), lte(organizations.deletionScheduledFor, now)));
+  for (const o of dueOrgs) {
+    if (await purgeOrganization(o.id)) purgedOrgs++;
+    else pending++;
+  }
+  const dueUsers = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(isNotNull(users.deletionScheduledFor), lte(users.deletionScheduledFor, now)));
+  for (const u of dueUsers) {
+    if (await purgeUser(u.id)) purgedAccounts++;
+    else pending++;
+  }
+  return { reminded, organizations: purgedOrgs, accounts: purgedAccounts, pending };
+}
+
 export const deletionPurgeService = {
   /**
    * One sweep: reminders, then every organization and account whose date has passed. Guarded by
    * a Postgres advisory lock so two worker processes never purge the same thing at once.
+   *
+   * The lock belongs to a session, so it is taken and released on one dedicated connection while
+   * the work itself runs through `db`. Through `db` the unlock could land on another pooled
+   * connection, fail, and leave the lock held, so later sweeps skipped without a trace.
    */
-  async sweep(now: Date = new Date()): Promise<{ reminded: number; organizations: number; accounts: number; pending: number }> {
-    const lock = await db.execute(sql`select pg_try_advisory_lock(hashtext('pushify:deletion-purge')) as ok`);
-    const acquired = (lock.rows?.[0] as { ok?: boolean } | undefined)?.ok === true;
-    if (!acquired) return { reminded: 0, organizations: 0, accounts: 0, pending: 0 };
+  async sweep(now: Date = new Date()): Promise<SweepStats> {
+    const lockClient = await pool.connect();
+    let unlockError: Error | undefined;
     try {
-      const reminded = await sendReminders(now);
-      let purgedOrgs = 0;
-      let purgedAccounts = 0;
-      let pending = 0;
-      const dueOrgs = await db
-        .select({ id: organizations.id })
-        .from(organizations)
-        .where(and(isNotNull(organizations.deletionScheduledFor), lte(organizations.deletionScheduledFor, now)));
-      for (const o of dueOrgs) {
-        if (await purgeOrganization(o.id)) purgedOrgs++;
-        else pending++;
+      const lock = await lockClient.query<{ ok: boolean }>('select pg_try_advisory_lock(hashtext($1)) as ok', [SWEEP_LOCK_KEY]);
+      if (lock.rows[0]?.ok !== true) {
+        logger.info('Deletion purge sweep skipped: another sweep holds the lock');
+        return { reminded: 0, organizations: 0, accounts: 0, pending: 0 };
       }
-      const dueUsers = await db
-        .select({ id: users.id })
-        .from(users)
-        .where(and(isNotNull(users.deletionScheduledFor), lte(users.deletionScheduledFor, now)));
-      for (const u of dueUsers) {
-        if (await purgeUser(u.id)) purgedAccounts++;
-        else pending++;
+      try {
+        return await purgeDue(now);
+      } finally {
+        await lockClient.query('select pg_advisory_unlock(hashtext($1))', [SWEEP_LOCK_KEY]).catch((err: unknown) => {
+          unlockError = err instanceof Error ? err : new Error(String(err));
+          logger.warn({ err: unlockError }, 'Deletion purge lock release failed; closing its connection');
+        });
       }
-      return { reminded, organizations: purgedOrgs, accounts: purgedAccounts, pending };
     } finally {
-      await db.execute(sql`select pg_advisory_unlock(hashtext('pushify:deletion-purge'))`);
+      // A connection whose unlock failed is closed instead of returned to the pool, ending the lock.
+      lockClient.release(unlockError);
     }
   },
 };
