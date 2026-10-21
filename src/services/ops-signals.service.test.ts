@@ -2,7 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 
-const h = vi.hoisted(() => ({ queries: [] as unknown[], downRows: [] as unknown[], serverRows: [] as unknown[] }));
+const h = vi.hoisted(() => ({
+  queries: [] as unknown[],
+  downRows: [] as unknown[],
+  serverRows: [] as unknown[],
+  outcomeRows: [] as unknown[],
+  sinceRows: [] as unknown[],
+}));
 
 vi.mock('../db', () => ({
   db: {
@@ -11,6 +17,8 @@ vi.mock('../db', () => ({
       const text = JSON.stringify(query);
       if (text.includes('project_health_state')) return { rows: h.downRows };
       if (text.includes('disk_breakdown')) return { rows: h.serverRows };
+      if (text.includes('GROUP BY 1, 2')) return { rows: h.outcomeRows };
+      if (text.includes('LIMIT 2000')) return { rows: h.sinceRows };
       return { rows: [] };
     },
   },
@@ -197,5 +205,53 @@ describe('opsSignalsService servers disk diagnosis', () => {
     h.serverRows = [{ ...base, diskBreakdown: null }];
     const { servers } = await opsSignalsService.getSignals();
     expect(servers[0].disk).toBeNull();
+  });
+});
+
+describe('opsSignalsService deploy failure rate', () => {
+  beforeEach(() => {
+    h.queries = [];
+    h.outcomeRows = [];
+    h.sinceRows = [];
+  });
+
+  it('counts deploys stopped under the Acceptable Use Policy on their own line, out of total and failed', async () => {
+    // 7 deploys, 5 stopped by the policy: the alarm read 5/7 failed.
+    h.outcomeRows = [
+      { status: 'failed', failureCategory: 'policy_blocked', count: 5 },
+      { status: 'running', failureCategory: null, count: 2 },
+    ];
+    const { deployments } = await opsSignalsService.getSignals();
+    expect(deployments).toMatchObject({ total: 2, failed: 0, policyBlocked: 5 });
+  });
+
+  it('still reports real failures next to them', async () => {
+    h.outcomeRows = [
+      { status: 'failed', failureCategory: 'policy_blocked', count: 3 },
+      { status: 'failed', failureCategory: 'application_build', count: 1 },
+      { status: 'failed', failureCategory: null, count: 1 },
+      { status: 'running', failureCategory: null, count: 3 },
+    ];
+    const { deployments } = await opsSignalsService.getSignals();
+    expect(deployments).toMatchObject({ total: 5, failed: 2, policyBlocked: 3 });
+  });
+
+  it('keeps them out of the failure causes and the failing projects', async () => {
+    await opsSignalsService.getSignals();
+    const rendered = h.queries.map(render);
+    const causes = rendered.find((q) => q.includes('ORDER BY created_at DESC LIMIT 500'));
+    expect(causes).toContain("status = 'failed' AND failure_category IS DISTINCT FROM 'policy_blocked'");
+    const failing = rendered.find((q) => q.includes('WITH recent AS'));
+    expect(failing).toContain("failure_category IS DISTINCT FROM 'policy_blocked'");
+  });
+
+  it('applies the same rule to the deploy watch window', async () => {
+    h.sinceRows = [
+      { status: 'failed', failureCategory: 'policy_blocked', errorMessage: '[Project] Stopped by policy: stopped' },
+      { status: 'failed', failureCategory: 'docker_build', errorMessage: '[Pushify] Docker build failed: failed to solve' },
+      { status: 'running', failureCategory: null, errorMessage: null },
+    ];
+    const { since } = await opsSignalsService.getSignals({ since: new Date(Date.now() - 60_000) });
+    expect(since).toMatchObject({ total: 2, failed: 1, pushifyFailed: 1, policyBlocked: 1 });
   });
 });

@@ -8,6 +8,8 @@ export type DeployFailureCategory =
   | 'container_start'
   | 'server_capacity'
   | 'project_config'
+  /** Stopped under the Acceptable Use Policy. Not a failure: kept out of failure rates. */
+  | 'policy_blocked'
   | 'unknown';
 
 export type DeployFailureBlame = 'pushify' | 'server' | 'project';
@@ -18,6 +20,30 @@ export interface ClassifiedDeployFailure {
   /** Short label stored in errorMessage prefix */
   label: string;
   userHint: string;
+}
+
+/**
+ * Thrown where a deploy is stopped under the Acceptable Use Policy. The category comes from the
+ * error's type, never from its message, so rewording the message cannot turn it into a failure.
+ */
+export class PolicyBlockedDeployError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PolicyBlockedDeployError';
+  }
+}
+
+const POLICY_BLOCKED: ClassifiedDeployFailure = {
+  category: 'policy_blocked',
+  blame: 'project',
+  label: 'Stopped by policy',
+  userHint: 'This project is suspended under the Acceptable Use Policy. The email sent to the owner says why and how to appeal.',
+};
+
+/** The worker's entry point: what stopped the deploy if it says so itself, else the classifier. */
+export function classifyDeployError(error: unknown, logs: string, rawError: string): ClassifiedDeployFailure {
+  if (error instanceof PolicyBlockedDeployError) return POLICY_BLOCKED;
+  return classifyDeployFailure(logs, rawError);
 }
 
 const LOG_TAG = '[Pushify] failureCategory=';
