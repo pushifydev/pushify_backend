@@ -29,7 +29,7 @@ vi.mock('../db', async () => {
   const { drizzle } = await import('drizzle-orm/node-postgres');
   const schema = await import('../db/schema');
   const pool = new pg.Pool({ connectionString: process.env.ACCOUNT_DELETION_TEST_DATABASE_URL || 'postgresql:///nonexistent', max: 4 });
-  return { db: drizzle(pool, { schema }), __pool: pool };
+  return { db: drizzle(pool, { schema }), pool, __pool: pool };
 });
 vi.mock('../config/env', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../config/env')>();
@@ -60,6 +60,7 @@ vi.mock('../lib/email', async (importOriginal) => {
 });
 vi.mock('./admin-notify.service', () => ({ adminNotify: h.adminNotify }));
 
+import pg from 'pg';
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../db';
 import {
@@ -233,6 +234,38 @@ describe.skipIf(!TEST_URL)('deletion purge (real Postgres)', () => {
     expect(await orgRow(soon.id)).toBeDefined();
     expect(await orgRow(later.id)).toBeDefined();
     expect(h.deleteServer).not.toHaveBeenCalled();
+  });
+
+  it('lets one of two parallel sweeps run, then releases the lock for the next sweep', async () => {
+    const owner = await makeUser();
+    const first = await makeScheduledOrg(owner.id);
+    // The sweep that takes the lock waits here until the other one has returned.
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    h.offsitePurge.mockImplementationOnce(() => gate);
+
+    const a = deletionPurgeService.sweep(NOW);
+    const b = deletionPurgeService.sweep(NOW);
+    expect(await Promise.race([a, b])).toEqual({ reminded: 0, organizations: 0, accounts: 0, pending: 0 });
+    open();
+    const results = await Promise.all([a, b]);
+    expect(results.map((r) => r.organizations).sort()).toEqual([0, 1]);
+    expect(h.offsitePurge).toHaveBeenCalledTimes(1);
+    expect(await orgRow(first.id)).toBeUndefined();
+
+    // Released: a session outside the pool can take it, and the next sweep runs normally.
+    const other = new pg.Client({ connectionString: TEST_URL });
+    await other.connect();
+    try {
+      const { rows } = await other.query<{ ok: boolean }>(`select pg_try_advisory_lock(hashtext('pushify:deletion-purge')) as ok`);
+      expect(rows[0].ok).toBe(true);
+      await other.query(`select pg_advisory_unlock(hashtext('pushify:deletion-purge'))`);
+    } finally {
+      await other.end();
+    }
+    const second = await makeScheduledOrg(owner.id);
+    expect(await deletionPurgeService.sweep(NOW)).toMatchObject({ organizations: 1, pending: 0 });
+    expect(await orgRow(second.id)).toBeUndefined();
   });
 
   it('purges an account after its organization, with its sign-in history, and keeps what it did elsewhere', async () => {
