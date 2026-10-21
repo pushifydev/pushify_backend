@@ -36,6 +36,8 @@ describe('opsSignalsService sitesDown query', () => {
     expect(query).toContain('JOIN projects p ON p.id = h.project_id');
     expect(query).toContain("p.status = 'active'");
     expect(query).toContain("p.sleep_state = 'awake'");
+    // Suspended (or owner-paused) projects were stopped on purpose: never a down site.
+    expect(query).toContain('p.suspended_at IS NULL');
     expect(query).toContain("jsonb_typeof(p.settings -> 'productionUrl') = 'string'");
     expect(query).toContain("EXISTS (SELECT 1 FROM deployments d WHERE d.project_id = h.project_id AND d.status = 'running')");
   });

@@ -11,6 +11,7 @@ import { env } from '../config/env';
 import { assertPublicUrl } from '../lib/ssrf-guard';
 import { logger } from '../lib/logger';
 import { withCauseCode } from '../lib/site-down-diagnosis';
+import { withDownCause } from '../lib/container-down-cause';
 import { t, type SupportedLocale } from '../i18n';
 import { planLimitsService } from './plan-limits.service';
 import type { HealthCheck, HealthCheckLog } from '../db/schema';
@@ -220,7 +221,8 @@ export const healthCheckService = {
       .select()
       .from(projectHealthState)
       .where(eq(projectHealthState.projectId, projectId));
-    return (
+    // cause + hint: why it is down (the inspected container) or that it was stopped on purpose.
+    return withDownCause(
       state ?? {
         projectId,
         url: null,
@@ -235,7 +237,8 @@ export const healthCheckService = {
         diagnostics: null,
         reminderStep: 0,
         lastCheckedAt: null,
-      }
+      },
+      project
     );
   },
 

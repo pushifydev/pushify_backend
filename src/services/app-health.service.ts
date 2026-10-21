@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '../db';
 import { projects } from '../db/schema/projects';
 import { deployments } from '../db/schema/deployments';
@@ -25,8 +25,11 @@ import {
   type ServerDiagnostics,
   type ServerProbeOutcomes,
 } from '../lib/app-health';
+import { containerInspectCommand, diagnoseContainer, parseContainerInspectOutput, type ContainerDiagnosis } from '../lib/container-down-cause';
+import { execOnProjectHost } from '../lib/project-host-exec';
 import { decrypt } from '../lib/encryption';
 import { getSSHConnection } from '../utils/ssh';
+import { getProjectLogMasker } from '../workers/log-collector';
 import { wsManager } from '../lib/ws';
 import { logger } from '../lib/logger';
 import { adminNotify } from './admin-notify.service';
@@ -46,6 +49,9 @@ const CHECK_CONCURRENCY = 8;
 const SSH_PROBE_TIMEOUT_MS = 10_000;
 /** TCP connect to the proxy ports 80/443, done from here, i.e. from the internet's side. */
 const PORT_PROBE_TIMEOUT_MS = 5_000;
+/** docker inspect + listening sockets + log tail of the app container, over SSH. */
+const CONTAINER_INSPECT_TIMEOUT_MS = 20_000;
+const REFUSED = /econnrefused/i;
 
 /** Can a TCP connection be opened to host:port? ok / refused / timeout / failed. */
 export function probeTcpPort(host: string, port: number, timeoutMs: number = PORT_PROBE_TIMEOUT_MS): Promise<ServerCheckOutcome> {
@@ -109,6 +115,8 @@ export interface Candidate {
   autoRestart: boolean;
   /** Only a configured check demands a 2xx; otherwise any answer means the app is up. */
   requireOk: boolean;
+  /** The project's container port, for when the container publishes none */
+  port?: number | null;
 }
 
 function toState(row: typeof projectHealthState.$inferSelect | undefined): HealthState {
@@ -131,12 +139,14 @@ export const appHealthService = {
         name: projects.name,
         organizationId: projects.organizationId,
         serverId: projects.serverId,
+        port: projects.port,
         settings: projects.settings,
         config: healthChecks,
       })
       .from(projects)
       .leftJoin(healthChecks, and(eq(healthChecks.projectId, projects.id), eq(healthChecks.isActive, true)))
-      .where(and(eq(projects.status, 'active'), eq(projects.sleepState, 'awake')));
+      // Paused by the owner or suspended by an admin: stopped on purpose, so never "down".
+      .where(and(eq(projects.status, 'active'), eq(projects.sleepState, 'awake'), isNull(projects.suspendedAt)));
 
     const withUrl = rows.filter((row) => typeof (row.settings as Record<string, unknown>)?.productionUrl === 'string');
     if (withUrl.length === 0) return [];
@@ -172,6 +182,7 @@ export const appHealthService = {
         threshold: row.config?.unhealthyThreshold ?? DEFAULT_THRESHOLD,
         autoRestart: row.config?.autoRestart ?? false,
         requireOk: !!row.config,
+        port: row.port ?? null,
       }));
   },
 
@@ -353,6 +364,35 @@ export const appHealthService = {
     return { ssh: sshDocker.ssh, docker: sshDocker.docker, httpPort, httpsPort };
   },
 
+  /**
+   * The production app container on the project's host (its server, or its shared runner):
+   * state, exit code, restarts, OOM, the ports it listens on and its last log lines (masked),
+   * with a cause code and a hint. `state: 'unknown'` when it could not be inspected.
+   */
+  async inspectContainer(candidate: Candidate, now: Date = new Date()): Promise<ContainerDiagnosis> {
+    const unknown = () => diagnoseContainer({ inspection: null, projectPort: candidate.port ?? null, now });
+    try {
+      const res = await withTimeout(
+        execOnProjectHost({ id: candidate.projectId, serverId: candidate.serverId }, containerInspectCommand(candidate.slug)),
+        CONTAINER_INSPECT_TIMEOUT_MS,
+        { ok: false, stdout: '' }
+      );
+      const inspection = res.ok ? parseContainerInspectOutput(res.stdout) : null;
+      if (!inspection) return unknown();
+      const logTail = inspection.logTail;
+      if (logTail) {
+        // Never kept unmasked: without the project's masker the lines are dropped.
+        inspection.logTail = await getProjectLogMasker(candidate.projectId)
+          .then((masker) => masker.mask(logTail))
+          .catch(() => null);
+      }
+      return diagnoseContainer({ inspection, projectPort: candidate.port ?? null, now });
+    } catch (err) {
+      logger.warn({ err, projectId: candidate.projectId }, 'Could not inspect the app container');
+      return unknown();
+    }
+  },
+
   /** server_unreachable / app_error / deploy_failed, plus per-check server diagnostics, for the alert and the API. */
   async diagnose(
     candidate: Candidate,
@@ -369,13 +409,23 @@ export const appHealthService = {
         .limit(1);
       const hasAnswer = !!result.statusCode && result.statusCode > 0;
       const outcomes = hasAnswer ? undefined : await this.probeServer(server);
+      // A refused connection means the host is up and nothing listens: look at the container
+      // itself — unless SSH or Docker already failed, which leaves nothing to ask.
+      const serverDown = !!outcomes && ((outcomes.ssh !== 'ok' && outcomes.ssh !== 'skipped') || outcomes.docker === 'failed');
+      const container = !hasAnswer && REFUSED.test(result.error ?? '') && !serverDown ? await this.inspectContainer(candidate, now) : null;
+      const inspected = !!container && container.state !== 'unknown';
       const reason = classifyDownReason({
         statusCode: result.statusCode,
         error: result.error,
         latestDeployFailed: latest?.status === 'failed',
-        serverReachable: outcomes && outcomes.ssh !== 'skipped' ? outcomes.ssh === 'ok' : undefined,
+        // Inspecting the container went through the server, so the server answered.
+        serverReachable: inspected ? true : outcomes && outcomes.ssh !== 'skipped' ? outcomes.ssh === 'ok' : undefined,
       });
-      const diagnostics = outcomes ? buildServerDiagnostics(outcomes, { managed: !(server?.byos ?? true), now }) : null;
+      const managed = !(server?.byos ?? true);
+      let diagnostics = outcomes ? buildServerDiagnostics(outcomes, { managed, now }) : null;
+      if (container) {
+        diagnostics = { ...(diagnostics ?? { checkedAt: now.toISOString(), checks: [], failedCheck: null, advice: null, managed }), container };
+      }
       return { reason, diagnostics };
     } catch (err) {
       logger.warn({ err, projectId: candidate.projectId }, 'Could not work out why the app is down');

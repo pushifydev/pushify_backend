@@ -93,7 +93,7 @@ export interface SiteDown {
   serverLastSeenAt: string | null;
   lastSuccessfulDeployAt: string | null;
   ownerLastLoginAt: string | null;
-  /** What monitoring concluded: server_unreachable | app_error | deploy_failed (null before the first alert). */
+  /** What monitoring concluded: server_unreachable | app_error | deploy_failed (null before the first alert). See diagnosis.cause for the container's own cause. */
   downReason: string | null;
   /**
    * The project's most recent deployment, classified. A site down behind a failed build whose
@@ -195,7 +195,7 @@ export const opsSignalsService = {
                                FROM deployments d WHERE d.project_id = h.project_id
                               ORDER BY d.created_at DESC LIMIT 1) ld ON true
          WHERE h.status = 'down' AND h.down_since < now() - ${sql.raw(`interval '${SITE_DOWN_GRACE_MIN} minutes'`)}
-           AND p.status = 'active' AND p.sleep_state = 'awake'
+           AND p.status = 'active' AND p.sleep_state = 'awake' AND p.suspended_at IS NULL
            AND jsonb_typeof(p.settings -> 'productionUrl') = 'string'
            AND EXISTS (SELECT 1 FROM deployments d WHERE d.project_id = h.project_id AND d.status = 'running')
          ORDER BY h.down_since ASC LIMIT ${LIST_LIMIT}`),
