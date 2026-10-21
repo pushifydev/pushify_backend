@@ -236,6 +236,7 @@ function getPriority(event: string): number {
     'backup.failed': 1,
     'backup.missed': 1,
     'backup.warning': 2,
+    'backup.resolved': 2,
     'backup.success': 3,
     'deployment.started': 3,
     'test': 5,

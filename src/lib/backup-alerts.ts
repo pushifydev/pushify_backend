@@ -18,6 +18,8 @@ export const BACKUP_EVENTS = {
   warning: 'backup.warning',
   /** No successful backup for well past the configured interval */
   missed: 'backup.missed',
+  /** The first successful backup after a reported failure or missed backup — sent once */
+  resolved: 'backup.resolved',
 } as const;
 
 export type BackupEvent = (typeof BACKUP_EVENTS)[keyof typeof BACKUP_EVENTS];
