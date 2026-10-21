@@ -305,6 +305,7 @@ const EVENT_META: Record<string, EventMeta> = {
   'backup.failed': { title: 'Backup failed', tone: 'danger' },
   'backup.warning': { title: 'Backup completed with warnings', tone: 'danger' },
   'backup.missed': { title: 'Expected backup missing', tone: 'danger' },
+  'backup.resolved': { title: 'Backups working again', tone: 'success' },
   test: { title: 'Test notification', tone: 'neutral' },
 };
 
@@ -323,6 +324,7 @@ export function getNotificationEventEmoji(event: string): string {
     'backup.failed': '❌',
     'backup.warning': '⚠️',
     'backup.missed': '⏰',
+    'backup.resolved': '💚',
     test: '🔔',
   };
   return map[event] ?? '📢';
@@ -340,6 +342,7 @@ export function getNotificationEventColor(event: string): string {
     'backup.failed': '#ef4444',
     'backup.warning': '#f59e0b',
     'backup.missed': '#ef4444',
+    'backup.resolved': '#22c55e',
     test: '#a78bfa',
   };
   return map[event] ?? '#737373';

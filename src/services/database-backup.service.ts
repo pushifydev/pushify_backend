@@ -281,6 +281,13 @@ export const databaseBackupService = {
           .catch(() => undefined);
       }
 
+      // Before `lastBackupAt` moves: it marks where the reported failure/missed gap started
+      await this.notifyBackupResolved(
+        databaseId,
+        `Backups are working again: ${fileName} completed.`,
+        backupId
+      );
+
       // Update last backup time on database
       await databaseRepository.update(databaseId, {
         lastBackupAt: new Date(),
@@ -386,6 +393,36 @@ export const databaseBackupService = {
     await this.notifyBackupEvent(databaseId, BACKUP_EVENTS.failed, {
       message: `${message} Further failures are not reported until a backup succeeds.`,
     });
+    return true;
+  },
+
+  /**
+   * Report once that backups work again. Sent for a successful backup only when the gap it
+   * closes — since the last successful backup, or since the database was created — had a
+   * failure or a missed backup, i.e. something `backup.failed`/`backup.missed` already told the
+   * channels about. Must run before `lastBackupAt` moves to this backup: afterwards the gap is
+   * closed, so the next success finds nothing and sends nothing. `backupId` is the backup that
+   * just succeeded. Returns whether a notification went out. Never throws.
+   */
+  async notifyBackupResolved(databaseId: string, message: string, backupId?: string): Promise<boolean> {
+    try {
+      const database = await databaseRepository.findById(databaseId);
+      if (!database) return false;
+      const gapStart = database.lastBackupAt ?? database.createdAt;
+      const marker = database.lastBackupAt?.getTime() ?? 0;
+      // A backup that could not start leaves no row, only the in-memory marker
+      const failedWithoutRow = failureAlerted.get(databaseId) === marker;
+      failureAlerted.delete(databaseId);
+      const reported =
+        failedWithoutRow ||
+        !!(await databaseRepository.findFailedBackupSince(databaseId, gapStart, backupId)) ||
+        !!(await databaseRepository.findMissedBackupSince(databaseId, gapStart));
+      if (!reported) return false;
+    } catch (error) {
+      logger.warn({ error, databaseId }, 'Could not check whether backups had been failing');
+      return false;
+    }
+    await this.notifyBackupEvent(databaseId, BACKUP_EVENTS.resolved, { message });
     return true;
   },
 

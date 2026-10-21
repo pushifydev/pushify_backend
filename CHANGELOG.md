@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-21
+
+### Added
+- **`backup.resolved`: one message when database backups work again.** `backup.failed` (once per failure run) and `backup.missed` (once per gap) said when backups broke, but nothing said when they recovered. The only signal was `backup.success`, which is sent for every backup. Now the first successful backup after a reported failure or missed backup sends `backup.resolved` once (`notifyBackupResolved`). It is sent when the gap since the previous successful backup has a `failed` or `missed` row, or a backup that could not start. Later successes send nothing more, and a new failure starts a new incident. Channels opt in by listing `backup.resolved` in their events, like any other event; existing channels do not get it until they add it. `backup.success` is unchanged. Covers managed database backups only. 6 tests.
+
 ## [0.3.0] - 2026-10-20
 
 ### Added

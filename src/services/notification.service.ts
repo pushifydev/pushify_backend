@@ -626,6 +626,7 @@ export const notificationService = {
       'backup.failed': '❌',
       'backup.warning': '⚠️',
       'backup.missed': '⏰',
+      'backup.resolved': '💚',
       test: '🔔',
     };
     return emojis[event] || '📢';
@@ -642,6 +643,7 @@ export const notificationService = {
       'backup.failed': '#e74c3c',
       'backup.warning': '#f39c12',
       'backup.missed': '#e74c3c',
+      'backup.resolved': '#2ecc71',
       test: '#9b59b6',
     };
     return colors[event] || '#95a5a6';
@@ -658,6 +660,7 @@ export const notificationService = {
       'backup.failed': 'Backup Failed',
       'backup.warning': 'Backup Completed With Warnings',
       'backup.missed': 'Expected Backup Missing',
+      'backup.resolved': 'Backups Working Again',
       test: 'Test Notification',
     };
     return titles[event] || event;
