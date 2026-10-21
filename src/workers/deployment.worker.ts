@@ -62,9 +62,11 @@ import {
   mergeQueueLineIntoLogs,
 } from '../lib/deploy-queue';
 import {
-  classifyDeployFailure,
+  classifyDeployError,
   failureCategoryLogLine,
   formatClassifiedErrorMessage,
+  PolicyBlockedDeployError,
+  type DeployFailureCategory,
 } from '../lib/deploy-failure-classify';
 import { detectNextStandaloneFromConfig } from '../buildpacks/remote-detect';
 import { wsManager } from '../lib/ws';
@@ -815,7 +817,8 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         image: deployImage,
       });
       if (abuseSource?.blocked) {
-        throw new Error(
+        // Its own error type, so the deploy is recorded as policy_blocked, not as a failure
+        throw new PolicyBlockedDeployError(
           'This deploy was stopped and the project suspended under the Pushify Acceptable Use Policy (§2.1). ' +
             'See your email for details and how to appeal.',
         );
@@ -1558,7 +1561,7 @@ server {
   } catch (error) {
     // Start-up failures carry the container's runtime log tail, which may print env values.
     const rawError = logMasker.mask(error instanceof Error ? error.message : String(error));
-    const classified = classifyDeployFailure(logBuffer.join('\n'), rawError);
+    const classified = classifyDeployError(error, logBuffer.join('\n'), rawError);
     addLog(failureCategoryLogLine(classified.category));
     addLog(`💡 ${classified.userHint}`);
     addLog(`❌ Deployment failed: ${rawError}`);
@@ -1572,7 +1575,7 @@ server {
       .limit(1)
       .then((r) => r[0]);
 
-    await markDeploymentFailed(job.id, errorMessage, logBuffer.join('\n'));
+    await markDeploymentFailed(job.id, errorMessage, logBuffer.join('\n'), classified.category);
 
     if (wasSleepingBeforeDeploy) {
       const woke = await wakeAfterFailedDeploy(job.projectId).catch(() => 'failed' as const);
@@ -1650,11 +1653,13 @@ server {
 
 /**
  * Mark deployment failed and close build window for quota metering when a build had started.
+ * The category is stored as decided here, so reports need not re-guess it from the message.
  */
 async function markDeploymentFailed(
   deploymentId: string,
   errorMessage: string,
   buildLogs: string,
+  failureCategory: DeployFailureCategory,
 ): Promise<void> {
   const [row] = await db
     .select({
@@ -1669,11 +1674,13 @@ async function markDeploymentFailed(
   const patch: {
     status: 'failed';
     errorMessage: string;
+    failureCategory: DeployFailureCategory;
     buildLogs: string;
     buildFinishedAt?: Date;
   } = {
     status: 'failed',
     errorMessage,
+    failureCategory,
     buildLogs,
   };
 

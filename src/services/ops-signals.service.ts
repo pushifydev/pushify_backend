@@ -1,7 +1,13 @@
 import { sql } from 'drizzle-orm';
 import { db } from '../db';
 import { classifyDeployFailure, type DeployFailureBlame } from '../lib/deploy-failure-classify';
-import { stripFailurePrefix, summarizeDeployFailures } from '../lib/deploy-failure-summary';
+import {
+  countDeployOutcomes,
+  isPolicyBlocked,
+  NOT_POLICY_BLOCKED_SQL,
+  stripFailurePrefix,
+  summarizeDeployFailures,
+} from '../lib/deploy-failure-summary';
 import { scrubSecrets } from '../lib/ops-scrub';
 import { diagnoseSiteDown, type SiteDownDiagnosis } from '../lib/site-down-diagnosis';
 import type { ServerDiagnostics } from '../lib/app-health';
@@ -20,6 +26,8 @@ const WINDOW_HOURS = 24;
 const DISK_WARN_PERCENT = 85;
 const SITE_DOWN_GRACE_MIN = 5;
 const LIST_LIMIT = 50;
+/** Deploys stopped under the Acceptable Use Policy are not failures (deployments.failure_category). */
+const NOT_POLICY_BLOCKED = sql.raw(NOT_POLICY_BLOCKED_SQL);
 
 export interface OpsSignals {
   generatedAt: string;
@@ -28,10 +36,13 @@ export interface OpsSignals {
    * Deployments started after `since` (when asked): the operations agent's deploy watch compares
    * the minutes after a Pushify release with the day before it.
    */
-  since: { since: string; total: number; failed: number; pushifyFailed: number } | null;
+  since: { since: string; total: number; failed: number; pushifyFailed: number; policyBlocked: number } | null;
   deployments: {
+    /** total and failed leave out deploys stopped under the Acceptable Use Policy (policyBlocked). */
     total: number;
     failed: number;
+    /** Deploys stopped under the Acceptable Use Policy: not failures, so in neither total nor failed. */
+    policyBlocked: number;
     /** Failures grouped by cause, with whose fault each cause is. */
     causes: Array<{ category: string; blame: DeployFailureBlame; label: string; count: number; projects: number; sample: string | null }>;
     /** Projects whose last deploy failed and that failed at least twice in the window. */
@@ -140,26 +151,27 @@ export const opsSignalsService = {
     const since = opts.since && Date.now() - opts.since.getTime() <= WINDOW_HOURS * 3600_000 ? opts.since : null;
 
     const sinceRows = since
-      ? await rows<{ errorMessage: string | null; status: string }>(sql`
-          SELECT error_message AS "errorMessage", status::text AS "status"
+      ? await rows<{ errorMessage: string | null; status: string; failureCategory: string | null }>(sql`
+          SELECT error_message AS "errorMessage", status::text AS "status", failure_category AS "failureCategory"
             FROM deployments WHERE created_at > ${since.toISOString()}::timestamptz
            LIMIT 2000`)
       : null;
 
-    const [counts, failedRows, failing, down, servers, databases] = await Promise.all([
-      rows<{ total: number; failed: number }>(sql`
-        SELECT count(*)::int AS "total", count(*) FILTER (WHERE status = 'failed')::int AS "failed"
-          FROM deployments WHERE created_at > now() - ${window}`),
+    const [outcomes, failedRows, failing, down, servers, databases] = await Promise.all([
+      rows<{ status: string; failureCategory: string | null; count: number }>(sql`
+        SELECT status::text AS "status", failure_category AS "failureCategory", count(*)::int AS "count"
+          FROM deployments WHERE created_at > now() - ${window}
+         GROUP BY 1, 2`),
       rows<{ errorMessage: string | null; projectId: string | null }>(sql`
         SELECT error_message AS "errorMessage", project_id AS "projectId"
           FROM deployments
-         WHERE status = 'failed' AND created_at > now() - ${window}
+         WHERE status = 'failed' AND ${NOT_POLICY_BLOCKED} AND created_at > now() - ${window}
          ORDER BY created_at DESC LIMIT 500`),
       rows<{ projectId: string; failures: number; lastFailedAt: string; errorMessage: string | null }>(sql`
         WITH recent AS (
           SELECT project_id, status, error_message, created_at,
                  row_number() OVER (PARTITION BY project_id ORDER BY created_at DESC) AS rn
-            FROM deployments WHERE created_at > now() - ${window}
+            FROM deployments WHERE created_at > now() - ${window} AND ${NOT_POLICY_BLOCKED}
         )
         SELECT r.project_id AS "projectId",
                (SELECT count(*) FROM recent f WHERE f.project_id = r.project_id AND f.status = 'failed')::int AS "failures",
@@ -219,7 +231,9 @@ export const opsSignalsService = {
          ORDER BY updated_at DESC LIMIT ${LIST_LIMIT}`),
     ]);
 
-    const sinceFailed = sinceRows?.filter((r) => r.status === 'failed') ?? [];
+    const counts = countDeployOutcomes(outcomes);
+    const sinceCounts = sinceRows ? countDeployOutcomes(sinceRows) : null;
+    const sinceFailed = sinceRows?.filter((r) => r.status === 'failed' && !isPolicyBlocked(r)) ?? [];
     const diagnosed: SiteDown[] = down.map(({ managed, latestStatus, latestCreatedAt, latestError, diagnostics, serverStatusMessage, ...d }) => {
       const failed = latestStatus === 'failed';
       const classified = failed ? classifyDeployFailure('', latestError ?? '') : null;
@@ -255,17 +269,19 @@ export const opsSignalsService = {
       generatedAt: new Date().toISOString(),
       windowHours: WINDOW_HOURS,
       since:
-        since && sinceRows
+        since && sinceCounts
           ? {
               since: since.toISOString(),
-              total: sinceRows.length,
-              failed: sinceFailed.length,
+              total: sinceCounts.total,
+              failed: sinceCounts.failed,
               pushifyFailed: sinceFailed.filter((r) => classifyDeployFailure('', r.errorMessage ?? '').blame === 'pushify').length,
+              policyBlocked: sinceCounts.policyBlocked,
             }
           : null,
       deployments: {
-        total: counts[0]?.total ?? 0,
-        failed: counts[0]?.failed ?? 0,
+        total: counts.total,
+        failed: counts.failed,
+        policyBlocked: counts.policyBlocked,
         causes: summarizeDeployFailures(failedRows).map((c) => ({
           category: c.category,
           blame: c.blame,

@@ -5,7 +5,11 @@ import { authEvents, adminAuditLogs, type AuthEventType, type AuthMethod } from 
 import { userRepository } from '../repositories/user.repository';
 import { logger } from '../lib/logger';
 import { normalizeClientIp } from '../lib/utils';
-import { summarizeDeployFailures, type DeployFailureSummary } from '../lib/deploy-failure-summary';
+import {
+  NOT_POLICY_BLOCKED_SQL,
+  summarizeDeployFailures,
+  type DeployFailureSummary,
+} from '../lib/deploy-failure-summary';
 
 const FAILURE_WINDOW_DAYS = 30;
 
@@ -36,7 +40,17 @@ export interface AdminOverview {
   };
   active: { logins7d: number; logins30d: number; activeUsers7d: number; activeUsers30d: number };
   byDay: { day: string; signups: number; logins: number }[];
-  deployments: { total: number; last7d: number; failed7d: number; byStatus: { status: string; count: number }[] };
+  /**
+   * last7d and failed7d leave out deploys stopped under the Acceptable Use Policy, which are not
+   * failures; those are policyBlocked7d. total and byStatus count every row as stored.
+   */
+  deployments: {
+    total: number;
+    last7d: number;
+    failed7d: number;
+    policyBlocked7d: number;
+    byStatus: { status: string; count: number }[];
+  };
   resources: {
     projects: number;
     activeProjects: number;
@@ -46,8 +60,11 @@ export interface AdminOverview {
     paidOrganizations: number;
   };
   plans: { plan: string; count: number }[];
-  /** Failed deployments in the window, grouped by the classifier's category */
-  failures: { windowDays: number; total: number; categories: DeployFailureSummary[] };
+  /**
+   * Failed deployments in the window, grouped by the classifier's category. Deploys stopped under
+   * the Acceptable Use Policy are not among them: policyBlocked counts those.
+   */
+  failures: { windowDays: number; total: number; policyBlocked: number; categories: DeployFailureSummary[] };
 }
 
 export type SignupMethod = 'password' | 'github' | 'google';
@@ -287,6 +304,7 @@ const USER_FILTER: Record<AdminUserFilter, string> = {
 
 export const adminService = {
   async getOverview(): Promise<AdminOverview> {
+    const notPolicyBlocked = sql.raw(NOT_POLICY_BLOCKED_SQL);
     const [usersRow, funnel, active, byDay, deployRow, byStatus, resources, plans, failedRows] = await Promise.all([
       one<AdminOverview['users']>(sql`
         SELECT count(*)::int AS "total",
@@ -345,10 +363,13 @@ export const adminService = {
                date_trunc('day', now()),
                interval '1 day') AS d
         ORDER BY d`),
-      one<{ total: number; last7d: number; failed7d: number }>(sql`
+      one<{ total: number; last7d: number; failed7d: number; policyBlocked7d: number; policyBlockedInWindow: number }>(sql`
         SELECT count(*)::int AS "total",
-               count(*) FILTER (WHERE created_at > now() - interval '7 days')::int AS "last7d",
-               count(*) FILTER (WHERE created_at > now() - interval '7 days' AND status = 'failed')::int AS "failed7d"
+               count(*) FILTER (WHERE created_at > now() - interval '7 days' AND ${notPolicyBlocked})::int AS "last7d",
+               count(*) FILTER (WHERE created_at > now() - interval '7 days' AND status = 'failed' AND ${notPolicyBlocked})::int AS "failed7d",
+               count(*) FILTER (WHERE created_at > now() - interval '7 days' AND NOT ${notPolicyBlocked})::int AS "policyBlocked7d",
+               count(*) FILTER (WHERE created_at > now() - make_interval(days => ${FAILURE_WINDOW_DAYS})
+                                  AND NOT ${notPolicyBlocked})::int AS "policyBlockedInWindow"
         FROM deployments`),
       rows<{ status: string; count: number }>(sql`
         SELECT status::text AS "status", count(*)::int AS "count"
@@ -369,22 +390,25 @@ export const adminService = {
       rows<{ errorMessage: string | null; projectId: string | null }>(sql`
         SELECT error_message AS "errorMessage", project_id AS "projectId"
         FROM deployments
-        WHERE status = 'failed' AND created_at > now() - make_interval(days => ${FAILURE_WINDOW_DAYS})
+        WHERE status = 'failed' AND ${notPolicyBlocked}
+          AND created_at > now() - make_interval(days => ${FAILURE_WINDOW_DAYS})
         ORDER BY created_at DESC
         LIMIT 5000`),
     ]);
 
+    const { policyBlockedInWindow, ...deployCounts } = deployRow;
     return {
       users: usersRow,
       funnel,
       active,
       byDay,
-      deployments: { ...deployRow, byStatus },
+      deployments: { ...deployCounts, byStatus },
       resources,
       plans,
       failures: {
         windowDays: FAILURE_WINDOW_DAYS,
         total: failedRows.length,
+        policyBlocked: policyBlockedInWindow,
         categories: summarizeDeployFailures(failedRows),
       },
     };

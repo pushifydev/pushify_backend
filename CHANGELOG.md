@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-21
+
+### Fixed
+- **Deploys stopped under the Acceptable Use Policy no longer count as failed deploys.** The worker stopped them with a plain error, so they were stored as `failed`, the classifier did not recognise the message and they showed up as `unknown` failures, raising the failure-rate alarm. The stop now throws its own error type (`PolicyBlockedDeployError`) and the worker stores the category it decided in the new `deployments.failure_category` column (`policy_blocked` here, the classifier's category for every other failure). **Needs migration 0078** (additive column; backfills `policy_blocked` on earlier deploys stopped this way, matched on the fixed sentence the worker wrote).
+  - Ops signals: `deployments.total`/`failed` and `since.total`/`failed` leave policy-blocked deploys out of both sides of the rate; they are reported on their own as `policyBlocked`. They are also out of `causes` and `failingProjects`.
+  - Admin overview: `deployments.last7d`/`failed7d` leave them out (`policyBlocked7d` counts them); `failures` leaves them out of its categories (`failures.policyBlocked` counts them). `total` and `byStatus` still count every row.
+  - Real build and runtime failures are classified and counted exactly as before.
+
 ## [0.5.0] - 2026-10-21
 
 ### Added

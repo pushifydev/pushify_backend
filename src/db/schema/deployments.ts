@@ -60,6 +60,12 @@ export const deployments = pgTable('deployments', {
 
   // Error info
   errorMessage: text('error_message'),
+  /**
+   * Why a failed deploy failed (DeployFailureCategory), written by the deploy worker where it
+   * stops. 'policy_blocked' (Acceptable Use) is not a failure and is kept out of failure rates.
+   * NULL for rows from before migration 0078 and for failures recorded elsewhere.
+   */
+  failureCategory: varchar('failure_category', { length: 32 }),
 
   // Timestamps
   buildStartedAt: timestamp('build_started_at', { withTimezone: true }),

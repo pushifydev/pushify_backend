@@ -28,6 +28,49 @@ export interface FailedDeploymentRow {
   projectId: string | null;
 }
 
+export interface DeployOutcomeRow {
+  status: string;
+  /** deployments.failure_category, as the worker stored it */
+  failureCategory: string | null;
+  /** Rows already grouped by status and category carry their count; one deployment is 1. */
+  count?: number;
+}
+
+export interface DeployOutcomeCounts {
+  /** Deployments, without the ones stopped under the Acceptable Use Policy */
+  total: number;
+  /** Failed deployments, without the ones stopped under the Acceptable Use Policy */
+  failed: number;
+  /** Stopped under the Acceptable Use Policy: in neither total nor failed */
+  policyBlocked: number;
+}
+
+/** SQL condition on `deployments`: not stopped under the Acceptable Use Policy (NULL-safe). */
+export const NOT_POLICY_BLOCKED_SQL = `failure_category IS DISTINCT FROM 'policy_blocked'`;
+
+export function isPolicyBlocked(row: { failureCategory?: string | null }): boolean {
+  return row.failureCategory === 'policy_blocked';
+}
+
+/**
+ * The counts a failure rate is built from. A deploy stopped under the Acceptable Use Policy did
+ * what it should, so it leaves both sides of failed / total and is counted on its own. Decided
+ * from the stored category alone, never from the message.
+ */
+export function countDeployOutcomes(rows: DeployOutcomeRow[]): DeployOutcomeCounts {
+  const counts: DeployOutcomeCounts = { total: 0, failed: 0, policyBlocked: 0 };
+  for (const row of rows) {
+    const n = row.count ?? 1;
+    if (isPolicyBlocked(row)) {
+      counts.policyBlocked += n;
+      continue;
+    }
+    counts.total += n;
+    if (row.status === 'failed') counts.failed += n;
+  }
+  return counts;
+}
+
 // formatClassifiedErrorMessage() writes "[Project] Application build failed: <raw>".
 const PREFIX = /^\[(?:Pushify|Server|Project)\]\s+[^:\n]{1,80}:\s*/;
 

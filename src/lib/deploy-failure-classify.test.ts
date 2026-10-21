@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { classifyDeployFailure } from './deploy-failure-classify';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import {
+  classifyDeployError,
+  classifyDeployFailure,
+  formatClassifiedErrorMessage,
+  PolicyBlockedDeployError,
+} from './deploy-failure-classify';
+import { stripFailurePrefix } from './deploy-failure-summary';
 import { nodeInstallLines, nodeLightningcssGlibcFixLines } from './platform-docker';
 
 describe('classifyDeployFailure — native addon compile failures', () => {
@@ -164,5 +172,66 @@ describe('classifyDeployFailure — platform native binaries', () => {
     expect(result.label).toBe('Native module (platform)');
     expect(result.userHint).toContain('Pushify build-platform issue');
     expect(result.userHint).toContain('Dockerfile');
+  });
+});
+
+describe('classifyDeployError — deploys stopped under the Acceptable Use Policy', () => {
+  // The sentence the worker has thrown since beta.108 when a source scan stops a deploy.
+  const AUP_MESSAGE =
+    'This deploy was stopped and the project suspended under the Pushify Acceptable Use Policy (§2.1). ' +
+    'See your email for details and how to appeal.';
+
+  it('records policy_blocked from the error type, whatever the message says', () => {
+    expect(classifyDeployError(new PolicyBlockedDeployError(AUP_MESSAGE), '', AUP_MESSAGE).category).toBe('policy_blocked');
+    // Words the classifier would otherwise match ("killed" = out of memory) do not change it.
+    const reworded = new PolicyBlockedDeployError('Deploy killed by policy');
+    expect(classifyDeployError(reworded, 'npm ERR! gyp ERR!', reworded.message).category).toBe('policy_blocked');
+  });
+
+  it('does not match on the message: a plain error with the same text is not policy_blocked', () => {
+    expect(classifyDeployError(new Error(AUP_MESSAGE), '', AUP_MESSAGE).category).toBe('unknown');
+  });
+
+  it('leaves real build and runtime failures exactly as the classifier puts them', () => {
+    const cases: Array<[string, string]> = [
+      ['', 'Docker build failed: npm ERR! Missing script: "build"'],
+      ['', 'ENOSPC: no space left on device'],
+      ['', 'Container failed to start: app is unhealthy'],
+      ['#5 Killed', 'Docker build failed'],
+    ];
+    for (const [logs, message] of cases) {
+      const classified = classifyDeployError(new Error(message), logs, message);
+      expect(classified).toEqual(classifyDeployFailure(logs, message));
+      expect(classified.category).not.toBe('policy_blocked');
+    }
+  });
+
+  it('writes a message whose prefix the failure summary strips', () => {
+    const classified = classifyDeployError(new PolicyBlockedDeployError(AUP_MESSAGE), '', AUP_MESSAGE);
+    const stored = formatClassifiedErrorMessage(classified, AUP_MESSAGE);
+    expect(stripFailurePrefix(stored)).toBe(AUP_MESSAGE);
+  });
+
+  describe('migration 0078 backfill', () => {
+    const migration = readFileSync(
+      fileURLToPath(new URL('../db/migrations/0078_deployment_failure_category.sql', import.meta.url)),
+      'utf8',
+    );
+    // The POSIX regex the UPDATE uses; JavaScript reads this simple pattern the same way.
+    const pattern = new RegExp(migration.match(/"error_message" ~ '([^']+)'/)![1]);
+
+    it('matches the stored AUP message under whatever label the classifier gave it', () => {
+      for (const logs of ['', 'Cloning into /tmp/build… zoom-room (oom)']) {
+        const stored = formatClassifiedErrorMessage(classifyDeployFailure(logs, AUP_MESSAGE), AUP_MESSAGE);
+        expect(stored).toMatch(pattern);
+      }
+    });
+
+    it('does not match real failures, or the sentence echoed inside a build log', () => {
+      const real = formatClassifiedErrorMessage(classifyDeployFailure('', 'npm ERR! Missing script'), 'npm ERR! Missing script');
+      expect(real).not.toMatch(pattern);
+      const echoed = `Docker build failed: #7 echo ${AUP_MESSAGE}`;
+      expect(formatClassifiedErrorMessage(classifyDeployFailure('', echoed), echoed)).not.toMatch(pattern);
+    });
   });
 });
