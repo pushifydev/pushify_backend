@@ -1,5 +1,6 @@
 import type { DeployFailureBlame } from './deploy-failure-classify';
 import type { ServerCheckName, ServerCheckOutcome, ServerDiagnostics } from './app-health';
+import { describeContainerDown, type ContainerDownCause } from './container-down-cause';
 
 /**
  * Why a monitored site is down, worked out from what was actually observed — the last health
@@ -33,13 +34,15 @@ export interface SiteDownDiagnosis {
   userSide: boolean | null;
   /** One line with the evidence the kind was taken from. */
   summary: string;
+  /** What the inspected app container says (lib/container-down-cause.ts), when it named a cause */
+  cause?: ContainerDownCause;
 }
 
 export interface SiteDownFacts {
   statusCode: number | null;
   error: string | null;
   hosting: 'byos' | 'managed' | 'shared';
-  diagnostics: Pick<ServerDiagnostics, 'checks' | 'failedCheck'> | null;
+  diagnostics: Pick<ServerDiagnostics, 'checks' | 'failedCheck' | 'container'> | null;
   latestDeploy: { status: string; blame: DeployFailureBlame | null; label: string | null } | null;
   /** The project's server row as Pushify records it (null/absent on the shared runners). */
   serverStatus?: string | null;
@@ -60,6 +63,20 @@ const STOP_REASONS = new Map<string, string>([
   ['infra_credits_stopped', 'stopped when the infrastructure wallet ran out'],
   ['account_banned', 'stopped by an account ban'],
 ]);
+
+/**
+ * Whose a container cause is. A crash, OOM or wrong port is the app's; an exited container that
+ * nothing restarted may have been stopped on the host, so that one is not settled.
+ */
+const CONTAINER_USER_SIDE: Record<ContainerDownCause, boolean | null> = {
+  oom: true,
+  crash_loop: true,
+  port_mismatch: true,
+  not_listening: true,
+  container_exited: null,
+  stopped_by_user: true,
+  suspended: true,
+};
 
 /** The proxy (nginx or Cloudflare in front of it) answered, but no app behind it did. */
 const NO_UPSTREAM = new Set([502, 503, 504, 521, 523]);
@@ -174,6 +191,17 @@ export function diagnoseSiteDown(facts: SiteDownFacts): SiteDownDiagnosis {
       summary: `No HTTP answer${said}: the server is up but Docker is not running on it.`,
     };
   }
+  // On ECONNREFUSED the app container itself was inspected: what it says is the most concrete
+  // cause there is, so it comes before the proxy ports (a domain-less app is not behind 80/443).
+  const container = facts.diagnostics?.container ?? null;
+  if (container?.cause) {
+    return {
+      kind: 'container_not_running',
+      userSide: CONTAINER_USER_SIDE[container.cause],
+      cause: container.cause,
+      summary: `No HTTP answer${said}: ${describeContainerDown(container)}.`,
+    };
+  }
   if (failed === 'http_port' || failed === 'https_port') {
     const port = failed === 'http_port' ? 80 : 443;
     const outcome = outcomeOf(facts.diagnostics, failed);
@@ -190,7 +218,7 @@ export function diagnoseSiteDown(facts: SiteDownFacts): SiteDownDiagnosis {
       summary: `No HTTP answer${said}: port ${port} is not reachable from the internet (${outcome ?? 'failed'}).`,
     };
   }
-  if (facts.diagnostics && !failed) {
+  if (facts.diagnostics?.checks?.length && !failed) {
     return {
       kind: 'container_not_running',
       userSide: null,
@@ -201,10 +229,16 @@ export function diagnoseSiteDown(facts: SiteDownFacts): SiteDownDiagnosis {
   // reachable, only nothing listens on the port — the container or the proxy in front of it is
   // not running. That is the container layer, not "unreachable", and never the build.
   if (REFUSED_PATTERN.test(error)) {
+    const seen =
+      container?.state === 'missing'
+        ? ' No app container exists on the server.'
+        : container?.state === 'running' && container.configuredPort !== null && container.listeningPorts?.includes(container.configuredPort)
+          ? ` The app container runs and listens on port ${container.configuredPort}, so what refuses is in front of it (proxy or port mapping).`
+          : '';
     return {
       kind: 'container_not_running',
       userSide: ours ? null : true,
-      summary: `No HTTP answer${said}: the server refused the connection, so it is up but nothing listens on the port (app container or proxy not running).`,
+      summary: `No HTTP answer${said}: the server refused the connection, so it is up but nothing listens on the port (app container or proxy not running).${seen}`,
     };
   }
   const connection = connectionFailure(error);

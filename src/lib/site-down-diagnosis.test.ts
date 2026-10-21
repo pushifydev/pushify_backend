@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildServerDiagnostics } from './app-health';
 import { diagnoseSiteDown, withCauseCode, type SiteDownFacts } from './site-down-diagnosis';
+import { diagnoseContainer } from './container-down-cause';
 
 const base: SiteDownFacts = { statusCode: null, error: 'fetch failed', hosting: 'managed', diagnostics: null, latestDeploy: null };
 const checks = (o: Partial<Parameters<typeof buildServerDiagnostics>[0]>) =>
@@ -38,6 +39,36 @@ describe('diagnoseSiteDown', () => {
     expect(diagnoseSiteDown({ ...base, diagnostics: checks({ httpPort: 'refused' }) }).kind).toBe('container_not_running');
     expect(diagnoseSiteDown({ ...base, diagnostics: checks({ httpsPort: 'timeout' }) }).kind).toBe('unreachable');
     expect(diagnoseSiteDown({ ...base, diagnostics: checks({}) }).kind).toBe('container_not_running');
+  });
+
+  it('an inspected container with a cause is the diagnosis, before the proxy ports and the failed build', () => {
+    const container = diagnoseContainer({
+      inspection: {
+        state: 'exited', name: 'pushify-app', exitCode: 137, restartCount: 2, oomKilled: true, finishedAt: null,
+        publishedPort: 3000, listeningPorts: null, loopbackPorts: null, logTail: 'secret log line',
+      },
+    });
+    const d = diagnoseSiteDown({
+      ...base,
+      error: 'fetch failed (ECONNREFUSED)',
+      latestDeploy: failedBuild,
+      diagnostics: { ...checks({ httpPort: 'refused' }), container },
+    });
+    expect(d).toMatchObject({ kind: 'container_not_running', cause: 'oom', userSide: true });
+    expect(d.summary).toContain('OOM-killed');
+    expect(d.summary).not.toMatch(/build|secret log line|pushify-app/i);
+  });
+
+  it('container-only diagnostics (no server checks) are not read as "everything works"', () => {
+    const container = diagnoseContainer({ inspection: null, projectPort: 3000 });
+    const d = diagnoseSiteDown({
+      ...base,
+      error: 'fetch failed (ECONNREFUSED)',
+      diagnostics: { checks: [], failedCheck: null, container },
+    });
+    expect(d.kind).toBe('container_not_running');
+    expect(d.cause).toBeUndefined();
+    expect(d.summary).not.toContain('all work');
   });
 
   it('a customer-owned server that does not answer is user side; a Pushify one is not', () => {

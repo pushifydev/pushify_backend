@@ -6,7 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-## [0.4.1] - 2026-10-21
+## [0.5.0] - 2026-10-21
+
+### Added
+- **A down site that refuses connections now says why, from the container itself.** On `ECONNREFUSED` (the server is up, nothing listens), monitoring connects to the project's host (its server or shared runner) and inspects the production app container: Docker state (running/restarting/exited), exit code, restart count, OOMKilled, the TCP ports it really listens on (read from `/proc/<pid>/net/tcp`, so the image needs no tools) and the last 50 log lines (masked with the project's secrets). It never reads the container's environment. The listening ports are compared with the configured container port (the published one, else the project port). The result goes into `project_health_state.diagnostics.container` with a cause code — `container_exited`, `crash_loop`, `oom`, `port_mismatch` (including an app bound to 127.0.0.1 only), `not_listening` — and a one-line hint (`lib/container-down-cause.ts`). This runs when the first alert goes out and then at most hourly while the outage lasts, like the server checks. A container that answered over SSH counts as a reachable server, so `downReason` is `app_error`, not `server_unreachable`. No migration: it lives in the existing `diagnostics` jsonb.
+- `GET /api/v1/projects/:id/health-status` returns `cause` and `hint` for the project page. A paused project (`stopped_by_user`) or a suspended one (`suspended`) shows `status: 'unknown'` with that cause, not a stale `down`.
+- The ops signals diagnosis has `cause` when the container named one, and its summary gives the facts (state, exit code, restarts, ports). No container name and no log line go out.
+
+### Changed
+- Suspended projects are kept out of monitoring (`candidates()`) and out of `sitesDown` even if their status is not `paused`. No new notifications: the first alert and the 24h/72h reminders are unchanged, and the cause is only shown.
+
 
 ### Fixed
 - **2FA backup codes work again.** `verifyBackupCode` passed the typed code where `verifyPassword` expects the stored hash, so argon2 threw on every check, the error was swallowed and every backup code was rejected. That blocked sign-in with a backup code, confirming 2FA disable / backup-code regeneration on OAuth-only accounts, and confirming account deletion with a backup code. A user who lost their authenticator had to contact support. The arguments are now in the right order, and the code is trimmed and uppercased first, so a code typed in lowercase is accepted too. A used code is still removed and cannot be used again. 4 tests.

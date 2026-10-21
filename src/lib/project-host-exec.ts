@@ -13,7 +13,7 @@ type Project = typeof projects.$inferSelect;
  * targets, locally when the control plane is the deploy host itself.
  */
 export async function execOnProjectHost(
-  project: Project,
+  project: Pick<Project, 'id' | 'serverId'>,
   command: string
 ): Promise<{ ok: boolean; stdout: string }> {
   const targetServerId = resolveProjectServerId(project);

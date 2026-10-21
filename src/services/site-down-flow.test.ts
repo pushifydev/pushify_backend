@@ -17,6 +17,8 @@ const h = vi.hoisted(() => ({
   sendNotifications: vi.fn(async (..._args: unknown[]) => {}),
   sendAppDownEmail: vi.fn(),
   latestDeploy: { status: 'failed', error: '[Project] Docker build failed: exit code 1', createdAt: '2026-09-22T22:50:00Z' },
+  // The container inspection on the project's host (lib/container-down-cause.ts prints this).
+  execOnProjectHost: vi.fn(async (..._args: unknown[]) => ({ ok: false, stdout: '' })),
 }));
 
 function chain(result: () => unknown[]) {
@@ -77,6 +79,10 @@ vi.mock('../lib/email', async (importOriginal) => ({
 }));
 vi.mock('../lib/ws', () => ({ wsManager: { publish: vi.fn(async () => {}) } }));
 vi.mock('../lib/container-resolve', () => ({ restartPushifyContainer: vi.fn() }));
+vi.mock('../lib/project-host-exec', () => ({ execOnProjectHost: h.execOnProjectHost }));
+vi.mock('../workers/log-collector', () => ({
+  getProjectLogMasker: async () => ({ mask: (text: string) => text.replace(/postgres:\/\/\S+/g, '••••••') }),
+}));
 vi.mock('../repositories/organization.repository', () => ({ organizationRepository: { findById: vi.fn(async () => null) } }));
 vi.mock('../repositories/deployment-alert.repository', () => ({
   deploymentAlertRepository: { findAlertRecipients: vi.fn(async () => []) },
@@ -97,26 +103,32 @@ beforeEach(() => {
   h.selects = [];
   h.stored = null;
   vi.clearAllMocks();
+  h.execOnProjectHost.mockResolvedValue({ ok: false, stdout: '' });
 });
+
+async function b1cecd19(): Promise<Candidate> {
+  const port = await closedPort();
+  return {
+    projectId: 'b1cecd19-0000-4000-8000-000000000000',
+    slug: 'app',
+    name: 'App',
+    organizationId: 'org-1',
+    serverId: 'srv-1',
+    url: `http://127.0.0.1:${port}`,
+    deploymentId: 'dep-1',
+    endpoint: '/',
+    intervalSeconds: 60,
+    timeoutSeconds: 5,
+    threshold: 3,
+    autoRestart: false,
+    requireOk: false,
+    port: 3000,
+  };
+}
 
 describe('site down with ECONNREFUSED behind a failed Docker build: health check → stored record → ops diagnosis', () => {
   it('is diagnosed as "container not running / port not listening", not as a build failure', async () => {
-    const port = await closedPort();
-    const candidate: Candidate = {
-      projectId: 'b1cecd19-0000-4000-8000-000000000000',
-      slug: 'app',
-      name: 'App',
-      organizationId: 'org-1',
-      serverId: 'srv-1',
-      url: `http://127.0.0.1:${port}`,
-      deploymentId: 'dep-1',
-      endpoint: '/',
-      intervalSeconds: 60,
-      timeoutSeconds: 5,
-      threshold: 3,
-      autoRestart: false,
-      requireOk: false,
-    };
+    const candidate = await b1cecd19();
     h.selects.push(
       // project_health_state: two failures already, so this check confirms the outage
       [{ status: 'up', failCount: 2, downSince: null, notifiedAt: null, reminderStep: 0, downReason: null, diagnostics: null }],
@@ -130,7 +142,9 @@ describe('site down with ECONNREFUSED behind a failed Docker build: health check
     expect(status).toBe('down');
 
     // The record: the network error code is kept, no HTTP status, and the build is not blamed.
-    expect(h.stored).toMatchObject({ statusCode: null, error: 'fetch failed (ECONNREFUSED)', diagnostics: null });
+    // The container could not be inspected here, and the record says so instead of guessing.
+    expect(h.stored).toMatchObject({ statusCode: null, error: 'fetch failed (ECONNREFUSED)' });
+    expect(h.stored!.diagnostics).toMatchObject({ checks: [], failedCheck: null, container: { state: 'unknown', cause: null } });
     expect(h.stored!.downReason).not.toBe('deploy_failed');
     const message = (h.sendNotifications.mock.calls[0]?.[2] as { message: string } | undefined)?.message ?? '';
     expect(message).toContain('ECONNREFUSED');
@@ -147,5 +161,63 @@ describe('site down with ECONNREFUSED behind a failed Docker build: health check
     expect(site.diagnosis.summary).toContain('ECONNREFUSED');
     expect(site.diagnosis.summary).toContain('nothing listens on the port');
     expect(site.diagnosis.summary).not.toMatch(/build/i);
+  });
+
+  it('inspects the container on ECONNREFUSED and records a concrete cause (crash_loop) instead of the build, without a second alert', async () => {
+    const candidate = await b1cecd19();
+    // What the server prints for b1cecd19's container: crash-looping on a database it cannot reach.
+    h.execOnProjectHost.mockResolvedValue({
+      ok: true,
+      stdout: [
+        '@@pushify:inspect pushify-app-blue',
+        '{"status":"restarting","exitCode":1,"oomKilled":false,"restartCount":4127,"finishedAt":"2026-10-21T07:59:58Z","ports":{"3000/tcp":[{"HostIp":"0.0.0.0","HostPort":"45001"}]}}',
+        '@@pushify:listen',
+        '@@pushify:logs',
+        'Connecting to postgres://app:s3cret@10.0.0.5:5432/app',
+        'Error: connect ECONNREFUSED 10.0.0.5:5432',
+      ].join('\n'),
+    });
+    h.selects.push(
+      [{ status: 'up', failCount: 2, downSince: null, notifiedAt: null, reminderStep: 0, downReason: null, diagnostics: null }],
+      [{ id: 'srv-1', name: 'web-1', provider: 'hetzner', isManaged: true, ipv4: null, sshPrivateKey: null }],
+      [{ status: h.latestDeploy.status }]
+    );
+
+    const at = new Date('2026-09-22T23:00:00Z');
+    expect(await appHealthService.checkProject(candidate, at)).toBe('down');
+
+    // The inspection ran on the project's host, for this project's container.
+    expect(h.execOnProjectHost).toHaveBeenCalledTimes(1);
+    expect(h.execOnProjectHost.mock.calls[0][0]).toEqual({ id: candidate.projectId, serverId: 'srv-1' });
+    expect(String(h.execOnProjectHost.mock.calls[0][1])).toContain("'^pushify-app(-(blue|green))? '");
+
+    // The record carries the cause code, the facts and a hint — not "build".
+    const container = (h.stored!.diagnostics as { container: Record<string, unknown> }).container;
+    expect(container).toMatchObject({ cause: 'crash_loop', state: 'restarting', exitCode: 1, restartCount: 4127, oomKilled: false, configuredPort: 3000 });
+    expect(String(container.hint)).toMatch(/keeps crashing on start/);
+    expect(String(container.hint)).not.toMatch(/build/i);
+    // Its last log lines are kept for the project page, with secrets masked.
+    expect(String(container.logTail)).toContain('Error: connect ECONNREFUSED 10.0.0.5:5432');
+    expect(String(container.logTail)).not.toContain('s3cret');
+    // Reaching the container means the server answers: the app, not an unreachable server.
+    expect(h.stored!.downReason).toBe('app_error');
+
+    // One alert for the outage, unchanged; the cause is shown, not mailed.
+    expect(h.sendNotifications).toHaveBeenCalledTimes(1);
+    expect((h.sendNotifications.mock.calls[0][2] as { message: string }).message).not.toMatch(/build/i);
+
+    // The ops diagnosis names the cause; no container name or log line goes out.
+    const { sitesDown } = await opsSignalsService.getSignals();
+    expect(sitesDown[0].diagnosis).toMatchObject({ kind: 'container_not_running', cause: 'crash_loop', userSide: true });
+    expect(sitesDown[0].diagnosis.summary).toContain('the app container is restarting (exit code 1, 4127 restarts) (crash_loop)');
+    expect(sitesDown[0].diagnosis.summary).not.toMatch(/build|pushify-app|10\.0\.0\.5/i);
+
+    // The next check a minute later: still down, nothing sent again, the cause stays on the record.
+    const first = h.stored!;
+    h.selects.push([{ ...first, status: 'down' }]);
+    expect(await appHealthService.checkProject(candidate, new Date(at.getTime() + 60_000))).toBe('down');
+    expect(h.sendNotifications).toHaveBeenCalledTimes(1);
+    expect(h.execOnProjectHost).toHaveBeenCalledTimes(1);
+    expect((h.stored!.diagnostics as { container: { cause: string } }).container.cause).toBe('crash_loop');
   });
 });

@@ -1,3 +1,5 @@
+import type { ContainerDiagnosis } from './container-down-cause';
+
 /**
  * What a health check result means for a project that is being watched.
  *
@@ -189,6 +191,12 @@ export interface ServerDiagnostics {
   advice: string | null;
   /** Managed servers are Pushify's to fix: operations is alerted instead of only the customer */
   managed: boolean;
+  /**
+   * The app container itself, inspected when the health check got ECONNREFUSED: state, exit code,
+   * restarts, OOM, the ports it listens on, the cause code and a hint. Absent when not inspected.
+   * Without server checks (no address to probe) `checks` is empty and only this is set.
+   */
+  container?: ContainerDiagnosis | null;
 }
 
 export interface ServerProbeOutcomes {
