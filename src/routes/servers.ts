@@ -12,6 +12,7 @@ import { eq, and } from 'drizzle-orm';
 import { decrypt } from '../lib/encryption';
 import { SSHClient } from '../utils/ssh';
 import { UNINSTALL_SCRIPT_URL } from '../lib/server-key-removal';
+import { buildSshConnectCommand } from '../lib/server-address';
 import type { AppEnv } from '../types';
 import type { ProviderType } from '../providers';
 import type { ServerSize } from '../providers/cloud-provider.interface';
@@ -460,7 +461,7 @@ serverRouter.get('/:serverId/ssh-key', rejectApiKeyAuth(), async (c) => {
       host: server.ipv4,
       username: 'root',
       port: 22,
-      connectCommand: `ssh -i pushify_${server.name}.pem root@${server.ipv4}`,
+      connectCommand: buildSshConnectCommand({ keyFile: `pushify_${server.name}.pem`, host: server.ipv4 ?? '' }),
     },
   });
 });
