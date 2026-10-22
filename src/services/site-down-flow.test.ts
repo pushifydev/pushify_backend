@@ -90,6 +90,9 @@ vi.mock('../repositories/deployment-alert.repository', () => ({
 
 import { appHealthService, type Candidate } from './app-health.service';
 import { opsSignalsService } from './ops-signals.service';
+import { adminNotify } from './admin-notify.service';
+
+const defaultLatestDeploy = { ...h.latestDeploy };
 
 async function closedPort(): Promise<number> {
   const tmp = createServer();
@@ -102,6 +105,7 @@ async function closedPort(): Promise<number> {
 beforeEach(() => {
   h.selects = [];
   h.stored = null;
+  Object.assign(h.latestDeploy, defaultLatestDeploy);
   vi.clearAllMocks();
   h.execOnProjectHost.mockResolvedValue({ ok: false, stdout: '' });
 });
@@ -219,5 +223,91 @@ describe('site down with ECONNREFUSED behind a failed Docker build: health check
     expect(h.sendNotifications).toHaveBeenCalledTimes(1);
     expect(h.execOnProjectHost).toHaveBeenCalledTimes(1);
     expect((h.stored!.diagnostics as { container: { cause: string } }).container.cause).toBe('crash_loop');
+  });
+
+  it('re-diagnoses a record opened before container inspection existed, moves it to build_failed, and sends nothing', async () => {
+    const candidate = await b1cecd19();
+    // The latest deployment failed on the project's side (its own build script).
+    Object.assign(h.latestDeploy, { error: '[Project] Application build failed: npm ERR! Missing script: "build"' });
+    // On the server: the app container exited and nothing restarted it.
+    h.execOnProjectHost.mockResolvedValue({
+      ok: true,
+      stdout: [
+        '@@pushify:inspect pushify-app',
+        '{"status":"exited","exitCode":1,"oomKilled":false,"restartCount":0,"finishedAt":"2026-09-22T22:53:10Z","ports":{"3000/tcp":[{"HostIp":"0.0.0.0","HostPort":"45001"}]}}',
+        '@@pushify:listen',
+        '@@pushify:logs',
+        'npm ERR! Missing script: "build"',
+      ].join('\n'),
+    });
+    const downSince = new Date('2026-09-22T22:54:41Z');
+    h.selects.push(
+      // The record as the code before the fix left it: down for a month, alert and both reminders
+      // sent, the build blamed, and server checks with no container in them.
+      [
+        {
+          status: 'down',
+          failCount: 43000,
+          statusCode: null,
+          error: 'fetch failed (ECONNREFUSED)',
+          downSince,
+          notifiedAt: new Date('2026-09-25T22:54:41Z'),
+          reminderStep: 2,
+          downReason: 'deploy_failed',
+          diagnostics: {
+            checkedAt: '2026-10-22T07:00:00.000Z',
+            checks: [
+              { check: 'ssh', outcome: 'ok', ok: true, advice: null },
+              { check: 'docker', outcome: 'ok', ok: true, advice: null },
+              { check: 'http_port', outcome: 'ok', ok: true, advice: null },
+              { check: 'https_port', outcome: 'ok', ok: true, advice: null },
+            ],
+            failedCheck: null,
+            advice: null,
+            managed: true,
+          },
+        },
+      ],
+      [{ id: 'srv-1', name: 'web-1', provider: 'hetzner', isManaged: true, ipv4: null, sshPrivateKey: null }],
+      [{ status: h.latestDeploy.status }]
+    );
+
+    const at = new Date('2026-10-22T09:00:00Z');
+    expect(await appHealthService.checkProject(candidate, at)).toBe('down');
+
+    // The stored diagnostics were due, so the new code ran on the old record: the container was inspected.
+    expect(h.execOnProjectHost).toHaveBeenCalledTimes(1);
+    const container = (h.stored!.diagnostics as { container: Record<string, unknown> }).container;
+    expect(container).toMatchObject({ state: 'exited', cause: 'container_exited', exitCode: 1, restartCount: 0, configuredPort: 3000 });
+    expect(h.stored!.downReason).toBe('app_error');
+    // Same outage: its start, its alert and its reminders are kept as they were.
+    expect(h.stored).toMatchObject({ status: 'down', statusCode: null, error: 'fetch failed (ECONNREFUSED)', downSince, reminderStep: 2 });
+    expect(h.stored!.notifiedAt).toEqual(new Date('2026-09-25T22:54:41Z'));
+
+    // No notification of any kind for the re-diagnosis.
+    expect(h.sendNotifications).not.toHaveBeenCalled();
+    expect(h.sendAppDownEmail).not.toHaveBeenCalled();
+    expect(adminNotify).not.toHaveBeenCalled();
+
+    // The ops record now carries the container state, the port result and the latest deploy, and
+    // waits on the user's build instead of standing as a platform outage.
+    const { sitesDown } = await opsSignalsService.getSignals();
+    expect(sitesDown).toHaveLength(1);
+    const [site] = sitesDown;
+    expect(site.latestDeploy).toMatchObject({ status: 'failed', blame: 'project', label: 'Application build failed' });
+    expect(site.diagnosis).toMatchObject({ kind: 'build_failed', userSide: true, cause: 'container_exited' });
+    expect(site.diagnosis.summary).toContain('fetch failed (ECONNREFUSED)');
+    expect(site.diagnosis.summary).toContain('the app container is exited (exit code 1, 0 restarts)');
+    expect(site.diagnosis.summary).toContain('nothing listens on port 3000');
+    expect(site.diagnosis.summary).toContain('the latest deployment failed (Application build failed, project side)');
+    expect(site.diagnosis.summary).not.toMatch(/pushify-app|npm ERR/);
+
+    // The next round: nothing sent, no second inspection within the hour, the diagnosis stays.
+    h.selects.push([{ ...h.stored!, status: 'down' }]);
+    expect(await appHealthService.checkProject(candidate, new Date(at.getTime() + 60_000))).toBe('down');
+    expect(h.sendNotifications).not.toHaveBeenCalled();
+    expect(h.sendAppDownEmail).not.toHaveBeenCalled();
+    expect(h.execOnProjectHost).toHaveBeenCalledTimes(1);
+    expect((h.stored!.diagnostics as { container: { cause: string } }).container.cause).toBe('container_exited');
   });
 });

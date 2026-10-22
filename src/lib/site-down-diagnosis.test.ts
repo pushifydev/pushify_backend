@@ -71,6 +71,67 @@ describe('diagnoseSiteDown', () => {
     expect(d.summary).not.toContain('all work');
   });
 
+  it('a container that is not running behind a project-side failed build is build_failed, user side', () => {
+    const error = 'fetch failed (ECONNREFUSED)';
+    const exited = diagnoseContainer({
+      inspection: {
+        state: 'exited', name: 'pushify-app', exitCode: 1, restartCount: 0, oomKilled: false, finishedAt: null,
+        publishedPort: 3000, listeningPorts: null, loopbackPorts: null, logTail: 'secret log line',
+      },
+    });
+    const d = diagnoseSiteDown({ ...base, error, latestDeploy: failedBuild, diagnostics: { ...checks({}), container: exited } });
+    expect(d).toMatchObject({ kind: 'build_failed', userSide: true, cause: 'container_exited' });
+    expect(d.summary).toContain('ECONNREFUSED');
+    expect(d.summary).toContain('the app container is exited (exit code 1, 0 restarts)');
+    expect(d.summary).toContain('nothing listens on port 3000');
+    expect(d.summary).toContain('latest deployment failed (Docker build failed, project side)');
+    expect(d.summary).not.toMatch(/secret log line|pushify-app/);
+
+    const missing = diagnoseContainer({
+      inspection: {
+        state: 'missing', name: null, exitCode: null, restartCount: null, oomKilled: null, finishedAt: null,
+        publishedPort: null, listeningPorts: null, loopbackPorts: null, logTail: null,
+      },
+      projectPort: 8080,
+    });
+    const m = diagnoseSiteDown({ ...base, error, latestDeploy: failedBuild, diagnostics: { checks: [], failedCheck: null, container: missing } });
+    expect(m).toMatchObject({ kind: 'build_failed', userSide: true });
+    expect(m.cause).toBeUndefined();
+    expect(m.summary).toContain('no app container exists on the server, so nothing listens on port 8080');
+  });
+
+  it('a failed build blamed on Pushify, or a container that could not be inspected, is not moved to the user', () => {
+    const error = 'fetch failed (ECONNREFUSED)';
+    const missing = diagnoseContainer({
+      inspection: {
+        state: 'missing', name: null, exitCode: null, restartCount: null, oomKilled: null, finishedAt: null,
+        publishedPort: null, listeningPorts: null, loopbackPorts: null, logTail: null,
+      },
+    });
+    const pushifyBuild = { status: 'failed', blame: 'pushify' as const, label: 'Docker build failed' };
+    const d = diagnoseSiteDown({ ...base, error, latestDeploy: pushifyBuild, diagnostics: { ...checks({}), container: missing } });
+    expect(d).toMatchObject({ kind: 'container_not_running', userSide: null });
+    // The container's state is on the record even when it named no cause.
+    expect(d.summary).toContain('all work, so the app container is not answering. No app container exists on the server.');
+
+    const unknown = diagnoseContainer({ inspection: null, projectPort: 3000 });
+    const u = diagnoseSiteDown({ ...base, error, latestDeploy: failedBuild, diagnostics: { checks: [], failedCheck: null, container: unknown } });
+    expect(u).toMatchObject({ kind: 'container_not_running', userSide: null });
+    expect(u.summary).toContain('The app container could not be inspected.');
+  });
+
+  it('shows the container state and port result next to a failed proxy port check', () => {
+    const container = diagnoseContainer({
+      inspection: {
+        state: 'running', name: 'pushify-app', exitCode: null, restartCount: 0, oomKilled: false, finishedAt: null,
+        publishedPort: 3000, listeningPorts: [3000], loopbackPorts: [], logTail: null,
+      },
+    });
+    const d = diagnoseSiteDown({ ...base, error: 'fetch failed (ECONNREFUSED)', diagnostics: { ...checks({ httpPort: 'refused' }), container } });
+    expect(d.kind).toBe('container_not_running');
+    expect(d.summary).toContain('nothing listens on port 80 (proxy not running). The app container runs and listens on port 3000');
+  });
+
   it('a customer-owned server that does not answer is user side; a Pushify one is not', () => {
     const down = checks({ ssh: 'timeout' });
     expect(diagnoseSiteDown({ ...base, hosting: 'byos', diagnostics: down }).userSide).toBe(true);

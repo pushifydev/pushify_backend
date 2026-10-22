@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-22
+
+### Fixed
+- **A down site whose app container is not running behind a project-side failed build is now a build failure on the user's side.** On `ECONNREFUSED` the container is inspected (0.5.0), but the ops diagnosis only used that when the container named a cause, and never looked at the failed build. Now, when the inspected container is not running (exited, dead, or no container at all) and the latest deployment failed with `project` blame, the diagnosis is `build_failed` with `userSide: true`, and the summary gives the container state, the port nothing listens on and the failed deployment. A crash loop, OOM or wrong port stays the more concrete cause. A build failure blamed on Pushify or the server, or a container that could not be inspected, is not moved to the user.
+  - Every no-answer summary now says what the container showed (missing, could not be inspected, running and listening on the port, or its state), not only the ones with a cause.
+  - Records opened before 0.5.0 need no migration: monitoring already re-runs the diagnosis of a down site with no HTTP answer every hour (`diagnosticsDue`), and the ops diagnosis is built from the stored record when it is read. No new notifications: the re-diagnosis sends no alert, reminder or operations message. 4 tests, one of them for a record opened before the fix.
+
 ## [0.5.1] - 2026-10-21
 
 ### Fixed
