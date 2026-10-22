@@ -10,6 +10,8 @@ import { getSSHConnection, SSHClient } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
 import { environmentVariables } from '../db/schema/projects';
 import { createLogMasker, type LogMasker } from '../lib/log-masking';
+import { hasSecretReferences } from '../lib/secret-references';
+import { secretProviderService } from '../services/secret-provider.service';
 import { logger } from '../lib/logger';
 import { getContainerLogs as getRemoteContainerLogs, isContainerRunning as isRemoteContainerRunning } from './remote-docker';
 import { getContainerLogs as getLocalContainerLogs, isContainerRunning as isLocalContainerRunning } from './docker';
@@ -443,10 +445,13 @@ export async function getProjectLogMasker(projectId: string): Promise<LogMasker>
 
   const envVars: Record<string, string> = {};
   const markedSecrets: string[] = [];
+  // Every stored value by row (one key can differ per environment), to find secret references.
+  const valuesByRow: Record<string, string> = {};
   for (const row of envRows) {
     try {
       const value = decrypt(row.valueEncrypted);
       envVars[row.key] = value;
+      valuesByRow[row.id] = value;
       if (row.isSecret) markedSecrets.push(value);
     } catch {
       // skip undecryptable values
@@ -456,6 +461,21 @@ export async function getProjectLogMasker(projectId: string): Promise<LogMasker>
   const masker = createLogMasker(envVars);
   // Marked secret: masked even when the key name / length heuristic would let it through.
   masker.addSecrets(markedSecrets);
+  // Only `{{infisical.KEY}}`-style references are stored; the app runs with their values. Load
+  // them so they are masked too. A failure throws before caching: callers drop the logs rather
+  // than keep them unmasked, and the next call tries again.
+  if (hasSecretReferences(valuesByRow)) {
+    const [project] = await db
+      .select({ organizationId: projects.organizationId })
+      .from(projects)
+      .where(eq(projects.id, projectId))
+      .limit(1);
+    if (project) {
+      masker.addSecrets(
+        await secretProviderService.referencedValuesForMasking(project.organizationId, projectId, valuesByRow)
+      );
+    }
+  }
   maskerCache.set(projectId, { masker, builtAt: Date.now() });
   return masker;
 }

@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   findSecretReferences,
   hasSecretReferences,
+  referencedSecretValues,
   resolveSecretReferences,
   SecretReferenceError,
 } from './secret-references';
@@ -125,5 +126,87 @@ describe('resolveSecretReferences', () => {
     expect(masker.mask('flag=xyz9')).toBe('flag=xyz9');
     masker.addSecrets(result.resolvedValues);
     expect(masker.mask('flag=xyz9')).not.toContain('xyz9');
+  });
+});
+
+/** The deploy worker's choke point: resolved values registered first, then the env heuristic. */
+async function buildLogFor(envVars: Record<string, string>, secrets: Record<string, string>) {
+  const masker = createLogMasker();
+  const resolved = await resolveSecretReferences(envVars, async () => secrets);
+  masker.addSecrets(resolved.resolvedValues);
+  masker.addEnvVars(resolved.envVars);
+  return { env: resolved.envVars, log: (output: string) => masker.mask(output) };
+}
+
+describe('a build step that echoes a resolved secret', () => {
+  it('logs only the masked value', async () => {
+    const { env, log } = await buildLogFor({ STRIPE_KEY: '{{infisical.STRIPE_KEY}}' }, { STRIPE_KEY: 'sk_live_51Hx9' });
+    const output = log(`$ echo $STRIPE_KEY\n${env.STRIPE_KEY}\nSTRIPE_KEY=${env.STRIPE_KEY}`);
+    expect(output).toBe('$ echo $STRIPE_KEY\n••••••\nSTRIPE_KEY=••••••');
+    expect(output).not.toContain('sk_live_51Hx9');
+  });
+
+  it('masks a secret embedded in a longer value', async () => {
+    const { env, log } = await buildLogFor(
+      { DATABASE_URL: 'postgres://app:{{infisical.DB_PASSWORD}}@db/app' },
+      { DB_PASSWORD: 'Zq8-pass' }
+    );
+    expect(log(`connecting to ${env.DATABASE_URL}`)).not.toContain('Zq8-pass');
+  });
+
+  it('masks every line of a multi-line value, echoed raw or JSON-escaped', async () => {
+    const pem = '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0B\nAQEFAASCBKcwggSjAgEAAoIB\n-----END PRIVATE KEY-----';
+    const { env, log } = await buildLogFor({ SIGNING_KEY: '{{infisical.SIGNING_KEY}}' }, { SIGNING_KEY: pem });
+    const raw = log(env.SIGNING_KEY);
+    const escaped = log(JSON.stringify({ SIGNING_KEY: env.SIGNING_KEY }));
+    for (const output of [raw, escaped]) {
+      expect(output).not.toContain('MIIEvQIBADANBgkqhkiG9w0B');
+      expect(output).not.toContain('AQEFAASCBKcwggSjAgEAAoIB');
+    }
+    expect(raw.split('\n')).toEqual(['••••••', '••••••', '••••••', '••••••']);
+  });
+
+  it('masks a short value from four characters on', async () => {
+    const { log } = await buildLogFor({ PIN: '{{infisical.PIN}}' }, { PIN: 'k7Qz' });
+    expect(log('pin=k7Qz')).toBe('pin=••••••');
+  });
+
+  it('leaves values under four characters and common words readable, as for every other secret', async () => {
+    const { log } = await buildLogFor(
+      { REGION: '{{infisical.REGION}}', DEBUG: '{{infisical.DEBUG}}' },
+      { REGION: 'eu1', DEBUG: 'true' }
+    );
+    // Masking these would replace every "eu1" / "true" in the build output.
+    expect(log('region=eu1 debug=true')).toBe('region=eu1 debug=true');
+  });
+});
+
+describe('referencedSecretValues', () => {
+  it('returns the referenced values, loading each provider once', async () => {
+    const load = vi.fn(async (provider: string): Promise<Record<string, string>> =>
+      provider === 'doppler' ? { TOKEN: 'dop-tok-1' } : { A: 'inf-a-1', B: 'inf-b-2', UNUSED: 'not-referenced' }
+    );
+    const values = await referencedSecretValues(
+      { r1: '{{infisical.A}}', r2: 'x-{{infisical.B}}-y', r3: '{{doppler.TOKEN}}', r4: 'plain' },
+      load
+    );
+    expect(values.sort()).toEqual(['dop-tok-1', 'inf-a-1', 'inf-b-2']);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips a secret the provider no longer has', async () => {
+    const values = await referencedSecretValues(
+      { r1: '{{vault.GONE}}', r2: '{{vault.KEPT}}' },
+      async () => ({ KEPT: 'kept-value' })
+    );
+    expect(values).toEqual(['kept-value']);
+  });
+
+  it('throws when a provider cannot be loaded', async () => {
+    await expect(
+      referencedSecretValues({ r1: '{{infisical.A}}' }, async () => {
+        throw new Error('Infisical could not be reached');
+      })
+    ).rejects.toThrow('Infisical could not be reached');
   });
 });
