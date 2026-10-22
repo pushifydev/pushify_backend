@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-22
+
+### Added
+- **A self-hosted (BYOS) server can be added with an IPv6 address.** `POST /api/v1/servers` with `provider: 'self_hosted'` now checks that `ipv4` (the server's SSH address) is an IPv4 or IPv6 literal. IPv6 may be sent in URL form (`[2001:db8::1]`): the brackets are removed and the address is lowercased before it is stored and connected to. Anything else (a hostname, a port, a CIDR, a zone-scoped `fe80::1%eth0`) gets a 400 before anything is stored, instead of a server that fails later in background setup. IPv4 addresses are stored exactly as before. The address stays in `servers.ipv4`, since every SSH path reads that column. Managed Hetzner servers were already saving their IPv6 host address (`<prefix>::1`) in `servers.ipv6`, so nothing changed there. No migration. Not in this release: servers with only IPv6 (domain checks, A records and `http://<ip>:<port>` URLs still assume IPv4) and Hetzner servers created without IPv4.
+
+### Fixed
+- **SSH to a server address stored as `[IPv6]` works.** ssh2 looked the bracketed form up as a hostname and failed. `SSHClient.connect` and the connection pool key now remove the brackets (`sshConnectHost`). The `connectCommand` from `GET /servers/:id/ssh-key` is built by `buildSshConnectCommand`, which puts an IPv6 address after `root@` without brackets, because OpenSSH reads `root@[…]` as a hostname. The IPv4 command is unchanged. Tests: address parsing, SSH command for IPv4 and IPv6, and BYOS server creation.
+
 ## [0.5.3] - 2026-10-22
 
 ### Security

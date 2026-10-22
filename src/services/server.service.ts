@@ -15,6 +15,7 @@ import { t, type SupportedLocale } from '../i18n';
 import { getServerStatusQueue } from '../queue';
 import { generateSSHKeyPair, removeSSHConnection } from '../utils/ssh';
 import { removePushifyKey, type KeyRemovalResult } from '../lib/server-key-removal';
+import { parseServerAddress } from '../lib/server-address';
 import { encrypt, decrypt } from '../lib/encryption';
 import { isUnlimited, type PlanType } from '../lib/plans';
 import { getEffectivePlanLimits } from '../lib/effective-plan-limits';
@@ -105,6 +106,7 @@ export interface CreateServerInput {
   sshKeyIds?: string[];
   labels?: Record<string, string>;
   // BYOS fields
+  /** The server's SSH address: an IPv4 or IPv6 literal (`[…]` form accepted) */
   ipv4?: string;
   sshPrivateKey?: string;
   rootPassword?: string;
@@ -632,6 +634,12 @@ export const serverService = {
       if (!input.ipv4) {
         throw new HTTPException(400, { message: 'IP address is required for self-hosted servers' });
       }
+      // IPv4 or IPv6 (`[2001:db8::1]` accepted). Every SSH path connects to `servers.ipv4`, so the
+      // address is stored there whichever family it is.
+      const address = parseServerAddress(input.ipv4);
+      if (!address) {
+        throw new HTTPException(400, { message: 'IP address must be a valid IPv4 or IPv6 address' });
+      }
 
       // Generate SSH key pair
       const serverKeyName = `pushify-${organizationId.slice(0, 8)}-${Date.now()}`;
@@ -648,7 +656,7 @@ export const serverService = {
           region: input.region || 'custom',
           size: input.size || 'custom',
           image: input.image || 'custom',
-          ipv4: input.ipv4,
+          ipv4: address.address,
           status: 'running',
           setupStatus: 'pending',
           isManaged: false,
@@ -661,7 +669,7 @@ export const serverService = {
 
       // Try to connect and setup the server in background
       this.setupBYOSServer(dbServer.id, {
-        ipv4: input.ipv4,
+        ipv4: address.address,
         pushifyPublicKey: sshKeyPair.publicKey,
         userPrivateKey: input.sshPrivateKey,
         rootPassword: input.rootPassword,

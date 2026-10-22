@@ -1,5 +1,6 @@
 import { Client, type ConnectConfig, type ExecOptions } from 'ssh2';
 import { generateKeyPairSync } from 'crypto';
+import { sshConnectHost } from '../lib/server-address';
 
 export interface SSHConnectionConfig {
   host: string;
@@ -45,7 +46,8 @@ export class SSHClient {
       }
 
       const connectConfig: ConnectConfig = {
-        host: config.host,
+        // `[2001:db8::1]` → `2001:db8::1`: ssh2 would look the bracketed form up as a hostname
+        host: sshConnectHost(config.host),
         port: config.port || 22,
         username: config.username,
         readyTimeout: 30000,
@@ -370,7 +372,7 @@ setInterval(() => {
  * Get or create an SSH connection from the pool
  */
 export async function getSSHConnection(config: SSHConnectionConfig): Promise<SSHClient> {
-  const key = `${config.username}@${config.host}:${config.port || 22}`;
+  const key = `${config.username}@${sshConnectHost(config.host)}:${config.port || 22}`;
 
   // Check if we have an existing connected client
   const existing = connectionPool.get(key);
@@ -421,7 +423,7 @@ export function closeAllSSHConnections(): void {
  * Remove a specific connection from the pool
  */
 export function removeSSHConnection(host: string, port: number = 22, username: string): void {
-  const key = `${username}@${host}:${port}`;
+  const key = `${username}@${sshConnectHost(host)}:${port}`;
   const entry = connectionPool.get(key);
   if (entry) {
     entry.client.disconnect(true);
