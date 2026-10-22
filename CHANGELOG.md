@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-10-22
+
+### Security
+- **Values from a connected secret manager (Infisical, Doppler, Vault) are now masked in runtime container logs too.** Build and deploy logs already masked them. The runtime log masker, used for stored container logs, the live log stream and the container log tail in health diagnostics, was built only from the stored env, which holds the `{{provider.KEY}}` references. It now loads the referenced values from the project's connection when it is built, keeps them only in memory (10-minute cache, as before) and never writes them anywhere. If a referenced provider cannot be loaded, the masker is not built or cached, and the next call tries again. Until then the collector skips that project's logs, the health tail is dropped and the live stream returns an error. No unmasked logs are kept. No migration. Tests: a build step that echoes a value, multi-line and short values, and the runtime masker.
+
 ## [0.5.2] - 2026-10-22
 
 ### Fixed

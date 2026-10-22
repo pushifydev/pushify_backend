@@ -123,6 +123,29 @@ export async function resolveSecretReferences(
   return { envVars: out, resolvedValues: [...resolvedValues], resolvedKeys: [...resolvedKeys] };
 }
 
+/**
+ * The values the references in `envVars` point to — for masking a running app's logs, whose
+ * stored env holds only the references. Unlike `resolveSecretReferences`, a secret the provider
+ * does not have is skipped rather than an error. A provider that cannot be loaded still throws:
+ * the caller must not treat logs as masked without its values.
+ */
+export async function referencedSecretValues(
+  envVars: Record<string, string>,
+  load: SecretLoader
+): Promise<string[]> {
+  const references = findSecretReferences(envVars);
+  const values = new Set<string>();
+  for (const provider of new Set(references.map((r) => r.provider))) {
+    const secrets = await load(provider);
+    for (const { secretKey } of references.filter((r) => r.provider === provider)) {
+      if (!Object.prototype.hasOwnProperty.call(secrets, secretKey)) continue;
+      const value = secrets[secretKey];
+      if (value) values.add(value);
+    }
+  }
+  return [...values];
+}
+
 export function providerLabel(provider: SecretProvider): string {
   if (provider === 'infisical') return 'Infisical';
   if (provider === 'doppler') return 'Doppler';

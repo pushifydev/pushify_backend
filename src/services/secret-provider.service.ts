@@ -29,6 +29,7 @@ import {
 import {
   hasSecretReferences,
   providerLabel,
+  referencedSecretValues,
   resolveSecretReferences,
   SUPPORTED_SECRET_PROVIDERS,
   type ResolvedEnv,
@@ -342,9 +343,7 @@ export const secretProviderService = {
         throw new Error(`no ${providerLabel(provider)} connection is set up for this project or organization`);
       }
       usedConnections.push(connection.id);
-      if (connection.provider === 'doppler') return fetchDopplerSecrets(connection);
-      if (connection.provider === 'vault') return fetchVaultSecrets(connection);
-      return fetchInfisicalSecrets(connection);
+      return fetchConnectionSecrets(connection);
     });
     for (const id of usedConnections) {
       db.update(secretProviderConnections)
@@ -354,4 +353,30 @@ export const secretProviderService = {
     }
     return resolved;
   },
+
+  /**
+   * The values behind the `{{infisical.KEY}}` / `{{doppler.KEY}}` / `{{vault.KEY}}` references in
+   * a project's stored env, so its runtime logs can be masked. Fetched fresh and kept in memory
+   * only — nothing is written. Throws when a referenced provider cannot be loaded.
+   */
+  async referencedValuesForMasking(
+    organizationId: string,
+    projectId: string,
+    envVars: Record<string, string>
+  ): Promise<string[]> {
+    if (!hasSecretReferences(envVars)) return [];
+    return referencedSecretValues(envVars, async (provider) => {
+      const connection = await secretProviderService.connectionForDeploy(organizationId, projectId, provider);
+      if (!connection) {
+        throw new Error(`no ${providerLabel(provider)} connection is set up for this project or organization`);
+      }
+      return fetchConnectionSecrets(connection);
+    });
+  },
 };
+
+function fetchConnectionSecrets(connection: DeployConnection): Promise<Record<string, string>> {
+  if (connection.provider === 'doppler') return fetchDopplerSecrets(connection);
+  if (connection.provider === 'vault') return fetchVaultSecrets(connection);
+  return fetchInfisicalSecrets(connection);
+}
