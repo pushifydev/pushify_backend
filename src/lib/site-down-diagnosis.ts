@@ -1,13 +1,14 @@
 import type { DeployFailureBlame } from './deploy-failure-classify';
 import type { ServerCheckName, ServerCheckOutcome, ServerDiagnostics } from './app-health';
-import { describeContainerDown, type ContainerDownCause } from './container-down-cause';
+import { describeContainerDown, type ContainerDiagnosis, type ContainerDownCause } from './container-down-cause';
 
 /**
  * Why a monitored site is down, worked out from what was actually observed — the last health
  * check (HTTP status or the network error behind "fetch failed") and the stored server checks —
  * instead of from the latest deployment alone. A failed build does not take a site down on its
  * own (the previous container keeps serving), so "build failed" is only the diagnosis when the
- * proxy answers but nothing is behind it. Used by the ops signals (pushify-hq) so a down site is
+ * proxy answers but nothing is behind it, or when the inspected app container is not running.
+ * Used by the ops signals (pushify-hq) so a down site is
  * reported with the right layer, and so a user-side outage can be told apart from a platform one.
  */
 export type SiteDownKind =
@@ -128,6 +129,29 @@ function outcomeOf(diagnostics: SiteDownFacts['diagnostics'], check: ServerCheck
   return diagnostics?.checks?.find((c) => c.check === check)?.outcome ?? null;
 }
 
+/**
+ * What the inspected app container showed, as one sentence for a summary whose kind did not come
+ * from it — so its state and port result are on the record whatever layer was blamed.
+ */
+function containerSeen(container: ContainerDiagnosis | null): string {
+  if (!container) return '';
+  if (container.state === 'missing') return ' No app container exists on the server.';
+  if (container.state === 'unknown') return ' The app container could not be inspected.';
+  const port = container.configuredPort;
+  if (container.state === 'running' && port !== null && container.listeningPorts?.includes(port)) {
+    return ` The app container runs and listens on port ${port}, so what refuses is in front of it (proxy or port mapping).`;
+  }
+  if (container.state === 'running') {
+    const ports =
+      container.listeningPorts === null
+        ? 'the ports it listens on could not be read'
+        : `it listens on ${container.listeningPorts.join(', ') || 'no TCP port'} and no container port is configured`;
+    return ` The app container is running; ${ports}.`;
+  }
+  const facts = describeContainerDown(container);
+  return ` ${facts.charAt(0).toUpperCase()}${facts.slice(1)}.`;
+}
+
 export function diagnoseSiteDown(facts: SiteDownFacts): SiteDownDiagnosis {
   const ours = facts.hosting !== 'byos';
   const deploy = facts.latestDeploy;
@@ -194,6 +218,18 @@ export function diagnoseSiteDown(facts: SiteDownFacts): SiteDownDiagnosis {
   // On ECONNREFUSED the app container itself was inspected: what it says is the most concrete
   // cause there is, so it comes before the proxy ports (a domain-less app is not behind 80/443).
   const container = facts.diagnostics?.container ?? null;
+  // The inspected container is not running (or does not exist) and the latest deployment failed
+  // on the project's side: nothing will serve until the owner fixes the build and redeploys. A
+  // cause that is already the app's own (crash loop, OOM, wrong port) stays the more concrete one.
+  const containerDown = !!container && container.state !== 'running' && container.state !== 'unknown';
+  if (containerDown && buildFailed && deploy?.blame === 'project' && !(container.cause && CONTAINER_USER_SIDE[container.cause])) {
+    return {
+      kind: 'build_failed',
+      userSide: true,
+      ...(container.cause ? { cause: container.cause } : {}),
+      summary: `No HTTP answer${said}: ${container.state === 'missing' ? 'no app container exists on the server' : describeContainerDown(container)}, so nothing listens on port ${container.configuredPort ?? 'the configured port'}, and the latest deployment failed (${deploy.label ?? 'build failed'}, project side). It comes back once the build is fixed and redeployed.`,
+    };
+  }
   if (container?.cause) {
     return {
       kind: 'container_not_running',
@@ -202,6 +238,7 @@ export function diagnoseSiteDown(facts: SiteDownFacts): SiteDownDiagnosis {
       summary: `No HTTP answer${said}: ${describeContainerDown(container)}.`,
     };
   }
+  const seen = containerSeen(container);
   if (failed === 'http_port' || failed === 'https_port') {
     const port = failed === 'http_port' ? 80 : 443;
     const outcome = outcomeOf(facts.diagnostics, failed);
@@ -209,32 +246,26 @@ export function diagnoseSiteDown(facts: SiteDownFacts): SiteDownDiagnosis {
       return {
         kind: 'container_not_running',
         userSide: ours ? null : true,
-        summary: `No HTTP answer${said}: the server is up but nothing listens on port ${port} (proxy not running).`,
+        summary: `No HTTP answer${said}: the server is up but nothing listens on port ${port} (proxy not running).${seen}`,
       };
     }
     return {
       kind: ours ? 'unreachable' : 'user_server_unreachable',
       userSide: !ours,
-      summary: `No HTTP answer${said}: port ${port} is not reachable from the internet (${outcome ?? 'failed'}).`,
+      summary: `No HTTP answer${said}: port ${port} is not reachable from the internet (${outcome ?? 'failed'}).${seen}`,
     };
   }
   if (facts.diagnostics?.checks?.length && !failed) {
     return {
       kind: 'container_not_running',
       userSide: null,
-      summary: `No HTTP answer${said}: SSH, Docker and ports 80/443 all work, so the app container is not answering.`,
+      summary: `No HTTP answer${said}: SSH, Docker and ports 80/443 all work, so the app container is not answering.${seen}`,
     };
   }
   // A refused connection is an answer from the host itself (a TCP reset): the server is up and
   // reachable, only nothing listens on the port — the container or the proxy in front of it is
-  // not running. That is the container layer, not "unreachable", and never the build.
+  // not running. That is the container layer, not "unreachable", and never the build on its own.
   if (REFUSED_PATTERN.test(error)) {
-    const seen =
-      container?.state === 'missing'
-        ? ' No app container exists on the server.'
-        : container?.state === 'running' && container.configuredPort !== null && container.listeningPorts?.includes(container.configuredPort)
-          ? ` The app container runs and listens on port ${container.configuredPort}, so what refuses is in front of it (proxy or port mapping).`
-          : '';
     return {
       kind: 'container_not_running',
       userSide: ours ? null : true,
