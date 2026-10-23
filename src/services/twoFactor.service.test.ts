@@ -38,6 +38,7 @@ vi.mock('../lib/email', () => ({
 
 import { twoFactorService } from './twoFactor.service';
 import { hashPassword } from '../lib/password';
+import { encrypt, decrypt } from '../lib/encryption';
 
 const USER_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -93,6 +94,33 @@ describe('verifyBackupCode', () => {
 
     expect(await twoFactorService.verifyBackupCode(USER_ID, 'ZZZZ0000')).toBe(false);
     expect(storedCodes()).toEqual(before);
+  });
+});
+
+describe('generateSetup', () => {
+  it('refuses while 2FA is enabled and keeps the active secret', async () => {
+    await setUpUser(2);
+    const activeSecret = encrypt('JBSWY3DPEHPK3PXP');
+    store.user!.twoFactorSecret = activeSecret;
+
+    await expect(
+      twoFactorService.generateSetup(USER_ID, 'dana@example.com')
+    ).rejects.toMatchObject({ status: 400, message: '2FA is already enabled for this account' });
+    expect(store.user!.twoFactorSecret).toBe(activeSecret);
+    expect(store.user!.twoFactorEnabled).toBe(true);
+  });
+
+  it('stores the new secret encrypted while 2FA is disabled', async () => {
+    await setUpUser(0);
+    store.user!.twoFactorEnabled = false;
+
+    const setup = await twoFactorService.generateSetup(USER_ID, 'dana@example.com');
+
+    expect(setup.secret).toBeTruthy();
+    expect(setup.backupCodes).toHaveLength(10);
+    expect(store.user!.twoFactorSecret).not.toBe(setup.secret);
+    expect(decrypt(store.user!.twoFactorSecret!)).toBe(setup.secret);
+    expect(store.user!.twoFactorEnabled).toBe(false);
   });
 });
 
