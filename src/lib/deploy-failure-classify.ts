@@ -3,6 +3,11 @@ export type DeployFailureCategory =
   | 'out_of_memory'
   | 'disk_space'
   | 'platform_native'
+  /** Generated (buildpack) builds: what the package manager or runtime said went wrong */
+  | 'buildpack_detection'
+  | 'runtime_version'
+  | 'dependency_install'
+  | 'start_command'
   | 'docker_build'
   | 'application_build'
   | 'container_start'
@@ -109,7 +114,9 @@ function classifyText(text: string): ClassifiedDeployFailure {
     text.includes('oom') ||
     text.includes('javascript heap') ||
     text.includes('killed') ||
-    text.includes('cannot allocate memory')
+    text.includes('cannot allocate memory') ||
+    // BuildKit's line for a build step the kernel OOM-killed (SIGKILL), often without "Killed"
+    text.includes('exit code: 137')
   ) {
     return {
       category: 'out_of_memory',
@@ -167,6 +174,54 @@ function classifyText(text: string): ClassifiedDeployFailure {
       blame: 'server',
       label: 'Server busy',
       userHint: 'The deployment server was busy. Wait and redeploy, or use a dedicated server.',
+    };
+  }
+
+  // Generated builds whose failure the package manager or runtime names. Ahead of the generic
+  // "npm ERR!" / "Docker build failed" buckets, which these used to land in (or in unknown).
+  if (NO_MANIFEST_PATTERN.test(text)) {
+    return {
+      category: 'buildpack_detection',
+      blame: 'project',
+      label: 'Language not detected',
+      userHint:
+        'No package.json was found where the build ran, so Pushify could not tell which language the app uses and built it as Node.js. ' +
+        "Set the project's root directory to the folder with your app's manifest (package.json, requirements.txt, pyproject.toml, go.mod, Gemfile, composer.json, Cargo.toml, pom.xml), " +
+        'set framework in pushify.yaml, or add a Dockerfile.',
+    };
+  }
+
+  if (RUNTIME_VERSION_PATTERNS.some((p) => p.test(text))) {
+    return {
+      category: 'runtime_version',
+      blame: 'project',
+      label: 'Unsupported runtime version',
+      userHint:
+        'The app or one of its dependencies needs a different language version than the build image has; the log names both. ' +
+        'Relax the version requirement (engines, requires-python, go.mod, Gemfile, composer.json), pin a dependency version that supports the image, ' +
+        'or deploy with your own Dockerfile on the version you need.',
+    };
+  }
+
+  if (DEPENDENCY_INSTALL_PATTERNS.some((p) => p.test(text))) {
+    return {
+      category: 'dependency_install',
+      blame: 'project',
+      label: 'Dependency install failed',
+      userHint:
+        'Installing dependencies failed: a package or version could not be found, resolved or built, or the lockfile is out of sync with the manifest. ' +
+        'Run the same install command locally on a clean checkout, fix the package the log names and commit the updated lockfile.',
+    };
+  }
+
+  if (START_COMMAND_PATTERNS.some((p) => p.test(text))) {
+    return {
+      category: 'start_command',
+      blame: 'project',
+      label: 'No start command',
+      userHint:
+        'The image built, but the start command found nothing to run (no "start" script in package.json, or no main.py / main:app / app:app where the default command looks). ' +
+        'Set the start command in the project settings or start in pushify.yaml.',
     };
   }
 
@@ -245,6 +300,54 @@ const SHARP_PREBUILT_PATTERNS = [
   'something went wrong installing the "sharp" module',
   'sharp: installation error',
   'sharp: prebuilt libvips',
+];
+
+/*
+ * Generated (buildpack) build failures. Each pattern is what a package manager or runtime prints
+ * when it fails — never a command line or a warning: BuildKit echoes every RUN step into the log
+ * (`RUN npm install …`), and warnings such as "npm warn EBADENGINE" appear in builds that pass.
+ * npm ≥ 10 prints "npm error", older npm "npm ERR!". `text` is lower-cased.
+ */
+
+/** No package.json where the Node build ran: no buildpack recognised the repository at its root directory. */
+const NO_MANIFEST_PATTERN =
+  /could not read package\.json|no such file or directory, open '[^'\n]*\/package\.json'|err_pnpm_no_pkg_manifest/;
+
+/** The app or a dependency requires a language version the build image does not have. */
+const RUNTIME_VERSION_PATTERNS: RegExp[] = [
+  /npm (?:err!|error) code ebadengine/, // npm with engine-strict
+  /error [^\n]*the engine "node" is incompatible with this module/, // yarn 1
+  /err_pnpm_unsupported_engine/,
+  /for next\.js, node\.js version|vite requires node\.js version/,
+  /requires a different python/, // pip: requires-python
+  /go\.mod requires go >=|note: module requires go \d/,
+  /your ruby version is [^\n]*but your gemfile specified|requires ruby version/,
+  /your php version \([^)\n]*\) does not satisfy/, // composer
+  /requires rustc [\d.]+ or newer|rustc [\d.]+ is not supported by the following package|feature `edition20\d\d` is required/,
+  /release version \d+ not supported|invalid target release|compiled by a more recent version of the java runtime/,
+];
+
+/** A dependency could not be found or resolved, or the lockfile does not match the manifest. */
+const DEPENDENCY_INSTALL_PATTERNS: RegExp[] = [
+  /npm (?:err!|error) code (?:eresolve|etarget|e404|eintegrity)\b/,
+  /can only install packages when your package\.json and package-lock\.json/, // npm ci
+  /your lockfile needs to be updated|the lockfile would have been modified by this install|couldn't find package|couldn't find any versions for/, // yarn
+  /err_pnpm_(?:outdated_lockfile|no_matching_version|fetch_\d{3}|lockfile_\w+|peer_dep_issues)/,
+  /could not find a version that satisfies the requirement|no matching distribution found for|resolutionimpossible/, // pip
+  /your pipfile\.lock \([^)\n]*\) is out of date/,
+  /could not find gem|bundler::gemnotfound|could not find compatible versions|and bundler cannot continue/,
+  /your requirements could not be resolved to an installable set of packages|your lock file does not contain a compatible set of packages/, // composer
+  /missing go\.sum entry|verifying [^\n]*: checksum mismatch|invalid version: unknown revision/,
+  /failed to select a version for the requirement|no matching package named/, // cargo
+  /could not resolve dependencies for project|could not resolve all (?:files|dependencies) for configuration/, // maven, gradle
+];
+
+/** The container started but the (default) start command had nothing to run. */
+const START_COMMAND_PATTERNS: RegExp[] = [
+  /missing script: "?start\b/, // npm start without a "start" script
+  /python[\d.]*: can't open file '[^'\n]*': \[errno 2\]/, // python main.py
+  /error loading asgi app/, // uvicorn main:app
+  /failed to find attribute '[^'\n]*' in '[^'\n]*'/, // gunicorn app:app
 ];
 
 /** A prebuilt binary that needs a newer glibc, or a glibc binary loaded on musl (Alpine). */

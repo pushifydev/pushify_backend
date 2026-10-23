@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-23
+
+### Fixed
+- **Buildpack build failures now get a concrete cause instead of a generic "Docker build failed" or "Deployment failed".** The deploy failure classifier had no cases for the common failures of generated (buildpack) builds. npm ≥ 10, which the Node 20 build image ships, prints `npm error` rather than `npm ERR!`, so most install failures missed the npm match. They ended up in `docker_build`, or in `unknown` when the error said nothing specific. Four new categories, each with its own label and a short English hint:
+  - `buildpack_detection`, "Language not detected": the Node fallback build found no `package.json` (npm `ENOENT`, pnpm `ERR_PNPM_NO_PKG_MANIFEST`). Hint: set the root directory, set `framework` in pushify.yaml, or add a Dockerfile.
+  - `runtime_version`, "Unsupported runtime version": npm `EBADENGINE` as an error (not the warning), yarn/pnpm engines, Next.js and Vite Node requirements, pip `requires-python`, `go.mod` toolchain, Bundler/RubyGems Ruby version, Composer PHP version, Cargo `rust-version`/edition 2024, javac release.
+  - `dependency_install`, "Dependency install failed": npm `ERESOLVE`/`ETARGET`/`E404`/`EINTEGRITY` and `npm ci` out of sync, yarn/pnpm frozen lockfile, pip, Bundler, Composer, Go modules, Cargo, Maven/Gradle resolution.
+  - `start_command`, "No start command": `Missing script: "start"`, `python main.py` with no main.py, uvicorn `Error loading ASGI app`, gunicorn `Failed to find attribute`.
+  - A build step OOM-killed without a "Killed" line (BuildKit `exit code: 137`) is now `out_of_memory`.
+
+  The worker already stores the category in `deployments.failure_category`, puts the label in `error_message` (`[Project] Dependency install failed: …`) and writes the hint into the build log as the `💡` line on the deploy page, so no other code changed. Ops signals, the failure summary and the growth report re-classify the stored message and land in the same category. No migration and no new notifications. The checks only match what a package manager or runtime prints when it fails, never a RUN line BuildKit echoes; a test runs them against the generated Dockerfile of every buildpack. Earlier deployments keep their stored category and message. Tests: log fixtures for every category.
+
 ## [0.6.0] - 2026-10-22
 
 ### Added
