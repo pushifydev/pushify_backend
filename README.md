@@ -33,6 +33,14 @@ curl -fsSL https://raw.githubusercontent.com/pushifydev/pushify_backend/master/s
 
 See [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) for requirements, configuration and operations.
 
+Only the latest version gets security fixes. To update, run this from the install directory (`--dry-run` shows what would change first):
+
+```bash
+./pushify_backend/selfhost/update.sh --dry-run
+```
+
+See [SECURITY.md](SECURITY.md) for supported versions and how fixes are released.
+
 ## Tech Stack
 
 | | Technology |
@@ -135,6 +143,10 @@ src/
 ## Contributing
 
 Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md) before submitting a pull request.
+
+## Security
+
+Please do not open a public issue for a vulnerability. Report it privately as described in [SECURITY.md](SECURITY.md).
 
 ## License
 

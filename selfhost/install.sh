@@ -78,6 +78,6 @@ cat <<EOF
     3. Create a project from a Git repository and deploy.
 
   Manage:  cd ${INSTALL_DIR} && docker compose logs -f | ps | down
-  Update:  re-run this installer, or: git -C pushify_backend pull && git -C pushify_frontend pull && docker compose up -d --build
+  Update:  cd ${INSTALL_DIR} && ./pushify_backend/selfhost/update.sh --dry-run   (then without --dry-run)
 
 EOF
