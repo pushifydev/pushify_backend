@@ -13,6 +13,12 @@ import { isAllowedWhilePendingDeletion, isOrganizationPendingDeletion } from '..
 import { accountSuspendedError, isUserBanned } from '../lib/user-ban';
 
 export async function authMiddleware(c: Context, next: Next) {
+  // Every router mounted on a shared prefix (/api/v1/projects) adds its own '*' auth middleware,
+  // and Hono runs all of them for one request: verify and count the plan rate limit only once.
+  if (c.get('authVerified')) {
+    return next();
+  }
+
   const locale: SupportedLocale = c.get('locale') || 'en';
 
   if (isApiKeyRequest(c)) {
@@ -54,6 +60,7 @@ export async function authMiddleware(c: Context, next: Next) {
       }
     }
 
+    c.set('authVerified', true);
     await applyPlanApiRateLimit(c, next);
   } catch (error) {
     if (error instanceof HTTPException) {
