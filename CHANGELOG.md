@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-10-23
+
+### Security
+- **An API key can no longer change the account, 2FA or billing, use the AI assistant or reach the user's GitHub/GitLab account.** `authMiddleware` accepts a Pushify API key (`pk_live_...`), and these routers had no scope check, so a key with any scope (e.g. only `metrics:read`) could set a first password on an OAuth account with `POST /auth/me/change-password` and sign in with it, enable 2FA and lock the owner out, change the plan, pay, cancel or open the billing portal, and list private repositories. They now follow the same rule as `organizations`:
+  - `/auth/me` and `/auth/me/*` (profile, password, sessions, account deletion, notification preferences) and `/billing`: an API key may still read (`GET`/`HEAD`); every other method answers 403.
+  - `/auth/2fa`, `/ai`, `/integrations/github` and `/integrations/gitlab`: an API key gets 403 on every route.
+
+  Dashboard sessions (JWT) are not affected. The CLI signs in with an API key (device login issues a `*` key), so it gets the same answers on these routes. No migration. Tests: a `metrics:read` key goes through the real auth middleware on each router and gets 403, while a session on the same routes still reaches the handler.
+
 ## [0.6.1] - 2026-10-23
 
 ### Fixed

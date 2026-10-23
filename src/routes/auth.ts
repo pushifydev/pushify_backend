@@ -1,8 +1,10 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { HTTPException } from 'hono/http-exception';
+import type { Context, Next } from 'hono';
 import { authService } from '../services/auth.service';
 import { organizationService } from '../services/organization.service';
 import { authMiddleware } from '../middleware/auth';
+import { rejectApiKeyAuth } from '../middleware/apikey-auth';
 import { authRateLimiter, passwordResetRateLimiter } from '../middleware/rate-limit';
 import { isPlatformAdminEmail } from '../lib/platform-admin';
 import { t } from '../i18n';
@@ -959,6 +961,11 @@ authRouter.openapi(verifyEmailRoute, async (c) => {
 // Me (protected)
 authRouter.use('/me', authMiddleware);
 authRouter.use('/me/*', authMiddleware);
+// Profile, password, sessions and account deletion are changed from the dashboard, not with API keys.
+const rejectApiKeyWrites = async (c: Context, next: Next) =>
+  ['GET', 'HEAD'].includes(c.req.method.toUpperCase()) ? next() : rejectApiKeyAuth()(c, next);
+authRouter.use('/me', rejectApiKeyWrites);
+authRouter.use('/me/*', rejectApiKeyWrites);
 
 authRouter.openapi(meRoute, async (c) => {
   const userId = c.get('userId')!;

@@ -1,6 +1,7 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { gitlabService } from '../services/gitlab.service';
 import { authMiddleware } from '../middleware/auth';
+import { rejectApiKeyAuth } from '../middleware/apikey-auth';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 import { HTTPException } from 'hono/http-exception';
@@ -57,6 +58,8 @@ const FrameworkDetectionSchema = z
 
 const gitlabRouter = new OpenAPIHono<AppEnv>();
 gitlabRouter.use('*', authMiddleware);
+// The user's GitLab account (private repos, OAuth) is reachable from a session only.
+gitlabRouter.use('*', rejectApiKeyAuth());
 
 const statusRoute = createRoute({
   method: 'get',

@@ -2,12 +2,15 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { aiService, type ChatMessage } from '../services/ai.service';
 import { authMiddleware } from '../middleware/auth';
+import { rejectApiKeyAuth } from '../middleware/apikey-auth';
 import type { AppEnv } from '../types';
 
 const aiRouter = new Hono<AppEnv>();
 
 // All routes require authentication
 aiRouter.use('*', authMiddleware);
+// The assistant is for the dashboard; API keys must not spend its LLM budget.
+aiRouter.use('*', rejectApiKeyAuth());
 
 // Check if AI is available
 aiRouter.get('/status', (c) => {
