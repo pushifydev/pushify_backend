@@ -2,6 +2,7 @@ import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { requireOrgMember } from '../lib/org-access';
 import { githubService, hasRepoScope } from '../services/github.service';
 import { authMiddleware } from '../middleware/auth';
+import { rejectApiKeyAuth } from '../middleware/apikey-auth';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 import { HTTPException } from 'hono/http-exception';
@@ -256,6 +257,8 @@ const githubRouter = new OpenAPIHono<AppEnv>();
 
 // All routes require authentication
 githubRouter.use('*', authMiddleware);
+// The user's GitHub account (OAuth link, private repos, App installs) is not reachable with an API key.
+githubRouter.use('*', rejectApiKeyAuth());
 
 // Get status
 githubRouter.openapi(statusRoute, async (c) => {

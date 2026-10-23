@@ -1,6 +1,7 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { gitlabService } from '../services/gitlab.service';
 import { authMiddleware } from '../middleware/auth';
+import { rejectApiKeyAuth } from '../middleware/apikey-auth';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 import { HTTPException } from 'hono/http-exception';
@@ -57,6 +58,8 @@ const FrameworkDetectionSchema = z
 
 const gitlabRouter = new OpenAPIHono<AppEnv>();
 gitlabRouter.use('*', authMiddleware);
+// The user's GitLab account (OAuth link, private repos) is not reachable with an API key.
+gitlabRouter.use('*', rejectApiKeyAuth());
 
 const statusRoute = createRoute({
   method: 'get',

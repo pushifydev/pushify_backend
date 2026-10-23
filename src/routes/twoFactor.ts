@@ -1,5 +1,6 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { authMiddleware } from '../middleware/auth';
+import { rejectApiKeyAuth } from '../middleware/apikey-auth';
 import { authRateLimiter } from '../middleware/rate-limit';
 import { twoFactorService } from '../services/twoFactor.service';
 import { authService } from '../services/auth.service';
@@ -225,6 +226,8 @@ const twoFactorRouter = new OpenAPIHono<AppEnv>();
 
 // All 2FA routes require authentication
 twoFactorRouter.use('/*', authMiddleware);
+// The second factor is managed from the dashboard only, never with an API key.
+twoFactorRouter.use('/*', rejectApiKeyAuth());
 
 // Apply rate limiting to sensitive endpoints
 twoFactorRouter.use('/setup', authRateLimiter);

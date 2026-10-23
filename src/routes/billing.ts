@@ -5,6 +5,7 @@ import { stripeService } from '../services/stripe.service';
 import { infraBillingService } from '../services/infra-billing.service';
 import { INFRA_TOPUP_AMOUNTS_CENTS } from '../lib/infra-billing';
 import { authMiddleware } from '../middleware/auth';
+import { rejectApiKeyAuth } from '../middleware/apikey-auth';
 import { requireOrgRole } from '../middleware/require-role';
 import { env } from '../config/env';
 import { db } from '../db';
@@ -25,6 +26,8 @@ billingRouter.get('/plans', async (c) => {
 
 // All remaining routes require authentication
 billingRouter.use('*', authMiddleware);
+// Plan changes, payments, cancellation and the Stripe portal are dashboard-only; API keys may only read.
+billingRouter.use('*', async (c, next) => (['GET', 'HEAD'].includes(c.req.method.toUpperCase()) ? next() : rejectApiKeyAuth()(c, next)));
 
 // Get billing information
 billingRouter.get('/', async (c) => {

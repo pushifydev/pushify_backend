@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-10-23
+
+### Security
+- **A narrow API key can no longer change the account, 2FA or billing, or reach the owner's Git accounts and the AI assistant.** `authMiddleware` accepts `pk_live_` keys, but the `/auth/me*`, `/auth/2fa`, `/billing`, `/ai`, `/integrations/github` and `/integrations/gitlab` routers had neither `requireScope` nor `rejectApiKeyAuth`, so any key, even one scoped to `metrics:read`, could use them. Such a key could set a first password on an OAuth account through `POST /auth/me/change-password` (no current password is asked) and then sign in with email and password, turn on 2FA and lock the owner out, change the plan, pay or cancel the subscription, open the Stripe portal, and list private GitHub repositories. Now, as on `/organizations`:
+  - `/auth/me` and `/auth/me/*` (profile, password, sessions, account deletion, notification preferences) and `/billing` accept API keys for `GET` only; other methods return 403 (`sessionOnly`).
+  - `/auth/2fa`, `/ai`, `/integrations/github` and `/integrations/gitlab` return 403 to every API key request.
+
+  Dashboard sessions are unaffected. Scripts that used an API key for these endpoints need a dashboard session instead. No migration. 15 tests send a `pk_live_` key through the real `authMiddleware`.
+
 ## [0.6.2] - 2026-10-23
 
 ### Security
