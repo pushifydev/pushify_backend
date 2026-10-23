@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-10-23
+
+### Security
+- **`POST /api/v1/2fa/setup` no longer replaces the TOTP secret of an account that already has 2FA on.** `generateSetup` overwrote `users.twoFactorSecret` without checking `twoFactorEnabled` and returned the new secret in plain text. Login then checked codes against that new secret, so the user's authenticator app stopped working and only backup codes were left. Anyone holding a session or API key could also get the second factor this way. Setup now returns 400 (`alreadyEnabled`) while 2FA is on and leaves the stored secret alone. To move to a new authenticator, disable 2FA first (this needs re-auth), then run setup again. Setup with 2FA off works as before. No migration. 2 tests.
+
 ## [0.6.1] - 2026-10-23
 
 ### Fixed

@@ -73,7 +73,8 @@ const setupRoute = createRoute({
   path: '/setup',
   tags: ['Two-Factor Authentication'],
   summary: 'Generate 2FA setup',
-  description: 'Generate a new TOTP secret and QR code for 2FA setup. Returns backup codes that must be saved by the user.',
+  description:
+    'Generate a new TOTP secret and QR code for 2FA setup. Returns backup codes that must be saved by the user. Returns 400 when 2FA is already enabled; disable it first to set up a new authenticator.',
   security: [{ bearerAuth: [] }],
   responses: {
     200: {
@@ -240,7 +241,7 @@ twoFactorRouter.openapi(setupRoute, async (c) => {
   // Get user's email for the QR code
   const user = await authService.getCurrentUser(userId, locale);
 
-  const setup = await twoFactorService.generateSetup(userId, user.email);
+  const setup = await twoFactorService.generateSetup(userId, user.email, locale);
 
   return c.json({
     secret: setup.secret,

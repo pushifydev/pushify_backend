@@ -29,9 +29,28 @@ export interface TwoFactorStatus {
 
 export const twoFactorService = {
   /**
-   * Generate a new TOTP secret and QR code for setup
+   * Generate a new TOTP secret and QR code for setup.
+   * Refused while 2FA is enabled: the stored secret is the active one then, and overwriting it
+   * would lock the user's authenticator out and hand the new secret to whoever holds the session.
    */
-  async generateSetup(userId: string, userEmail: string): Promise<TwoFactorSetupResult> {
+  async generateSetup(
+    userId: string,
+    userEmail: string,
+    locale: SupportedLocale = 'en'
+  ): Promise<TwoFactorSetupResult> {
+    const user = await db.query.users.findFirst({
+      where: eq(users.id, userId),
+      columns: { twoFactorEnabled: true },
+    });
+
+    if (!user) {
+      throw new HTTPException(404, { message: t(locale, 'auth', 'userNotFound') });
+    }
+
+    if (user.twoFactorEnabled) {
+      throw new HTTPException(400, { message: t(locale, 'twoFactor', 'alreadyEnabled') });
+    }
+
     // Generate a new secret
     const secret = generateSecret();
 
