@@ -53,6 +53,11 @@ export function isApiKeyRequest(c: Context): boolean {
  * Sets userId, organizationId, and apiKey on context
  */
 export async function apiKeyAuthMiddleware(c: Context, next: Next) {
+  // Already verified by an earlier auth middleware on a shared route prefix (see authMiddleware)
+  if (c.get('authVerified')) {
+    return next();
+  }
+
   const locale: SupportedLocale = c.get('locale') || 'en';
   const token = extractAuthToken(c);
 
@@ -80,6 +85,7 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
   c.set('organizationId', result.organizationId);
   c.set('apiKey', result.apiKey);
   c.set('isApiKeyAuth', true);
+  c.set('authVerified', true);
 
   // Audit entries written while handling this request record which key made it (id + name).
   await runWithAuditApiKey(result.apiKey, () => applyPlanApiRateLimit(c, next));

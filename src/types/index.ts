@@ -11,6 +11,11 @@ export type AppEnv = {
     /** set by the API key middleware when the caller authenticated with pk_live_... */
     isApiKeyAuth?: boolean;
     apiKey?: { id: string; scopes: string };
+    /**
+     * set by authMiddleware / apiKeyAuthMiddleware once the caller is verified and the plan rate
+     * limit is applied; later auth middleware on the same request (shared route prefixes) skips
+     */
+    authVerified?: boolean;
     /** set by requirePlatformAdmin once the caller has passed the operator gate */
     platformAdmin?: { id: string; email: string };
   };
