@@ -235,8 +235,21 @@ Restore: `rclone copy offsite:pushify-control-plane-<stamp>.sql.gz .` then
 Secrets in it are encrypted with the backend's `ENCRYPTION_KEY` — keep the backend `.env` in
 your password manager too, or the restored platform can't read them.
 
-**Update:** re-run the installer, or `git -C pushify_backend pull && git -C pushify_frontend pull
-&& docker compose up -d --build`. Migrations run automatically on start.
+**Update:** only the latest version gets security fixes ([SECURITY.md](../SECURITY.md)). Back up
+first (above), then from the install directory:
+
+```bash
+./pushify_backend/selfhost/update.sh --dry-run   # installed vs. latest version, releases in between ([security] = has a Security section)
+./pushify_backend/selfhost/update.sh             # asks, then fast-forwards both checkouts and runs docker compose up -d --build
+```
+
+`--yes` skips the question (for cron or no terminal). A MAJOR version jump stops until you re-run
+with `--allow-major`. Running it again when nothing changed does nothing. If a build failed, the
+next run builds again. Migrations run automatically on start. `.env` and the data volumes are kept.
+Re-running the installer still works too, but it shows no versions, has no dry run and does not
+remind you to back up. An install older than the script doesn't have it yet, so run it from GitHub
+once, in the install directory:
+`curl -fsSL https://raw.githubusercontent.com/pushifydev/pushify_backend/master/selfhost/update.sh | bash -s -- --dry-run`.
 
 ## Troubleshooting
 
