@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-24
+
+### Added
+- **Self-hosted installs can keep the dashboard and API on a private network with `ADMIN_ALLOWED_CIDRS`.** It takes comma-separated IPv4/IPv6 CIDRs or addresses, e.g. `100.64.0.0/10,fd7a:115c:a1e0::/48` for a tailnet. Any other address gets `403` (`IP_NOT_ALLOWED`) on every API route: dashboard calls, CLI, API keys, the admin panel, WebSockets, API docs. Three prefixes stay open because they are called from outside by design: `/api/v1/webhooks/*` (GitHub, GitLab, GitHub App, Stripe), `/api/v1/wake/*` (visitors of a sleeping app, forwarded by nginx on the deploy servers) and `/api/v1/health*` (the compose healthcheck). Unset or empty registers nothing, so behaviour is unchanged. A wrong entry stops the API from starting instead of leaving it open. `X-Forwarded-For` is believed only when the connection comes from `ADMIN_TRUSTED_PROXY_CIDRS`, walking back through trusted hops only. `TRUSTED_PROXY_HOPS` is not used for this check: a client reaching port 4000 directly could send a forged header and get past it. A refused request is logged with the derived `ip` and the `socketIp`. `docs/SELF_HOSTING.md` has a section with a Tailscale example. No migration. Tests cover IPv4/IPv6 and mapped addresses, CIDR edges, the exempt paths (including dot-segment tricks), forged headers with and without a trusted proxy, and invalid entries.
+
 ## [0.7.0] - 2026-10-24
 
 ### Added
