@@ -8,6 +8,7 @@ import { loggerMiddleware } from './logger';
 import { errorHandler } from './error-handler';
 import { i18nMiddleware } from './i18n';
 import { generalRateLimiter } from './rate-limit';
+import { createAdminIpAllowlist } from './admin-ip-allowlist';
 import { env } from '../config/env';
 
 export function registerMiddleware(app: OpenAPIHono<any>) {
@@ -23,6 +24,15 @@ export function registerMiddleware(app: OpenAPIHono<any>) {
 
   // Logging
   app.use('*', loggerMiddleware);
+
+  // Self-host network allowlist (ADMIN_ALLOWED_CIDRS); not registered when unset or empty
+  const adminIpAllowlist = createAdminIpAllowlist({
+    allowedCidrs: env.ADMIN_ALLOWED_CIDRS,
+    trustedProxyCidrs: env.ADMIN_TRUSTED_PROXY_CIDRS,
+  });
+  if (adminIpAllowlist) {
+    app.use('*', adminIpAllowlist);
+  }
 
   // CORS
   app.use(

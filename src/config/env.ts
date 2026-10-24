@@ -123,6 +123,21 @@ const envSchema = z.object({
   TRUSTED_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(0),
 
   /**
+   * Self-host: comma-separated IPv4/IPv6 addresses or CIDRs (e.g. `100.64.0.0/10` for Tailscale)
+   * that may reach the API — the dashboard's calls, CLI, API keys, admin panel, WebSockets.
+   * Others get 403. Webhooks (/api/v1/webhooks/*), the wake page of deployed apps (/api/v1/wake/*)
+   * and health probes (/api/v1/health*) stay open. Unset or empty = no restriction.
+   * A wrong entry stops the API from starting (middleware/admin-ip-allowlist.ts).
+   */
+  ADMIN_ALLOWED_CIDRS: z.string().optional(),
+  /**
+   * Reverse proxies (addresses or CIDRs) whose X-Forwarded-For the allowlist believes. Unset = the
+   * socket address is checked and the header ignored. Independent of TRUSTED_PROXY_HOPS, which a
+   * client reaching the API port directly with a forged header would get past.
+   */
+  ADMIN_TRUSTED_PROXY_CIDRS: z.string().optional(),
+
+  /**
    * Deploy on the control plane's own Docker when a project has no server and no runner is
    * configured. Unset = allowed outside production, refused in production: that fallback put
    * customer code on the machine holding Pushify's own database. Every real server — even the

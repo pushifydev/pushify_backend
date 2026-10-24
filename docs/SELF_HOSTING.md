@@ -177,6 +177,56 @@ Put your own reverse proxy (nginx, Caddy, Traefik) in front of ports 3000/4000, 
 `PUSHIFY_FRONTEND_URL` / `PUSHIFY_API_URL` to the public `https://` URLs, set
 `TRUSTED_PROXY_HOPS=1`, then rebuild the frontend as above.
 
+### Keep the dashboard and API off the public internet
+
+`ADMIN_ALLOWED_CIDRS` limits the API to the networks you list: comma-separated IPv4/IPv6 CIDRs
+or single addresses. Every call the dashboard makes, the CLI, API keys, the admin panel and
+WebSockets then answer `403` (`IP_NOT_ALLOWED`) to any other address. Unset or empty (the
+default) changes nothing.
+
+These stay open to everyone, because they are called from outside your network by design:
+
+| Path | Called by |
+|---|---|
+| `/api/v1/webhooks/*` | GitHub, GitLab, the GitHub App and Stripe (each checked by its signature) |
+| `/api/v1/wake/*` | visitors of a sleeping app, forwarded by nginx on your servers |
+| `/api/v1/health`, `/api/v1/health/*` | the compose healthcheck and uptime monitors |
+
+Your deployed apps are not affected: nginx on the deploy servers serves them, not the API.
+
+Example: only devices on your tailnet. Tailscale gives them addresses from `100.64.0.0/10`
+(and `fd7a:115c:a1e0::/48` for IPv6).
+
+```bash
+# pushify/.env
+ADMIN_ALLOWED_CIDRS=100.64.0.0/10,fd7a:115c:a1e0::/48
+```
+
+Then `docker compose up -d`. An entry that is not an address or CIDR stops the API from
+starting (`docker compose logs api` names it) instead of leaving it open.
+
+The check uses the address the API sees, so your browser has to reach the API **over
+Tailscale**. Webhooks, on the other hand, need `PUSHIFY_API_URL` to be reachable from the
+internet. One hostname covers both: it resolves to the server's public IP on the internet and to
+its tailnet IP (`tailscale ip -4`) on your own devices, through an `/etc/hosts` entry or a
+split-DNS nameserver. If `PUSHIFY_API_URL` is the tailnet address instead, everything works
+except incoming webhooks.
+
+**Behind a reverse proxy** the API sees the proxy, not you. Set `ADMIN_TRUSTED_PROXY_CIDRS` to
+the address the proxy connects from (a refused request logs it as `socketIp` in
+`docker compose logs api`, e.g. `172.18.0.1` for nginx or Caddy on the host). The proxy must
+append to `X-Forwarded-For` (nginx: `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`;
+Caddy does it by default). The header is believed only when one of those addresses connects;
+`TRUSTED_PROXY_HOPS` does not count for this check, because a client reaching port 4000
+directly could send its own header. Trust the proxy and nothing else, since whatever connects
+from a trusted address can name any client. Also publish the API on loopback only
+(`PUSHIFY_API_PORT=127.0.0.1:4000`), so no one can go around the proxy.
+
+The dashboard page itself (port 3000) is served by the `frontend` container, not the API.
+Outside the list it still loads, but every call it makes to the API is refused. To hide the
+page too, publish it on the tailnet address only: `PUSHIFY_FRONTEND_PORT=100.x.y.z:3000`
+(Tailscale has to be up before Docker starts the stack).
+
 ## Operations
 
 ```bash
