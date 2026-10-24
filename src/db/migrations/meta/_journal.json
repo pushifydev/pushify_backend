@@ -547,6 +547,13 @@
       "when": 1787270400037,
       "tag": "0078_deployment_failure_category",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1787270400038,
+      "tag": "0079_deployment_failure_summary",
+      "breakpoints": true
     }
   ]
 }

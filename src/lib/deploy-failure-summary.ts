@@ -74,8 +74,13 @@ export function countDeployOutcomes(rows: DeployOutcomeRow[]): DeployOutcomeCoun
 // formatClassifiedErrorMessage() writes "[Project] Application build failed: <raw>".
 const PREFIX = /^\[(?:Pushify|Server|Project)\]\s+[^:\n]{1,80}:\s*/;
 
+/** The raw error the worker stored after the "[Blame] Label:" prefix, whole. */
+export function removeFailurePrefix(message: string): string {
+  return message.replace(PREFIX, '');
+}
+
 export function stripFailurePrefix(message: string): string {
-  return message.replace(PREFIX, '').trim().split('\n')[0].slice(0, 200);
+  return removeFailurePrefix(message).trim().split('\n')[0].slice(0, 200);
 }
 
 /** Rows are expected newest first, so the sample is the latest message in each bucket. */

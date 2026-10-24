@@ -66,6 +66,12 @@ export const deployments = pgTable('deployments', {
    * NULL for rows from before migration 0078 and for failures recorded elsewhere.
    */
   failureCategory: varchar('failure_category', { length: 32 }),
+  /**
+   * The first line of the failed deploy's log that says what went wrong (lib/first-error-line.ts),
+   * masked and at most ~300 characters. Shows the cause when the category is 'unknown'.
+   * NULL for policy-blocked deploys and failures from before migration 0079 not yet backfilled.
+   */
+  failureSummary: text('failure_summary'),
 
   // Timestamps
   buildStartedAt: timestamp('build_started_at', { withTimezone: true }),

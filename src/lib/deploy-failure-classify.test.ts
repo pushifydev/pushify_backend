@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import {
   classifyDeployError,
   classifyDeployFailure,
+  describeFailureCategory,
   formatClassifiedErrorMessage,
   PolicyBlockedDeployError,
 } from './deploy-failure-classify';
@@ -407,5 +408,42 @@ describe('classifyDeployError — deploys stopped under the Acceptable Use Polic
       const echoed = `Docker build failed: #7 echo ${AUP_MESSAGE}`;
       expect(formatClassifiedErrorMessage(classifyDeployFailure('', echoed), echoed)).not.toMatch(pattern);
     });
+  });
+});
+
+describe('describeFailureCategory — blame and label of a stored category', () => {
+  const samples = [
+    'fatal: could not read Username',
+    'ENOSPC: no space left on device',
+    'FATAL ERROR: JavaScript heap out of memory',
+    'gyp ERR! build error',
+    "npm error enoent Could not read package.json: Error: ENOENT: no such file or directory, open '/app/package.json'",
+    'npm error code EBADENGINE',
+    'npm error code ERESOLVE',
+    'npm error Missing script: "start"',
+    'Docker build failed: failed to solve',
+    'Failed to compile.',
+    'Container failed to start: app is unhealthy',
+    'global deployment concurrency limit reached',
+    'invalid package.json',
+    'Deployment failed',
+  ];
+  const classified = [
+    ...samples.map((message) => classifyDeployFailure('', message)),
+    classifyDeployError(new PolicyBlockedDeployError('stopped'), '', 'stopped'),
+  ];
+
+  it('covers every category', () => {
+    expect(new Set(classified.map((c) => c.category)).size).toBe(15);
+  });
+
+  it.each(classified.map((c) => [c.category, c] as const))('%s: same blame and label as the classifier', (category, c) => {
+    expect(describeFailureCategory(category)).toEqual({ category, blame: c.blame, label: c.label });
+  });
+
+  it('is null for anything that is not a category', () => {
+    for (const value of ['never_deployed', 'toString', '__proto__', '']) {
+      expect(describeFailureCategory(value)).toBeNull();
+    }
   });
 });

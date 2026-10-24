@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-24
+
+### Added
+- **A failed deploy now stores and returns the first error line of its log, so a failure the classifier has no case for still shows its cause.** The category stays `unknown` when no case matches, but the new `deployments.failure_summary` holds the first line the build printed that says what went wrong (`lib/first-error-line.ts`). It skips the worker's own lines, echoed `RUN` steps, warnings and stack frames, and falls back to BuildKit's "did not complete successfully" line or the raw error. The line is masked with the project's secrets, then passed through `scrubSecrets`, and capped at about 300 characters. It is not written for policy-blocked deploys. `GET /api/v1/projects/:projectId/deployments` and `GET /api/v1/projects/:projectId/deployments/:deploymentId` return it as `failureSummary`, next to `failureCategory`. **Needs migration 0079** (additive, nullable column).
+- `npm run backfill:failure-category [-- --dry-run]` re-runs the classifier on each project's latest failed deploy that has no summary yet. It stores the category and the summary, reading the stored build log (up to the worker's `failureCategory=` line) and the raw error. Policy-blocked rows and rows the worker already summarised are left alone. The result depends only on `build_logs` and `error_message`, so a second run changes nothing. Run it once after migrating.
+
+### Fixed
+- **The growth report's stuck users now take the category stored with the failure.** `stuck.byCause` re-classified `error_message` alone, without the log. A buildpack failure whose message said only "Remote deployment failed" showed up as `unknown` even when the worker had stored `dependency_install`. The report now reads `failure_category` and falls back to the message only for rows without one. Each cause also gets `sample`, the first error line (`failure_summary`) of one of its users, passed through `scrubSecrets`. Tests: log fixtures for an unmatched failure, secret masking, the backfill run twice on the same rows, and the report.
+
 ## [0.6.3] - 2026-10-23
 
 ### Security

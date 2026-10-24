@@ -68,6 +68,7 @@ import {
   PolicyBlockedDeployError,
   type DeployFailureCategory,
 } from '../lib/deploy-failure-classify';
+import { firstErrorLine } from '../lib/first-error-line';
 import { detectNextStandaloneFromConfig } from '../buildpacks/remote-detect';
 import { wsManager } from '../lib/ws';
 import {
@@ -1562,6 +1563,11 @@ server {
     // Start-up failures carry the container's runtime log tail, which may print env values.
     const rawError = logMasker.mask(error instanceof Error ? error.message : String(error));
     const classified = classifyDeployError(error, logBuffer.join('\n'), rawError);
+    // Read before the lines below are added; masked again for secrets registered after the line was logged.
+    const failureSummary =
+      classified.category === 'policy_blocked'
+        ? null
+        : firstErrorLine(logBuffer.join('\n'), rawError, (text) => logMasker.mask(text));
     addLog(failureCategoryLogLine(classified.category));
     addLog(`💡 ${classified.userHint}`);
     addLog(`❌ Deployment failed: ${rawError}`);
@@ -1575,7 +1581,7 @@ server {
       .limit(1)
       .then((r) => r[0]);
 
-    await markDeploymentFailed(job.id, errorMessage, logBuffer.join('\n'), classified.category);
+    await markDeploymentFailed(job.id, errorMessage, logBuffer.join('\n'), classified.category, failureSummary);
 
     if (wasSleepingBeforeDeploy) {
       const woke = await wakeAfterFailedDeploy(job.projectId).catch(() => 'failed' as const);
@@ -1653,13 +1659,15 @@ server {
 
 /**
  * Mark deployment failed and close build window for quota metering when a build had started.
- * The category is stored as decided here, so reports need not re-guess it from the message.
+ * The category is stored as decided here, so reports need not re-guess it from the message;
+ * the summary (first error line of the log) shows the cause even when the category is 'unknown'.
  */
 async function markDeploymentFailed(
   deploymentId: string,
   errorMessage: string,
   buildLogs: string,
   failureCategory: DeployFailureCategory,
+  failureSummary: string | null,
 ): Promise<void> {
   const [row] = await db
     .select({
@@ -1675,12 +1683,14 @@ async function markDeploymentFailed(
     status: 'failed';
     errorMessage: string;
     failureCategory: DeployFailureCategory;
+    failureSummary: string | null;
     buildLogs: string;
     buildFinishedAt?: Date;
   } = {
     status: 'failed',
     errorMessage,
     failureCategory,
+    failureSummary,
     buildLogs,
   };
 
