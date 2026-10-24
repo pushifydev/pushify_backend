@@ -27,6 +27,37 @@ export interface ClassifiedDeployFailure {
   userHint: string;
 }
 
+/** Blame and label of each category, as classifyDeployFailure gives them ('platform_native' also has "Native module (platform)"). */
+const CATEGORY_LABELS: Record<DeployFailureCategory, Pick<ClassifiedDeployFailure, 'blame' | 'label'>> = {
+  repository_access: { blame: 'project', label: 'Repository access' },
+  out_of_memory: { blame: 'server', label: 'Out of memory' },
+  disk_space: { blame: 'server', label: 'Disk full' },
+  platform_native: { blame: 'pushify', label: 'Native module build' },
+  buildpack_detection: { blame: 'project', label: 'Language not detected' },
+  runtime_version: { blame: 'project', label: 'Unsupported runtime version' },
+  dependency_install: { blame: 'project', label: 'Dependency install failed' },
+  start_command: { blame: 'project', label: 'No start command' },
+  docker_build: { blame: 'pushify', label: 'Docker build failed' },
+  application_build: { blame: 'project', label: 'Application build failed' },
+  container_start: { blame: 'project', label: 'Container failed to start' },
+  server_capacity: { blame: 'server', label: 'Server busy' },
+  project_config: { blame: 'project', label: 'Project configuration' },
+  policy_blocked: { blame: 'project', label: 'Stopped by policy' },
+  unknown: { blame: 'project', label: 'Deployment failed' },
+};
+
+/**
+ * Blame and label of a category stored in deployments.failure_category, for reports that read
+ * the stored category instead of re-classifying the message. Null for anything else.
+ */
+export function describeFailureCategory(
+  category: string,
+): Pick<ClassifiedDeployFailure, 'category' | 'blame' | 'label'> | null {
+  if (!Object.prototype.hasOwnProperty.call(CATEGORY_LABELS, category)) return null;
+  const known = category as DeployFailureCategory;
+  return { category: known, ...CATEGORY_LABELS[known] };
+}
+
 /**
  * Thrown where a deploy is stopped under the Acceptable Use Policy. The category comes from the
  * error's type, never from its message, so rewording the message cannot turn it into a failure.

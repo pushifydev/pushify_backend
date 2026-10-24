@@ -1,13 +1,15 @@
 import { sql } from 'drizzle-orm';
 import { db } from '../db';
-import { classifyDeployFailure } from '../lib/deploy-failure-classify';
+import { classifyDeployFailure, describeFailureCategory } from '../lib/deploy-failure-classify';
+import { FAILURE_SUMMARY_MAX_LENGTH } from '../lib/first-error-line';
 import { scrubSecrets } from '../lib/ops-scrub';
 
 /**
  * Growth signals for pushify-hq's growth agent: where new users stop between signing up and
  * paying, and why the ones who try to deploy get stuck. Aggregates only — no ids, names or
  * addresses leave — because the consumer hands it to a language model. Cancellation comments are
- * customer-written, so they go through scrubSecrets (which also removes e-mail addresses).
+ * customer-written, so they go through scrubSecrets (which also removes e-mail addresses), and so
+ * does the one build-log error line given per stuck cause.
  */
 
 export interface Funnel {
@@ -19,6 +21,15 @@ export interface Funnel {
   paid: number;
 }
 
+export interface StuckCause {
+  category: string;
+  blame: string;
+  label: string;
+  users: number;
+  /** First error line of one of these users' newest failed deploy (deployments.failure_summary), scrubbed. */
+  sample: string | null;
+}
+
 export interface OpsGrowth {
   generatedAt: string;
   funnel7d: Funnel;
@@ -27,7 +38,7 @@ export interface OpsGrowth {
   stuck: {
     users: number;
     bySource: Array<{ source: string; users: number }>;
-    byCause: Array<{ category: string; blame: string; label: string; users: number }>;
+    byCause: StuckCause[];
   };
   /** Signed up 2–14 days ago and never created a project. */
   noProject: number;
@@ -39,6 +50,26 @@ export interface OpsGrowth {
 
 async function rows<T>(query: ReturnType<typeof sql>): Promise<T[]> {
   return (await db.execute(query)).rows as T[];
+}
+
+interface StuckRow {
+  userId: string;
+  source: string;
+  errorMessage: string | null;
+  failureCategory: string | null;
+  failureSummary: string | null;
+}
+
+const NEVER_DEPLOYED = { category: 'never_deployed', blame: 'project', label: 'Created a project but never deployed' };
+
+/**
+ * The category the deploy worker (or the backfill) stored, read with the log behind it; the
+ * message alone often says only "Docker build failed". Rows without one are re-classified.
+ */
+function stuckCause(row: StuckRow): { category: string; blame: string; label: string } {
+  const stored = row.failureCategory ? describeFailureCategory(row.failureCategory) : null;
+  if (stored) return stored;
+  return row.errorMessage ? classifyDeployFailure('', row.errorMessage) : NEVER_DEPLOYED;
 }
 
 function funnelFor(days: number) {
@@ -64,7 +95,7 @@ export const opsGrowthService = {
       funnelFor(7),
       funnelFor(30),
       // One row per stuck user: their newest project's kind and newest failure.
-      rows<{ userId: string; source: string; errorMessage: string | null }>(sql`
+      rows<StuckRow>(sql`
         WITH cohort AS (SELECT id FROM users WHERE created_at > now() - interval '14 days'),
              up AS (
                SELECT DISTINCT ON (m.user_id) m.user_id, p.id AS project_id,
@@ -78,9 +109,12 @@ export const opsGrowthService = {
                 ORDER BY m.user_id, p.created_at DESC
              )
         SELECT up.user_id AS "userId", up.source,
-               (SELECT d.error_message FROM deployments d WHERE d.project_id = up.project_id AND d.status = 'failed'
-                 ORDER BY d.created_at DESC LIMIT 1) AS "errorMessage"
+               fd.error_message AS "errorMessage", fd.failure_category AS "failureCategory",
+               fd.failure_summary AS "failureSummary"
           FROM up
+          LEFT JOIN LATERAL (SELECT d.error_message, d.failure_category, d.failure_summary
+                               FROM deployments d WHERE d.project_id = up.project_id AND d.status = 'failed'
+                              ORDER BY d.created_at DESC LIMIT 1) fd ON true
          WHERE NOT EXISTS (
            SELECT 1 FROM organization_members m2 JOIN projects p2 ON p2.organization_id = m2.organization_id
              JOIN deployments d2 ON d2.project_id = p2.id
@@ -100,14 +134,13 @@ export const opsGrowthService = {
     ]);
 
     const bySource = new Map<string, number>();
-    const byCause = new Map<string, { category: string; blame: string; label: string; users: number }>();
+    const byCause = new Map<string, StuckCause>();
     for (const s of stuckProjects) {
       bySource.set(s.source, (bySource.get(s.source) ?? 0) + 1);
-      const c = s.errorMessage
-        ? classifyDeployFailure('', s.errorMessage)
-        : { category: 'never_deployed', blame: 'project', label: 'Created a project but never deployed' };
-      const cur = byCause.get(c.category) ?? { category: c.category, blame: c.blame, label: c.label, users: 0 };
+      const c = stuckCause(s);
+      const cur = byCause.get(c.category) ?? { category: c.category, blame: c.blame, label: c.label, users: 0, sample: null };
       cur.users += 1;
+      cur.sample ??= scrubSecrets(s.failureSummary, FAILURE_SUMMARY_MAX_LENGTH);
       byCause.set(c.category, cur);
     }
 

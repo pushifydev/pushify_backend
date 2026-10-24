@@ -1,6 +1,6 @@
 {
   "name": "pushify-backend",
-  "version": "0.6.3",
+  "version": "0.7.0",
   "private": true,
   "description": "Pushify cloud deployment platform — API server",
   "license": "MIT",
@@ -31,6 +31,7 @@
     "reset:storage-usage": "tsx scripts/reset-storage-usage.ts",
     "requeue:stuck-servers": "tsx scripts/requeue-stuck-servers.ts",
     "gc:orphans": "tsx scripts/gc-orphaned-deployments.ts",
+    "backfill:failure-category": "tsx scripts/backfill-failure-category.ts",
     "grant-org": "tsx scripts/grant-org-limits.ts",
     "refund:infra-overcharge": "tsx scripts/refund-infra-overcharge.ts",
     "stripe:create-prices": "tsx scripts/create-stripe-prices.ts",

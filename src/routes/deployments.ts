@@ -57,6 +57,11 @@ const DeploymentSchema = z
     commitMessage: z.string().nullable(),
     branch: z.string().nullable(),
     errorMessage: z.string().nullable(),
+    failureCategory: z.string().nullable().openapi({ description: 'Why a failed deployment failed, e.g. dependency_install or unknown' }),
+    failureSummary: z
+      .string()
+      .nullable()
+      .openapi({ description: 'First error line of the failed deployment log, secrets masked, at most ~300 characters' }),
     buildStartedAt: z.coerce.date().nullable(),
     buildFinishedAt: z.coerce.date().nullable(),
     deployStartedAt: z.coerce.date().nullable(),
