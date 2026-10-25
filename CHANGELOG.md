@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-25
+
+### Fixed
+- **The growth report no longer shows a stuck user's failure as `unknown` just because it was stored before the newer classifier.** `stuck.byCause` took a stored `failure_category` of `unknown` as final, re-classified rows without a category from `error_message` alone, and gave `sample: null` when `failure_summary` was empty. Now, when the report is read, a row stored as `unknown` or without a category is classified again the way the backfill does it (`reclassifyStoredFailure`): from the stored first error line and the last 20,000 characters of `build_logs`, up to the worker's `failureCategory=` line. If that still finds nothing, the message is used as before. A row without `failure_summary` gets its first error line from the same log tail. The line is passed through `scrubSecrets` and capped at `FAILURE_SUMMARY_MAX_LENGTH`. A concrete stored category and a stored first error line are still used as they are, and policy stops get no line. Nothing is written to the database; `npm run backfill:failure-category` remains the way to store the result. No new classifier cases. No migration. Tests: an old buildpack failure without a category, an `unknown` row with a stored first error line, a still-unknown line with secrets, and a policy stop.
+
 ## [0.9.0] - 2026-10-25
 
 ### Added

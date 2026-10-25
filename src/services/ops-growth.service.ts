@@ -3,6 +3,7 @@ import { db } from '../db';
 import { classifyDeployFailure, describeFailureCategory } from '../lib/deploy-failure-classify';
 import { FAILURE_SUMMARY_MAX_LENGTH } from '../lib/first-error-line';
 import { scrubSecrets } from '../lib/ops-scrub';
+import { reclassifyStoredFailure } from './deploy-failure-backfill.service';
 
 /**
  * Growth signals for pushify-hq's growth agent: where new users stop between signing up and
@@ -26,7 +27,10 @@ export interface StuckCause {
   blame: string;
   label: string;
   users: number;
-  /** First error line of one of these users' newest failed deploy (deployments.failure_summary), scrubbed. */
+  /**
+   * First error line of one of these users' newest failed deploy, scrubbed and capped:
+   * deployments.failure_summary, or read from the log tail for rows stored without one.
+   */
   sample: string | null;
 }
 
@@ -58,18 +62,51 @@ interface StuckRow {
   errorMessage: string | null;
   failureCategory: string | null;
   failureSummary: string | null;
+  /** The end of the failed deploy's build_logs (BUILD_LOG_TAIL_CHARS) */
+  buildLogTail: string | null;
 }
+
+/** Enough of the log for the failing step and the worker's failureCategory= line after it. */
+const BUILD_LOG_TAIL_CHARS = 20_000;
 
 const NEVER_DEPLOYED = { category: 'never_deployed', blame: 'project', label: 'Created a project but never deployed' };
 
+interface Cause {
+  category: string;
+  blame: string;
+  label: string;
+  /** Scrubbed and capped */
+  firstErrorLine: string | null;
+}
+
 /**
  * The category the deploy worker (or the backfill) stored, read with the log behind it; the
- * message alone often says only "Docker build failed". Rows without one are re-classified.
+ * message alone often says only "Docker build failed". A row stored without a category or as
+ * 'unknown' (an older classifier) is classified again from its first error line and log tail, as
+ * the backfill would, and a row without a stored first error line gets one from the log. Only
+ * read here: nothing is written back.
  */
-function stuckCause(row: StuckRow): { category: string; blame: string; label: string } {
+function stuckCause(row: StuckRow): Cause {
   const stored = row.failureCategory ? describeFailureCategory(row.failureCategory) : null;
-  if (stored) return stored;
-  return row.errorMessage ? classifyDeployFailure('', row.errorMessage) : NEVER_DEPLOYED;
+  const known = stored?.category === 'unknown' ? null : stored;
+  const storedLine = scrubSecrets(row.failureSummary, FAILURE_SUMMARY_MAX_LENGTH);
+  // The worker gives policy stops no first error line.
+  if (known?.category === 'policy_blocked') return { ...known, firstErrorLine: null };
+  if (known && storedLine) return { ...known, firstErrorLine: storedLine };
+  if (!row.errorMessage && !row.failureSummary && !row.buildLogTail) {
+    return { ...(stored ?? NEVER_DEPLOYED), firstErrorLine: null };
+  }
+
+  const reread = reclassifyStoredFailure({
+    errorMessage: row.errorMessage,
+    buildLogs: [row.failureSummary, row.buildLogTail].filter(Boolean).join('\n'),
+  });
+  const cause =
+    known ??
+    (reread.failureCategory !== 'unknown'
+      ? describeFailureCategory(reread.failureCategory)!
+      : classifyDeployFailure('', row.errorMessage ?? ''));
+  return { category: cause.category, blame: cause.blame, label: cause.label, firstErrorLine: storedLine ?? reread.failureSummary };
 }
 
 function funnelFor(days: number) {
@@ -110,9 +147,10 @@ export const opsGrowthService = {
              )
         SELECT up.user_id AS "userId", up.source,
                fd.error_message AS "errorMessage", fd.failure_category AS "failureCategory",
-               fd.failure_summary AS "failureSummary"
+               fd.failure_summary AS "failureSummary", fd.build_log_tail AS "buildLogTail"
           FROM up
-          LEFT JOIN LATERAL (SELECT d.error_message, d.failure_category, d.failure_summary
+          LEFT JOIN LATERAL (SELECT d.error_message, d.failure_category, d.failure_summary,
+                                    right(d.build_logs, ${BUILD_LOG_TAIL_CHARS}::int) AS build_log_tail
                                FROM deployments d WHERE d.project_id = up.project_id AND d.status = 'failed'
                               ORDER BY d.created_at DESC LIMIT 1) fd ON true
          WHERE NOT EXISTS (
@@ -140,7 +178,7 @@ export const opsGrowthService = {
       const c = stuckCause(s);
       const cur = byCause.get(c.category) ?? { category: c.category, blame: c.blame, label: c.label, users: 0, sample: null };
       cur.users += 1;
-      cur.sample ??= scrubSecrets(s.failureSummary, FAILURE_SUMMARY_MAX_LENGTH);
+      cur.sample ??= c.firstErrorLine;
       byCause.set(c.category, cur);
     }
 
