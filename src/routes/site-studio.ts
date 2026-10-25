@@ -1,8 +1,10 @@
 import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import { assertOrganizationCanMutateResources } from '../services/organization-billing.service';
 import { requireOrgMember } from '../lib/org-access';
 import { siteStudioService } from '../services/site-studio.service';
 import { authMiddleware } from '../middleware/auth';
+import { requireScope } from '../middleware/apikey-auth';
 import type { AppEnv } from '../types';
 
 const siteStudioRouter = new Hono<AppEnv>();
@@ -37,7 +39,8 @@ siteStudioRouter.get('/categories', async (c) => {
 
 siteStudioRouter.use('/launch', authMiddleware);
 
-siteStudioRouter.post('/launch', async (c) => {
+// Creates a project and starts a deploy: an API key needs projects:write.
+siteStudioRouter.post('/launch', requireScope('projects:write'), async (c) => {
   const organizationId = c.get('organizationId')!;
   const userId = c.get('userId')!;
   const body = await c.req.json();
@@ -75,6 +78,8 @@ siteStudioRouter.post('/launch', async (c) => {
     });
     return c.json(result, 201);
   } catch (err: any) {
+    // Plan quota (403) and other intentional errors keep their status.
+    if (err instanceof HTTPException) throw err;
     return c.json(
       { error: { code: 'LAUNCH_FAILED', message: err.message } },
       400

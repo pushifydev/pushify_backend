@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import { assertOrganizationCanMutateResources } from '../services/organization-billing.service';
 import { requireOrgMember } from '../lib/org-access';
 import { getMemberAllowedProjectIds } from '../lib/member-project-scope';
@@ -30,7 +31,8 @@ marketplaceRouter.get('/templates/:templateId', async (c) => {
 marketplaceRouter.use('/deploy', authMiddleware);
 marketplaceRouter.use('/deployments', authMiddleware);
 
-marketplaceRouter.post('/deploy', async (c) => {
+// Creates a project and starts a deploy: an API key needs projects:write.
+marketplaceRouter.post('/deploy', requireScope('projects:write'), async (c) => {
   const organizationId = c.get('organizationId')!;
   const userId = c.get('userId')!;
   const body = await c.req.json();
@@ -57,9 +59,12 @@ marketplaceRouter.post('/deploy', async (c) => {
       name,
       envVars: envVars || {},
       domain,
+      locale: c.get('locale'),
     });
     return c.json(result, 201);
   } catch (err: any) {
+    // Plan quota (403) and other intentional errors keep their status.
+    if (err instanceof HTTPException) throw err;
     return c.json(
       { error: { code: 'DEPLOY_FAILED', message: err.message } },
       400

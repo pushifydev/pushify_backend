@@ -7,8 +7,11 @@ import { Hono, type Context } from 'hono';
  * only their names: not for a viewer, not for a key without projects:read, not for rows written
  * before the values were dropped from marketplace_deployments.configuration.
  *
- * The real authMiddleware, route and service run; key validation, the JWT check, membership and
- * the database are mocked.
+ * POST /marketplace/deploy creates a project and starts a deploy, so it needs projects:write and
+ * the same plan quotas (projects, deployments, build minutes) as the normal project/deploy path.
+ *
+ * The real authMiddleware, route and service run; key validation, the JWT check, membership, the
+ * plan quotas and the database are mocked.
  */
 const { h } = vi.hoisted(() => ({
   h: {
@@ -16,6 +19,9 @@ const { h } = vi.hoisted(() => ({
     verifyToken: vi.fn(),
     requireOrgMember: vi.fn(),
     allowedProjectIds: vi.fn(),
+    assertProjectsQuota: vi.fn(),
+    assertDeploymentsQuota: vi.fn(),
+    assertBuildMinutesQuota: vi.fn(),
     rows: [] as unknown[],
     inserts: [] as { table: unknown; values: unknown }[],
   },
@@ -38,6 +44,13 @@ vi.mock('../lib/org-access', () => ({ requireOrgMember: h.requireOrgMember }));
 vi.mock('../lib/member-project-scope', () => ({ getMemberAllowedProjectIds: h.allowedProjectIds }));
 vi.mock('../services/organization-billing.service', () => ({ assertOrganizationCanMutateResources: async () => {} }));
 vi.mock('../lib/deployment-scheduler', () => ({ scheduleDeploymentProcessing: async () => {} }));
+vi.mock('../services/plan-limits.service', () => ({
+  planLimitsService: {
+    assertProjectsQuota: h.assertProjectsQuota,
+    assertDeploymentsQuota: h.assertDeploymentsQuota,
+    assertBuildMinutesQuota: h.assertBuildMinutesQuota,
+  },
+}));
 vi.mock('../db', () => {
   const select = () => {
     const c: Record<string, unknown> = {};
@@ -60,6 +73,7 @@ vi.mock('../db', () => {
   };
 });
 
+import { HTTPException } from 'hono/http-exception';
 import { errorHandler } from '../middleware/error-handler';
 import { t } from '../i18n';
 import { db } from '../db';
@@ -81,10 +95,18 @@ const SECRETS = {
 const KEYS: Record<string, string> = {
   pk_live_metrics_only: 'metrics:read',
   pk_live_projects_read: 'projects:read',
+  pk_live_projects_write: 'projects:write',
 };
 
 const get = (token: string) =>
   app.request('/api/v1/marketplace/deployments', { headers: { Authorization: `Bearer ${token}` } });
+
+const deploy = (token: string) =>
+  app.request('/api/v1/marketplace/deploy', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ templateId: 'redis', serverId: 'server-1', name: 'cache' }),
+  });
 
 function expectNoSecret(body: unknown) {
   const json = JSON.stringify(body);
@@ -102,6 +124,9 @@ beforeEach(() => {
   h.verifyToken.mockReset().mockResolvedValue({ type: 'access', sub: 'user-1', org: 'org-1' });
   h.requireOrgMember.mockReset().mockResolvedValue({ role: 'viewer', restrictedAccess: false });
   h.allowedProjectIds.mockReset().mockResolvedValue(null);
+  h.assertProjectsQuota.mockReset().mockResolvedValue(undefined);
+  h.assertDeploymentsQuota.mockReset().mockResolvedValue(undefined);
+  h.assertBuildMinutesQuota.mockReset().mockResolvedValue(undefined);
   h.rows = [
     {
       // Written before migration 0080: every value in plain text
@@ -152,13 +177,12 @@ describe('GET /marketplace/deployments', () => {
 });
 
 describe('POST /marketplace/deploy', () => {
-  it('keeps generated values in encrypted env vars only', async () => {
+  beforeEach(() => {
     h.requireOrgMember.mockResolvedValue({ role: 'member', restrictedAccess: false });
-    const res = await app.request('/api/v1/marketplace/deploy', {
-      method: 'POST',
-      headers: { Authorization: 'Bearer session-access-token', 'content-type': 'application/json' },
-      body: JSON.stringify({ templateId: 'redis', serverId: 'server-1', name: 'cache' }),
-    });
+  });
+
+  it('keeps generated values in encrypted env vars only', async () => {
+    const res = await deploy('session-access-token');
     expect(res.status).toBe(201);
 
     const envVars = h.inserts.find((i) => i.table === environmentVariables)!.values as { key: string; valueEncrypted: string }[];
@@ -172,6 +196,45 @@ describe('POST /marketplace/deploy', () => {
     const body = (await res.json()) as { marketplaceDeployment: { configuration: unknown } };
     expect(body.marketplaceDeployment.configuration).toEqual(['REDIS_PASSWORD']);
     expect(JSON.stringify(body)).not.toContain(password);
+  });
+
+  it('refuses an API key without projects:write before creating anything', async () => {
+    const res = await deploy('pk_live_metrics_only');
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: { message: string } }).error.message).toBe(
+      t('en', 'apiKeys', 'insufficientScope')
+    );
+    expect(h.requireOrgMember).not.toHaveBeenCalled();
+    expect(h.assertProjectsQuota).not.toHaveBeenCalled();
+    expect(h.inserts).toEqual([]);
+  });
+
+  it('refuses a projects:read key too', async () => {
+    const res = await deploy('pk_live_projects_read');
+    expect(res.status).toBe(403);
+    expect(h.inserts).toEqual([]);
+  });
+
+  it('lets a projects:write key deploy within the plan quotas', async () => {
+    const res = await deploy('pk_live_projects_write');
+    expect(res.status).toBe(201);
+    expect(h.assertProjectsQuota).toHaveBeenCalledWith('org-1', 'en');
+    expect(h.assertDeploymentsQuota).toHaveBeenCalledWith('org-1', 'en');
+    expect(h.assertBuildMinutesQuota).toHaveBeenCalledWith('org-1', 'en');
+  });
+
+  it.each([
+    ['projects', h.assertProjectsQuota],
+    ['deploymentsPerMonth', h.assertDeploymentsQuota],
+    ['buildMinutesPerMonth', h.assertBuildMinutesQuota],
+  ] as const)('answers 403 when the %s quota is full and creates nothing', async (limitKey, assertQuota) => {
+    const message = t('en', 'planLimits', limitKey);
+    assertQuota.mockRejectedValue(new HTTPException(403, { message }));
+
+    const res = await deploy('session-access-token');
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: { message: string } }).error.message).toBe(message);
+    expect(h.inserts).toEqual([]);
   });
 });
 

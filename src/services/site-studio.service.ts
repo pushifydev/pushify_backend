@@ -11,6 +11,7 @@ import { siteEditorService } from './site-editor.service';
 import { generateSlug } from '../lib/utils';
 import { scheduleDeploymentProcessing } from '../lib/deployment-scheduler';
 import { projectRepository } from '../repositories/project.repository';
+import { planLimitsService } from './plan-limits.service';
 
 export const siteStudioService = {
   getTemplates(category?: string, search?: string, stack?: string) {
@@ -123,6 +124,7 @@ export const siteStudioService = {
       name: params.name,
       envVars,
       domain: normalizedDomain,
+      locale: params.locale,
     });
 
     const projectId = deployResult.project.id;
@@ -202,6 +204,12 @@ export const siteStudioService = {
     },
     siteTemplate: SiteStudioTemplate,
   ) {
+    // Creates a project and a publish deployment: the same plan quotas as projects and deployments.
+    const locale = params.locale ?? 'en';
+    await planLimitsService.assertProjectsQuota(params.organizationId, locale);
+    await planLimitsService.assertDeploymentsQuota(params.organizationId, locale);
+    await planLimitsService.assertBuildMinutesQuota(params.organizationId, locale);
+
     // Domain is optional — without one the site is served on http://<server-ip>:<port>,
     // exactly like an app deploy.
     const normalizedDomain =
