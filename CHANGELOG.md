@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-25
+
+### Added
+- **A test for cancelling a deploy while the previous container serves.** Cancelling only marks the deployment row `cancelled`. No connection is made to the server: the live container keeps running and nginx keeps its upstream. A cancelled deploy that is still queued is skipped by the queue worker and never reaches the deploy pipeline (`src/workers/deploy-cancel.test.ts`). Together with the build-failure and crash/health-check tests (`remote-deployment-failure.test.ts`, `blue-green-deploy.test.ts`), all three ways a deploy can end early now have a test showing the live container stays untouched. No code change. A cancel does not stop a deploy that is already building: it runs to the end, and a successful build still switches to the new container as usual.
+
 ## [0.8.0] - 2026-10-24
 
 ### Added
