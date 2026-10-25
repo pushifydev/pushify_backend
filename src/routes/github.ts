@@ -8,6 +8,7 @@ import type { AppEnv } from '../types';
 import { HTTPException } from 'hono/http-exception';
 import { decrypt } from '../lib/encryption';
 import { githubAppService } from '../services/github-app.service';
+import { validateRepoRelativePath } from '../lib/repo-settings-validate';
 import {
   createOAuthState,
   consumeOAuthState,
@@ -61,6 +62,14 @@ const FrameworkDetectionSchema = z
     startCommand: z.string().nullable(),
   })
   .openapi('FrameworkDetection');
+
+// Names only: the example file is committed and may hold a real secret, so values are never sent.
+const EnvKeyDetectionSchema = z
+  .object({
+    source: z.string().nullable(),
+    keys: z.array(z.object({ key: z.string(), hasDefault: z.boolean() })),
+  })
+  .openapi('EnvKeyDetection');
 
 const MessageSchema = z
   .object({
@@ -251,6 +260,37 @@ const detectRoute = createRoute({
   },
 });
 
+// Detect env keys
+const envKeysRoute = createRoute({
+  method: 'get',
+  path: '/repos/{owner}/{repo}/env-keys',
+  tags: ['GitHub'],
+  summary: 'Detect env variable names',
+  description:
+    'List the env variable names in .env.example, .env.sample or .env.template (first found) in the root directory. Values are never returned.',
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: z.object({
+      owner: z.string(),
+      repo: z.string(),
+    }),
+    query: z.object({
+      branch: z.string().optional(),
+      rootDirectory: z.string().max(255).optional(),
+    }),
+  },
+  responses: {
+    200: {
+      description: 'Env variable names found in the example file (empty when there is none)',
+      content: {
+        'application/json': {
+          schema: z.object({ data: EnvKeyDetectionSchema }),
+        },
+      },
+    },
+  },
+});
+
 // ============ Router ============
 
 const githubRouter = new OpenAPIHono<AppEnv>();
@@ -375,6 +415,22 @@ githubRouter.openapi(detectRoute, async (c) => {
 
   const accessToken = await githubService.getAccessToken(userId, locale);
   const detection = await githubService.detectFramework(accessToken, owner, repo, branch);
+
+  return c.json({ data: detection });
+});
+
+// Detect env keys
+githubRouter.openapi(envKeysRoute, async (c) => {
+  const userId = c.get('userId')!;
+  const locale = c.get('locale');
+  const { owner, repo } = c.req.valid('param');
+  const { branch, rootDirectory } = c.req.valid('query');
+
+  const rootError = rootDirectory ? validateRepoRelativePath(rootDirectory, 'Root directory') : null;
+  if (rootError) throw new HTTPException(400, { message: rootError });
+
+  const accessToken = await githubService.getAccessToken(userId, locale);
+  const detection = await githubService.detectEnvKeys(accessToken, owner, repo, branch, rootDirectory);
 
   return c.json({ data: detection });
 });

@@ -5,6 +5,7 @@ import { rejectApiKeyAuth } from '../middleware/apikey-auth';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 import { HTTPException } from 'hono/http-exception';
+import { validateRepoRelativePath } from '../lib/repo-settings-validate';
 import {
   createOAuthState,
   consumeOAuthState,
@@ -55,6 +56,14 @@ const FrameworkDetectionSchema = z
     startCommand: z.string().nullable(),
   })
   .openapi('GitLabFrameworkDetection');
+
+// Names only: the example file is committed and may hold a real secret, so values are never sent.
+const EnvKeyDetectionSchema = z
+  .object({
+    source: z.string().nullable(),
+    keys: z.array(z.object({ key: z.string(), hasDefault: z.boolean() })),
+  })
+  .openapi('GitLabEnvKeyDetection');
 
 const gitlabRouter = new OpenAPIHono<AppEnv>();
 gitlabRouter.use('*', authMiddleware);
@@ -195,6 +204,31 @@ const detectRoute = createRoute({
   },
 });
 
+const envKeysRoute = createRoute({
+  method: 'get',
+  path: '/projects/{projectId}/env-keys',
+  tags: ['GitLab'],
+  summary: 'Detect env variable names',
+  description:
+    'List the env variable names in .env.example, .env.sample or .env.template (first found) in the root directory. Values are never returned.',
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: z.object({ projectId: z.coerce.number() }),
+    query: z.object({
+      branch: z.string().optional(),
+      rootDirectory: z.string().max(255).optional(),
+    }),
+  },
+  responses: {
+    200: {
+      content: {
+        'application/json': { schema: z.object({ data: EnvKeyDetectionSchema }) },
+      },
+      description: 'Env variable names found in the example file (empty when there is none)',
+    },
+  },
+});
+
 gitlabRouter.openapi(statusRoute, async (c) => {
   const userId = c.get('userId')!;
   const integration = await gitlabService.getIntegration(userId);
@@ -275,6 +309,18 @@ gitlabRouter.openapi(detectRoute, async (c) => {
   const { branch } = c.req.valid('query');
   const accessToken = await gitlabService.getAccessToken(userId, locale);
   const detection = await gitlabService.detectFramework(accessToken, projectId, branch);
+  return c.json({ data: detection });
+});
+
+gitlabRouter.openapi(envKeysRoute, async (c) => {
+  const userId = c.get('userId')!;
+  const locale = c.get('locale');
+  const { projectId } = c.req.valid('param');
+  const { branch, rootDirectory } = c.req.valid('query');
+  const rootError = rootDirectory ? validateRepoRelativePath(rootDirectory, 'Root directory') : null;
+  if (rootError) throw new HTTPException(400, { message: rootError });
+  const accessToken = await gitlabService.getAccessToken(userId, locale);
+  const detection = await gitlabService.detectEnvKeys(accessToken, projectId, branch, rootDirectory);
   return c.json({ data: detection });
 });
 
