@@ -554,6 +554,13 @@
       "when": 1787270400038,
       "tag": "0079_deployment_failure_summary",
       "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1787270400039,
+      "tag": "0080_marketplace_configuration_keys",
+      "breakpoints": true
     }
   ]
 }

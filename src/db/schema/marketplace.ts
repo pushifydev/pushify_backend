@@ -9,7 +9,9 @@ export const marketplaceDeployments = pgTable('marketplace_deployments', {
   templateId: varchar('template_id', { length: 100 }).notNull(),
   templateVersion: varchar('template_version', { length: 50 }).notNull(),
   appVersion: varchar('app_version', { length: 50 }).notNull(),
-  configuration: jsonb('configuration').default({}).notNull(),
+  // The env var names the app was deployed with, never their values: those are encrypted in
+  // environment_variables (migration 0080 reduced older plain-text rows to their key names).
+  configuration: jsonb('configuration').$type<string[]>().default([]).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });

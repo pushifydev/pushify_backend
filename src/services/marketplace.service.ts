@@ -5,8 +5,19 @@ import { templates, getTemplateById } from '../marketplace/templates';
 import { generatePassword, generateSecret, applyCalcomEnvDefaults } from '../marketplace/helpers';
 import { encrypt } from '../lib/encryption';
 import { omitWebhookSecret } from '../lib/project-public';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, inArray } from 'drizzle-orm';
 import { logger } from '../lib/logger';
+
+/**
+ * The env var names a marketplace app was deployed with. The values (generated passwords,
+ * Supabase JWT_SECRET / SERVICE_ROLE_KEY) live only encrypted in environment_variables; rows
+ * written before migration 0080 held them in plain text as an object, so only its keys are read.
+ */
+export function configurationKeys(configuration: unknown): string[] {
+  if (Array.isArray(configuration)) return configuration.filter((k): k is string => typeof k === 'string');
+  if (configuration && typeof configuration === 'object') return Object.keys(configuration);
+  return [];
+}
 
 export const marketplaceService = {
   getTemplates(category?: string, search?: string) {
@@ -149,7 +160,7 @@ export const marketplaceService = {
       await db.insert(environmentVariables).values(envVarInserts);
     }
 
-    // Create marketplace deployment record
+    // Create marketplace deployment record (env var names only: the values are encrypted above)
     const [mpDeployment] = await db
       .insert(marketplaceDeployments)
       .values({
@@ -157,7 +168,7 @@ export const marketplaceService = {
         templateId: template.id,
         templateVersion: template.version,
         appVersion: template.appVersion,
-        configuration: finalEnvVars,
+        configuration: Object.keys(finalEnvVars),
       })
       .returning();
 
@@ -181,22 +192,31 @@ export const marketplaceService = {
     return {
       project: omitWebhookSecret(project),
       deployment,
-      marketplaceDeployment: mpDeployment,
+      marketplaceDeployment: { ...mpDeployment, configuration: configurationKeys(mpDeployment.configuration) },
     };
   },
 
-  async getDeployments(organizationId: string) {
+  /** `allowedProjectIds`: a restricted member's projects (null = every project). */
+  async getDeployments(organizationId: string, allowedProjectIds: string[] | null = null) {
+    if (allowedProjectIds && allowedProjectIds.length === 0) return [];
+
     const result = await db
       .select()
       .from(marketplaceDeployments)
       .innerJoin(projects, eq(marketplaceDeployments.projectId, projects.id))
-      .where(eq(projects.organizationId, organizationId))
+      .where(
+        and(
+          eq(projects.organizationId, organizationId),
+          allowedProjectIds ? inArray(projects.id, allowedProjectIds) : undefined
+        )
+      )
       .orderBy(desc(marketplaceDeployments.createdAt));
 
     return result.map((r) => {
       const template = getTemplateById(r.marketplace_deployments.templateId);
       return {
         ...r.marketplace_deployments,
+        configuration: configurationKeys(r.marketplace_deployments.configuration),
         templateName: template?.name ?? r.marketplace_deployments.templateId,
         templateIcon: template?.icon ?? '📦',
         templateCategory: template?.category ?? null,
