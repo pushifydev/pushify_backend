@@ -1,8 +1,10 @@
 import { Hono } from 'hono';
 import { assertOrganizationCanMutateResources } from '../services/organization-billing.service';
 import { requireOrgMember } from '../lib/org-access';
+import { getMemberAllowedProjectIds } from '../lib/member-project-scope';
 import { marketplaceService } from '../services/marketplace.service';
 import { authMiddleware } from '../middleware/auth';
+import { requireScope } from '../middleware/apikey-auth';
 import type { AppEnv } from '../types';
 
 const marketplaceRouter = new Hono<AppEnv>();
@@ -65,10 +67,14 @@ marketplaceRouter.post('/deploy', async (c) => {
   }
 });
 
-marketplaceRouter.get('/deployments', async (c) => {
+// Lists the org's marketplace apps (env var names only, never values); a restricted member sees
+// only their projects.
+marketplaceRouter.get('/deployments', requireScope('projects:read'), async (c) => {
   const organizationId = c.get('organizationId')!;
-  await requireOrgMember(organizationId, c.get('userId')!, 'viewer', c.get('locale'));
-  const deployments = await marketplaceService.getDeployments(organizationId);
+  const userId = c.get('userId')!;
+  const membership = await requireOrgMember(organizationId, userId, 'viewer', c.get('locale'));
+  const allowed = await getMemberAllowedProjectIds(membership, organizationId, userId);
+  const deployments = await marketplaceService.getDeployments(organizationId, allowed);
   return c.json(deployments);
 });
 
