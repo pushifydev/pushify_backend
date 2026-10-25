@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-10-25
+
+### Security
+- **A marketplace deploy or Site Studio launch now needs `projects:write` on an API key and stays inside the plan quotas.** `POST /api/v1/marketplace/deploy` and `POST /api/v1/site-studio/launch` ran only `authMiddleware`, so any key, even one scoped to `metrics:read`, could create a project and start a deploy (the same kind of gap as 0.6.3). Both now use `requireScope('projects:write')`; a narrower key gets 403 (`insufficientScope`) before anything is read or written. `GET /marketplace/deployments` already required `projects:read`. Both paths also created the project with `db.insert(projects)` and never checked the plan, so a Free organization (2 projects) could open any number of projects and deploys through them. `marketplaceService.deploy` (which the Site Studio CMS launch goes through) and `siteStudioService.launchStatic` now call `assertProjectsQuota`, `assertDeploymentsQuota` and `assertBuildMinutesQuota` before creating anything, as `projectService.create` and `deploymentService.create` do. The routes pass a quota error through with its own status and message (403) instead of turning it into `400 DEPLOY_FAILED` / `LAUNCH_FAILED`; other launch errors still answer 400 as before. No migration. Tests: a `metrics:read` and a `projects:read` key are refused on both routes, a `projects:write` key goes through, and each full quota answers 403 and creates nothing (marketplace, static and CMS launch).
+
 ## [0.9.1] - 2026-10-25
 
 ### Fixed

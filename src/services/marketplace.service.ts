@@ -7,6 +7,8 @@ import { encrypt } from '../lib/encryption';
 import { omitWebhookSecret } from '../lib/project-public';
 import { eq, and, desc, inArray } from 'drizzle-orm';
 import { logger } from '../lib/logger';
+import { planLimitsService } from './plan-limits.service';
+import type { SupportedLocale } from '../i18n';
 
 /**
  * The env var names a marketplace app was deployed with. The values (generated passwords,
@@ -52,11 +54,18 @@ export const marketplaceService = {
     name: string;
     envVars: Record<string, string>;
     domain?: string;
+    locale?: SupportedLocale;
   }) {
     const template = getTemplateById(params.templateId);
     if (!template) {
       throw new Error(`Template '${params.templateId}' not found`);
     }
+
+    // Creates a project and starts a deploy: the same plan quotas as projects and deployments.
+    const locale = params.locale ?? 'en';
+    await planLimitsService.assertProjectsQuota(params.organizationId, locale);
+    await planLimitsService.assertDeploymentsQuota(params.organizationId, locale);
+    await planLimitsService.assertBuildMinutesQuota(params.organizationId, locale);
 
     // Verify the target server belongs to this organization
     // (prevents deploying onto another tenant's infrastructure via a forged serverId)
