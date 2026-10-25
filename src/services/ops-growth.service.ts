@@ -3,6 +3,7 @@ import { db } from '../db';
 import { classifyDeployFailure, describeFailureCategory } from '../lib/deploy-failure-classify';
 import { FAILURE_SUMMARY_MAX_LENGTH } from '../lib/first-error-line';
 import { scrubSecrets } from '../lib/ops-scrub';
+import { reclassifyStoredFailure } from './deploy-failure-backfill.service';
 
 /**
  * Growth signals for pushify-hq's growth agent: where new users stop between signing up and
@@ -26,7 +27,10 @@ export interface StuckCause {
   blame: string;
   label: string;
   users: number;
-  /** First error line of one of these users' newest failed deploy (deployments.failure_summary), scrubbed. */
+  /**
+   * First error line of one of these users' newest failed deploy, scrubbed: deployments.failure_summary,
+   * or for a row recorded without one, taken from its build log tail when the report is read.
+   */
   sample: string | null;
 }
 
@@ -58,18 +62,42 @@ interface StuckRow {
   errorMessage: string | null;
   failureCategory: string | null;
   failureSummary: string | null;
+  /** End of build_logs, selected only for rows stuckCause re-classifies (see the query). */
+  buildLogsTail: string | null;
 }
 
 const NEVER_DEPLOYED = { category: 'never_deployed', blame: 'project', label: 'Created a project but never deployed' };
 
+/** How much of the build log is read for a row the worker did not classify or summarise; the error is at the end. */
+const LOG_TAIL_CHARS = 20_000;
+
+/** right() may start mid-line: drop the cut line so it is not taken for the first error line. */
+function wholeLines(tail: string | null): string | null {
+  if (tail === null || tail.length < LOG_TAIL_CHARS) return tail;
+  return tail.slice(tail.indexOf('\n') + 1);
+}
+
 /**
- * The category the deploy worker (or the backfill) stored, read with the log behind it; the
- * message alone often says only "Docker build failed". Rows without one are re-classified.
+ * The category and first error line the deploy worker (or the backfill) stored, read with the log
+ * behind it; the message alone often says only "Docker build failed". A row with no category,
+ * with 'unknown', or with no summary (recorded before 0.6.1 / migration 0079 and not backfilled)
+ * is re-run through the classifier on its message and log tail as the backfill would, without
+ * writing anything back. A stored concrete category is kept.
  */
-function stuckCause(row: StuckRow): { category: string; blame: string; label: string } {
+function stuckCause(row: StuckRow): { category: string; blame: string; label: string; firstErrorLine: string | null } {
   const stored = row.failureCategory ? describeFailureCategory(row.failureCategory) : null;
-  if (stored) return stored;
-  return row.errorMessage ? classifyDeployFailure('', row.errorMessage) : NEVER_DEPLOYED;
+  if (!stored && !row.errorMessage) return { ...NEVER_DEPLOYED, firstErrorLine: null };
+  // Policy stops are decided from the error type and have no error line by design.
+  if (stored?.category === 'policy_blocked') return { ...stored, firstErrorLine: null };
+  if (stored && stored.category !== 'unknown' && row.failureSummary) return { ...stored, firstErrorLine: row.failureSummary };
+
+  const fresh = reclassifyStoredFailure({ errorMessage: row.errorMessage, buildLogs: wholeLines(row.buildLogsTail) });
+  const firstErrorLine = row.failureSummary ?? fresh.failureSummary;
+  if (stored && stored.category !== 'unknown') return { ...stored, firstErrorLine };
+  if (fresh.failureCategory !== 'unknown') return { ...describeFailureCategory(fresh.failureCategory)!, firstErrorLine };
+  // The "[Blame] Label:" prefix an older worker wrote may still name the cause.
+  const fromMessage = row.errorMessage ? classifyDeployFailure('', row.errorMessage) : describeFailureCategory('unknown')!;
+  return { category: fromMessage.category, blame: fromMessage.blame, label: fromMessage.label, firstErrorLine };
 }
 
 function funnelFor(days: number) {
@@ -110,9 +138,12 @@ export const opsGrowthService = {
              )
         SELECT up.user_id AS "userId", up.source,
                fd.error_message AS "errorMessage", fd.failure_category AS "failureCategory",
-               fd.failure_summary AS "failureSummary"
+               fd.failure_summary AS "failureSummary", fd.build_logs_tail AS "buildLogsTail"
           FROM up
-          LEFT JOIN LATERAL (SELECT d.error_message, d.failure_category, d.failure_summary
+          LEFT JOIN LATERAL (SELECT d.error_message, d.failure_category, d.failure_summary,
+                                    CASE WHEN d.failure_category IS NULL OR d.failure_category = 'unknown'
+                                              OR (d.failure_summary IS NULL AND d.failure_category <> 'policy_blocked')
+                                         THEN right(d.build_logs, ${LOG_TAIL_CHARS}) END AS build_logs_tail
                                FROM deployments d WHERE d.project_id = up.project_id AND d.status = 'failed'
                               ORDER BY d.created_at DESC LIMIT 1) fd ON true
          WHERE NOT EXISTS (
@@ -140,7 +171,7 @@ export const opsGrowthService = {
       const c = stuckCause(s);
       const cur = byCause.get(c.category) ?? { category: c.category, blame: c.blame, label: c.label, users: 0, sample: null };
       cur.users += 1;
-      cur.sample ??= scrubSecrets(s.failureSummary, FAILURE_SUMMARY_MAX_LENGTH);
+      cur.sample ??= scrubSecrets(c.firstErrorLine, FAILURE_SUMMARY_MAX_LENGTH);
       byCause.set(c.category, cur);
     }
 

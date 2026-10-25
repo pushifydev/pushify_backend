@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-25
+
+### Fixed
+- **The growth report re-classifies stuck users' failures that were stored without a category, as `unknown`, or without a first error line, when the report is read.** `stuck.byCause` took a stored `unknown` as it was, re-classified rows without a category from `error_message` alone, and left `sample` empty for rows recorded before `failure_summary` existed and not backfilled. For those rows the query now also reads the last 20,000 characters of `build_logs`, and the report runs the backfill's `reclassifyStoredFailure` on the message and that tail: the category it finds replaces `unknown` or an empty one, and its first error line fills a missing `sample`. A stored concrete category is kept, policy-blocked deploys get no error line, and nothing is written back to the database. When the log does not say more, the message's `[Blame] Label:` prefix is classified as before. The sample is still passed through `scrubSecrets` and capped at about 300 characters. No new classifier cases, no migration. Tests: an old buildpack failure without category or summary, a stored `unknown`, a still-unknown failure whose error line holds a secret, a tail cut mid-line, and a policy stop.
+
 ## [0.8.0] - 2026-10-24
 
 ### Added
