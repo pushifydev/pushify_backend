@@ -10,6 +10,12 @@ import {
   detectFrameworkFromPackageJson,
   STATIC_FRAMEWORK_RESULT,
 } from '../lib/git-framework-detect';
+import {
+  detectEnvExampleKeys,
+  readTextWithLimit,
+  ENV_EXAMPLE_MAX_BYTES,
+  type EnvExampleDetection,
+} from '../lib/env-example-keys';
 
 function gitlabBaseUrl(): string {
   return (env.GITLAB_BASE_URL || 'https://gitlab.com').replace(/\/$/, '');
@@ -213,6 +219,28 @@ class GitLabService {
     }
 
     return response.text();
+  }
+
+  /**
+   * Env variable names from the project's .env.example / .env.sample / .env.template in its root
+   * directory, for the new-project wizard. Values never leave the parser.
+   */
+  async detectEnvKeys(
+    accessToken: string,
+    projectId: number,
+    branch?: string,
+    rootDirectory?: string,
+  ): Promise<EnvExampleDetection> {
+    const ref = branch || 'main';
+
+    return detectEnvExampleKeys(async (filePath) => {
+      const response = await fetch(
+        `${gitlabApiUrl()}/projects/${projectId}/repository/files/${encodeURIComponent(filePath)}/raw?ref=${encodeURIComponent(ref)}`,
+        { headers: { Authorization: `Bearer ${accessToken}` } },
+      );
+      if (!response.ok) return null;
+      return readTextWithLimit(response, ENV_EXAMPLE_MAX_BYTES);
+    }, rootDirectory);
   }
 
   async detectFramework(

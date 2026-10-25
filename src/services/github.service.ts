@@ -7,6 +7,12 @@ import { HTTPException } from 'hono/http-exception';
 import { t, type SupportedLocale } from '../i18n';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { logger } from '../lib/logger';
+import {
+  detectEnvExampleKeys,
+  readTextWithLimit,
+  ENV_EXAMPLE_MAX_BYTES,
+  type EnvExampleDetection,
+} from '../lib/env-example-keys';
 
 // GitHub API URLs
 const GITHUB_OAUTH_URL = 'https://github.com/login/oauth/authorize';
@@ -359,6 +365,35 @@ class GitHubService {
       outputDirectory: null,
       startCommand: null,
     };
+  }
+
+  /**
+   * Env variable names from the repository's .env.example / .env.sample / .env.template in the
+   * project's root directory, for the new-project wizard. Values never leave the parser.
+   */
+  async detectEnvKeys(
+    accessToken: string,
+    owner: string,
+    repo: string,
+    branch?: string,
+    rootDirectory?: string
+  ): Promise<EnvExampleDetection> {
+    const ref = branch || 'main';
+
+    return detectEnvExampleKeys(async (path) => {
+      const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+      const response = await fetch(
+        `${GITHUB_API_URL}/repos/${owner}/${repo}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: 'application/vnd.github.v3.raw',
+          },
+        }
+      );
+      if (!response.ok) return null;
+      return readTextWithLimit(response, ENV_EXAMPLE_MAX_BYTES);
+    }, rootDirectory);
   }
 
   /**
