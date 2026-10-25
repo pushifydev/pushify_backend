@@ -6,6 +6,7 @@ import { env } from '../config/env';
 import { notificationRepository } from '../repositories/notification.repository';
 import { QUEUE_NAMES, type NotificationJobData } from '../lib/queue';
 import { getBullRedisConnection } from '../lib/redis-connection';
+import { assertPublicUrl } from '../lib/ssrf-guard';
 import {
   renderNotificationEmail,
   getNotificationEventEmoji,
@@ -100,7 +101,7 @@ async function processNotificationJob(job: Job<NotificationJobData>): Promise<bo
 }
 
 // Send Slack notification
-async function sendSlackNotification(
+export async function sendSlackNotification(
   config: { webhookUrl: string },
   payload: NotificationJobData['payload']
 ): Promise<boolean> {
@@ -140,9 +141,13 @@ async function sendSlackNotification(
     ],
   };
 
+  // SSRF guard: block Slack webhook URLs that resolve to private/internal addresses.
+  await assertPublicUrl(config.webhookUrl);
+
   const response = await fetch(config.webhookUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    redirect: 'manual',
     body: JSON.stringify(slackPayload),
   });
 
@@ -150,7 +155,7 @@ async function sendSlackNotification(
 }
 
 // Send Discord notification (incoming webhook, embed format)
-async function sendDiscordNotification(
+export async function sendDiscordNotification(
   config: { webhookUrl: string },
   payload: NotificationJobData['payload']
 ): Promise<boolean> {
@@ -181,9 +186,13 @@ async function sendDiscordNotification(
     ],
   };
 
+  // SSRF guard: block webhook URLs that resolve to private/internal addresses.
+  await assertPublicUrl(config.webhookUrl);
+
   const response = await fetch(config.webhookUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    redirect: 'manual',
     body: JSON.stringify(discordPayload),
   });
 
@@ -213,7 +222,7 @@ async function sendEmailNotification(
 }
 
 // Send Webhook notification
-async function sendWebhookNotification(
+export async function sendWebhookNotification(
   config: { url: string; secret?: string },
   payload: NotificationJobData['payload']
 ): Promise<boolean> {
@@ -236,9 +245,13 @@ async function sendWebhookNotification(
     headers['X-Pushify-Signature'] = `sha256=${signature}`;
   }
 
+  // SSRF guard: block webhook URLs that resolve to private/internal addresses.
+  await assertPublicUrl(config.url);
+
   const response = await fetch(config.url, {
     method: 'POST',
     headers,
+    redirect: 'manual',
     body,
   });
 
