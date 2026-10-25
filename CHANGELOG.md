@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-25
+
+### Added
+- **The server health report now shows pending OS updates and whether the server needs a reboot.** `GET /api/v1/servers/:serverId/health` returns `patch: { pending, security, rebootRequired, unattendedUpgrades: { enabled, lastRunAt }, checkedAt }` next to `disk` and `orphans`, with the same fields for connected (BYOS) and managed Hetzner servers (`lib/server-patch-status.ts`). On Debian/Ubuntu the counts come from Ubuntu's `apt-check` when it is installed, otherwise from a simulated `apt-get -s dist-upgrade`; a package counts as a security update when it comes from a `-security` pocket. `rebootRequired` is whether `/var/run/reboot-required` exists. `unattendedUpgrades.enabled` means the package is installed, `APT::Periodic::Unattended-Upgrade` is not 0 and `apt-daily-upgrade.timer` is not disabled; `lastRunAt` is the newest mtime of its stamp file or log. The check is read-only: no `apt update`, so the counts are as fresh as the package lists the server already has, and the slow apt commands are capped at 30 seconds. On another distro, or when a command fails or times out, the fields are `unknown` (`lastRunAt` is `null`) and the rest of the report is returned as before. No migration. Tests cover apt-check and apt simulation output from Ubuntu and Debian, hosts without apt, garbage output, a failing command, and that the script only reads.
+
 ## [0.8.1] - 2026-10-25
 
 ### Added
