@@ -3,6 +3,7 @@ import { db } from '../db';
 import { projects } from '../db/schema/projects';
 import { decrypt } from './encryption';
 import { checkServerDiskSpace, type ServerDiskCheckResult } from './server-disk-check';
+import { checkServerPatchStatus, type ServerPatchStatus } from './server-patch-status';
 import { getSSHConnection } from '../utils/ssh';
 
 export interface OrphanContainer {
@@ -16,6 +17,8 @@ export interface ServerHealthReport {
   disk: ServerDiskCheckResult;
   orphans: OrphanContainer[];
   pushifyContainerCount: number;
+  /** OS updates (Debian/Ubuntu, read-only); fields are `unknown` when they could not be read */
+  patch: ServerPatchStatus;
 }
 
 function containerMatchesProjectSlug(containerName: string, slug: string): boolean {
@@ -26,7 +29,8 @@ function containerMatchesProjectSlug(containerName: string, slug: string): boole
 }
 
 /**
- * Scan a deployment server for disk usage and Pushify containers not tied to an active project.
+ * Scan a deployment server for disk usage, Pushify containers not tied to an active project and
+ * pending OS updates. Same checks for connected (BYOS) and managed servers.
  */
 export type ServerHealthScanTarget = {
   ipv4: string | null;
@@ -82,10 +86,14 @@ export async function scanServerHealth(
       }
     }
 
+    // Never throws: a failed patch check leaves `unknown` fields, not a failed report
+    const patch = await checkServerPatchStatus(ssh);
+
     return {
       disk,
       orphans,
       pushifyContainerCount: lines.length,
+      patch,
     };
   } finally {
     ssh.disconnect();
