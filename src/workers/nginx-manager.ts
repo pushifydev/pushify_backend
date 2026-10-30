@@ -1,5 +1,5 @@
 import type { SSHClient } from '../utils/ssh';
-import type { NginxSettings } from '../db/schema/projects';
+import type { MaintenanceMode, NginxSettings } from '../db/schema/projects';
 import { env } from '../config/env';
 
 export interface SiteConfig {
@@ -314,6 +314,67 @@ export interface ProjectSitesConfig {
    * TRAFFIC_LOG_DIR/<id>.log for traffic analytics (unset = analytics off for this site).
    */
   trafficLogId?: string;
+  /**
+   * Maintenance mode: when enabled, every block that would serve the app answers with a 503
+   * maintenance page instead. Redirects and ACME challenges stay as they are; the containers
+   * are not touched, so switching it off only rewrites this file.
+   */
+  maintenance?: MaintenanceMode | null;
+}
+
+/** Seconds a client is told to wait (Retry-After) while a project is in maintenance mode. */
+export const MAINTENANCE_RETRY_AFTER_SECONDS = 300;
+export const MAINTENANCE_MESSAGE_MAX_LENGTH = 500;
+const DEFAULT_MAINTENANCE_MESSAGE = 'This site is down for scheduled maintenance. Please check back soon.';
+
+/**
+ * The message as HTML that is also safe inside a single-quoted nginx string: only plain ASCII
+ * letters, digits and a few punctuation marks are written as-is, everything else (quotes, `$`
+ * — an nginx variable —, backslashes, `<`, `&`, non-ASCII) becomes a numeric character
+ * reference, and control characters become spaces. So the text can neither close the string
+ * nor inject markup.
+ */
+function maintenanceMessageHtml(message: string | undefined): string {
+  const text = (message ?? '')
+    .replace(/[\x00-\x1f\x7f]+/g, ' ')
+    .trim()
+    .slice(0, MAINTENANCE_MESSAGE_MAX_LENGTH);
+  return Array.from(text || DEFAULT_MAINTENANCE_MESSAGE)
+    .map((ch) => (/^[A-Za-z0-9 .,:!?()_\-/@%+=*~]$/.test(ch) ? ch : `&#${ch.codePointAt(0)};`))
+    .join('');
+}
+
+/** The maintenance page, on one line and without `'`, `$` or `\` outside the escaped message. */
+export function maintenancePageHtml(message: string | undefined): string {
+  return [
+    '<!doctype html><html lang="en"><head><meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1">',
+    '<title>Down for maintenance</title>',
+    '<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0a0a0f;color:#e5e7eb;font-family:ui-sans-serif,system-ui,sans-serif}',
+    '.card{text-align:center;padding:2rem;max-width:36rem}h1{font-size:1.25rem;margin:0 0 .5rem}p{color:#9ca3af;font-size:.9rem;margin:0}</style>',
+    '</head><body><div class="card"><h1>Down for maintenance</h1>',
+    `<p>${maintenanceMessageHtml(message)}</p>`,
+    '</div></body></html>',
+  ].join('');
+}
+
+/**
+ * Replaces the app's location while the project is in maintenance mode: a 503 with the page as
+ * its body, straight from nginx (no upstream, no wake fallback). The headers sit at server level
+ * next to HSTS, so the location inherits all of them (an add_header inside it would drop HSTS).
+ * `types {}` makes every path — /app.js too — answer as text/html.
+ */
+function maintenanceLocation(maintenance: MaintenanceMode): string {
+  return `
+    # Maintenance mode: the app keeps running, visitors get this page until it is switched off
+    add_header Retry-After ${MAINTENANCE_RETRY_AFTER_SECONDS} always;
+    add_header Cache-Control "no-store" always;
+
+    location / {
+        types { }
+        default_type text/html;
+        return 503 '${maintenancePageHtml(maintenance.message)}';
+    }`;
 }
 
 /** Per-app access logs, collected and aggregated hourly by the traffic analytics worker. */
@@ -474,12 +535,17 @@ function renderProjectDomain(
   index: number,
   upstreamName?: string | null,
   staticRoot?: string,
-  trafficLogId?: string
+  trafficLogId?: string,
+  maintenance?: MaintenanceMode | null
 ) {
   // One rate-limit zone per domain: two domains of one project each with rate limiting on
   // would otherwise declare the same zone twice and fail `nginx -t`.
   const zoneKey = index === 0 ? projectSlug : `${projectSlug}_${index}`;
-  const location = appLocation(projectSlug, zoneKey, containerPort, site.nginxSettings, upstreamName, staticRoot);
+  const appServed = appLocation(projectSlug, zoneKey, containerPort, site.nginxSettings, upstreamName, staticRoot);
+  // Maintenance: same blocks, redirects and certificates — only what they serve changes.
+  const location = maintenance?.enabled
+    ? { ...appServed, zone: '', body: maintenanceLocation(maintenance) }
+    : appServed;
   // Only blocks that serve the app log to the traffic file — redirects are not app traffic.
   const app = { ...location, body: trafficLogLines(trafficLogId) + location.body };
   const blocks: string[] = [];
@@ -580,7 +646,8 @@ export function generateProjectSitesConfig(config: ProjectSitesConfig): string {
       i,
       upstream.name,
       config.staticRoot,
-      config.trafficLogId
+      config.trafficLogId,
+      config.maintenance
     )
   );
   // Declared before any server block that uses it; only when some block actually logs.
@@ -595,7 +662,7 @@ export function generateProjectSitesConfig(config: ProjectSitesConfig): string {
     .join(', ');
 
   return `# Pushify site: ${config.projectSlug}
-# Domains: ${names || '(none)'}
+# Domains: ${names || '(none)'}${config.maintenance?.enabled ? '\n# Maintenance mode: on (503)' : ''}
 # Generated: ${new Date().toISOString()}
 ${zones.length ? '\n' + zones.join('\n') + '\n' : ''}
 ${rendered.flatMap((r) => r.blocks).join('\n\n')}

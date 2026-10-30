@@ -101,6 +101,13 @@ export const projects = pgTable('projects', {
   suspensionClause: varchar('suspension_clause', { length: 64 }),
   suspensionEndsAt: timestamp('suspension_ends_at', { withTimezone: true }),
 
+  /**
+   * Maintenance mode: while enabled, every production domain answers with a 503 maintenance page
+   * (and Retry-After) straight from nginx. The containers keep running; switching it off points
+   * the vhost back at them without a redeploy. Set by owners/admins only.
+   */
+  maintenanceMode: jsonb('maintenance_mode').$type<MaintenanceMode>().default({ enabled: false }).notNull(),
+
   // Metadata
   settings: jsonb('settings').default({}).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -119,6 +126,13 @@ export const environmentVariables = pgTable('environment_variables', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
+
+/** A project's maintenance mode (projects.maintenance_mode) */
+export interface MaintenanceMode {
+  enabled: boolean;
+  /** Short text shown on the maintenance page; a generic one is used when empty */
+  message?: string;
+}
 
 // Nginx settings type for domain configuration
 export interface NginxSettings {

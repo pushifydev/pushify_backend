@@ -5,7 +5,7 @@ import { env } from '../config/env';
 import { logger } from './logger';
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
-import { projects } from '../db/schema/projects';
+import { projects, type MaintenanceMode } from '../db/schema/projects';
 import { staticSiteKey } from './static-upload';
 import { isTrafficAnalyticsEnabledFor } from './traffic-analytics';
 import {
@@ -145,11 +145,15 @@ export async function syncProjectSites(
   let staticRoot: string | undefined;
   let fileSlug = options.projectSlug;
   let trafficLogId: string | undefined;
+  // Maintenance mode covers the production domains; read here so no writer (deploy, verify,
+  // settings, autoscale) can switch the maintenance page off behind the owner's back.
+  let maintenance: MaintenanceMode | undefined;
   if (environment === 'production') {
     const project = await db.query.projects.findFirst({
       where: eq(projects.id, options.projectId),
-      columns: { id: true, slug: true, settings: true },
+      columns: { id: true, slug: true, settings: true, maintenanceMode: true },
     });
+    if (project?.maintenanceMode?.enabled) maintenance = project.maintenanceMode;
     // Traffic analytics: on unless switched off globally or in the project's settings.
     if (project && isTrafficAnalyticsEnabledFor(project.settings as Record<string, unknown> | null)) {
       trafficLogId = project.id;
@@ -212,6 +216,7 @@ export async function syncProjectSites(
       staticRoot,
       domains: plan.map(toSite),
       trafficLogId,
+      maintenance,
     });
     if (!result.success) return result;
     const reload = await reloadNginx(ssh);

@@ -66,6 +66,9 @@ export interface TranslationKeys {
     settingsUpdated: string;
     invalidServer: string;
     serverNotReady: string;
+    maintenanceEnabled: string;
+    maintenanceDisabled: string;
+    maintenanceApplyFailed: string;
   };
   organizations: {
     notFound: string;
@@ -438,6 +441,9 @@ export const en: TranslationKeys = {
     settingsUpdated: 'Project settings updated successfully',
     invalidServer: 'Selected server does not exist or does not belong to this organization',
     serverNotReady: 'Selected server is not ready for deployment',
+    maintenanceEnabled: 'Maintenance mode is on: your domains now show the maintenance page',
+    maintenanceDisabled: 'Maintenance mode is off: your domains serve the app again',
+    maintenanceApplyFailed: 'Could not apply maintenance mode on the server; the previous Nginx config was kept',
   },
 
   // Organizations

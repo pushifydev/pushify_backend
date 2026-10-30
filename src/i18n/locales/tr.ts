@@ -74,6 +74,9 @@ export const tr: TranslationKeys = {
     settingsUpdated: 'Proje ayarları başarıyla güncellendi',
     invalidServer: 'Seçilen sunucu mevcut değil veya bu organizasyona ait değil',
     serverNotReady: 'Seçilen sunucu deployment için hazır değil',
+    maintenanceEnabled: 'Bakım modu açık: domain\'leriniz artık bakım sayfasını gösteriyor',
+    maintenanceDisabled: 'Bakım modu kapalı: domain\'leriniz uygulamayı yeniden sunuyor',
+    maintenanceApplyFailed: 'Bakım modu sunucuya uygulanamadı; önceki Nginx yapılandırması korundu',
   },
 
   // Organizations

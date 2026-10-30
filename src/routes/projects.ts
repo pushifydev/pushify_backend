@@ -5,6 +5,7 @@ import { combinedAuthMiddleware } from '../middleware/auth';
 import { requireScope } from '../middleware/apikey-auth';
 import { omitWebhookSecret } from '../lib/project-public';
 import { getApiBaseUrl } from '../lib/api-base-url';
+import { MAINTENANCE_MESSAGE_MAX_LENGTH } from '../workers/nginx-manager';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 import { auditSource, diffChanges } from '../lib/audit';
@@ -49,6 +50,8 @@ const ProjectSchema = z
     autoscaleMin: z.number().optional(),
     autoscaleMax: z.number().optional(),
     autoscaleObserveOnly: z.boolean().optional(),
+    /** On: the production domains serve a 503 maintenance page instead of the app */
+    maintenanceMode: z.object({ enabled: z.boolean(), message: z.string().optional() }).optional(),
     port: z.number().nullable(),
     autoDeploy: z.boolean(),
     status: z.enum(['active', 'paused', 'deleted']),
@@ -143,6 +146,27 @@ const UpdateStatusSchema = z
     status: z.enum(['active', 'paused']),
   })
   .openapi('UpdateStatus');
+
+const MaintenanceModeSchema = z
+  .object({
+    enabled: z.boolean(),
+    message: z.string().optional(),
+  })
+  .openapi('MaintenanceMode');
+
+const UpdateMaintenanceModeSchema = z
+  .object({
+    enabled: z.boolean().openapi({ example: true }),
+    message: z
+      .string()
+      .max(MAINTENANCE_MESSAGE_MAX_LENGTH)
+      .optional()
+      .openapi({
+        example: 'We are upgrading our database. Back in 15 minutes.',
+        description: 'Shown on the maintenance page; left out keeps the stored one, empty uses a generic text',
+      }),
+  })
+  .openapi('UpdateMaintenanceMode');
 
 // ============ Route Definitions ============
 
@@ -317,6 +341,45 @@ const updateStatusRoute = createRoute({
   },
 });
 
+const updateMaintenanceRoute = createRoute({
+  method: 'put',
+  path: '/{projectId}/maintenance',
+  tags: ['Projects'],
+  summary: 'Set maintenance mode',
+  description:
+    'Owner/admin only. While enabled, every production domain answers with a 503 maintenance page (Retry-After set). Containers keep running and no redeploy is needed.',
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: z.object({
+      projectId: z.string().uuid(),
+    }),
+    body: {
+      content: {
+        'application/json': {
+          schema: UpdateMaintenanceModeSchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Maintenance mode updated',
+      content: {
+        'application/json': {
+          schema: z.object({
+            data: MaintenanceModeSchema.extend({
+              applied: z.boolean().openapi({
+                description: 'False when the project has no ready server yet; the next deploy applies it',
+              }),
+            }),
+            message: z.string(),
+          }),
+        },
+      },
+    },
+  },
+});
+
 // ============ Router ============
 
 const projectRouter = new OpenAPIHono<AppEnv>();
@@ -331,6 +394,7 @@ projectRouter.post('/', requireScope('projects:write'));
 projectRouter.patch('/:projectId', requireScope('projects:write'));
 projectRouter.delete('/:projectId', requireScope('projects:write'));
 projectRouter.patch('/:projectId/status', requireScope('projects:write'));
+projectRouter.put('/:projectId/maintenance', requireScope('projects:write'));
 projectRouter.get('/:projectId/webhook', requireScope('projects:read'));
 projectRouter.post('/:projectId/webhook/regenerate', requireScope('projects:write'));
 projectRouter.post('/:projectId/webhook/github/install', requireScope('projects:write'));
@@ -515,6 +579,47 @@ projectRouter.openapi(updateStatusRoute, async (c) => {
   });
 
   return c.json({ data: omitWebhookSecret(project), containersSynced });
+});
+
+// Maintenance mode
+projectRouter.openapi(updateMaintenanceRoute, async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const { projectId } = c.req.valid('param');
+  const input = c.req.valid('json');
+
+  const { project, previous, applied } = await projectService.setMaintenanceMode(
+    projectId,
+    organizationId,
+    userId,
+    input,
+    locale
+  );
+  const maintenance = project.maintenanceMode;
+
+  await activityService.log({
+    organizationId,
+    userId,
+    projectId,
+    action: maintenance.enabled ? 'project.maintenance_enabled' : 'project.maintenance_disabled',
+    description: maintenance.enabled
+      ? `Turned on maintenance mode for "${project.name}"`
+      : `Turned off maintenance mode for "${project.name}"`,
+    metadata: { applied },
+    changes: diffChanges(
+      { maintenanceEnabled: previous.enabled, maintenanceMessage: previous.message ?? null },
+      { maintenanceEnabled: maintenance.enabled, maintenanceMessage: maintenance.message ?? null }
+    ),
+    ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
+    userAgent: c.req.header('user-agent'),
+    source: auditSource(c),
+  });
+
+  return c.json({
+    data: { ...maintenance, applied },
+    message: t(locale, 'projects', maintenance.enabled ? 'maintenanceEnabled' : 'maintenanceDisabled'),
+  });
 });
 
 // ============ Webhook Management ============

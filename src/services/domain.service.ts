@@ -718,4 +718,40 @@ export const domainService = {
 
     return updatedSettings;
   },
+
+  /**
+   * Rewrite the project's production vhost from what is stored (domains, their Nginx settings,
+   * maintenance mode) on the server the app runs on. No certificates are requested. Returns
+   * false when there is no ready server to write to; throws when nginx rejects the new config
+   * (`nginx -t` — the previous file is put back and nothing is reloaded).
+   */
+  async resyncProjectSites(project: { id: string; slug: string | null; serverId: string | null }): Promise<boolean> {
+    const targetServerId = resolveProjectServerId(project);
+    if (!targetServerId || !project.slug) return false;
+
+    const server = await db.query.servers.findFirst({ where: eq(servers.id, targetServerId) });
+    if (!server?.ipv4 || !server?.sshPrivateKey) return false;
+
+    const ssh = new SSHClient();
+    await ssh.connect({
+      host: server.ipv4,
+      port: 22,
+      username: 'root',
+      privateKey: decrypt(server.sshPrivateKey),
+    });
+    try {
+      const containerPort = await resolveProjectPort(ssh, project.id, project.slug);
+      const result = await syncProjectSites(ssh, {
+        projectId: project.id,
+        projectSlug: project.slug,
+        containerPort,
+        serverIp: server.ipv4,
+        sharedHost: isSharedRunnerServer(targetServerId),
+      });
+      if (!result.success) throw new Error(result.message);
+      return true;
+    } finally {
+      ssh.disconnect();
+    }
+  },
 };
