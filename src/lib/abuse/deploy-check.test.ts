@@ -8,13 +8,14 @@ const mocks = vi.hoisted(() => ({
   covered: vi.fn(async () => true),
   recordFinding: vi.fn(async () => ({ flagId: 'f', created: true })),
   suspendProject: vi.fn(async () => ({})),
+  clearedRuleIds: vi.fn(async () => new Set<string>()),
   adminNotify: vi.fn(),
 }));
 
 vi.mock('../../config/env', () => ({ env: mocks.env }));
 vi.mock('../../services/abuse.service', () => ({
   projectIsCovered: mocks.covered,
-  abuseService: { recordFinding: mocks.recordFinding, suspendProject: mocks.suspendProject },
+  abuseService: { recordFinding: mocks.recordFinding, suspendProject: mocks.suspendProject, clearedRuleIds: mocks.clearedRuleIds },
 }));
 vi.mock('../../services/admin-notify.service', () => ({ adminNotify: mocks.adminNotify }));
 const autoBan = vi.hoisted(() => vi.fn(async () => false));
@@ -32,6 +33,7 @@ beforeEach(() => {
   mocks.covered.mockReset().mockResolvedValue(true);
   mocks.recordFinding.mockClear();
   mocks.suspendProject.mockClear();
+  mocks.clearedRuleIds.mockReset().mockResolvedValue(new Set());
   dir = mkdtempSync(path.join(tmpdir(), 'abuse-deploy-'));
   writeFileSync(
     path.join(dir, 'Dockerfile'),
@@ -78,6 +80,29 @@ describe('deploy-time Acceptable Use checks', () => {
     expect((await abuseAfterClone({ ...ctx, workDir: dir }))?.blocked).toBeUndefined();
     mocks.env.ABUSE_AUTO_SUSPEND = false;
     expect((await abuseAfterClone({ ...ctx, workDir: dir }))?.blocked).toBeUndefined();
+  });
+
+  it('after an approved review, neither flags nor stops the rules the admin cleared for the project', async () => {
+    const found = await abuseAfterClone({ ...ctx, workDir: dir });
+    const ruleIds = found!.reasons.map((r) => r.ruleId);
+    mocks.recordFinding.mockClear();
+
+    mocks.env.ABUSE_AUTO_SUSPEND = true;
+    mocks.clearedRuleIds.mockResolvedValue(new Set(ruleIds));
+    const result = await abuseAfterClone({ ...ctx, workDir: dir });
+    expect(mocks.clearedRuleIds).toHaveBeenCalledWith('p');
+    expect(result?.flagged).toBe(false);
+    expect(result?.blocked).toBeUndefined();
+    await abuseAfterBuild({ ...ctx, source: found, buildLog: 'ok' });
+    expect(mocks.recordFinding).not.toHaveBeenCalled();
+    expect(mocks.suspendProject).not.toHaveBeenCalled();
+  });
+
+  it('still stops a deploy whose findings were not the ones cleared', async () => {
+    mocks.env.ABUSE_AUTO_SUSPEND = true;
+    mocks.clearedRuleIds.mockResolvedValue(new Set(['some-other-rule']));
+    expect((await abuseAfterClone({ ...ctx, workDir: dir }))?.blocked).toBe(true);
+    expect(mocks.suspendProject).toHaveBeenCalledTimes(1);
   });
 
   it('never throws into the deploy', async () => {

@@ -1,5 +1,5 @@
 import { HTTPException } from 'hono/http-exception';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { projects, domains } from '../db/schema/projects';
 import { servers } from '../db/schema/servers';
@@ -22,7 +22,7 @@ import { sendProjectSuspendedEmail, sendProjectReinstatedEmail } from '../lib/em
  * installs carry none of it.
  */
 
-export type AbuseSource = 'deploy_scan' | 'runtime' | 'report';
+export type AbuseSource = 'deploy_scan' | 'runtime' | 'report' | 'review_request';
 
 /** Policy sections an admin can cite; the frontend Acceptable Use page uses the same anchors. */
 export const AUP_CLAUSES = {
@@ -107,7 +107,7 @@ export const abuseService = {
     projectId: string;
     organizationId: string;
     deploymentId?: string | null;
-    source: Exclude<AbuseSource, 'report'>;
+    source: Exclude<AbuseSource, 'report' | 'review_request'>;
     result: ScanResult;
   }): Promise<{ flagId: string; created: boolean } | null> {
     if (!input.result.flagged) return null;
@@ -202,6 +202,64 @@ export const abuseService = {
       review: `${env.FRONTEND_URL}/admin/abuse`,
     });
     return { id: flag.id };
+  },
+
+  /**
+   * The owner asks for a person to look at a deploy the automatic check stopped. It lands in the
+   * review queue with what the scan found for that deploy (for the reviewer only — none of it is
+   * returned) and the operators are told. One per deployment: null when one already exists.
+   */
+  async requestDeployReview(input: {
+    projectId: string;
+    organizationId: string;
+    deploymentId: string;
+    note: string | null;
+  }): Promise<{ id: string; createdAt: Date } | null> {
+    const scans = await db
+      .select({ score: abuseFlags.score, reasons: abuseFlags.reasons })
+      .from(abuseFlags)
+      .where(
+        and(
+          eq(abuseFlags.projectId, input.projectId),
+          eq(abuseFlags.deploymentId, input.deploymentId),
+          eq(abuseFlags.source, 'deploy_scan'),
+        ),
+      );
+
+    const [request] = await db
+      .insert(abuseFlags)
+      .values({
+        projectId: input.projectId,
+        organizationId: input.organizationId,
+        deploymentId: input.deploymentId,
+        source: 'review_request',
+        score: Math.max(0, ...scans.map((s) => s.score)),
+        reasons: mergeReasons([], scans.flatMap((s) => s.reasons)),
+        reportText: input.note ? input.note.slice(0, 2000) : null,
+      })
+      // The partial unique index on deployment_id: a second request for the same deploy
+      .onConflictDoNothing()
+      .returning({ id: abuseFlags.id, createdAt: abuseFlags.createdAt });
+    if (!request) return null;
+
+    const [project] = await db.select({ slug: projects.slug }).from(projects).where(eq(projects.id, input.projectId)).limit(1);
+    adminNotify('abuse.review_requested', {
+      project: project?.slug ?? input.projectId,
+      deployment: input.deploymentId,
+      note: input.note,
+      review: `${env.FRONTEND_URL}/admin/abuse`,
+    });
+    return request;
+  },
+
+  /** When a review was requested, by deployment, for the deployments that have one. */
+  async reviewRequestsFor(deploymentIds: string[]): Promise<Map<string, Date>> {
+    if (deploymentIds.length === 0) return new Map();
+    const rows = await db
+      .select({ deploymentId: abuseFlags.deploymentId, createdAt: abuseFlags.createdAt })
+      .from(abuseFlags)
+      .where(and(eq(abuseFlags.source, 'review_request'), inArray(abuseFlags.deploymentId, deploymentIds)));
+    return new Map(rows.filter((r) => r.deploymentId).map((r) => [r.deploymentId as string, r.createdAt]));
   },
 
   async listFlags(params: { status: 'open' | 'dismissed' | 'actioned' | 'all'; limit: number; offset: number }) {
@@ -305,10 +363,13 @@ export const abuseService = {
       clause: input.clause,
       endsAt: input.endsAt,
     });
+    // Not an open review request: `actioned` means approved there, and approving clears rules
     await db
       .update(abuseFlags)
       .set({ status: 'actioned', reviewedAt: now, reviewedBy: input.adminUserId, updatedAt: now })
-      .where(and(eq(abuseFlags.projectId, project.id), eq(abuseFlags.status, 'open')));
+      .where(
+        and(eq(abuseFlags.projectId, project.id), eq(abuseFlags.status, 'open'), ne(abuseFlags.source, 'review_request')),
+      );
 
     await activityService.log({
       organizationId: project.organizationId,
@@ -373,6 +434,50 @@ export const abuseService = {
     const to = await ownerContact(project.organizationId);
     if (to) await sendProjectReinstatedEmail(to, { projectName: project.name, note: input.note });
     return { containersStarted, ownerNotified: !!to };
+  },
+
+  /**
+   * Approve a review request: lift the suspension through the regular unsuspend (owner emailed,
+   * audit row) and close the request as `actioned`. The rules it lists are then cleared for the
+   * project, so deploying the same code again is neither flagged nor stopped. Declining is the
+   * regular dismiss.
+   */
+  async approveReviewRequest(flagId: string, adminUserId: string, note: string | null) {
+    const [flag] = await db.select().from(abuseFlags).where(eq(abuseFlags.id, flagId)).limit(1);
+    if (!flag || flag.source !== 'review_request' || !flag.projectId) {
+      throw new HTTPException(404, { message: 'Review request not found' });
+    }
+    if (flag.status !== 'open') throw new HTTPException(409, { message: 'This review request was already decided' });
+
+    const [project] = await db
+      .select({ suspendedAt: projects.suspendedAt })
+      .from(projects)
+      .where(eq(projects.id, flag.projectId))
+      .limit(1);
+    const lifted = project?.suspendedAt
+      ? await this.unsuspendProject({ projectId: flag.projectId, adminUserId, note })
+      : null;
+
+    const now = new Date();
+    await db
+      .update(abuseFlags)
+      .set({ status: 'actioned', reviewedAt: now, reviewedBy: adminUserId, updatedAt: now })
+      .where(eq(abuseFlags.id, flagId));
+    await db
+      .insert(abuseActions)
+      .values({ projectId: flag.projectId, flagId, adminUserId, action: 'approve_review', reason: note });
+    return { unsuspended: !!lifted, containersStarted: lifted?.containersStarted ?? null, ownerNotified: lifted?.ownerNotified ?? false };
+  },
+
+  /** Rule IDs cleared for a project by approved review requests; the deploy scan leaves them out. */
+  async clearedRuleIds(projectId: string): Promise<Set<string>> {
+    const rows = await db
+      .select({ reasons: abuseFlags.reasons })
+      .from(abuseFlags)
+      .where(
+        and(eq(abuseFlags.projectId, projectId), eq(abuseFlags.source, 'review_request'), eq(abuseFlags.status, 'actioned')),
+      );
+    return new Set(rows.flatMap((r) => r.reasons.map((reason) => reason.ruleId)));
   },
 
   async clauses() {

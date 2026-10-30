@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import { pgTable, uuid, varchar, timestamp, integer, text, jsonb, index, uniqueIndex } from 'drizzle-orm/pg-core';
 import { organizations } from './organizations';
 import { projects } from './projects';
@@ -16,7 +17,12 @@ export interface AbuseReason {
 
 /**
  * The review queue. A project gets at most one open flag per source; a new finding from the same
- * source updates it. `source`: deploy_scan | runtime | report. `status`: open | dismissed | actioned.
+ * source updates it. `source`: deploy_scan | runtime | report | review_request. `status`: open |
+ * dismissed | actioned.
+ *
+ * `review_request`: the owner asked for a person to look at a deploy the automatic check stopped
+ * (one per deployment; `reportText` is their note, `reasons` what the scan found — admins only).
+ * `actioned` = approved, which clears those rules for the project; `dismissed` = declined.
  */
 export const abuseFlags = pgTable(
   'abuse_flags',
@@ -41,6 +47,9 @@ export const abuseFlags = pgTable(
   (t) => ({
     statusIdx: index('abuse_flags_status_idx').on(t.status, t.createdAt),
     projectIdx: index('abuse_flags_project_idx').on(t.projectId),
+    reviewRequestUq: uniqueIndex('abuse_flags_review_request_deployment_unique')
+      .on(t.deploymentId)
+      .where(sql`${t.source} = 'review_request'`),
   })
 );
 

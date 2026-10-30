@@ -141,6 +141,9 @@ export interface TranslationKeys {
     cannotRollback: string;
     rollbackStarted: string;
     redeployStarted: string;
+    reviewRequested: string;
+    reviewAlreadyRequested: string;
+    reviewNotAvailable: string;
   };
   integrations: {
     notConnected: string;
@@ -518,6 +521,9 @@ export const en: TranslationKeys = {
     cannotRollback: 'Cannot rollback to this deployment',
     rollbackStarted: 'Rollback started successfully',
     redeployStarted: 'Redeploy started successfully',
+    reviewRequested: 'Review requested. Our team will look at this deploy and email the project owner.',
+    reviewAlreadyRequested: 'A review was already requested for this deploy',
+    reviewNotAvailable: 'A review can only be requested for a deploy stopped by the automatic security check while the project is suspended',
   },
 
   // Integrations

@@ -3,7 +3,7 @@ import { deploymentService } from '../services/deployment.service';
 import { activityService } from '../services/activity.service';
 import { combinedAuthMiddleware } from '../middleware/auth';
 import { requireScope } from '../middleware/apikey-auth';
-import { createDeploymentRateLimiter } from '../middleware/rate-limit';
+import { createDeploymentRateLimiter, createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 import { streamContainerLogs } from '../workers/docker';
@@ -24,6 +24,18 @@ import { auditSource } from '../lib/audit';
 
 // Rate limiter for deployment operations
 const deploymentRateLimiter = createDeploymentRateLimiter();
+
+// A review request reaches a person: a few an hour per user
+const reviewRequestRateLimiter = createRateLimiter({
+  namespace: 'deploy-review-request',
+  windowMs: 60 * 60 * 1000,
+  maxRequests: 5,
+  keyGenerator: (c) => {
+    const userId = c.get('userId') as string | undefined;
+    return userId ? `user:${userId}` : getClientIp(c);
+  },
+  message: 'Too many review requests, please try again later',
+});
 
 // ============ Schemas ============
 
@@ -62,6 +74,10 @@ const DeploymentSchema = z
       .string()
       .nullable()
       .openapi({ description: 'First error line of the failed deployment log, secrets masked, at most ~300 characters' }),
+    reviewRequestable: z.boolean().optional().openapi({
+      description: 'Stopped by the automatic Acceptable Use check (failureCategory policy_blocked) and a review can be requested with POST …/review-request',
+    }),
+    reviewRequestedAt: z.coerce.date().nullable().optional().openapi({ description: 'When a review of this stopped deploy was requested' }),
     buildStartedAt: z.coerce.date().nullable(),
     buildFinishedAt: z.coerce.date().nullable(),
     deployStartedAt: z.coerce.date().nullable(),
@@ -266,6 +282,45 @@ const rollbackRoute = createRoute({
   },
 });
 
+const reviewRequestRoute = createRoute({
+  method: 'post',
+  path: '/{deploymentId}/review-request',
+  tags: ['Deployments'],
+  summary: 'Request a review',
+  description:
+    'Ask for a person to review a deploy the automatic Acceptable Use check stopped (reviewRequestable). One request per deployment.',
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: z.object({
+      projectId: z.string().uuid(),
+      deploymentId: z.string().uuid(),
+    }),
+    body: {
+      content: {
+        'application/json': {
+          schema: z.object({
+            note: z.string().trim().max(1000).optional().openapi({ description: 'Optional note for the reviewer' }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    201: {
+      description: 'Review requested',
+      content: {
+        'application/json': {
+          schema: z.object({
+            data: z.object({ id: z.string(), status: z.literal('pending'), createdAt: z.coerce.date() }),
+            message: z.string(),
+          }),
+        },
+      },
+    },
+    409: { description: 'A review was already requested for this deployment' },
+  },
+});
+
 const getLogsRoute = createRoute({
   method: 'get',
   path: '/{deploymentId}/logs',
@@ -314,6 +369,7 @@ deploymentRouter.post('/:deploymentId/cancel', requireScope('deployments:write',
 deploymentRouter.post('/:deploymentId/redeploy', requireScope('deployments:write'), deploymentRateLimiter);
 deploymentRouter.post('/:deploymentId/rollback', requireScope('deployments:write'), deploymentRateLimiter);
 deploymentRouter.post('/promote', requireScope('deployments:write'), deploymentRateLimiter);
+deploymentRouter.post('/:deploymentId/review-request', requireScope('deployments:write'), reviewRequestRateLimiter);
 deploymentRouter.get('/:deploymentId/container-logs/history', requireScope('deployments:read', 'logs:read'));
 
 // List deployments
@@ -518,6 +574,26 @@ deploymentRouter.openapi(rollbackRoute, async (c) => {
     },
     201
   );
+});
+
+// Request a review of a deploy the automatic Acceptable Use check stopped
+deploymentRouter.openapi(reviewRequestRoute, async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const { projectId, deploymentId } = c.req.valid('param');
+  const { note } = c.req.valid('json');
+
+  const request = await deploymentService.requestPolicyReview(
+    deploymentId,
+    projectId,
+    organizationId,
+    userId,
+    note || null,
+    locale
+  );
+
+  return c.json({ data: request, message: t(locale, 'deployments', 'reviewRequested') }, 201);
 });
 
 // Get logs

@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- **A deploy stopped by the automatic Acceptable Use check can be put to a person for review from the API.** Deployments now carry `reviewRequestable` and `reviewRequestedAt`; `POST /api/v1/projects/:projectId/deployments/:deploymentId/review-request` (member and up, optional `note`, 5 an hour per user) files it into the admin abuse queue as source `review_request` and emails the operators (`abuse.review_requested`). One per deploy: a second answers 409 (unique index, migration 0081). Nothing about what the check found is returned. `POST /api/v1/admin/abuse/flags/:flagId/approve-review` lifts the suspension through the regular unsuspend and clears the rules that stopped the deploy for that project, so deploying the same code again is neither flagged nor stopped; declining is the regular dismiss.
+
 ## [0.9.2] - 2026-10-25
 
 ### Security
