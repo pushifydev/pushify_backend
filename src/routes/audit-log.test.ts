@@ -34,6 +34,8 @@ vi.mock('../lib/org-access', () => ({
 }));
 vi.mock('../middleware/rate-limit', () => ({
   createDeploymentRateLimiter: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  createRateLimiter: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  getClientIp: () => '127.0.0.1',
 }));
 vi.mock('../db', () => ({ db: {} }));
 

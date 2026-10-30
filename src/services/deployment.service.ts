@@ -7,6 +7,34 @@ import { t, type SupportedLocale } from '../i18n';
 import { assertMemberProjectScope } from '../lib/member-project-scope';
 import { assertOrganizationCanMutateResources } from './organization-billing.service';
 import { planLimitsService } from './plan-limits.service';
+import { isPolicyBlocked } from '../lib/deploy-failure-summary';
+import { policyReviewFields } from '../lib/deploy-policy-review';
+
+/**
+ * Adds reviewRequestable / reviewRequestedAt to each deployment. Only deploys stopped under the
+ * Acceptable Use Policy look anything up.
+ */
+async function withPolicyReview<T extends { id: string; failureCategory: string | null }>(
+  project: { suspendedAt: Date | null },
+  rows: T[],
+) {
+  const blockedIds = rows.filter(isPolicyBlocked).map((d) => d.id);
+  let detectionEnabled = false;
+  let requested = new Map<string, Date>();
+  if (blockedIds.length > 0) {
+    const { abuseService, abuseDetectionEnabled } = await import('./abuse.service');
+    detectionEnabled = abuseDetectionEnabled();
+    requested = await abuseService.reviewRequestsFor(blockedIds);
+  }
+  return rows.map((d) => ({
+    ...d,
+    ...policyReviewFields(d, {
+      detectionEnabled,
+      projectSuspended: !!project.suspendedAt,
+      requestedAt: requested.get(d.id) ?? null,
+    }),
+  }));
+}
 
 type DeploymentTrigger = 'manual' | 'git_push' | 'rollback' | 'redeploy';
 
@@ -63,8 +91,8 @@ export const deploymentService = {
     limit: number = 20,
     offset: number = 0
   ) {
-    await this.checkProjectAccess(projectId, organizationId, userId, locale);
-    return deploymentRepository.findByProject(projectId, limit, offset);
+    const project = await this.checkProjectAccess(projectId, organizationId, userId, locale);
+    return withPolicyReview(project, await deploymentRepository.findByProject(projectId, limit, offset));
   },
 
   /**
@@ -77,14 +105,56 @@ export const deploymentService = {
     userId: string,
     locale: SupportedLocale
   ) {
-    await this.checkProjectAccess(projectId, organizationId, userId, locale);
+    const project = await this.checkProjectAccess(projectId, organizationId, userId, locale);
 
     const deployment = await deploymentRepository.findByIdWithProject(deploymentId);
     if (!deployment || deployment.projectId !== projectId) {
       throw new HTTPException(404, { message: t(locale, 'deployments', 'notFound') });
     }
 
-    return deployment;
+    const [withReview] = await withPolicyReview(project, [deployment]);
+    return withReview;
+  },
+
+  /**
+   * Ask a person to review a deploy the automatic Acceptable Use check stopped (member and up).
+   * It goes to the admin review queue; the answer says nothing about what the check found.
+   */
+  async requestPolicyReview(
+    deploymentId: string,
+    projectId: string,
+    organizationId: string,
+    userId: string,
+    note: string | null,
+    locale: SupportedLocale
+  ) {
+    const project = await this.checkProjectAccess(projectId, organizationId, userId, locale, 'member');
+
+    const deployment = await deploymentRepository.findById(deploymentId);
+    if (!deployment || deployment.projectId !== projectId) {
+      throw new HTTPException(404, { message: t(locale, 'deployments', 'notFound') });
+    }
+
+    const [state] = await withPolicyReview(project, [deployment]);
+    if (state.reviewRequestedAt) {
+      throw new HTTPException(409, { message: t(locale, 'deployments', 'reviewAlreadyRequested') });
+    }
+    if (!state.reviewRequestable) {
+      throw new HTTPException(400, { message: t(locale, 'deployments', 'reviewNotAvailable') });
+    }
+
+    const { abuseService } = await import('./abuse.service');
+    const request = await abuseService.requestDeployReview({
+      projectId,
+      organizationId: project.organizationId,
+      deploymentId,
+      note,
+    });
+    // Another request for the same deploy got in first
+    if (!request) {
+      throw new HTTPException(409, { message: t(locale, 'deployments', 'reviewAlreadyRequested') });
+    }
+    return { id: request.id, status: 'pending' as const, createdAt: request.createdAt };
   },
 
   /**

@@ -48,6 +48,7 @@ import {
   abuseFlags,
   activityLogs,
   containerMetrics,
+  deployments,
   domains,
   organizationMembers,
   organizations,
@@ -197,6 +198,43 @@ describe.skipIf(!TEST_URL)('Acceptable Use enforcement (real Postgres)', () => {
     const actions = await db.select().from(abuseActions).where(eq(abuseActions.projectId, ctx.managedProject));
     expect(actions.map((x) => x.action).sort()).toEqual(['suspend', 'unsuspend']);
     expect(mocks.reinstatedEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes one review request per stopped deploy, and approving it lifts the suspension and clears its rules', async () => {
+    const pid = await project('review', null);
+    const [dep] = await db
+      .insert(deployments)
+      .values({ projectId: pid, status: 'failed', failureCategory: 'policy_blocked' })
+      .returning({ id: deployments.id });
+    const reason = { ruleId: `${PREFIX}rule`, weight: 100, strength: 'strong' as const, message: 'test signal' };
+    await abuseService.recordFinding({
+      projectId: pid,
+      organizationId: ctx.orgId,
+      deploymentId: dep.id,
+      source: 'deploy_scan',
+      result: { flagged: true, autoSuspend: true, score: 100, strong: 1, medium: 0, reasons: [reason] },
+    });
+    await abuseService.suspendProject({ projectId: pid, adminUserId: null, reason: 'Automatic review', clause: 'proxy-vpn', endsAt: null });
+
+    const request = await abuseService.requestDeployReview({ projectId: pid, organizationId: ctx.orgId, deploymentId: dep.id, note: 'A chat app' });
+    expect(request?.id).toBeTruthy();
+    expect(await abuseService.requestDeployReview({ projectId: pid, organizationId: ctx.orgId, deploymentId: dep.id, note: 'again' })).toBeNull();
+    expect(mocks.adminNotify).toHaveBeenCalledWith('abuse.review_requested', expect.objectContaining({ deployment: dep.id }));
+    expect([...(await abuseService.reviewRequestsFor([dep.id])).keys()]).toEqual([dep.id]);
+
+    const [queued] = await db.select().from(abuseFlags).where(eq(abuseFlags.id, request!.id));
+    expect(queued).toMatchObject({ source: 'review_request', status: 'open', reportText: 'A chat app', projectId: pid });
+    expect(queued.reasons.map((r) => r.ruleId)).toEqual([reason.ruleId]);
+    expect((await abuseService.clearedRuleIds(pid)).size).toBe(0);
+
+    const res = await abuseService.approveReviewRequest(request!.id, ctx.adminId, 'Reviewed: a chat app');
+    expect(res).toMatchObject({ unsuspended: true, ownerNotified: true });
+    const [p] = await db.select().from(projects).where(eq(projects.id, pid));
+    expect(p).toMatchObject({ status: 'active', suspendedAt: null });
+    expect([...(await abuseService.clearedRuleIds(pid))]).toEqual([reason.ruleId]);
+    const actions = await db.select().from(abuseActions).where(eq(abuseActions.projectId, pid));
+    expect(actions.map((x) => x.action).sort()).toEqual(['approve_review', 'suspend', 'unsuspend']);
+    await expect(abuseService.approveReviewRequest(request!.id, ctx.adminId, null)).rejects.toMatchObject({ status: 409 });
   });
 
   it('files outside reports into the same queue, matched to a project by host when possible', async () => {

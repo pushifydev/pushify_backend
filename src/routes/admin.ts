@@ -113,6 +113,14 @@ adminRouter.post('/abuse/flags/:flagId/dismiss', async (c) => {
   return c.json({ data: { ok: true } });
 });
 
+// Approve an owner's review request (source review_request): lifts the suspension and clears the
+// rules that stopped the deploy for the project. Declining is the dismiss above.
+adminRouter.post('/abuse/flags/:flagId/approve-review', async (c) => {
+  const { note } = await parseBody(c, noteSchema);
+  const result = await abuseService.approveReviewRequest(uuidParam(c, 'flagId'), c.get('userId')!, note ?? null);
+  return c.json({ data: result });
+});
+
 adminRouter.post('/abuse/projects/:projectId/suspend', async (c) => {
   const body = await parseBody(c, suspendSchema);
   const result = await abuseService.suspendProject({

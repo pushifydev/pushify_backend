@@ -157,6 +157,9 @@ export const tr: TranslationKeys = {
     cannotRollback: 'Bu deployment\'a geri alınamaz',
     rollbackStarted: 'Geri alma başarıyla başlatıldı',
     redeployStarted: 'Yeniden deployment başarıyla başlatıldı',
+    reviewRequested: 'İnceleme talebin alındı. Ekibimiz bu deploy\'a bakıp proje sahibine e-posta gönderecek.',
+    reviewAlreadyRequested: 'Bu deploy için zaten inceleme talep edildi',
+    reviewNotAvailable: 'İnceleme yalnızca otomatik güvenlik kontrolünde durdurulan ve projesi askıda olan bir deploy için istenebilir',
   },
 
   // Integrations

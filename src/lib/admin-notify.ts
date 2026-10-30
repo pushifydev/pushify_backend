@@ -38,6 +38,7 @@ export type AdminEvent =
   | 'abuse.flagged'
   | 'abuse.reported'
   | 'abuse.auto_suspended'
+  | 'abuse.review_requested'
   | 'user.banned';
 
 export const ADMIN_EVENT_TITLES: Record<AdminEvent, string> = {
@@ -71,6 +72,7 @@ export const ADMIN_EVENT_TITLES: Record<AdminEvent, string> = {
   'abuse.flagged': 'A project was flagged for Acceptable Use review',
   'abuse.reported': 'An abuse report was received',
   'abuse.auto_suspended': 'A project was suspended automatically (Acceptable Use)',
+  'abuse.review_requested': 'A review of a stopped deploy was requested (Acceptable Use)',
   'user.banned': 'An account was banned (Acceptable Use)',
 };
 

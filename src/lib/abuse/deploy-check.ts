@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { env } from '../../config/env';
 import { logger } from '../logger';
-import { loadAbuseRules } from './rules';
+import { loadAbuseRules, type AbuseRules } from './rules';
 import { readRepositoryForScan, scanForAbuse, scoreReasons, type ScanResult } from './scan';
 
 /**
@@ -55,6 +55,18 @@ async function autoSuspend(ctx: Ctx, result: ScanResult): Promise<boolean> {
   return true;
 }
 
+/**
+ * Leave out the rules an admin cleared for this project by approving a review request, and score
+ * again: the reviewed code is neither flagged nor stopped again, anything else still is.
+ */
+async function withoutClearedRules(projectId: string, result: ScanResult, rules: AbuseRules): Promise<ScanResult> {
+  if (!result.flagged) return result;
+  const { abuseService } = await import('../../services/abuse.service');
+  const cleared = await abuseService.clearedRuleIds(projectId);
+  if (cleared.size === 0) return result;
+  return scoreReasons(result.reasons.filter((r) => !cleared.has(r.ruleId)), rules);
+}
+
 export type DeployScanResult = ScanResult & {
   /** The deploy must stop here: the project was just suspended (ABUSE_AUTO_SUSPEND) */
   blocked?: boolean;
@@ -69,7 +81,7 @@ export async function abuseAfterClone(
     // The whole repository, not just the root directory: a monorepo can build from one folder
     // and still ship scripts from another.
     const source = ctx.workDir ? await readRepositoryForScan(path.resolve(ctx.workDir), rules) : {};
-    const result = scanForAbuse({ ...source, image: ctx.image ?? null }, rules);
+    const result = await withoutClearedRules(ctx.projectId, scanForAbuse({ ...source, image: ctx.image ?? null }, rules), rules);
     if (result.flagged) {
       const { abuseService } = await import('../../services/abuse.service');
       await abuseService.recordFinding({ ...ctx, source: 'deploy_scan', result });
@@ -90,7 +102,11 @@ export async function abuseAfterBuild(ctx: Ctx & { source: ScanResult | null; bu
     if (!(await enabledAndCovered(ctx.projectId))) return;
     const rules = loadAbuseRules();
     const fromLog = scanForAbuse({ buildLog: ctx.buildLog }, rules);
-    const combined = scoreReasons([...(ctx.source?.reasons ?? []), ...fromLog.reasons], rules);
+    const combined = await withoutClearedRules(
+      ctx.projectId,
+      scoreReasons([...(ctx.source?.reasons ?? []), ...fromLog.reasons], rules),
+      rules,
+    );
     if (!combined.flagged) return;
 
     const { abuseService } = await import('../../services/abuse.service');
