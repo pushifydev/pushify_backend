@@ -346,6 +346,139 @@ describe('generateProjectSitesConfig', () => {
   });
 });
 
+describe('generateProjectSitesConfig in maintenance mode', () => {
+  const domains = [
+    { domain: 'yeliapp.com', kind: 'custom' as const, ssl: true, aliases: ['www.yeliapp.com'], sslAliases: ['www.yeliapp.com'] },
+    { domain: 'staging-off.com', kind: 'custom' as const, ssl: false, nginxSettings: { rateLimit: { enabled: true, requestsPerSecond: 5, burst: 10 } } },
+  ];
+
+  it('answers every serving block with a 503 page and Retry-After, never proxying to the app', () => {
+    const config = generateProjectSitesConfig({
+      projectSlug: 'yeli',
+      containerPort: 3001,
+      containerPorts: [3001, 3002],
+      domains,
+      maintenance: { enabled: true, message: 'Upgrading the database, back at 14:00.' },
+    });
+
+    expect(config).toContain('# Maintenance mode: on (503)');
+    expect(config.match(/return 503 '/g)).toHaveLength(2);
+    expect(config).toContain('add_header Retry-After 300 always;');
+    expect(config).toContain('add_header Cache-Control "no-store" always;');
+    expect(config).toContain('Upgrading the database, back at 14:00.');
+    expect(config).not.toContain('proxy_pass');
+    expect(config).not.toContain('pushify_wake');
+    expect(config).not.toContain('limit_req');
+    // Redirects, certificates, HSTS and ACME challenges are untouched.
+    expect(config).toContain('return 301 https://yeliapp.com$request_uri;');
+    expect(config).toContain('ssl_certificate /etc/letsencrypt/live/yeliapp.com/fullchain.pem;');
+    expect(config).toContain('add_header Strict-Transport-Security "max-age=63072000" always;');
+    expect(config).toContain('location ^~ /.well-known/acme-challenge/');
+  });
+
+  it('serves the app again when maintenance is off — same blocks, proxy back in place', () => {
+    const off = generateProjectSitesConfig({
+      projectSlug: 'yeli',
+      containerPort: 3001,
+      domains,
+      maintenance: { enabled: false, message: 'Upgrading' },
+    });
+
+    expect(off).not.toContain('return 503');
+    expect(off).not.toContain('Retry-After');
+    expect(off).not.toContain('Maintenance mode');
+    expect(off).toContain('proxy_pass http://127.0.0.1:3001;');
+  });
+
+  it('uses a generic message when none is set', () => {
+    const config = generateProjectSitesConfig({
+      projectSlug: 'yeli',
+      containerPort: 3001,
+      domains: [{ domain: 'a.com', kind: 'custom', ssl: false }],
+      maintenance: { enabled: true },
+    });
+    expect(config).toContain('This site is down for scheduled maintenance. Please check back soon.');
+  });
+
+  it('cannot break out of the nginx string or inject markup through the message', () => {
+    const message = `x'; } location /leak { alias /etc/; } # $host \\ <script>alert(1)</script>\nadd_header X 1; Bakım çalışması`;
+    const config = generateProjectSitesConfig({
+      projectSlug: 'yeli',
+      containerPort: 3001,
+      domains: [{ domain: 'a.com', kind: 'custom', ssl: false }],
+      maintenance: { enabled: true, message },
+    });
+
+    const returnLine = config.split('\n').find((line) => line.includes("return 503 '"))!;
+    // Exactly the opening and closing quote of the string, nothing after it.
+    expect(returnLine.match(/'/g)).toHaveLength(2);
+    expect(returnLine.trim().endsWith("</html>';")).toBe(true);
+    expect(returnLine).not.toContain('$');
+    expect(returnLine).not.toContain('\\');
+    expect(returnLine).not.toContain('<script>');
+    expect(returnLine).toContain('&#60;script&#62;');
+    expect(returnLine).toContain('Bak&#305;m &#231;al&#305;&#351;mas&#305;');
+    // The words may appear as page text, never as a directive (no `;` / `}` survives).
+    expect(config).not.toContain('alias /etc/;');
+    expect(config).not.toMatch(/^\s*add_header X 1;/m);
+  });
+
+  it('works for a static site too', () => {
+    const config = generateProjectSitesConfig({
+      projectSlug: 'yuppi-3c6c924f',
+      containerPort: 0,
+      staticRoot: '/opt/pushify/site-studio/yuppi-3c6c924f',
+      domains: [{ domain: 'yuppikids.com', kind: 'custom', ssl: true }],
+      maintenance: { enabled: true },
+    });
+    expect(config).toContain("return 503 '");
+    expect(config).not.toContain('root /opt/pushify/site-studio');
+  });
+});
+
+describe('syncProjectSites in maintenance mode', () => {
+  it('writes the maintenance page from the stored project, so deploys keep it on', async () => {
+    mocks.findProject.mockResolvedValue({ id: 'project-1', slug: 'yeli', settings: {}, maintenanceMode: { enabled: true, message: 'Back soon' } });
+    mocks.findByProject.mockResolvedValue([row('yeliapp.com', { isPrimary: true })]);
+    dnsPointsHere('yeliapp.com');
+    const server = fakeServer({ certs: { 'yeliapp.com': ['yeliapp.com'] } });
+
+    const result = await sync(server.ssh, { requestCertificates: false });
+
+    expect(result.success).toBe(true);
+    expect(server.vhost()).toContain("return 503 '");
+    expect(server.vhost()).toContain('Back soon');
+    expect(server.vhost()).not.toContain('proxy_pass');
+    // tested before the reload, as every write is
+    const test = server.commands.indexOf('nginx -t 2>&1');
+    expect(test).toBeGreaterThan(-1);
+  });
+
+  it('keeps the previous vhost when nginx rejects the maintenance config', async () => {
+    mocks.findProject.mockResolvedValue({ id: 'project-1', slug: 'yeli', settings: {}, maintenanceMode: { enabled: true } });
+    mocks.findByProject.mockResolvedValue([row('yeliapp.com', { isPrimary: true })]);
+    dnsPointsHere('yeliapp.com');
+    const server = fakeServer({ nginxOk: false });
+
+    const result = await sync(server.ssh, { requestCertificates: false });
+
+    expect(result.success).toBe(false);
+    expect(server.commands.some((c) => c.includes('systemctl reload nginx'))).toBe(false);
+  });
+
+  it('leaves staging domains serving the app', async () => {
+    mocks.findProject.mockResolvedValue({ id: 'project-1', slug: 'yeli', settings: {}, maintenanceMode: { enabled: true } });
+    mocks.findByProject.mockResolvedValue([row('staging.yeliapp.com', { isPrimary: true, environment: 'staging' })]);
+    dnsPointsHere('staging.yeliapp.com');
+    const server = fakeServer();
+
+    await sync(server.ssh, { requestCertificates: false, environment: 'staging' });
+
+    expect(server.vhost()).toContain('proxy_pass http://127.0.0.1:3001;');
+    expect(server.vhost()).not.toContain('return 503');
+  });
+});
+
 describe('syncProjectSites for a static site', () => {
   const uploaded = { id: '3c6c924f-7aec-4768-a49e-8b4596763153', slug: 'yuppi', settings: { static: true, staticSource: 'upload' } };
 

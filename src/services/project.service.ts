@@ -1,5 +1,5 @@
 import { HTTPException } from 'hono/http-exception';
-import { requireOrgMember } from '../lib/org-access';
+import { requireOrgMember, requireProjectMember } from '../lib/org-access';
 import crypto from 'crypto';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../db';
@@ -549,6 +549,58 @@ export const projectService = {
     logger.info({ projectId, userId, status, containersSynced }, 'Project status updated');
 
     return { project, containersSynced };
+  },
+
+  /**
+   * Switch maintenance mode on or off: the production domains answer with a 503 maintenance page
+   * (or the app again) as soon as nginx is reloaded. Containers are not touched and nothing is
+   * redeployed. Owner/admin only. When nginx rejects the new config the previous vhost stays and
+   * the stored value is put back, so the database never claims a state the server isn't in.
+   * `applied` is false when the project has no ready server yet — the next deploy picks it up.
+   */
+  async setMaintenanceMode(
+    projectId: string,
+    organizationId: string,
+    userId: string,
+    input: { enabled: boolean; message?: string },
+    locale: SupportedLocale = 'en'
+  ) {
+    const { project: existing } = await requireProjectMember(projectId, organizationId, userId, 'admin', locale);
+    if (existing.status === 'deleted') {
+      throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });
+    }
+    // A suspension notice is not something a maintenance page may cover up.
+    if (existing.suspendedAt && input.enabled) {
+      throw new HTTPException(403, { message: `${t(locale, 'projects', 'suspended')} ${env.ABUSE_CONTACT_EMAIL}` });
+    }
+
+    const previous = existing.maintenanceMode ?? { enabled: false };
+    const message = (input.message ?? previous.message ?? '').trim();
+    const next = { enabled: input.enabled, ...(message ? { message } : {}) };
+
+    const save = async (value: typeof next) => {
+      const [row] = await db
+        .update(projects)
+        .set({ maintenanceMode: value, updatedAt: new Date() })
+        .where(eq(projects.id, projectId))
+        .returning();
+      return row;
+    };
+
+    const project = await save(next);
+
+    let applied: boolean;
+    try {
+      const { domainService } = await import('./domain.service');
+      applied = await domainService.resyncProjectSites(project);
+    } catch (err) {
+      await save(previous);
+      logger.error({ projectId, enabled: input.enabled, err }, 'Failed to apply maintenance mode');
+      throw new HTTPException(500, { message: t(locale, 'projects', 'maintenanceApplyFailed') });
+    }
+
+    logger.info({ projectId, userId, enabled: input.enabled, applied }, 'Maintenance mode updated');
+    return { project, previous, applied };
   },
 
   /**
