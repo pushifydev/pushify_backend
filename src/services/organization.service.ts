@@ -10,6 +10,7 @@ import { planLimitsService } from './plan-limits.service';
 import { t, type SupportedLocale } from '../i18n';
 import { sendOrgInvitationEmail } from '../lib/email';
 import { projectRepository } from '../repositories/project.repository';
+import { invalidateOrgTwoFactorPolicy, userHasTwoFactorEnabled } from '../lib/org-two-factor';
 
 interface UpdateOrganizationInput {
   name?: string;
@@ -78,9 +79,55 @@ export const organizationService = {
       }
     }
 
-    const updated = await organizationRepository.update(organizationId, input);
+    // Only the fields this endpoint owns: the body is passed through unvalidated, and columns such
+    // as require_two_factor (owner-only, below) or plan must not be writable from here.
+    const changes: UpdateOrganizationInput = {};
+    if (input.name !== undefined) changes.name = input.name;
+    if (input.slug !== undefined) changes.slug = input.slug;
+
+    const updated = await organizationRepository.update(organizationId, changes);
     logger.info({ organizationId, userId }, 'Organization updated');
     return updated;
+  },
+
+  /**
+   * Turn the organization-wide 2FA requirement on or off (owner only). Turning it on needs the
+   * owner's own 2FA, so the owner is never the first person locked out by it.
+   * `changed` is false when the value was already the requested one (nothing to audit).
+   */
+  async setTwoFactorPolicy(
+    organizationId: string,
+    userId: string,
+    requireTwoFactor: boolean,
+    locale: SupportedLocale = 'en'
+  ): Promise<{ requireTwoFactor: boolean; changed: boolean }> {
+    const membership = await organizationRepository.findMember(organizationId, userId);
+    if (!membership) {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
+    }
+    if (membership.role !== 'owner') {
+      throw new HTTPException(403, { message: t(locale, 'organizations', 'ownerRequired') });
+    }
+
+    if (requireTwoFactor && !(await userHasTwoFactorEnabled(userId))) {
+      throw new HTTPException(400, {
+        message: t(locale, 'organizations', 'enableOwnTwoFactorFirst'),
+        cause: { code: 'TWO_FACTOR_NOT_ENABLED' },
+      });
+    }
+
+    const org = await organizationRepository.findById(organizationId);
+    if (!org) {
+      throw new HTTPException(404, { message: t(locale, 'organizations', 'notFound') });
+    }
+    if (org.requireTwoFactor === requireTwoFactor) {
+      return { requireTwoFactor, changed: false };
+    }
+
+    const updated = await organizationRepository.update(organizationId, { requireTwoFactor });
+    invalidateOrgTwoFactorPolicy(organizationId);
+    logger.info({ organizationId, userId, requireTwoFactor }, 'Organization two-factor policy changed');
+    return { requireTwoFactor: updated?.requireTwoFactor ?? requireTwoFactor, changed: true };
   },
 
   /**

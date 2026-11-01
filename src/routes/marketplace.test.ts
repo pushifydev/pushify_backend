@@ -37,6 +37,12 @@ vi.mock('../lib/deletion-lock', () => ({
   isAllowedWhilePendingDeletion: () => true,
   isOrganizationPendingDeletion: async () => false,
 }));
+vi.mock('../lib/org-two-factor', () => ({
+  isExemptFromOrgTwoFactor: () => true,
+  isOrganizationTwoFactorRequired: async () => false,
+  userHasTwoFactorEnabled: async () => true,
+  orgTwoFactorRequiredError: () => new Error('2fa required'),
+}));
 vi.mock('../middleware/rate-limit', () => ({
   applyPlanApiRateLimit: async (_c: unknown, next: () => Promise<void>) => next(),
 }));

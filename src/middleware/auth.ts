@@ -11,6 +11,12 @@ import { applyPlanApiRateLimit } from './rate-limit';
 import { t, type SupportedLocale } from '../i18n';
 import { isAllowedWhilePendingDeletion, isOrganizationPendingDeletion } from '../lib/deletion-lock';
 import { accountSuspendedError, isUserBanned } from '../lib/user-ban';
+import {
+  isExemptFromOrgTwoFactor,
+  isOrganizationTwoFactorRequired,
+  orgTwoFactorRequiredError,
+  userHasTwoFactorEnabled,
+} from '../lib/org-two-factor';
 
 export async function authMiddleware(c: Context, next: Next) {
   // Every router mounted on a shared prefix (/api/v1/projects) adds its own '*' auth middleware,
@@ -57,6 +63,15 @@ export async function authMiddleware(c: Context, next: Next) {
           message: t(locale, 'deletion', 'organizationPending'),
           cause: { code: 'ORGANIZATION_PENDING_DELETION' },
         });
+      }
+      // Organization-wide 2FA (lib/org-two-factor): sessions only. API key requests returned to
+      // apiKeyAuthMiddleware above and are deliberately not affected by the policy in this step.
+      if (
+        !isExemptFromOrgTwoFactor(c.req.path) &&
+        (await isOrganizationTwoFactorRequired(payload.org)) &&
+        !(payload.sub && (await userHasTwoFactorEnabled(payload.sub)))
+      ) {
+        throw orgTwoFactorRequiredError(locale);
       }
     }
 

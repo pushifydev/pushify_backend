@@ -26,6 +26,12 @@ vi.mock('../lib/deletion-lock', () => ({
   isAllowedWhilePendingDeletion: () => true,
   isOrganizationPendingDeletion: async () => false,
 }));
+vi.mock('../lib/org-two-factor', () => ({
+  isExemptFromOrgTwoFactor: () => false,
+  isOrganizationTwoFactorRequired: async () => false,
+  userHasTwoFactorEnabled: async () => false,
+  orgTwoFactorRequiredError: () => new HTTPException(403, { message: '2fa' }),
+}));
 vi.mock('../services/apikey.service', () => ({
   apiKeyService: { validate: mocks.validate },
   hasScope: () => true,

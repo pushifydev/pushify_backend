@@ -43,6 +43,11 @@ export const organizations = pgTable('organizations', {
   /** Optional per-limit overrides merged on top of effective plan limits */
   planLimitsOverride: jsonb('plan_limits_override').$type<Partial<Record<string, number | boolean>>>(),
   settings: jsonb('settings').default({}).notNull(),
+  /**
+   * Organization-wide 2FA: members on a session need TOTP enabled to use the organization's
+   * routes (see lib/org-two-factor). Owner-only toggle; API keys are not affected yet.
+   */
+  requireTwoFactor: boolean('require_two_factor').default(false).notNull(),
   /** Deletion requested: locked until `deletionScheduledFor`, then purged (restorable until then) */
   deletionRequestedAt: timestamp('deletion_requested_at', { withTimezone: true }),
   deletionScheduledFor: timestamp('deletion_scheduled_for', { withTimezone: true }),
