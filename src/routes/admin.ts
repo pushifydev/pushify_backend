@@ -1,18 +1,21 @@
 import { Hono, type Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
+import { OpenAPIHono, createRoute } from '@hono/zod-openapi';
 import { z } from 'zod';
 import { authMiddleware } from '../middleware/auth';
 import { requirePlatformAdmin } from '../middleware/require-platform-admin';
 import { adminService } from '../services/admin.service';
 import { abuseService, AUP_CLAUSES, type AupClause } from '../services/abuse.service';
 import { userBanService } from '../services/user-ban.service';
+import { getPlatformVersion } from '../lib/platform-version';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 
 /**
  * Platform-operator API — cross-organisation, read-only views of who signed up and what they
  * did. Plain Hono rather than OpenAPI on purpose: this is not part of the public API surface
- * and should not appear in the Swagger document.
+ * and should not appear in the Swagger document. (The platform version route is declared with
+ * createRoute for its schema, but `hide: true` and this plain router keep it out of the document.)
  */
 const adminRouter = new Hono<AppEnv>();
 
@@ -69,6 +72,54 @@ adminRouter.get('/auth-events', async (c) => {
   const query = parseQuery(c, pageSchema);
   return c.json({ data: await adminService.listAuthEvents(query) });
 });
+
+// ── Platform version / update check ──────────────────────────────────────────
+
+const platformVersionRoute = createRoute({
+  method: 'get',
+  path: '/version',
+  // Listing it would tell anyone reading /api/v1/doc that the admin panel exists (see above).
+  hide: true,
+  tags: ['Admin'],
+  summary: 'Running version and whether a newer or security release exists',
+  description:
+    'Compares the running version (package.json) with the GitHub releases of pushifydev/pushify_backend, ' +
+    'cached for 6 hours. `securityRelease` is true when a release newer than `current` is marked as a ' +
+    'security release. Always 200: when the check is turned off (PUSHIFY_DISABLE_UPDATE_CHECK=true) or ' +
+    'GitHub cannot be reached, `latest` is null and `check` says why. Update with selfhost/update.sh.',
+  security: [{ bearerAuth: [] }],
+  responses: {
+    200: {
+      description: 'Version status',
+      content: {
+        'application/json': {
+          schema: z.object({
+            data: z.object({
+              current: z.string().nullable(),
+              latest: z
+                .object({
+                  version: z.string(),
+                  tag: z.string(),
+                  name: z.string().nullable(),
+                  url: z.string().nullable(),
+                  publishedAt: z.string().nullable(),
+                })
+                .nullable(),
+              updateAvailable: z.boolean(),
+              securityRelease: z.boolean(),
+              check: z.enum(['ok', 'disabled', 'unavailable']),
+              checkedAt: z.string().nullable(),
+            }),
+          }),
+        },
+      },
+    },
+  },
+});
+
+const platformRouter = new OpenAPIHono<AppEnv>();
+platformRouter.openapi(platformVersionRoute, async (c) => c.json({ data: await getPlatformVersion() }, 200));
+adminRouter.route('/platform', platformRouter);
 
 // ── Acceptable Use review queue ──────────────────────────────────────────────
 

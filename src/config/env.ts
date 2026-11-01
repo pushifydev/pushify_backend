@@ -94,6 +94,12 @@ const envSchema = z.object({
   /** Bearer token for the read-only operational signals endpoint (/api/v1/ops/*) used by the
    *  operations agent in pushify-hq. Unset = endpoint disabled (404). */
   OPS_READ_TOKEN: z.string().min(32).optional(),
+  /** true = the admin panel's update check (GET /api/v1/admin/platform/version) never contacts
+   *  GitHub. Not z.coerce.boolean(): Boolean('false') is true. */
+  PUSHIFY_DISABLE_UPDATE_CHECK: z
+    .string()
+    .optional()
+    .transform((v) => !!v && /^(true|1|yes|on)$/i.test(v.trim())),
 
   // Domain sales (registrar reseller). Unset = feature hidden.
   REGISTRAR_PROVIDER: z.enum(['namecom']).optional(),
