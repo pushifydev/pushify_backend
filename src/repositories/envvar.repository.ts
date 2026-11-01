@@ -10,11 +10,13 @@ interface CreateEnvVarInput {
   key: string;
   valueEncrypted: string;
   isSecret?: boolean;
+  locked?: boolean;
 }
 
 interface UpdateEnvVarInput {
   valueEncrypted?: string;
   isSecret?: boolean;
+  locked?: boolean;
 }
 
 export const envVarRepository = {
@@ -84,6 +86,7 @@ export const envVarRepository = {
         key: input.key,
         valueEncrypted: input.valueEncrypted,
         isSecret: input.isSecret ?? false,
+        locked: input.locked ?? false,
       })
       .returning();
     return result[0];
@@ -104,6 +107,7 @@ export const envVarRepository = {
           key: input.key,
           valueEncrypted: input.valueEncrypted,
           isSecret: input.isSecret ?? false,
+          locked: input.locked ?? false,
         }))
       )
       .returning();

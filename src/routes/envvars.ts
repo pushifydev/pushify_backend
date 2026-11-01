@@ -19,6 +19,10 @@ const EnvVarSchema = z
     key: z.string(),
     value: z.string(),
     isSecret: z.boolean(),
+    locked: z.boolean().openapi({ description: 'Admin-only: the value is read and changed by owners/admins only' }),
+    masked: z.boolean().openapi({
+      description: 'The value is withheld from the caller (`****`): every value for a viewer, locked ones below admin',
+    }),
     createdAt: z.coerce.date(),
     updatedAt: z.coerce.date(),
   })
@@ -48,6 +52,7 @@ const CreateEnvVarSchema = z
     value: z.string().min(1).openapi({ example: 'postgres://localhost:5432/mydb' }),
     environment: EnvironmentEnum.optional().openapi({ example: 'production' }),
     isSecret: z.boolean().optional().openapi({ example: true }),
+    locked: z.boolean().optional().openapi({ example: false, description: 'Owners/admins only' }),
   })
   .openapi('CreateEnvVar');
 
@@ -71,6 +76,7 @@ const UpdateEnvVarSchema = z
   .object({
     value: z.string().min(1).optional(),
     isSecret: z.boolean().optional(),
+    locked: z.boolean().optional().openapi({ description: 'Owners/admins only' }),
   })
   .openapi('UpdateEnvVar');
 
@@ -81,7 +87,10 @@ const listEnvVarsRoute = createRoute({
   path: '/',
   tags: ['Environment Variables'],
   summary: 'List environment variables',
-  description: 'Get all environment variables for a project',
+  description:
+    'Get all environment variables for a project. A value the caller may not see comes back as `****` with ' +
+    '`masked: true`: every value for a viewer, locked (admin-only) values for a member or an API key ' +
+    'created by one. A masked entry has no value: `pushify env pull` leaves it out of the file it writes.',
   security: [{ bearerAuth: [] }],
   request: {
     params: z.object({
@@ -372,7 +381,7 @@ envVarRouter.openapi(updateEnvVarRoute, async (c) => {
   const { projectId, envVarId } = c.req.valid('param');
   const input = c.req.valid('json');
 
-  // Read the secret flag before the change so the audit entry can show from -> to.
+  // Read the secret and lock flags before the change so the audit entry can show from -> to.
   const before = await envVarService.getById(envVarId, projectId, organizationId, userId, locale);
 
   const envVar = await envVarService.update(
@@ -393,6 +402,7 @@ envVarRouter.openapi(updateEnvVarRoute, async (c) => {
     {
       valueChanged: input.value !== undefined,
       isSecret: { from: before.isSecret, to: envVar.isSecret },
+      locked: { from: before.locked, to: envVar.locked },
     },
     c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
     c.req.header('user-agent'),
