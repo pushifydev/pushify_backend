@@ -48,6 +48,8 @@ import { domainService } from '../services/domain.service';
 import { checkComposeFile, checkVolumes } from '../lib/host-access-guard';
 import { encodeRunSpec } from '../lib/run-spec';
 import { deployComposeFromRepo, findComposeFile } from './compose-deploy';
+import type { ComposeBuildBaseline } from '../lib/compose-build-cache';
+import type { DeploymentBuildMetadata } from '../db/schema/deployments';
 import {
   buildLoginCommand,
   buildLogoutCommand,
@@ -112,6 +114,10 @@ export interface RemoteDeploymentConfig {
   composeService?: string | null;
   /** The container port of that service, when it is not the first one it publishes */
   composePort?: number | null;
+  /** Compose stacks: build even when the build inputs are unchanged (a forced redeploy) */
+  forceBuild?: boolean;
+  /** Compose stacks: the previous deploy of the same stack, to skip an unneeded build */
+  previousComposeDeploy?: ComposeBuildBaseline | null;
   // Marketplace fields
   marketplace?: {
     id?: string;
@@ -141,6 +147,8 @@ export interface RemoteDeploymentResult {
    * one later without rebuilding the arguments from settings that may since have changed.
    */
   runSpec?: string;
+  /** Compose stacks: how the build was decided, for the deployment row (build_metadata) */
+  buildMetadata?: DeploymentBuildMetadata;
   error?: string;
 }
 
@@ -1253,6 +1261,9 @@ export async function deployToRemoteServer(
           envVars,
           sharedHost,
           dockerConfig,
+          commitHash,
+          forceBuild: config.forceBuild === true,
+          previous: config.previousComposeDeploy ?? null,
           onProgress,
         });
       }

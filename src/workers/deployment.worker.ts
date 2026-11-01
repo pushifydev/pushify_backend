@@ -54,6 +54,7 @@ import { resolveProjectGitAccess, noRepoAccessMessage } from '../services/git-pr
 import { firstRepoSettingsError, firstProjectSettingsError } from '../lib/repo-settings-validate';
 import { buildConnectionString, planLinkedDatabaseEnv, type LinkedDatabase } from '../lib/managed-database';
 import { databaseRepository } from '../repositories/database.repository';
+import { deploymentRepository } from '../repositories/deployment.repository';
 import { env } from '../config/env';
 import { normalizeRootDirectory } from '../lib/normalize-root-directory';
 import {
@@ -959,6 +960,11 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       // token in the deploy log — register it with the masker before anything runs.
       logMasker.addSecrets(deployRegistries.map((credential) => credential.password));
 
+      // A compose stack skips `docker compose build` when nothing it reads changed since the
+      // previous deploy of the same copy (lib/compose-build-cache.ts); this is what it compares with.
+      const composeBaseline =
+        project.composePath && !deployImage ? await deploymentRepository.findComposeBuildBaseline(job.id) : null;
+
       const remoteResult = await deployToRemoteServer({
         serverId: deployTargetServerId,
         projectId: project.id,
@@ -987,6 +993,8 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         composePath: project.composePath,
         composeService: project.composeService,
         composePort: project.composePort,
+        forceBuild: composeBaseline?.forceBuild ?? false,
+        previousComposeDeploy: composeBaseline?.previous ?? null,
         // The organization's private-registry logins: for a private `FROM` base image and for
         // image projects on a private registry. Empty for everyone who has none.
         registryCredentials: deployRegistries,
@@ -1016,6 +1024,8 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
           dockerImageId: remoteResult.dockerImageId || null,
           runSpecEncrypted: remoteResult.runSpec ?? null,
           containerPort: remoteResult.containerPort || null,
+          // Compose stacks: what the next deploy of the stack compares its build with
+          ...(remoteResult.buildMetadata ? { buildMetadata: remoteResult.buildMetadata } : {}),
         })
         .where(eq(deployments.id, job.id));
 

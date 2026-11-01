@@ -1,7 +1,8 @@
-import { eq, desc, and, ne } from 'drizzle-orm';
+import { eq, desc, and, ne, lt, isNull } from 'drizzle-orm';
 import { db } from '../db';
-import { deployments } from '../db/schema/deployments';
+import { deployments, type DeploymentBuildMetadata } from '../db/schema/deployments';
 import { projects } from '../db/schema/projects';
+import type { ComposeBuildBaseline } from '../lib/compose-build-cache';
 
 type DeploymentStatus = 'pending' | 'building' | 'deploying' | 'running' | 'failed' | 'stopped' | 'cancelled';
 type DeploymentTrigger = 'manual' | 'git_push' | 'rollback' | 'redeploy';
@@ -20,6 +21,7 @@ interface CreateDeploymentInput {
   /** The staging deployment this production deploy promotes */
   promotedFromDeploymentId?: string;
   rollbackFromDeploymentId?: string; // For quick rollback
+  buildMetadata?: DeploymentBuildMetadata;
 }
 
 interface UpdateDeploymentInput {
@@ -155,9 +157,45 @@ export const deploymentRepository = {
         environment: input.environment ?? 'production',
         promotedFromDeploymentId: input.promotedFromDeploymentId,
         rollbackFromDeploymentId: input.rollbackFromDeploymentId,
+        buildMetadata: input.buildMetadata,
       })
       .returning();
     return result[0];
+  },
+
+  /**
+   * What a compose deploy compares its build with: whether it was requested as a forced build,
+   * and the deployment of the same copy of the project (environment, preview) created just
+   * before it, whatever its status.
+   */
+  async findComposeBuildBaseline(
+    id: string
+  ): Promise<{ forceBuild: boolean; previous: ComposeBuildBaseline | null } | null> {
+    const current = await this.findById(id);
+    if (!current) return null;
+
+    const [previous] = await db
+      .select({
+        status: deployments.status,
+        commitHash: deployments.commitHash,
+        buildMetadata: deployments.buildMetadata,
+      })
+      .from(deployments)
+      .where(
+        and(
+          eq(deployments.projectId, current.projectId),
+          eq(deployments.environment, current.environment),
+          eq(deployments.isPreview, current.isPreview),
+          current.previewPrNumber == null
+            ? isNull(deployments.previewPrNumber)
+            : eq(deployments.previewPrNumber, current.previewPrNumber),
+          lt(deployments.createdAt, current.createdAt)
+        )
+      )
+      .orderBy(desc(deployments.createdAt))
+      .limit(1);
+
+    return { forceBuild: current.buildMetadata?.forceBuild === true, previous: previous ?? null };
   },
 
   /**

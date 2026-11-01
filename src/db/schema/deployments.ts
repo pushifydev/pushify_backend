@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, timestamp, text, pgEnum, boolean, integer } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, text, pgEnum, boolean, integer, jsonb } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 import { projects } from './projects';
 import { users } from './users';
@@ -72,6 +72,12 @@ export const deployments = pgTable('deployments', {
    * NULL for policy-blocked deploys and failures from before migration 0079 not yet backfilled.
    */
   failureSummary: text('failure_summary'),
+  /**
+   * How this deploy's build was decided (migration 0083). A forced redeploy is marked when it is
+   * created; a compose stack records its build inputs hash and images so the next deploy of the
+   * same stack can skip `docker compose build` (lib/compose-build-cache.ts). NULL otherwise.
+   */
+  buildMetadata: jsonb('build_metadata').$type<DeploymentBuildMetadata>(),
 
   // Timestamps
   buildStartedAt: timestamp('build_started_at', { withTimezone: true }),
@@ -91,6 +97,18 @@ export const deployments = pgTable('deployments', {
   triggeredById: uuid('triggered_by_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
+
+/** deployments.build_metadata */
+export interface DeploymentBuildMetadata {
+  /** Requested as a forced redeploy: build even when the build inputs are unchanged */
+  forceBuild?: boolean;
+  /** Compose stacks: keyed hash of what `docker compose build` reads */
+  composeInputsHash?: string;
+  /** Compose stacks: image name → image ID the stack was started with */
+  composeImages?: Record<string, string>;
+  /** Compose stacks: `docker compose build` was skipped because nothing it reads changed */
+  composeBuildSkipped?: boolean;
+}
 
 // Relations
 export const deploymentsRelations = relations(deployments, ({ one }) => ({
