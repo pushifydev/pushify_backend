@@ -55,6 +55,19 @@ describe('activity service audit helpers', () => {
     expect(inserted[0].metadata).not.toHaveProperty('apiKey');
   });
 
+  it('envvar.updated records a lock (admin-only) change as from -> to', async () => {
+    await activityService.logEnvVarUpdated('org-A', 'user-1', 'p-1', 'ROOT_DB_URL', {
+      valueChanged: false,
+      isSecret: { from: false, to: false },
+      locked: { from: false, to: true },
+    });
+    expect(inserted[0]).toMatchObject({
+      action: 'envvar.updated',
+      metadata: { key: 'ROOT_DB_URL', changed: ['locked'] },
+      changes: { locked: { from: false, to: true } },
+    });
+  });
+
   it('envvar.updated leaves an unchanged secret flag out of the diff', async () => {
     await activityService.logEnvVarUpdated('org-A', 'user-1', 'p-1', 'K', {
       valueChanged: true,

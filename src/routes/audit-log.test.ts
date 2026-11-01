@@ -61,7 +61,7 @@ vi.mock('../services/activity.service', () => ({
 
 const envVar = {
   id: 'ev-1', projectId: 'p-1', environment: 'production', key: 'STRIPE_KEY', value: 'sk_l********',
-  isSecret: true, createdAt: new Date(), updatedAt: new Date(),
+  isSecret: true, locked: false, masked: false, createdAt: new Date(), updatedAt: new Date(),
 };
 vi.mock('../services/envvar.service', () => ({
   envVarService: {
@@ -170,7 +170,8 @@ describe('audit log: critical events are recorded', () => {
     expect(res.status).toBe(200);
     const args = only('logEnvVarUpdated')[0].args;
     expect(args.slice(0, 5)).toEqual([
-      'org-A', 'user-1', P, 'STRIPE_KEY', { valueChanged: true, isSecret: { from: true, to: true } },
+      'org-A', 'user-1', P, 'STRIPE_KEY',
+      { valueChanged: true, isSecret: { from: true, to: true }, locked: { from: false, to: false } },
     ]);
     expect(args[7]).toBe('ui');
   });

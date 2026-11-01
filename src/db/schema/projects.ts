@@ -123,6 +123,11 @@ export const environmentVariables = pgTable('environment_variables', {
   key: varchar('key', { length: 255 }).notNull(),
   valueEncrypted: text('value_encrypted').notNull(), // Encrypted value
   isSecret: boolean('is_secret').default(false).notNull(),
+  /**
+   * Admin-only: the value is read and changed by owners/admins only; members and viewers see it
+   * withheld (services/envvar.service.ts). Deploys inject it like any other variable.
+   */
+  locked: boolean('locked').default(false).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });

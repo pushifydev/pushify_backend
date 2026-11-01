@@ -378,14 +378,19 @@ class ActivityService {
   /**
    * An env var changed. The value is never recorded, old or new, secret or not: the audit log is
    * readable by every admin and exported as CSV, and a secret that lands here has leaked. A value
-   * change is written as `{ value: { changed: true } }`; the secret flag is a plain from/to.
+   * change is written as `{ value: { changed: true } }`; the secret and lock (admin-only) flags are
+   * a plain from/to.
    */
   async logEnvVarUpdated(
     organizationId: string,
     userId: string,
     projectId: string,
     key: string,
-    diff: { valueChanged: boolean; isSecret?: { from: boolean; to: boolean } },
+    diff: {
+      valueChanged: boolean;
+      isSecret?: { from: boolean; to: boolean };
+      locked?: { from: boolean; to: boolean };
+    },
     ipAddress?: string,
     userAgent?: string,
     source?: AuditSource
@@ -394,6 +399,9 @@ class ActivityService {
     if (diff.valueChanged) changes.value = { changed: true };
     if (diff.isSecret && diff.isSecret.from !== diff.isSecret.to) {
       changes.isSecret = { from: diff.isSecret.from, to: diff.isSecret.to };
+    }
+    if (diff.locked && diff.locked.from !== diff.locked.to) {
+      changes.locked = { from: diff.locked.from, to: diff.locked.to };
     }
     await this.log({
       organizationId,

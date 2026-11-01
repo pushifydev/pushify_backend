@@ -217,6 +217,19 @@ describe.skipIf(!TEST_URL)('role access (real Postgres)', () => {
     expect(byKey).toEqual({ PUBLIC_URL: 'https://example.com', STRIPE_KEY: 'sk****gh' });
   });
 
+  it('a locked environment variable: owners and admins read and change it', async () => {
+    const [locked] = await db
+      .insert(environmentVariables)
+      .values({ projectId: ctx.otherProjectId, key: 'ROOT_TOKEN', valueEncrypted: encrypt('root-token-value'), locked: true, environment: 'production' })
+      .returning();
+    const seen = {} as Record<Role, string>;
+    for (const role of ROLES) {
+      seen[role] = (await envVarService.getById(locked.id, ctx.otherProjectId, ctx.orgId, ctx.users[role], 'en')).value;
+    }
+    expect(seen).toEqual({ owner: 'root-token-value', admin: 'root-token-value', member: '****', viewer: '****', restricted: '****' });
+    expect(await matrix((u) => envVarService.update(locked.id, ctx.otherProjectId, ctx.orgId, u, { value: 'root-token-value' }, 'en'))).toEqual(ADMINS);
+  });
+
   describe('routes', () => {
     const call = async (role: Role, method: string, path: string, body?: unknown, key?: string) => {
       const { app } = await import('../app');

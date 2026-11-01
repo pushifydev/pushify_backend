@@ -36,6 +36,11 @@ describe('selectDeployEnvVars', () => {
     }
   });
 
+  it('injects a locked (admin-only) variable like any other', () => {
+    const withLocked = [...rows, { key: 'ROOT_TOKEN', environment: 'production' as const, v: 'root', locked: true }];
+    expect(pick(selectDeployEnvVars(withLocked, { preview: false }))).toMatchObject({ ROOT_TOKEN: 'root' });
+  });
+
   it('is empty for a project with no variables', () => {
     expect(selectDeployEnvVars([], { preview: true })).toEqual([]);
   });

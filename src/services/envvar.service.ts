@@ -5,6 +5,7 @@ import { organizationRepository } from '../repositories/organization.repository'
 import { encrypt, decrypt } from '../lib/encryption';
 import { t, type SupportedLocale } from '../i18n';
 import { assertMemberProjectScope } from '../lib/member-project-scope';
+import type { environmentVariables } from '../db/schema/projects';
 
 type Environment = 'production' | 'staging' | 'development' | 'preview';
 
@@ -13,6 +14,7 @@ interface CreateEnvVarInput {
   value: string;
   environment?: Environment;
   isSecret?: boolean;
+  locked?: boolean;
 }
 
 interface BulkCreateInput {
@@ -27,7 +29,13 @@ interface BulkCreateInput {
 interface UpdateEnvVarInput {
   value?: string;
   isSecret?: boolean;
+  locked?: boolean;
 }
+
+type EnvVarRow = typeof environmentVariables.$inferSelect;
+
+/** Returned in place of a value the reader's role may not see. */
+const WITHHELD = '****';
 
 // Helper to mask secret values
 function maskValue(value: string): string {
@@ -35,13 +43,45 @@ function maskValue(value: string): string {
   return value.substring(0, 2) + '****' + value.substring(value.length - 2);
 }
 
+/** Owners and admins are the only roles that read or change a locked (admin-only) variable. */
+function canManageLocked(role: string): boolean {
+  return role === 'owner' || role === 'admin';
+}
+
+/** No value at all for this reader: viewers for every variable, members for locked ones. */
+function isWithheld(locked: boolean, role: string): boolean {
+  return role === 'viewer' || (locked && !canManageLocked(role));
+}
+
 /**
  * What a reader sees of a value: viewers see names only (every value is ****, nothing of the
- * secret leaks); others see plain values and secrets as their first/last two characters.
+ * secret leaks), and so do members for a locked variable; others see plain values and secrets as
+ * their first/last two characters. A withheld value is not decrypted.
  */
-function displayValue(decrypted: string, isSecret: boolean, role: string): string {
-  if (role === 'viewer') return '****';
-  return isSecret ? maskValue(decrypted) : decrypted;
+function displayValue(envVar: EnvVarRow, role: string): string {
+  if (isWithheld(envVar.locked, role)) return WITHHELD;
+  const decrypted = decrypt(envVar.valueEncrypted);
+  return envVar.isSecret ? maskValue(decrypted) : decrypted;
+}
+
+/** A variable as returned to `role`; `masked` is true when the value was withheld. */
+function toResponse(envVar: EnvVarRow, role: string) {
+  return {
+    id: envVar.id,
+    projectId: envVar.projectId,
+    environment: envVar.environment,
+    key: envVar.key,
+    value: displayValue(envVar, role),
+    isSecret: envVar.isSecret,
+    locked: envVar.locked,
+    masked: isWithheld(envVar.locked, role),
+    createdAt: envVar.createdAt,
+    updatedAt: envVar.updatedAt,
+  };
+}
+
+function adminRequired(locale: SupportedLocale): HTTPException {
+  return new HTTPException(403, { message: t(locale, 'organizations', 'adminRequired') });
 }
 
 async function readerRole(organizationId: string, userId: string): Promise<string> {
@@ -97,19 +137,7 @@ export const envVarService = {
     const envVars = await envVarRepository.findByProject(projectId, environment);
 
     // Decrypt values and mask secrets
-    return envVars.map((envVar) => {
-      const decryptedValue = decrypt(envVar.valueEncrypted);
-      return {
-        id: envVar.id,
-        projectId: envVar.projectId,
-        environment: envVar.environment,
-        key: envVar.key,
-        value: displayValue(decryptedValue, envVar.isSecret, role),
-        isSecret: envVar.isSecret,
-        createdAt: envVar.createdAt,
-        updatedAt: envVar.updatedAt,
-      };
-    });
+    return envVars.map((envVar) => toResponse(envVar, role));
   },
 
   /**
@@ -130,17 +158,7 @@ export const envVarService = {
       throw new HTTPException(404, { message: t(locale, 'envVars', 'notFound') });
     }
 
-    const decryptedValue = decrypt(envVar.valueEncrypted);
-    return {
-      id: envVar.id,
-      projectId: envVar.projectId,
-      environment: envVar.environment,
-      key: envVar.key,
-      value: displayValue(decryptedValue, envVar.isSecret, role),
-      isSecret: envVar.isSecret,
-      createdAt: envVar.createdAt,
-      updatedAt: envVar.updatedAt,
-    };
+    return toResponse(envVar, role);
   },
 
   /**
@@ -154,6 +172,11 @@ export const envVarService = {
     locale: SupportedLocale
   ) {
     await this.checkProjectAccess(projectId, organizationId, userId, locale, true);
+
+    // Only owners/admins create a locked (admin-only) variable.
+    if (input.locked && !canManageLocked(await readerRole(organizationId, userId))) {
+      throw adminRequired(locale);
+    }
 
     const environment = input.environment || 'production';
 
@@ -177,6 +200,7 @@ export const envVarService = {
       key: input.key,
       valueEncrypted,
       isSecret: input.isSecret,
+      locked: input.locked,
     });
 
     return {
@@ -186,6 +210,8 @@ export const envVarService = {
       key: envVar.key,
       value: envVar.isSecret ? maskValue(input.value) : input.value,
       isSecret: envVar.isSecret,
+      locked: envVar.locked,
+      masked: false,
       createdAt: envVar.createdAt,
       updatedAt: envVar.updatedAt,
     };
@@ -202,8 +228,20 @@ export const envVarService = {
     locale: SupportedLocale
   ) {
     await this.checkProjectAccess(projectId, organizationId, userId, locale, true);
+    const manageLocked = canManageLocked(await readerRole(organizationId, userId));
 
     const environment = input.environment || 'production';
+
+    // A locked variable is changed by owners/admins only. Checked for every key before anything is
+    // written, so a refused push changes nothing. The withheld placeholder a member gets back from
+    // a read is not a change and is skipped below.
+    if (!manageLocked) {
+      for (const variable of input.variables) {
+        const existing = await envVarRepository.findByKey(projectId, environment, variable.key);
+        if (existing?.locked && variable.value !== WITHHELD) throw adminRequired(locale);
+      }
+    }
+
     const results: Array<{
       id: string;
       key: string;
@@ -224,6 +262,10 @@ export const envVarService = {
       const valueEncrypted = encrypt(variable.value);
 
       if (existing) {
+        if (existing.locked && !manageLocked) {
+          results.push({ id: existing.id, key: variable.key, environment, isSecret: existing.isSecret, action: 'unchanged' });
+          continue;
+        }
         // `pushify env pull` writes secrets masked; pushing that file back must not replace the
         // real secret with its mask. An unchanged mask leaves the variable as it is.
         if (existing.isSecret && variable.value === maskValue(decrypt(existing.valueEncrypted))) {
@@ -282,7 +324,14 @@ export const envVarService = {
       throw new HTTPException(404, { message: t(locale, 'envVars', 'notFound') });
     }
 
-    const updateData: { valueEncrypted?: string; isSecret?: boolean } = {};
+    // A locked variable, and the lock itself, are changed by owners/admins only.
+    const role = await readerRole(organizationId, userId);
+    const changesLock = input.locked !== undefined && input.locked !== envVar.locked;
+    if ((envVar.locked || changesLock) && !canManageLocked(role)) {
+      throw adminRequired(locale);
+    }
+
+    const updateData: { valueEncrypted?: string; isSecret?: boolean; locked?: boolean } = {};
 
     if (input.value !== undefined) {
       updateData.valueEncrypted = encrypt(input.value);
@@ -292,19 +341,13 @@ export const envVarService = {
       updateData.isSecret = input.isSecret;
     }
 
+    if (input.locked !== undefined) {
+      updateData.locked = input.locked;
+    }
+
     const updated = await envVarRepository.update(envVarId, updateData);
 
-    const decryptedValue = decrypt(updated!.valueEncrypted);
-    return {
-      id: updated!.id,
-      projectId: updated!.projectId,
-      environment: updated!.environment,
-      key: updated!.key,
-      value: updated!.isSecret ? maskValue(decryptedValue) : decryptedValue,
-      isSecret: updated!.isSecret,
-      createdAt: updated!.createdAt,
-      updatedAt: updated!.updatedAt,
-    };
+    return toResponse(updated!, role);
   },
 
   /**
@@ -324,6 +367,10 @@ export const envVarService = {
       throw new HTTPException(404, { message: t(locale, 'envVars', 'notFound') });
     }
 
+    if (envVar.locked && !canManageLocked(await readerRole(organizationId, userId))) {
+      throw adminRequired(locale);
+    }
+
     await envVarRepository.delete(envVarId);
   },
 
@@ -337,6 +384,7 @@ export const envVarService = {
     locale?: SupportedLocale,
   ): Promise<{ copied: number; skipped: number; overwritten: number }> {
     await this.checkProjectAccess(projectId, organizationId, userId, locale as SupportedLocale, true);
+    const manageLocked = canManageLocked(await readerRole(organizationId, userId));
 
     // Get source env vars
     const sourceVars = await envVarRepository.findByProject(projectId, sourceEnv);
@@ -353,14 +401,20 @@ export const envVarService = {
     let overwritten = 0;
 
     for (const srcVar of sourceVars) {
-      const decryptedValue = decrypt(srcVar.valueEncrypted);
       const existingTarget = targetKeyMap.get(srcVar.key);
+      // Below owner/admin, a locked variable is neither copied nor overwritten: it is skipped.
+      if (!manageLocked && (srcVar.locked || existingTarget?.locked)) {
+        skipped++;
+        continue;
+      }
+      const decryptedValue = decrypt(srcVar.valueEncrypted);
 
       if (existingTarget) {
         if (overwrite) {
           await envVarRepository.update(existingTarget.id, {
             valueEncrypted: encrypt(decryptedValue),
             isSecret: srcVar.isSecret,
+            locked: srcVar.locked,
           });
           overwritten++;
         } else {
@@ -373,6 +427,7 @@ export const envVarService = {
           valueEncrypted: encrypt(decryptedValue),
           environment: targetEnv,
           isSecret: srcVar.isSecret,
+          locked: srcVar.locked,
         });
         copied++;
       }
