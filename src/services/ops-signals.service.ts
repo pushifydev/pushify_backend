@@ -1,6 +1,11 @@
 import { sql } from 'drizzle-orm';
 import { db } from '../db';
-import { classifyDeployFailure, type DeployFailureBlame } from '../lib/deploy-failure-classify';
+import {
+  classifyDeployFailure,
+  describeFailureCategory,
+  type DeployFailureBlame,
+  type DeployFailureCategory,
+} from '../lib/deploy-failure-classify';
 import {
   countDeployOutcomes,
   isPolicyBlocked,
@@ -8,8 +13,11 @@ import {
   stripFailurePrefix,
   summarizeDeployFailures,
 } from '../lib/deploy-failure-summary';
+import { FAILURE_SUMMARY_MAX_LENGTH } from '../lib/first-error-line';
+import { logger } from '../lib/logger';
 import { scrubSecrets } from '../lib/ops-scrub';
 import { diagnoseSiteDown, type SiteDownDiagnosis } from '../lib/site-down-diagnosis';
+import type { ContainerDownCause } from '../lib/container-down-cause';
 import type { ServerDiagnostics } from '../lib/app-health';
 import type { ServerDiskBreakdown } from '../lib/server-disk-cleanup';
 
@@ -114,17 +122,44 @@ export interface SiteDown {
   latestDeploy: {
     status: string;
     createdAt: string | null;
+    /**
+     * Machine-readable failure category (null unless the deploy failed): the one the deploy
+     * worker or the backfill stored in deployments.failure_category, else the classifier on the
+     * message; 'unknown' when neither names a cause. blame and label are this category's.
+     */
+    category: DeployFailureCategory | null;
     blame: DeployFailureBlame | null;
     label: string | null;
     error: string | null;
+    /** The first error line of the build log (deployments.failure_summary), scrubbed; null when none is stored. */
+    firstErrorLine: string | null;
   } | null;
   /**
    * Which layer is down, from the last health check (HTTP status / network error) and the stored
    * server checks rather than from the latest deployment alone, plus whether that is the
    * customer's to fix. Prefer this over downReason, which says deploy_failed whenever the latest
-   * deploy failed even when the site gives no HTTP answer at all.
+   * deploy failed even when the site gives no HTTP answer at all. kind 'unknown' when the stored
+   * record cannot be diagnosed.
    */
-  diagnosis: SiteDownDiagnosis;
+  diagnosis: SiteDownDiagnosis & { container: SiteDownContainer };
+}
+
+/**
+ * What the inspected app container showed (project_health_state.diagnostics.container): its
+ * Docker state, exit code, restarts, OOM flag and ports. Never its name (it carries the project
+ * slug), its log lines or its hint. state 'unknown': it could not be inspected, or no inspection
+ * is stored for this outage.
+ */
+export interface SiteDownContainer {
+  state: string;
+  cause: ContainerDownCause | null;
+  checkedAt: string | null;
+  exitCode: number | null;
+  restartCount: number | null;
+  oomKilled: boolean | null;
+  configuredPort: number | null;
+  listeningPorts: number[] | null;
+  loopbackPorts: number[] | null;
 }
 
 type SiteDownRow = Omit<SiteDown, 'hosting' | 'latestDeploy' | 'diagnosis'> & {
@@ -135,7 +170,43 @@ type SiteDownRow = Omit<SiteDown, 'hosting' | 'latestDeploy' | 'diagnosis'> & {
   latestStatus: string | null;
   latestCreatedAt: string | null;
   latestError: string | null;
+  latestFailureCategory?: string | null;
+  latestFailureSummary?: string | null;
 };
+
+/**
+ * The latest deploy's failure: the category stored with it when that names a cause, else the
+ * classifier on the message, as before (rows stored before migration 0078, or as 'unknown').
+ */
+function latestFailure(storedCategory: string | null | undefined, errorMessage: string | null) {
+  const stored = storedCategory ? describeFailureCategory(storedCategory) : null;
+  if (stored && stored.category !== 'unknown') return stored;
+  const { category, blame, label } = classifyDeployFailure('', errorMessage ?? '');
+  return { category, blame, label };
+}
+
+const CONTAINER_STATE = /^[a-z_]{1,32}$/;
+const intOrNull = (v: unknown) => (Number.isInteger(v) ? (v as number) : null);
+const portsOrNull = (v: unknown) => (Array.isArray(v) ? v.filter((p): p is number => Number.isInteger(p)) : null);
+
+/** The stored container inspection, field by field: the jsonb may be from an older shape, or absent. */
+function containerFacts(diagnostics: ServerDiagnostics | null | undefined): SiteDownContainer {
+  const c = (diagnostics?.container ?? null) as Record<string, unknown> | null;
+  if (!c || typeof c !== 'object') {
+    return { state: 'unknown', cause: null, checkedAt: null, exitCode: null, restartCount: null, oomKilled: null, configuredPort: null, listeningPorts: null, loopbackPorts: null };
+  }
+  return {
+    state: typeof c.state === 'string' && CONTAINER_STATE.test(c.state) ? c.state : 'unknown',
+    cause: typeof c.cause === 'string' && CONTAINER_STATE.test(c.cause) ? (c.cause as ContainerDownCause) : null,
+    checkedAt: typeof c.checkedAt === 'string' ? c.checkedAt : null,
+    exitCode: intOrNull(c.exitCode),
+    restartCount: intOrNull(c.restartCount),
+    oomKilled: typeof c.oomKilled === 'boolean' ? c.oomKilled : null,
+    configuredPort: intOrNull(c.configuredPort),
+    listeningPorts: portsOrNull(c.listeningPorts),
+    loopbackPorts: portsOrNull(c.loopbackPorts),
+  };
+}
 
 async function rows<T>(query: ReturnType<typeof sql>): Promise<T[]> {
   const result = await db.execute(query);
@@ -190,7 +261,8 @@ export const opsSignalsService = {
                h.status_code AS "statusCode", h.error, h.down_reason AS "downReason",
                h.diagnostics AS "diagnostics",
                ld.status AS "latestStatus", ${iso('ld.created_at')} AS "latestCreatedAt",
-               ld.error_message AS "latestError",
+               ld.error_message AS "latestError", ld.failure_category AS "latestFailureCategory",
+               ld.failure_summary AS "latestFailureSummary",
                s.is_managed AS "managed", s.status::text AS "serverStatus",
                s.status_message AS "serverStatusMessage",
                ${iso('s.last_seen_at')} AS "serverLastSeenAt",
@@ -203,7 +275,8 @@ export const opsSignalsService = {
           FROM project_health_state h
           JOIN projects p ON p.id = h.project_id
           LEFT JOIN servers s ON s.id = p.server_id
-          LEFT JOIN LATERAL (SELECT d.status::text AS status, d.created_at, d.error_message
+          LEFT JOIN LATERAL (SELECT d.status::text AS status, d.created_at, d.error_message,
+                                    d.failure_category, d.failure_summary
                                FROM deployments d WHERE d.project_id = h.project_id
                               ORDER BY d.created_at DESC LIMIT 1) ld ON true
          WHERE h.status = 'down' AND h.down_since < now() - ${sql.raw(`interval '${SITE_DOWN_GRACE_MIN} minutes'`)}
@@ -234,19 +307,26 @@ export const opsSignalsService = {
     const counts = countDeployOutcomes(outcomes);
     const sinceCounts = sinceRows ? countDeployOutcomes(sinceRows) : null;
     const sinceFailed = sinceRows?.filter((r) => r.status === 'failed' && !isPolicyBlocked(r)) ?? [];
-    const diagnosed: SiteDown[] = down.map(({ managed, latestStatus, latestCreatedAt, latestError, diagnostics, serverStatusMessage, ...d }) => {
+    const diagnosed: SiteDown[] = down.map(({ managed, latestStatus, latestCreatedAt, latestError, latestFailureCategory, latestFailureSummary, diagnostics, serverStatusMessage, ...d }) => {
       const failed = latestStatus === 'failed';
-      const classified = failed ? classifyDeployFailure('', latestError ?? '') : null;
+      const classified = failed ? latestFailure(latestFailureCategory, latestError) : null;
       const hosting: SiteDown['hosting'] = managed === null || managed === undefined ? 'shared' : managed ? 'managed' : 'byos';
-      const diagnosis = diagnoseSiteDown({
-        statusCode: d.statusCode ?? null,
-        error: d.error ?? null,
-        hosting,
-        diagnostics: diagnostics ?? null,
-        latestDeploy: latestStatus ? { status: latestStatus, blame: classified?.blame ?? null, label: classified?.label ?? null } : null,
-        serverStatus: d.serverStatus ?? null,
-        serverStatusMessage: serverStatusMessage ?? null,
-      });
+      let diagnosis: SiteDownDiagnosis;
+      try {
+        diagnosis = diagnoseSiteDown({
+          statusCode: d.statusCode ?? null,
+          error: d.error ?? null,
+          hosting,
+          diagnostics: diagnostics ?? null,
+          latestDeploy: latestStatus ? { status: latestStatus, blame: classified?.blame ?? null, label: classified?.label ?? null } : null,
+          serverStatus: d.serverStatus ?? null,
+          serverStatusMessage: serverStatusMessage ?? null,
+        });
+      } catch (err) {
+        // A stored record in a shape the diagnosis cannot read must not take the whole endpoint down.
+        logger.warn({ err, projectId: d.projectId }, 'Could not diagnose a down site for ops signals');
+        diagnosis = { kind: 'unknown', userSide: null, summary: 'The stored health record could not be diagnosed.' };
+      }
       return {
         ...d,
         hosting,
@@ -256,12 +336,14 @@ export const opsSignalsService = {
           ? {
               status: latestStatus,
               createdAt: latestCreatedAt ?? null,
+              category: classified?.category ?? null,
               blame: classified?.blame ?? null,
               label: classified?.label ?? null,
               error: failed ? scrubSecrets(latestError ? stripFailurePrefix(latestError) : null) : null,
+              firstErrorLine: failed ? scrubSecrets(latestFailureSummary, FAILURE_SUMMARY_MAX_LENGTH) : null,
             }
           : null,
-        diagnosis: { ...diagnosis, summary: scrubSecrets(diagnosis.summary) ?? diagnosis.summary },
+        diagnosis: { ...diagnosis, summary: scrubSecrets(diagnosis.summary) ?? diagnosis.summary, container: containerFacts(diagnostics) },
       };
     });
     const userServer = (s: SiteDown) => s.diagnosis.kind === 'user_server_unreachable';

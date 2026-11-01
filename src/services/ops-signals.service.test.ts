@@ -106,7 +106,10 @@ describe('opsSignalsService sitesDown query', () => {
     expect(user.latestDeploy?.error).toContain('Failed to compile.');
     expect(user.latestDeploy?.error).not.toContain('Type error');
     expect(platform.latestDeploy).toMatchObject({ status: 'failed', blame: 'server' });
-    expect(running.latestDeploy).toEqual({ status: 'running', createdAt: base.latestCreatedAt, blame: null, label: null, error: null });
+    expect(user.latestDeploy?.category).toBe('application_build');
+    expect(running.latestDeploy).toEqual({
+      status: 'running', createdAt: base.latestCreatedAt, category: null, blame: null, label: null, error: null, firstErrorLine: null,
+    });
     expect(none.downReason).toBeNull();
     expect(none.latestDeploy).toBeNull();
     expect(user).not.toHaveProperty('latestStatus');
@@ -165,6 +168,92 @@ describe('opsSignalsService sitesDown diagnosis', () => {
     expect(userServerUnreachable[0]).not.toHaveProperty('serverStatusMessage');
     const query = h.queries.map(render).find((q) => q.includes('project_health_state'))!;
     expect(query).toContain('s.status_message AS "serverStatusMessage"');
+  });
+});
+
+describe('opsSignalsService sitesDown stored failure and container facts', () => {
+  beforeEach(() => {
+    h.queries = [];
+    h.downRows = [];
+  });
+
+  // b1cecd19: ECONNREFUSED, no HTTP status, the latest deploy a failed build.
+  const base = {
+    projectId: 'b1cecd19', downSince: '2026-09-22T22:54:41Z', statusCode: null, error: 'fetch failed (ECONNREFUSED)',
+    managed: true, serverStatus: 'running', serverLastSeenAt: null, lastSuccessfulDeployAt: '2026-09-01T00:00:00Z',
+    ownerLastLoginAt: null, downReason: 'app_error', latestStatus: 'failed', latestCreatedAt: '2026-09-22T22:50:00Z',
+    latestError: '[Pushify] Docker build failed: exit code 1',
+  };
+  const exited = {
+    checkedAt: '2026-10-22T09:00:00.000Z', cause: 'container_exited', hint: 'Check its last log lines', state: 'exited',
+    name: 'pushify-secret-slug', exitCode: 1, restartCount: 0, oomKilled: false, finishedAt: '2026-09-22T22:53:10Z',
+    configuredPort: 3000, listeningPorts: null, loopbackPorts: null, logTail: 'DATABASE_URL=postgres://u:p@db/app',
+  };
+
+  it('selects the stored failure category and first error line of the latest deployment', async () => {
+    await opsSignalsService.getSignals();
+    const query = h.queries.map(render).find((q) => q.includes('project_health_state'))!;
+    expect(query).toContain('d.failure_category, d.failure_summary');
+    expect(query).toContain('ld.failure_category AS "latestFailureCategory"');
+    expect(query).toContain('ld.failure_summary AS "latestFailureSummary"');
+  });
+
+  it('gives the stored category, its first error line scrubbed, and the inspected container without name or logs', async () => {
+    h.downRows = [
+      {
+        ...base,
+        latestFailureCategory: 'application_build',
+        latestFailureSummary: 'Error: STRIPE_SECRET_KEY=sk_live_abcdefghijklmnop is not set',
+        diagnostics: { checkedAt: '2026-10-22T09:00:00.000Z', checks: [], failedCheck: null, advice: null, managed: true, container: exited },
+      },
+    ];
+    const { sitesDown } = await opsSignalsService.getSignals();
+    const [site] = sitesDown;
+    // The stored category wins over the message ("Docker build failed" would say docker_build, pushify side).
+    expect(site.latestDeploy).toMatchObject({
+      status: 'failed', createdAt: base.latestCreatedAt, category: 'application_build', blame: 'project', label: 'Application build failed',
+    });
+    expect(site.latestDeploy?.firstErrorLine).toContain('STRIPE_SECRET_KEY=[redacted]');
+    expect(site.latestDeploy?.firstErrorLine).not.toContain('sk_live_');
+    expect(site.lastSuccessfulDeployAt).toBe('2026-09-01T00:00:00Z');
+    expect(site.diagnosis).toMatchObject({ kind: 'build_failed', userSide: true, cause: 'container_exited' });
+    expect(site.diagnosis.container).toEqual({
+      state: 'exited', cause: 'container_exited', checkedAt: '2026-10-22T09:00:00.000Z', exitCode: 1, restartCount: 0,
+      oomKilled: false, configuredPort: 3000, listeningPorts: null, loopbackPorts: null,
+    });
+    expect(JSON.stringify(site)).not.toMatch(/pushify-secret-slug|postgres:|Check its last log lines/);
+    expect(site).not.toHaveProperty('latestFailureCategory');
+    expect(site).not.toHaveProperty('latestFailureSummary');
+  });
+
+  it('falls back to the message when the stored category is missing or unknown', async () => {
+    h.downRows = [
+      { ...base, projectId: 'old', latestFailureCategory: null, latestFailureSummary: null },
+      { ...base, projectId: 'unknown', latestFailureCategory: 'unknown', latestFailureSummary: 'boom' },
+      { ...base, projectId: 'nothing', latestError: 'something odd', latestFailureCategory: 'unknown', latestFailureSummary: null },
+    ];
+    const { sitesDown } = await opsSignalsService.getSignals();
+    const [old, unknown, nothing] = sitesDown;
+    expect(old.latestDeploy).toMatchObject({ status: 'failed', category: 'docker_build', blame: 'pushify', firstErrorLine: null });
+    expect(unknown.latestDeploy).toMatchObject({ category: 'docker_build', firstErrorLine: 'boom' });
+    expect(nothing.latestDeploy).toMatchObject({ status: 'failed', category: 'unknown', label: 'Deployment failed' });
+  });
+
+  it("says 'unknown' when the container was not inspected, and does not fail on a record it cannot read", async () => {
+    h.downRows = [
+      { ...base, projectId: 'none', diagnostics: null },
+      { ...base, projectId: 'uninspected', diagnostics: { checkedAt: 'x', checks: [], failedCheck: null, advice: null, managed: true, container: { state: 'unknown', cause: null } } },
+      { ...base, projectId: 'broken', diagnostics: { checks: 'not-a-list', failedCheck: 'http_port', container: { state: 42, listeningPorts: 'x' } } },
+    ];
+    const { sitesDown } = await opsSignalsService.getSignals();
+    const [none, uninspected, broken] = sitesDown;
+    for (const site of sitesDown) {
+      expect(site.latestDeploy).toMatchObject({ status: 'failed', category: 'docker_build' });
+      expect(site.diagnosis.container).toMatchObject({ state: 'unknown', cause: null, listeningPorts: null });
+    }
+    expect(none.diagnosis.kind).toBe('container_not_running');
+    expect(uninspected.diagnosis.summary).toContain('could not be inspected');
+    expect(broken.diagnosis).toMatchObject({ kind: 'unknown', userSide: null });
   });
 });
 

@@ -160,6 +160,10 @@ describe('site down with ECONNREFUSED behind a failed Docker build: health check
     const [site] = sitesDown;
     expect(site).toMatchObject({ projectId: candidate.projectId, statusCode: null, error: 'fetch failed (ECONNREFUSED)' });
     expect(site.latestDeploy?.status).toBe('failed');
+    // The failure is machine-readable, and the container that could not be inspected says 'unknown'.
+    expect(site.latestDeploy).toMatchObject({ category: 'docker_build', createdAt: '2026-09-22T22:50:00Z' });
+    expect(site.lastSuccessfulDeployAt).toBe('2026-09-01T00:00:00Z');
+    expect(site.diagnosis.container).toMatchObject({ state: 'unknown', cause: null });
     expect(site.diagnosis.kind).toBe('container_not_running');
     expect(site.diagnosis.kind).not.toBe('build_failed');
     expect(site.diagnosis.summary).toContain('ECONNREFUSED');
