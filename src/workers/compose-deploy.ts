@@ -6,6 +6,13 @@ import { shSingleQuote } from './shell';
 import { checkComposeFile } from '../lib/host-access-guard';
 import { COMPOSE_FILENAMES, planCompose, renderDeployableCompose } from '../lib/compose-project';
 import { dockerConfigPrefix } from '../lib/registry';
+import {
+  composeBuildInputsHash,
+  decideComposeBuild,
+  type ComposeBuildBaseline,
+} from '../lib/compose-build-cache';
+import type { DeploymentBuildMetadata } from '../db/schema/deployments';
+import { env } from '../config/env';
 
 /**
  * Deploy a repository as a Docker Compose stack — the customer's own compose file, from their
@@ -34,6 +41,12 @@ export interface ComposeDeployOptions {
   sharedHost: boolean;
   /** This deploy's private-registry logins, for images and `build:` steps in the stack */
   dockerConfig: string | null;
+  /** The commit this deploy is for (the deployment row's commitHash) */
+  commitHash: string | null;
+  /** Build even when the build inputs are unchanged */
+  forceBuild: boolean;
+  /** The previous deploy of the same stack, to skip the build when nothing it reads changed */
+  previous: ComposeBuildBaseline | null;
   onProgress: (message: string) => void;
 }
 
@@ -41,6 +54,8 @@ export interface ComposeDeployResult {
   success: true;
   deploymentUrl: string;
   containerPort: number;
+  /** Recorded on the deployment row for the next deploy's build decision */
+  buildMetadata: DeploymentBuildMetadata;
 }
 
 /**
@@ -79,6 +94,9 @@ export async function deployComposeFromRepo(
     envVars,
     sharedHost,
     dockerConfig,
+    commitHash,
+    forceBuild,
+    previous,
     onProgress,
   } = options;
 
@@ -156,13 +174,34 @@ export async function deployComposeFromRepo(
   const pull = await ssh.exec(`${compose('pull --ignore-pull-failures')} 2>&1`);
   if (pull.code !== 0) onProgress('⚠️ Some images could not be pulled; they will be built or already exist');
 
-  onProgress('🔨 Building images...');
-  const build = await ssh.exec(`${compose('build')} 2>&1`);
-  if (build.code !== 0) {
-    const buildOutput = `${build.stdout}\n${build.stderr}`;
-    throw new Error(
-      `Docker build failed for the compose stack; the previous stack (if any) keeps serving:\n${buildOutput.slice(-1200)}`
-    );
+  // Build only when something the build reads may have changed (lib/compose-build-cache.ts): a
+  // redeploy that changed only runtime variables or replicas starts the images it already has.
+  const head = await ssh.exec(`git -C ${shSingleQuote(workDir)} rev-parse HEAD 2>/dev/null`);
+  const resolvedConfig = await ssh.exec(`${compose('config')} 2>/dev/null`);
+  const inputsHash =
+    head.code === 0 && resolvedConfig.code === 0
+      ? composeBuildInputsHash(
+          { head: head.stdout, composeYaml, resolvedConfig: resolvedConfig.stdout },
+          env.ENCRYPTION_KEY
+        )
+      : null;
+  const imagesBefore = !forceBuild && previous ? await stackImages(ssh, compose) : null;
+  const decision = decideComposeBuild({ forceBuild, commitHash, inputsHash, images: imagesBefore, previous });
+
+  let images: Record<string, string> | null;
+  if (decision.build) {
+    onProgress(`🔨 Building images (${decision.reason})...`);
+    const build = await ssh.exec(`${compose('build')} 2>&1`);
+    if (build.code !== 0) {
+      const buildOutput = `${build.stdout}\n${build.stderr}`;
+      throw new Error(
+        `Docker build failed for the compose stack; the previous stack (if any) keeps serving:\n${buildOutput.slice(-1200)}`
+      );
+    }
+    images = await stackImages(ssh, compose);
+  } else {
+    onProgress('⏭️ Build inputs unchanged, build skipped — starting the images already on the server');
+    images = imagesBefore;
   }
 
   // A previous stack of this project, if any — its containers hold the ports
@@ -173,7 +212,8 @@ export async function deployComposeFromRepo(
   if (!sharedHost) await openFirewallPort(ssh, hostPort, onProgress);
 
   onProgress('🚀 Starting the stack...');
-  // Images were built above; `up` only starts them, so nothing can fail to build after `down`.
+  // Images were built (or found unchanged) above; `up` only starts them, so nothing can fail to
+  // build after `down`.
   const up = await ssh.exec(`${compose('up -d --remove-orphans')} 2>&1`);
   const upOutput = `${up.stdout}\n${up.stderr}`;
   if (up.code !== 0) {
@@ -195,7 +235,36 @@ export async function deployComposeFromRepo(
   const { setupNginxAndDomain } = await import('./remote-deployment');
   const deploymentUrl = await setupNginxAndDomain(ssh, server, projectId, projectSlug, hostPort, onProgress);
 
-  return { success: true, deploymentUrl, containerPort: hostPort };
+  const buildMetadata: DeploymentBuildMetadata = {
+    ...(forceBuild ? { forceBuild: true } : {}),
+    composeBuildSkipped: !decision.build,
+    // Without both, the next deploy of this stack builds
+    ...(inputsHash && images ? { composeInputsHash: inputsHash, composeImages: images } : {}),
+  };
+  return { success: true, deploymentUrl, containerPort: hostPort, buildMetadata };
+}
+
+/**
+ * Image name → image ID for every image the stack runs (`docker compose config --images`), or
+ * null when one of them is not on the server or the list cannot be read.
+ */
+async function stackImages(
+  ssh: SSHClient,
+  compose: (args: string) => string
+): Promise<Record<string, string> | null> {
+  const listed = await ssh.exec(`${compose('config --images')} 2>/dev/null`);
+  if (listed.code !== 0) return null;
+  const names = [...new Set(listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean))].sort();
+  if (names.length === 0) return null;
+
+  // One ID per name, in the order given; a missing image makes the command fail
+  const inspect = await ssh.exec(
+    `docker image inspect --format '{{.Id}}' ${names.map((name) => shSingleQuote(name)).join(' ')} 2>/dev/null`
+  );
+  if (inspect.code !== 0) return null;
+  const ids = inspect.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+  if (ids.length !== names.length) return null;
+  return Object.fromEntries(names.map((name, i) => [name, ids[i]]));
 }
 
 /** Workers and cron jobs configured on a project that now deploys as a stack. */

@@ -231,7 +231,8 @@ const redeployRoute = createRoute({
   path: '/{deploymentId}/redeploy',
   tags: ['Deployments'],
   summary: 'Redeploy',
-  description: 'Create a new deployment with the same configuration',
+  description:
+    'Create a new deployment with the same configuration. A compose stack whose build inputs are unchanged since its previous successful deploy skips `docker compose build`; send the optional JSON body `{ "forceBuild": true }` to build anyway.',
   security: [{ bearerAuth: [] }],
   request: {
     params: z.object({
@@ -508,13 +509,16 @@ deploymentRouter.openapi(redeployRoute, async (c) => {
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
   const { projectId, deploymentId } = c.req.valid('param');
+  // Optional body: clients that send none keep working
+  const body = await c.req.json().catch(() => ({}));
 
   const deployment = await deploymentService.redeploy(
     deploymentId,
     projectId,
     organizationId,
     userId,
-    locale
+    locale,
+    { forceBuild: body?.forceBuild === true }
   );
 
   // Log activity

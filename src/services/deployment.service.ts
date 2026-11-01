@@ -46,6 +46,8 @@ interface CreateDeploymentInput {
   /** 'staging' deploys the project's staging copy (its own container, domains and variables) */
   environment?: 'production' | 'staging';
   rollbackFromDeploymentId?: string; // For quick rollback
+  /** Build even when the build inputs are unchanged (compose stacks otherwise skip the build) */
+  forceBuild?: boolean;
 }
 
 export const deploymentService = {
@@ -202,6 +204,7 @@ export const deploymentService = {
       triggeredById: userId,
       environment,
       rollbackFromDeploymentId: input.rollbackFromDeploymentId,
+      buildMetadata: input.forceBuild ? { forceBuild: true } : undefined,
     });
 
     const { scheduleDeploymentProcessing } = await import('../lib/deployment-scheduler');
@@ -283,14 +286,16 @@ export const deploymentService = {
   },
 
   /**
-   * Redeploy (create new deployment from existing one)
+   * Redeploy (create new deployment from existing one). `forceBuild` builds even when nothing
+   * the build reads changed; a compose stack otherwise starts the images it already has.
    */
   async redeploy(
     deploymentId: string,
     projectId: string,
     organizationId: string,
     userId: string,
-    locale: SupportedLocale
+    locale: SupportedLocale,
+    options: { forceBuild?: boolean } = {}
   ) {
     await this.checkProjectAccess(projectId, organizationId, userId, locale, 'member');
 
@@ -309,6 +314,7 @@ export const deploymentService = {
         commitMessage: deployment.commitMessage ?? undefined,
         branch: deployment.branch ?? undefined,
         trigger: 'redeploy',
+        forceBuild: options.forceBuild === true,
       },
       locale
     );
