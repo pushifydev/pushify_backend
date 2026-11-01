@@ -301,6 +301,12 @@ remind you to back up. An install older than the script doesn't have it yet, so 
 once, in the install directory:
 `curl -fsSL https://raw.githubusercontent.com/pushifydev/pushify_backend/master/selfhost/update.sh | bash -s -- --dry-run`.
 
+To see whether an update is due without logging in to the host, a platform admin can call
+`GET /api/v1/admin/platform/version`. It compares the running version with the latest GitHub
+release (checked at most every 6 hours) and sets `securityRelease: true` when a release you are
+missing is a security release. `PUSHIFY_DISABLE_UPDATE_CHECK=true` in `.env` turns that check off,
+and then the API never contacts GitHub. The update itself is always done with the script above.
+
 ## Troubleshooting
 
 - **API unhealthy on first boot** — usually a migration still running or a bad `.env` value:

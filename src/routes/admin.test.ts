@@ -58,6 +58,10 @@ vi.mock('../services/abuse.service', () => ({
   AUP_CLAUSES: { 'proxy-vpn': 'Acceptable Use §2.1' },
 }));
 
+vi.mock('../lib/platform-version', () => ({
+  getPlatformVersion: mocks.service,
+}));
+
 vi.mock('../config/env', () => ({
   env: { ADMIN_EMAILS: 'root@example.com, ops@example.com', TRUSTED_PROXY_HOPS: 0 },
 }));
@@ -109,6 +113,15 @@ describe('admin routes', () => {
   it('rejects an unknown user id even if it is in the token', async () => {
     const res = await call('/overview', 'GET', { 'x-test-user': 'ghost' });
     expect(res.status).toBe(404);
+  });
+
+  it('walks the platform version route too, and keeps it out of the OpenAPI document', async () => {
+    expect(endpoints).toContainEqual({ method: 'GET', path: '/platform/version' });
+    const { OpenAPIHono } = await import('@hono/zod-openapi');
+    const app = new OpenAPIHono();
+    app.route('/api/v1/admin', adminRoutes);
+    const doc = app.getOpenAPI31Document({ openapi: '3.1.0', info: { title: 't', version: '0' } });
+    expect(Object.keys(doc.paths ?? {}).filter((p) => p.includes('admin'))).toEqual([]);
   });
 });
 
