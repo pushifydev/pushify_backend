@@ -102,6 +102,11 @@ export const tr: TranslationKeys = {
     invitationAlreadyPending: 'Bu e-postaya zaten bir davet gönderilmiş',
     invitationAccepted: 'Organizasyona başarıyla katıldınız',
     invitationEmailMismatch: 'Bu davet farklı bir e-posta adresine gönderilmiştir',
+    ownerRequired: 'Bu işlemi yalnızca organizasyon sahibi yapabilir',
+    twoFactorRequired:
+      'Bu organizasyon iki adımlı doğrulama gerektiriyor. Devam etmek için Ayarlar → Güvenlik bölümünden etkinleştirin.',
+    enableOwnTwoFactorFirst: 'Organizasyon için zorunlu kılmadan önce kendi hesabınızda iki adımlı doğrulamayı etkinleştirin',
+    twoFactorPolicyUpdated: 'İki adımlı doğrulama zorunluluğu güncellendi',
   },
 
   // Environment Variables

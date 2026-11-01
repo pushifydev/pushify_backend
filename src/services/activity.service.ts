@@ -623,6 +623,33 @@ class ActivityService {
   }
 
   /**
+   * The owner turned the organization-wide 2FA requirement on or off. Recorded as
+   * `settings.updated` with `setting: 'two_factor_policy'` so no enum migration is needed.
+   */
+  async logTwoFactorPolicyChanged(
+    organizationId: string,
+    userId: string,
+    requireTwoFactor: boolean,
+    ipAddress?: string,
+    userAgent?: string,
+    source?: AuditSource
+  ): Promise<void> {
+    await this.log({
+      organizationId,
+      userId,
+      action: 'settings.updated',
+      description: requireTwoFactor
+        ? 'Required two-factor authentication for all members'
+        : 'Stopped requiring two-factor authentication for members',
+      metadata: { setting: 'two_factor_policy', operation: requireTwoFactor ? 'enabled' : 'disabled' },
+      changes: { requireTwoFactor: { from: !requireTwoFactor, to: requireTwoFactor } },
+      ipAddress,
+      userAgent,
+      source,
+    });
+  }
+
+  /**
    * A private registry login was added (or replaced) for the organization. Recorded as
    * `settings.updated` with `setting: 'registry'` so no enum migration is needed. Only the host,
    * name and username are written — never the password or token.

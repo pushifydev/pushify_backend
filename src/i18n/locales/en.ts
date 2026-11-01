@@ -92,6 +92,10 @@ export interface TranslationKeys {
     invitationAlreadyPending: string;
     invitationAccepted: string;
     invitationEmailMismatch: string;
+    ownerRequired: string;
+    twoFactorRequired: string;
+    enableOwnTwoFactorFirst: string;
+    twoFactorPolicyUpdated: string;
   };
   envVars: {
     notFound: string;
@@ -469,6 +473,11 @@ export const en: TranslationKeys = {
     invitationAlreadyPending: 'An invitation has already been sent to this email',
     invitationAccepted: 'You have successfully joined the organization',
     invitationEmailMismatch: 'This invitation was sent to a different email address',
+    ownerRequired: 'Only the organization owner can perform this action',
+    twoFactorRequired:
+      'This organization requires two-factor authentication. Enable it under Settings → Security to continue.',
+    enableOwnTwoFactorFirst: 'Enable two-factor authentication on your own account before requiring it for the organization',
+    twoFactorPolicyUpdated: 'Two-factor requirement updated',
   },
 
   // Environment Variables

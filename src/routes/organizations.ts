@@ -106,6 +106,41 @@ organizationRouter.patch('/', async (c) => {
   });
 });
 
+// Organization-wide 2FA requirement (owner only; turning it on needs the owner's own 2FA).
+// Enforced for sessions by authMiddleware — see lib/org-two-factor for exemptions, API keys and SSO.
+organizationRouter.put('/two-factor-policy', async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const body = z
+    .object({ requireTwoFactor: z.boolean() })
+    .safeParse(await c.req.json().catch(() => ({})));
+  if (!body.success) throw new HTTPException(400, { message: t(locale, 'validation', 'invalidRequest') });
+
+  const result = await organizationService.setTwoFactorPolicy(
+    organizationId,
+    userId,
+    body.data.requireTwoFactor,
+    locale
+  );
+
+  if (result.changed) {
+    await activityService.logTwoFactorPolicyChanged(
+      organizationId,
+      userId,
+      result.requireTwoFactor,
+      c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
+      c.req.header('user-agent'),
+      auditSource(c)
+    );
+  }
+
+  return c.json({
+    data: { requireTwoFactor: result.requireTwoFactor },
+    message: t(locale, 'organizations', 'twoFactorPolicyUpdated'),
+  });
+});
+
 // Get all members
 organizationRouter.get('/members', async (c) => {
   const userId = c.get('userId')!;
