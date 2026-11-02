@@ -17,6 +17,20 @@ interface UpdateOrganizationInput {
   slug?: string;
 }
 
+/**
+ * Roles that can be granted by adding a member, changing a role or inviting someone. 'owner' is
+ * deliberately missing: the DB enum accepts it, so without this check an admin could make
+ * themselves (or anyone) owner. The routes validate the same list; this is the second line.
+ */
+const ASSIGNABLE_MEMBER_ROLES = ['admin', 'member', 'viewer'] as const;
+type AssignableMemberRole = (typeof ASSIGNABLE_MEMBER_ROLES)[number];
+
+function assertAssignableRole(role: unknown, locale: SupportedLocale): asserts role is AssignableMemberRole {
+  if (!(ASSIGNABLE_MEMBER_ROLES as readonly unknown[]).includes(role)) {
+    throw new HTTPException(400, { message: t(locale, 'validation', 'invalidRequest') });
+  }
+}
+
 export const organizationService = {
   /**
    * Get organization details
@@ -269,9 +283,11 @@ export const organizationService = {
     organizationId: string,
     userId: string,
     email: string,
-    role: 'admin' | 'member' | 'viewer',
+    role: AssignableMemberRole,
     locale: SupportedLocale = 'en'
   ) {
+    assertAssignableRole(role, locale);
+
     const membership = await organizationRepository.findMember(organizationId, userId);
     if (!membership) {
       throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
@@ -313,9 +329,11 @@ export const organizationService = {
     organizationId: string,
     userId: string,
     targetUserId: string,
-    role: 'admin' | 'member' | 'viewer',
+    role: AssignableMemberRole,
     locale: SupportedLocale = 'en'
   ) {
+    assertAssignableRole(role, locale);
+
     const membership = await organizationRepository.findMember(organizationId, userId);
     if (!membership) {
       throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
@@ -383,10 +401,12 @@ export const organizationService = {
     organizationId: string,
     userId: string,
     email: string,
-    role: 'admin' | 'member' | 'viewer',
+    role: AssignableMemberRole,
     note: string | undefined,
     locale: SupportedLocale = 'en'
   ) {
+    assertAssignableRole(role, locale);
+
     const membership = await organizationRepository.findMember(organizationId, userId);
     if (!membership) {
       throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });

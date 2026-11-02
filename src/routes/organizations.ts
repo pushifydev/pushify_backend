@@ -7,11 +7,21 @@ import { authService } from '../services/auth.service';
 import { activityService } from '../services/activity.service';
 import { organizationRepository } from '../repositories/organization.repository';
 import { authMiddleware } from '../middleware/auth';
-import { t } from '../i18n';
+import { t, type SupportedLocale } from '../i18n';
 import type { AppEnv } from '../types';
 import { auditSource } from '../lib/audit';
 
 const organizationRouter = new Hono<AppEnv>();
+
+// Roles that members, role changes and invitations may grant. Never 'owner': the DB enum accepts
+// it, so an admin could otherwise promote themselves. The service checks the same list again.
+const assignableRoleSchema = z.enum(['admin', 'member', 'viewer']);
+
+function parseAssignableRole(value: unknown, locale: SupportedLocale) {
+  const parsed = assignableRoleSchema.safeParse(value);
+  if (!parsed.success) throw new HTTPException(400, { message: t(locale, 'validation', 'invalidRequest') });
+  return parsed.data;
+}
 
 // All routes require authentication
 organizationRouter.use('*', authMiddleware);
@@ -163,7 +173,7 @@ organizationRouter.post('/members', async (c) => {
     organizationId,
     userId,
     email,
-    role || 'member',
+    parseAssignableRole(role || 'member', locale),
     locale
   );
 
@@ -190,7 +200,8 @@ organizationRouter.patch('/members/:userId', async (c) => {
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
   const targetUserId = c.req.param('userId');
-  const { role } = await c.req.json();
+  const body = await c.req.json();
+  const role = parseAssignableRole(body?.role, locale);
 
   // Read the role before the change so the audit entry can show from -> to.
   const before = await organizationRepository.findMember(organizationId, targetUserId);
@@ -316,7 +327,7 @@ organizationRouter.post('/invitations', async (c) => {
     organizationId,
     userId,
     email,
-    role || 'member',
+    parseAssignableRole(role || 'member', locale),
     note,
     locale
   );
