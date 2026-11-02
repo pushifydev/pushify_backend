@@ -48,4 +48,33 @@ describe('cloneRepository', () => {
     expect(result.branch).toBe('main');
     expect(result.commitHash).toBe('1234567890abcdef');
   });
+
+  describe('access token in the clone URL', () => {
+    const cloneUrlFor = async (repoUrl: string) => {
+      execStreamingCommand.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
+      execCommand.mockResolvedValue({ stdout: 'main\n', stderr: '', exitCode: 0 });
+      await cloneRepository({ repoUrl, accessToken: 'SECRET' });
+      const args = execStreamingCommand.mock.calls[0][1] as string[];
+      return args[args.indexOf('--') + 1];
+    };
+
+    it.each([
+      'https://evil.example/github.com/acme/repo',
+      'https://gitlab.evil.example/x/y',
+      'https://evil.example/https://github.com/a/b',
+      'http://gitlab.com/x/y',
+    ])('is never sent to %s', async (repoUrl) => {
+      expect(await cloneUrlFor(repoUrl)).toBe(repoUrl);
+      // nothing to scrub from .git/config either
+      expect(execCommand.mock.calls.some(([cmd]) => String(cmd).includes('remote set-url'))).toBe(false);
+    });
+
+    it('goes to github.com and gitlab.com, then is scrubbed from .git/config', async () => {
+      expect(await cloneUrlFor('https://github.com/acme/app')).toBe('https://x-access-token:SECRET@github.com/acme/app');
+      expect(execCommand).toHaveBeenCalledWith("git remote set-url origin 'https://github.com/acme/app'", expect.anything());
+
+      execStreamingCommand.mockReset();
+      expect(await cloneUrlFor('https://gitlab.com/x/y')).toBe('https://oauth2:SECRET@gitlab.com/x/y');
+    });
+  });
 });

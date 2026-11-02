@@ -1,5 +1,6 @@
 import { eq, and } from 'drizzle-orm';
 import { redactUrlCredentials } from '../lib/utils';
+import { authenticatedCloneUrl } from '../lib/git-clone-url';
 import { db } from '../db';
 import { servers } from '../db/schema/servers';
 import { domains } from '../db/schema/projects';
@@ -1199,18 +1200,8 @@ export async function deployToRemoteServer(
       // Clone repository
       onProgress(`📥 Cloning repository: ${repoUrl}`);
 
-      // Build clone URL with token if available
-      let cloneUrl = repoUrl;
-      if (accessToken && repoUrl.includes('github.com')) {
-        cloneUrl = repoUrl.replace('https://', `https://x-access-token:${accessToken}@`);
-      } else if (accessToken && repoUrl.includes('gitlab')) {
-        try {
-          const parsed = new URL(repoUrl);
-          cloneUrl = `${parsed.protocol}//oauth2:${accessToken}@${parsed.host}${parsed.pathname}`;
-        } catch {
-          cloneUrl = repoUrl.replace('https://', `https://oauth2:${accessToken}@`);
-        }
-      }
+      // Token only for https github.com / our GitLab host — never to whatever host the URL names.
+      const cloneUrl = authenticatedCloneUrl(repoUrl, accessToken);
 
       // Every value single-quoted and `--` before the URL: these came from the customer and this
       // runs as root (a branch like `x;curl …|sh` or a URL with `$(…)` used to execute).

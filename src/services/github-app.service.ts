@@ -16,6 +16,7 @@ import {
 } from '../db/schema/integrations';
 import { env } from '../config/env';
 import { logger } from '../lib/logger';
+import { gitHostOf, parseGitRemote } from '../lib/git-clone-url';
 import {
   createAppJwt,
   forgetInstallationToken,
@@ -54,11 +55,16 @@ export function installUrl(state?: string): string | null {
   return url.toString();
 }
 
-/** `owner/repo` from any GitHub URL shape we store. */
+/**
+ * `owner/repo` from any GitHub URL shape we store — only when the host really is github.com
+ * (`https://evil.example/github.com/acme/site` used to resolve to acme's installation).
+ */
 export function repoFullNameFromUrl(repoUrl: string | null | undefined): string | null {
-  if (!repoUrl) return null;
+  if (gitHostOf(repoUrl) !== 'github') return null;
+  const remote = parseGitRemote(repoUrl);
+  if (!remote) return null;
 
-  const match = repoUrl.match(/github\.com[/:]([^/]+)\/([^/.]+)(?:\.git)?/i);
+  const match = remote.path.match(/^\/?([^/]+)\/([^/.]+)(?:\.git)?/i);
   if (!match) return null;
   return `${match[1]}/${match[2]}`;
 }

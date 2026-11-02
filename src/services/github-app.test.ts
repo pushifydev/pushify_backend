@@ -92,6 +92,13 @@ describe('repoFullNameFromUrl', () => {
     expect(repoFullNameFromUrl(null)).toBeNull();
     expect(repoFullNameFromUrl('')).toBeNull();
   });
+
+  it('does not find acme/site in a URL on another host', () => {
+    // It resolved to acme's App installation, whose token then went to evil.example on clone.
+    expect(repoFullNameFromUrl('https://evil.example/github.com/acme/site')).toBeNull();
+    expect(repoFullNameFromUrl('https://evil.example/https://github.com/acme/site')).toBeNull();
+    expect(repoFullNameFromUrl('https://github.com.evil.example/acme/site')).toBeNull();
+  });
 });
 
 describe('detectGitProviderFromUrl', () => {
@@ -99,6 +106,11 @@ describe('detectGitProviderFromUrl', () => {
     expect(detectGitProviderFromUrl('https://github.com/a/b')).toBe('github');
     expect(detectGitProviderFromUrl('https://gitlab.com/a/b')).toBe('gitlab');
     expect(detectGitProviderFromUrl('https://example.com/a/b')).toBeNull();
+  });
+
+  it('goes by the host, not by what the URL mentions', () => {
+    expect(detectGitProviderFromUrl('https://evil.example/github.com/acme/repo')).toBeNull();
+    expect(detectGitProviderFromUrl('https://gitlab.evil.example/x/y')).toBeNull();
   });
 });
 
@@ -246,6 +258,24 @@ describe('resolveProjectGitAccess', () => {
     const result = await resolveProjectGitAccess('project-1');
     expect(result.isPublic).toBeNull();
     expect(mocks.repoAccess).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['github', 'https://evil.example/github.com/acme/site'],
+    ['github', 'https://gitlab.com/acme/site'],
+    ['gitlab', 'https://gitlab.evil.example/x/y'],
+    ['gitlab', 'https://github.com/acme/site'],
+  ])('hands no credential to a %s project whose URL is %s', async (gitProvider, gitRepoUrl) => {
+    // The stored provider is the member's choice; the token must only go where it was issued.
+    mocks.findProject.mockResolvedValue(project({ gitProvider, gitRepoUrl }));
+    mocks.findInstallationForRepo.mockResolvedValue({ installationId: 42, accountLogin: 'acme' });
+
+    const result = await resolveProjectGitAccess('project-1', { checkPublic: true });
+
+    expect(result.credential).toBeNull();
+    expect(mocks.tokenFor).not.toHaveBeenCalled();
+    expect(mocks.githubIntegration).not.toHaveBeenCalled();
+    expect(mocks.gitlabIntegration).not.toHaveBeenCalled();
   });
 
   it('treats a non-git project as having no provider', async () => {
