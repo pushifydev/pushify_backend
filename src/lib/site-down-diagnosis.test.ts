@@ -186,6 +186,26 @@ describe('diagnoseSiteDown', () => {
     expect(diagnoseSiteDown({ ...base, error, diagnostics: checks({ ssh: 'timeout' }) }).kind).toBe('unreachable');
   });
 
+  it('a refused connection after a successful deploy is the container not listening, never a build failure', () => {
+    const error = 'fetch failed (ECONNREFUSED)';
+    const succeeded = { status: 'running', blame: null, label: null };
+    const d = diagnoseSiteDown({ ...base, error, latestDeploy: succeeded });
+    expect(d).toMatchObject({ kind: 'container_not_running', userSide: null });
+    expect(d.summary).toContain('nothing listens on the port');
+    expect(d.summary).not.toMatch(/build/i);
+
+    // Even when the inspected container is not running, a deploy that succeeded is not blamed.
+    const exited = diagnoseContainer({
+      inspection: {
+        state: 'exited', name: 'pushify-app', exitCode: 1, restartCount: 0, oomKilled: false, finishedAt: null,
+        publishedPort: 3000, listeningPorts: null, loopbackPorts: null, logTail: null,
+      },
+    });
+    const c = diagnoseSiteDown({ ...base, error, latestDeploy: succeeded, diagnostics: { ...checks({}), container: exited } });
+    expect(c).toMatchObject({ kind: 'container_not_running', cause: 'container_exited' });
+    expect(c.summary).not.toMatch(/build/i);
+  });
+
   it('without server checks it says so instead of guessing', () => {
     expect(diagnoseSiteDown(base)).toMatchObject({ kind: 'unreachable', userSide: null });
   });

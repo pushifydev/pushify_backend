@@ -5,6 +5,7 @@ import type { SQL } from 'drizzle-orm';
 const h = vi.hoisted(() => ({
   queries: [] as unknown[],
   downRows: [] as unknown[],
+  stoppedRows: [] as unknown[],
   serverRows: [] as unknown[],
   outcomeRows: [] as unknown[],
   sinceRows: [] as unknown[],
@@ -15,6 +16,7 @@ vi.mock('../db', () => ({
     execute: async (query: unknown) => {
       h.queries.push(query);
       const text = JSON.stringify(query);
+      if (text.includes('project_health_state') && text.includes("p.status <> 'active'")) return { rows: h.stoppedRows };
       if (text.includes('project_health_state')) return { rows: h.downRows };
       if (text.includes('disk_breakdown')) return { rows: h.serverRows };
       if (text.includes('GROUP BY 1, 2')) return { rows: h.outcomeRows };
@@ -24,10 +26,12 @@ vi.mock('../db', () => ({
   },
 }));
 
-import { opsSignalsService } from './ops-signals.service';
+import { opsSignalsService, projectStopCategory } from './ops-signals.service';
 
 const dialect = new PgDialect();
 const render = (q: unknown) => dialect.sqlToQuery(q as SQL).sql.replace(/\s+/g, ' ');
+const downQuery = () => h.queries.map(render).find((q) => q.includes('project_health_state') && !q.includes("p.status <> 'active'"));
+const stoppedQuery = () => h.queries.map(render).find((q) => q.includes('project_health_state') && q.includes("p.status <> 'active'"));
 
 describe('opsSignalsService sitesDown query', () => {
   beforeEach(() => {
@@ -48,6 +52,11 @@ describe('opsSignalsService sitesDown query', () => {
     expect(query).toContain('p.suspended_at IS NULL');
     expect(query).toContain("jsonb_typeof(p.settings -> 'productionUrl') = 'string'");
     expect(query).toContain("EXISTS (SELECT 1 FROM deployments d WHERE d.project_id = h.project_id AND d.status = 'running')");
+  });
+
+  it('leaves a project in maintenance mode out: its 503 page says nothing about the app', async () => {
+    await opsSignalsService.getSignals();
+    expect(downQuery()).toContain("AND (p.maintenance_mode ->> 'enabled') IS DISTINCT FROM 'true'");
   });
 
   it('carries the facts needed to classify a down site as platform or user side', async () => {
@@ -254,6 +263,92 @@ describe('opsSignalsService sitesDown stored failure and container facts', () =>
     expect(none.diagnosis.kind).toBe('container_not_running');
     expect(uninspected.diagnosis.summary).toContain('could not be inspected');
     expect(broken.diagnosis).toMatchObject({ kind: 'unknown', userSide: null });
+  });
+});
+
+describe('opsSignalsService projects stopped on purpose', () => {
+  beforeEach(() => {
+    h.queries = [];
+    h.downRows = [];
+    h.stoppedRows = [];
+  });
+
+  // A 'down' stored before the project stopped: monitoring no longer checks it, so it stays.
+  const stale = {
+    downSince: '2026-09-22T22:54:41Z', statusCode: null, error: 'fetch failed (ECONNREFUSED)', managed: true,
+    serverStatus: 'running', serverLastSeenAt: null, lastSuccessfulDeployAt: '2026-09-01T00:00:00Z', ownerLastLoginAt: null,
+    downReason: 'app_error', latestStatus: 'failed', latestCreatedAt: '2026-09-22T22:50:00Z',
+    latestError: '[Pushify] Docker build failed: exit code 1', diagnostics: null,
+  };
+  const serving = { projectStatus: 'active', sleepState: 'awake', suspended: false, maintenance: false };
+  const states = {
+    paused: { ...serving, projectStatus: 'paused' },
+    suspended: { ...serving, projectStatus: 'paused', suspended: true },
+    sleeping: { ...serving, sleepState: 'sleeping' },
+    maintenance: { ...serving, maintenance: true },
+    deleted: { ...serving, projectStatus: 'deleted' },
+  };
+
+  it('raises no down-site signal for a stopped, suspended, sleeping, in-maintenance or deleted project', async () => {
+    h.downRows = [
+      ...Object.entries(states).map(([projectId, state]) => ({ ...stale, ...state, projectId })),
+      { ...stale, ...serving, projectId: 'live' },
+    ];
+    const { sitesDown, userServerUnreachable } = await opsSignalsService.getSignals();
+    expect(sitesDown.map((s) => s.projectId)).toEqual(['live']);
+    expect(userServerUnreachable).toEqual([]);
+    expect(sitesDown[0]).not.toHaveProperty('projectStatus');
+    expect(sitesDown[0]).not.toHaveProperty('suspended');
+    expect(sitesDown[0]).not.toHaveProperty('maintenance');
+  });
+
+  it('lists them in sitesStopped with why, and b1cecd19 suspended under the policy is policy_suspended, not down', async () => {
+    h.stoppedRows = [
+      { projectId: 'b1cecd19', downSince: stale.downSince, ...states.suspended },
+      { projectId: 'paused', downSince: '2026-10-01T00:00:00Z', ...states.paused },
+      { projectId: 'sleeping', downSince: '2026-10-02T00:00:00Z', ...states.sleeping },
+      { projectId: 'waking', downSince: null, ...serving, sleepState: 'waking' },
+      { projectId: 'maintenance', downSince: '2026-10-03T00:00:00Z', ...states.maintenance },
+      { projectId: 'deleted', downSince: '2026-10-04T00:00:00Z', ...states.deleted },
+      // Not stopped after all (it would be monitored): never listed as stopped.
+      { projectId: 'live', downSince: '2026-10-05T00:00:00Z', ...serving },
+    ];
+    const { sitesDown, sitesStopped } = await opsSignalsService.getSignals();
+    expect(sitesDown).toEqual([]);
+    expect(sitesStopped).toEqual([
+      { projectId: 'b1cecd19', downSince: stale.downSince, category: 'policy_suspended' },
+      { projectId: 'paused', downSince: '2026-10-01T00:00:00Z', category: 'stopped_by_user' },
+      { projectId: 'sleeping', downSince: '2026-10-02T00:00:00Z', category: 'sleeping' },
+      { projectId: 'waking', downSince: null, category: 'sleeping' },
+      { projectId: 'maintenance', downSince: '2026-10-03T00:00:00Z', category: 'maintenance' },
+      { projectId: 'deleted', downSince: '2026-10-04T00:00:00Z', category: 'deleted' },
+    ]);
+  });
+
+  it('reads the down rows that the sitesDown filter leaves out, by the project state only', async () => {
+    await opsSignalsService.getSignals();
+    const query = stoppedQuery();
+    expect(query).toBeDefined();
+    expect(query).toContain("WHERE h.status = 'down'");
+    expect(query).toContain(
+      "AND (p.status <> 'active' OR p.sleep_state <> 'awake' OR p.suspended_at IS NOT NULL OR (p.maintenance_mode ->> 'enabled') = 'true')"
+    );
+    expect(query).toContain('(p.suspended_at IS NOT NULL) AS "suspended"');
+    expect(query).toContain(`coalesce((p.maintenance_mode ->> 'enabled') = 'true', false) AS "maintenance"`);
+    expect(query).not.toMatch(/h\.error|diagnostics|auth_events/);
+    // The down-site query reads the same columns, so one rule decides what counts as stopped.
+    expect(downQuery()).toContain('p.status::text AS "projectStatus", p.sleep_state AS "sleepState"');
+  });
+
+  it('projectStopCategory: a suspension wins over the pause it comes with; a serving project is not stopped', () => {
+    expect(projectStopCategory(states.suspended)).toBe('policy_suspended');
+    expect(projectStopCategory({ ...states.deleted, sleepState: 'sleeping' })).toBe('deleted');
+    expect(projectStopCategory({ ...states.paused, maintenance: true })).toBe('stopped_by_user');
+    expect(projectStopCategory({ ...states.sleeping, maintenance: true })).toBe('sleeping');
+    expect(projectStopCategory(states.maintenance)).toBe('maintenance');
+    expect(projectStopCategory(serving)).toBeNull();
+    // A row without the state columns (an older reader) is treated as serving, as before.
+    expect(projectStopCategory({})).toBeNull();
   });
 });
 
