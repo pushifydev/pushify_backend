@@ -69,6 +69,14 @@ export interface OpsSignals {
    * out of sitesDown (which raises the platform alarm) and only listed here for the record.
    */
   userServerUnreachable: SiteDown[];
+  /**
+   * Sites whose last health check said down but whose project was stopped on purpose since:
+   * paused by the owner, suspended under the Acceptable Use Policy, asleep (auto-sleep), in
+   * maintenance mode or deleted. Never an outage, so never in sitesDown or userServerUnreachable;
+   * listed with why, so a site that left sitesDown can be told apart from one that was fixed.
+   * Most recently down first.
+   */
+  sitesStopped: Array<{ projectId: string; downSince: string | null; category: SiteStopCategory }>;
   servers: Array<{
     serverId: string;
     managed: boolean;
@@ -162,7 +170,38 @@ export interface SiteDownContainer {
   loopbackPorts: number[] | null;
 }
 
-type SiteDownRow = Omit<SiteDown, 'hosting' | 'latestDeploy' | 'diagnosis'> & {
+/** Why a project is not served on purpose, so a 'down' stored for it is not an outage. */
+export type SiteStopCategory = 'policy_suspended' | 'deleted' | 'stopped_by_user' | 'sleeping' | 'maintenance';
+
+/** The project's own state, read only to tell a stopped project from a down site; never passed through. */
+interface ProjectStateColumns {
+  projectStatus?: string | null;
+  sleepState?: string | null;
+  suspended?: boolean | null;
+  maintenance?: boolean | null;
+}
+
+const PROJECT_STATE_COLUMNS = sql.raw(
+  `p.status::text AS "projectStatus", p.sleep_state AS "sleepState",
+   (p.suspended_at IS NOT NULL) AS "suspended",
+   coalesce((p.maintenance_mode ->> 'enabled') = 'true', false) AS "maintenance"`
+);
+
+/**
+ * Why the project is stopped on purpose, or null when it should be serving. A suspension (the
+ * project is also paused) comes first, then deletion, the owner's pause, auto-sleep (asleep or
+ * waking) and maintenance mode, whose 503 page says nothing about the app behind it.
+ */
+export function projectStopCategory(p: ProjectStateColumns): SiteStopCategory | null {
+  if (p.suspended) return 'policy_suspended';
+  if (p.projectStatus === 'deleted') return 'deleted';
+  if (p.projectStatus === 'paused') return 'stopped_by_user';
+  if (p.sleepState && p.sleepState !== 'awake') return 'sleeping';
+  if (p.maintenance) return 'maintenance';
+  return null;
+}
+
+type SiteDownRow = Omit<SiteDown, 'hosting' | 'latestDeploy' | 'diagnosis'> & ProjectStateColumns & {
   managed: boolean | null;
   /** Read only to name a known stop reason in the diagnosis; never passed through. */
   serverStatusMessage?: string | null;
@@ -228,7 +267,7 @@ export const opsSignalsService = {
            LIMIT 2000`)
       : null;
 
-    const [outcomes, failedRows, failing, down, servers, databases] = await Promise.all([
+    const [outcomes, failedRows, failing, down, stopped, servers, databases] = await Promise.all([
       rows<{ status: string; failureCategory: string | null; count: number }>(sql`
         SELECT status::text AS "status", failure_category AS "failureCategory", count(*)::int AS "count"
           FROM deployments WHERE created_at > now() - ${window}
@@ -256,10 +295,12 @@ export const opsSignalsService = {
       // A project that left monitoring — paused, asleep, no running deployment, no URL — is never
       // checked again, so its row keeps the last 'down' forever and would stay on this list after
       // the site is fixed. A monitored site that recovers is reset by its next successful check.
+      // A project in maintenance mode is still checked, but its 503 page says nothing about the
+      // app, so it is left out too. All of these are listed in sitesStopped instead.
       rows<SiteDownRow>(sql`
         SELECT h.project_id AS "projectId", ${iso('h.down_since')} AS "downSince",
                h.status_code AS "statusCode", h.error, h.down_reason AS "downReason",
-               h.diagnostics AS "diagnostics",
+               h.diagnostics AS "diagnostics", ${PROJECT_STATE_COLUMNS},
                ld.status AS "latestStatus", ${iso('ld.created_at')} AS "latestCreatedAt",
                ld.error_message AS "latestError", ld.failure_category AS "latestFailureCategory",
                ld.failure_summary AS "latestFailureSummary",
@@ -281,9 +322,19 @@ export const opsSignalsService = {
                               ORDER BY d.created_at DESC LIMIT 1) ld ON true
          WHERE h.status = 'down' AND h.down_since < now() - ${sql.raw(`interval '${SITE_DOWN_GRACE_MIN} minutes'`)}
            AND p.status = 'active' AND p.sleep_state = 'awake' AND p.suspended_at IS NULL
+           AND (p.maintenance_mode ->> 'enabled') IS DISTINCT FROM 'true'
            AND jsonb_typeof(p.settings -> 'productionUrl') = 'string'
            AND EXISTS (SELECT 1 FROM deployments d WHERE d.project_id = h.project_id AND d.status = 'running')
          ORDER BY h.down_since ASC LIMIT ${LIST_LIMIT}`),
+      // The 'down' rows the filter above leaves out because the project was stopped on purpose.
+      rows<{ projectId: string; downSince: string | null } & ProjectStateColumns>(sql`
+        SELECT h.project_id AS "projectId", ${iso('h.down_since')} AS "downSince", ${PROJECT_STATE_COLUMNS}
+          FROM project_health_state h
+          JOIN projects p ON p.id = h.project_id
+         WHERE h.status = 'down'
+           AND (p.status <> 'active' OR p.sleep_state <> 'awake' OR p.suspended_at IS NOT NULL
+                OR (p.maintenance_mode ->> 'enabled') = 'true')
+         ORDER BY h.down_since DESC NULLS LAST LIMIT ${LIST_LIMIT}`),
       rows<{
         serverId: string; managed: boolean; provider: string; status: string; setupStatus: string;
         diskUsedPercent: number | null; message: string | null; diskBreakdown: ServerDiskBreakdown | null;
@@ -307,7 +358,14 @@ export const opsSignalsService = {
     const counts = countDeployOutcomes(outcomes);
     const sinceCounts = sinceRows ? countDeployOutcomes(sinceRows) : null;
     const sinceFailed = sinceRows?.filter((r) => r.status === 'failed' && !isPolicyBlocked(r)) ?? [];
-    const diagnosed: SiteDown[] = down.map(({ managed, latestStatus, latestCreatedAt, latestError, latestFailureCategory, latestFailureSummary, diagnostics, serverStatusMessage, ...d }) => {
+    // The query already leaves projects stopped on purpose out; the same rule as sitesStopped
+    // keeps one of them from ever raising the down-site alarm.
+    const monitored = down.filter((row) => projectStopCategory(row) === null);
+    const sitesStopped = stopped.flatMap((row) => {
+      const category = projectStopCategory(row);
+      return category ? [{ projectId: row.projectId, downSince: row.downSince ?? null, category }] : [];
+    });
+    const diagnosed: SiteDown[] = monitored.map(({ managed, latestStatus, latestCreatedAt, latestError, latestFailureCategory, latestFailureSummary, diagnostics, serverStatusMessage, projectStatus: _status, sleepState: _sleep, suspended: _suspended, maintenance: _maintenance, ...d }) => {
       const failed = latestStatus === 'failed';
       const classified = failed ? latestFailure(latestFailureCategory, latestError) : null;
       const hosting: SiteDown['hosting'] = managed === null || managed === undefined ? 'shared' : managed ? 'managed' : 'byos';
@@ -386,6 +444,7 @@ export const opsSignalsService = {
       },
       sitesDown: diagnosed.filter((s) => !userServer(s)),
       userServerUnreachable: diagnosed.filter(userServer),
+      sitesStopped,
       servers: servers.map(({ diskBreakdown, ...s }) => ({
         ...s,
         problem: s.status === 'error' ? 'error' : s.setupStatus === 'failed' ? 'setup_failed' : 'disk',
