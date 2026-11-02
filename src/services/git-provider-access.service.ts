@@ -5,6 +5,7 @@ import { githubService } from './github.service';
 import { projectRepository } from '../repositories/project.repository';
 import { organizationRepository } from '../repositories/organization.repository';
 import { logger } from '../lib/logger';
+import { gitHostOf } from '../lib/git-clone-url';
 
 export type GitProvider = 'github' | 'gitlab';
 
@@ -39,11 +40,9 @@ export interface ResolveGitAccessOptions {
   checkPublic?: boolean;
 }
 
+/** By the parsed host: github.com, or gitlab.com / GITLAB_BASE_URL's host. Anything else is null. */
 export function detectGitProviderFromUrl(repoUrl: string | null | undefined): GitProvider | null {
-  if (!repoUrl) return null;
-  if (repoUrl.includes('gitlab.com') || repoUrl.includes('gitlab.')) return 'gitlab';
-  if (repoUrl.includes('github.com')) return 'github';
-  return null;
+  return gitHostOf(repoUrl);
 }
 
 /**
@@ -74,6 +73,13 @@ export async function resolveProjectGitAccess(
   const result: ProjectGitAccess = { provider, repoFullName, credential: null, isPublic: null };
 
   if (!project || !repoUrl || !provider) return result;
+
+  // The stored provider is what the member picked, not where the URL points: a URL on any other
+  // host (`https://gitlab.evil.example/x/y`) would carry the owner's token there on clone.
+  if (gitHostOf(repoUrl) !== provider) {
+    logger.warn({ projectId, provider }, 'Repository host does not match its git provider; no credential used');
+    return result;
+  }
 
   // 1. GitHub App
   if (provider === 'github') {

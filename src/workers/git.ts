@@ -1,5 +1,6 @@
 import { execCommand, execStreamingCommand, shSingleQuote, type StreamingCommandOptions } from './shell';
 import { redactUrlCredentials } from '../lib/utils';
+import { authenticatedCloneUrl } from '../lib/git-clone-url';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
@@ -46,20 +47,8 @@ export async function cloneRepository(options: CloneOptions): Promise<CloneResul
 
   onProgress?.(`📦 Cloning repository to ${workDir}...`);
 
-  // Prepare authenticated URL if access token provided
-  let cloneUrl = repoUrl;
-  if (accessToken && repoUrl.includes('github.com')) {
-    // `x-access-token` is what GitHub documents for App installation tokens (ghs_…); a bare
-    // `token@host` makes git prompt for a password and die in a non-interactive worker.
-    cloneUrl = repoUrl.replace('https://github.com/', `https://x-access-token:${accessToken}@github.com/`);
-  } else if (accessToken && repoUrl.includes('gitlab')) {
-    try {
-      const parsed = new URL(repoUrl);
-      cloneUrl = `${parsed.protocol}//oauth2:${accessToken}@${parsed.host}${parsed.pathname}`;
-    } catch {
-      cloneUrl = repoUrl.replace('https://', `https://oauth2:${accessToken}@`);
-    }
-  }
+  // The token goes only to https github.com / our GitLab host — never to whatever host the URL names.
+  const cloneUrl = authenticatedCloneUrl(repoUrl, accessToken);
 
   // Clone command - if branch is specified, use it; otherwise clone default branch
   const cloneArgs = ['clone', '--single-branch'];
