@@ -610,6 +610,13 @@
       "when": 1787270400046,
       "tag": "0087_api_key_project_scope",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1787270400047,
+      "tag": "0088_preview_actions_activity",
+      "breakpoints": true
     }
   ]
 }

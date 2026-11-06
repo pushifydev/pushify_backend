@@ -51,6 +51,8 @@ const ActivityActionEnum = z.enum([
   'server.patches_requested',
   'server.patches_applied',
   'server.patches_failed',
+  'preview.redeployed',
+  'preview.closed',
 ]);
 
 const UserSchema = z.object({

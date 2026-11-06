@@ -152,6 +152,13 @@ export interface TranslationKeys {
     reviewAlreadyRequested: string;
     reviewNotAvailable: string;
   };
+  previews: {
+    notFound: string;
+    alreadyClosed: string;
+    disabled: string;
+    redeployStarted: string;
+    closed: string;
+  };
   integrations: {
     notConnected: string;
     connected: string;
@@ -541,6 +548,15 @@ export const en: TranslationKeys = {
     reviewRequested: 'Review requested. Our team will look at this deploy and email the project owner.',
     reviewAlreadyRequested: 'A review was already requested for this deploy',
     reviewNotAvailable: 'A review can only be requested for a deploy stopped by the automatic security check while the project is suspended',
+  },
+
+  // PR preview deployments
+  previews: {
+    notFound: 'Preview deployment not found',
+    alreadyClosed: 'This preview deployment is closed',
+    disabled: 'Preview deployments are disabled for this project',
+    redeployStarted: 'Preview redeploy started',
+    closed: 'Preview deployment closed',
   },
 
   // Integrations
