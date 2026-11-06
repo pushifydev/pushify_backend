@@ -17,7 +17,7 @@ The response shapes of sections 1 and 3 are checked by `src/routes/api-contracts
 | 4 | Self-host version / security release | `GET /api/v1/admin/platform/version` | yes (platform admins only) |
 | 5 | `.env.example` import | `GET /api/v1/integrations/github/repos/:owner/:repo/env-keys`, `GET /api/v1/integrations/gitlab/projects/:projectId/env-keys` | yes |
 | 6a | PR preview list | `GET /api/v1/projects/:projectId/previews`, `…/previews/active` | yes (read-only) |
-| 6b | PR preview actions (redeploy / close / delete) | — | **no** |
+| 6b | PR preview actions (redeploy / close) | `POST /api/v1/projects/:projectId/previews/:previewId/redeploy`, `…/close` | yes (no delete) |
 | 6c | Volume backups | — | **no** |
 
 ## Conventions (all sections)
@@ -469,18 +469,46 @@ No file found is `200` with `{ "source": null, "keys": [] }`, not an error.
 Errors: `403 FORBIDDEN` (not a member / API key without `projects:read`), `404 NOT_FOUND`
 `Project not found`.
 
-Previews are created, updated and closed only by Git webhooks (GitHub `pull_request` in
+Previews are created and updated by Git webhooks (GitHub `pull_request` in
 `src/routes/webhooks.ts` and `src/lib/github-deploy-trigger.ts`, GitLab `merge_request` in
-`src/routes/webhooks.ts`). They are switched on per project with
+`src/routes/webhooks.ts`), which also close them when the PR / MR closes; section 6b redeploys or
+closes one by hand. A new push to a PR whose preview was closed by hand deploys it again (and
+clears `closedAt`), as a reopened PR does. They are switched on per project with
 `PATCH /api/v1/projects/:projectId/settings` and body `{ "previewDeploymentsEnabled": true }`
 (settings are merged; scope `projects:write`; role member and up; `403` when the plan has no
 preview deployments — `planLimitsService.assertPreviewDeploymentsAllowed`).
 
-### 6b. PR preview actions — **do not exist**
+### 6b. PR preview actions — exist (redeploy, close)
 
-There is **no** endpoint to redeploy, rebuild, stop, close or delete a preview from the dashboard
-or API. `src/routes/previews.ts` has only the two GET routes above. Buttons for these actions need a
-backend change first.
+| Method | Path | Does | Success |
+|--------|------|------|---------|
+| POST | `/api/v1/projects/:projectId/previews/:previewId/redeploy` | queues a new preview deployment of the **head of the PR branch** (`prBranch`; no pinned commit), same container and URL as a webhook push | `201` |
+| POST | `/api/v1/projects/:projectId/previews/:previewId/close` | the PR-closed teardown (`cleanupPreview`): stops and removes the preview container and image, removes its nginx vhost, port, firewall rule and Cloudflare preview subdomain, marks the record closed (`status: "stopped"`, `closedAt` set) and updates the PR comment. Production and staging are not touched (only `<slug>-pr-<n>` names) | `200` |
+
+- **Source**: `src/routes/previews.ts`, `src/services/preview.service.ts` (`redeployPreview`,
+  `closePreview`, which call `createOrUpdatePreview` / `cleanupPreview`, the webhook code paths).
+- **Auth**: session or API key. **Scope**: `projects:write`. **Role**: member and up (viewer `403`).
+- **Body**: none.
+- **Audit log**: `preview.redeployed` (`metadata`: `previewId`, `prNumber`, `deploymentId`) and
+  `preview.closed` (`metadata`: `previewId`, `prNumber`).
+
+Response: `{ "data": <preview>, "message": … }`, the preview in the shape of section 6a, after the
+action. Redeploy: `status: "pending"` and the new `deploymentId` (follow it with the deployment
+endpoints); `message` `Preview redeploy started`. Close: `status: "stopped"`, `closedAt` set;
+`message` `Preview deployment closed`.
+
+Errors:
+
+| Status | `code` | `message` / when |
+|--------|--------|------------------|
+| 400 | `BAD_REQUEST` | redeploy only: `Preview deployments are disabled for this project` (also for Site Studio / uploaded static sites, whose publish path would overwrite production) |
+| 402 | `UNKNOWN_ERROR` | redeploy only: organization billing past due (`assertOrganizationCanMutateResources`) |
+| 403 | `FORBIDDEN` | redeploy only: billing suspended, organization pending deletion, plan without preview deployments or over a deploy / build-minutes quota (`planLimitsService`) |
+| 403 | `FORBIDDEN` | viewer, not a member, or an API key without `projects:write` |
+| 404 | `NOT_FOUND` | `Project not found`, or `Preview deployment not found` (no such preview in this project) |
+| 409 | `CONFLICT` | `This preview deployment is closed` — redeploying or closing a preview with `closedAt` set |
+
+There is still **no** endpoint to delete a preview record or change preview settings per preview.
 
 ### 6c. Volume backups — **do not exist**
 

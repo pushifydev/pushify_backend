@@ -170,6 +170,15 @@ export const tr: TranslationKeys = {
     reviewNotAvailable: 'İnceleme yalnızca otomatik güvenlik kontrolünde durdurulan ve projesi askıda olan bir deploy için istenebilir',
   },
 
+  // PR preview deployment'ları
+  previews: {
+    notFound: 'Preview deployment bulunamadı',
+    alreadyClosed: 'Bu preview deployment kapatılmış',
+    disabled: 'Bu projede preview deployment\'lar kapalı',
+    redeployStarted: 'Preview yeniden deployment başlatıldı',
+    closed: 'Preview deployment kapatıldı',
+  },
+
   // Integrations
   integrations: {
     notConnected: 'GitHub bağlı değil',

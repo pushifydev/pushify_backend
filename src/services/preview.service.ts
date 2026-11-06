@@ -17,7 +17,7 @@ import { resolveDeployServerForCleanup } from '../lib/project-remote-cleanup';
 import { buildPreviewTeardownScript, previewDeploySlug } from '../lib/preview-remote';
 import { env } from '../config/env';
 import type { PreviewDeployment } from '../db/schema';
-import { canOrganizationDeploy } from './organization-billing.service';
+import { assertOrganizationCanMutateResources, canOrganizationDeploy } from './organization-billing.service';
 import { planLimitsService } from './plan-limits.service';
 
 /** Site Studio / uploaded static sites: published from stored files, not built from git. */
@@ -30,7 +30,16 @@ interface CreatePreviewInput {
   prTitle?: string;
   prBranch: string;
   baseBranch: string;
-  commitHash: string;
+  /** Unset: the worker builds the head of prBranch (a manual redeploy) */
+  commitHash?: string;
+  /** Webhooks: 'git_push'. A manual redeploy: 'redeploy', with the user who asked. */
+  trigger?: 'git_push' | 'redeploy';
+  triggeredById?: string;
+}
+
+/** Closed by the PR closing, or from the dashboard / API (previewRepository.close). */
+function isPreviewClosed(preview: PreviewDeployment): boolean {
+  return preview.closedAt != null;
 }
 
 export const previewService = {
@@ -110,7 +119,8 @@ export const previewService = {
       // Create a new deployment for the preview
       const deployment = await deploymentRepository.create({
         projectId,
-        trigger: 'git_push',
+        trigger: input.trigger ?? 'git_push',
+        triggeredById: input.triggeredById,
         branch: input.prBranch,
         commitHash: input.commitHash,
         isPreview: true,
@@ -120,11 +130,12 @@ export const previewService = {
       const { scheduleDeploymentProcessing } = await import('../lib/deployment-scheduler');
       await scheduleDeploymentProcessing(deployment.id, projectId);
 
-      // Update preview record
+      // Update preview record (a reopened PR's preview is open again)
       const preview = await previewRepository.update(existing.id, {
         deploymentId: deployment.id,
         prTitle: input.prTitle,
         status: 'pending',
+        closedAt: null,
       });
 
       return preview!;
@@ -136,7 +147,8 @@ export const previewService = {
     // Create deployment
     const deployment = await deploymentRepository.create({
       projectId,
-      trigger: 'git_push',
+      trigger: input.trigger ?? 'git_push',
+      triggeredById: input.triggeredById,
       branch: input.prBranch,
       commitHash: input.commitHash,
       isPreview: true,
@@ -229,6 +241,78 @@ export const previewService = {
     await previewRepository.close(preview.id);
 
     await this.updatePreviewComment(projectId, prNumber, 'closed');
+  },
+
+  /**
+   * A preview of this project the caller may act on: member and up (viewers get 403), 404 when
+   * the preview belongs to another project.
+   */
+  async getPreviewForAction(
+    projectId: string,
+    previewId: string,
+    organizationId: string,
+    userId: string,
+    locale: SupportedLocale
+  ): Promise<PreviewDeployment> {
+    await requireProjectMember(projectId, organizationId, userId, 'member', locale);
+
+    const preview = await previewRepository.findById(previewId);
+    if (!preview || preview.projectId !== projectId) {
+      throw new HTTPException(404, { message: t(locale, 'previews', 'notFound') });
+    }
+    return preview;
+  },
+
+  /**
+   * Redeploy an open preview from the head of its PR branch (dashboard / API). Same path as a
+   * webhook push (createOrUpdatePreview): same plan limits, same preview container and URL.
+   */
+  async redeployPreview(
+    projectId: string,
+    previewId: string,
+    organizationId: string,
+    userId: string,
+    locale: SupportedLocale = 'en'
+  ): Promise<PreviewDeployment> {
+    const preview = await this.getPreviewForAction(projectId, previewId, organizationId, userId, locale);
+    if (isPreviewClosed(preview)) {
+      throw new HTTPException(409, { message: t(locale, 'previews', 'alreadyClosed') });
+    }
+    // Also refuses Site Studio / uploaded static sites, whose publish path would overwrite production
+    if (!(await this.isPreviewEnabled(projectId))) {
+      throw new HTTPException(400, { message: t(locale, 'previews', 'disabled') });
+    }
+    await assertOrganizationCanMutateResources(organizationId, locale);
+
+    return this.createOrUpdatePreview(
+      projectId,
+      {
+        prNumber: preview.prNumber,
+        prTitle: preview.prTitle ?? undefined,
+        prBranch: preview.prBranch,
+        baseBranch: preview.baseBranch,
+        trigger: 'redeploy',
+        triggeredById: userId,
+      },
+      locale
+    );
+  },
+
+  /** Close an open preview by hand: the same teardown as the PR-closed webhook (cleanupPreview). */
+  async closePreview(
+    projectId: string,
+    previewId: string,
+    organizationId: string,
+    userId: string,
+    locale: SupportedLocale = 'en'
+  ): Promise<PreviewDeployment> {
+    const preview = await this.getPreviewForAction(projectId, previewId, organizationId, userId, locale);
+    if (isPreviewClosed(preview)) {
+      throw new HTTPException(409, { message: t(locale, 'previews', 'alreadyClosed') });
+    }
+
+    await this.cleanupPreview(projectId, preview.prNumber);
+    return (await previewRepository.findById(preview.id)) ?? preview;
   },
 
   async teardownRemotePreview(

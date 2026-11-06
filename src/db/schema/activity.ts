@@ -59,6 +59,9 @@ export const activityActionEnum = pgEnum('activity_action', [
   'server.patches_requested',
   'server.patches_applied',
   'server.patches_failed',
+  // PR preview actions (POST /projects/:projectId/previews/:previewId/redeploy | close)
+  'preview.redeployed',
+  'preview.closed',
 ]);
 
 export type ActivityAction = typeof activityActionEnum.enumValues[number];
