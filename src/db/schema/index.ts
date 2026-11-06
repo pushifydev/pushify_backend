@@ -56,6 +56,9 @@ export * from './servers';
 // Container Logs
 export * from './container-logs';
 
+// Log and metric drains
+export * from './log-drains';
+
 // Managed Databases
 export * from './databases';
 
