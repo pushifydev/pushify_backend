@@ -12,6 +12,7 @@ export const QUEUE_NAMES = {
   DEPLOYMENTS: 'deployments',
   HEALTH_CHECKS: 'health-checks',
   ADMIN_NOTIFY: 'admin-notify',
+  SERVER_PATCHES: 'server-patches',
 } as const;
 
 // Job types
@@ -120,6 +121,42 @@ export async function addAdminNotifyJob(data: AdminNotifyJobData): Promise<boole
   if (!queue) return false;
   await queue.add('admin-email', data);
   return true;
+}
+
+export interface ServerPatchJobData {
+  serverId: string;
+  organizationId: string;
+  /** Who asked for the run (the request itself is audited as server.patches_requested) */
+  requestedBy: string;
+  /** Token of the per-server lock taken when the run was queued (lib/server-patch-lock.ts) */
+  lockToken: string;
+}
+
+let serverPatchQueue: Queue<ServerPatchJobData> | null = null;
+
+/** Security-update runs (POST /servers/:serverId/patches/apply). Never retried: an upgrade is not replayed blindly. */
+export function getServerPatchQueue(): Queue<ServerPatchJobData> | null {
+  const connection = getRedisConnection();
+  if (!connection) return null;
+
+  if (!serverPatchQueue) {
+    serverPatchQueue = new Queue<ServerPatchJobData>(QUEUE_NAMES.SERVER_PATCHES, {
+      connection,
+      defaultJobOptions: {
+        attempts: 1,
+        removeOnComplete: { age: 7 * 24 * 3600, count: 500 },
+        removeOnFail: { age: 7 * 24 * 3600 },
+      },
+    });
+  }
+
+  return serverPatchQueue;
+}
+
+export async function addServerPatchJob(data: ServerPatchJobData): Promise<Job<ServerPatchJobData> | null> {
+  const queue = getServerPatchQueue();
+  if (!queue) return null;
+  return queue.add('apply', data);
 }
 
 // Get or create deployment queue
@@ -246,7 +283,7 @@ function getPriority(event: string): number {
 
 // Close all queues (for graceful shutdown)
 export async function closeQueues(): Promise<void> {
-  const queues = [notificationQueue, deploymentQueue, healthCheckQueue, adminNotifyQueue];
+  const queues = [notificationQueue, deploymentQueue, healthCheckQueue, adminNotifyQueue, serverPatchQueue];
 
   await Promise.all(
     queues.filter(Boolean).map(async (queue) => {
@@ -260,6 +297,7 @@ export async function closeQueues(): Promise<void> {
   deploymentQueue = null;
   healthCheckQueue = null;
   adminNotifyQueue = null;
+  serverPatchQueue = null;
 
   logger.info('All queues closed');
 }

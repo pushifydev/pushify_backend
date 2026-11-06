@@ -1,5 +1,10 @@
+import { randomUUID } from 'crypto';
 import { Hono } from 'hono';
 import { requireOrgMember } from '../lib/org-access';
+import { auditSource } from '../lib/audit';
+import { addServerPatchJob, isQueueAvailable } from '../lib/queue';
+import { acquireServerPatchLock, releaseServerPatchLock } from '../lib/server-patch-lock';
+import { activityService } from '../services/activity.service';
 import { metricsRepository } from '../repositories/metrics.repository';
 import { serverService } from '../services/server.service';
 import { combinedAuthMiddleware } from '../middleware/auth';
@@ -167,6 +172,85 @@ serverRouter.get('/:serverId/health', requireScope('servers:read'), async (c) =>
   const report = await scanServerHealth(serverRow, organizationId);
 
   return c.json({ data: report });
+});
+
+// Apply pending OS security updates (owner/admin). Queued: the outcome (output, updates left,
+// reboot required) lands on the server timeline and the audit log. Never reboots.
+serverRouter.post('/:serverId/patches/apply', requireScope('servers:write'), async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const serverId = c.req.param('serverId');
+
+  await requireOrgMember(organizationId, userId, 'admin', locale);
+
+  const server = await db.query.servers.findFirst({
+    where: and(eq(servers.id, serverId), eq(servers.organizationId, organizationId)),
+  });
+
+  if (!server) {
+    return c.json({ error: { code: 'NOT_FOUND', message: t(locale, 'servers', 'notFound') } }, 404);
+  }
+
+  if (server.setupStatus !== 'completed' || server.status !== 'running') {
+    return c.json(
+      { error: { code: 'SERVER_NOT_READY', message: 'Server must be running with setup completed' } },
+      400
+    );
+  }
+
+  if (!server.sshPrivateKey || !server.ipv4) {
+    return c.json({ error: { code: 'SSH_UNAVAILABLE', message: 'Server is not reachable via SSH' } }, 400);
+  }
+
+  if (!isQueueAvailable()) {
+    return c.json(
+      { error: { code: 'QUEUE_UNAVAILABLE', message: 'Background jobs are not available (Redis is not configured)' } },
+      503
+    );
+  }
+
+  const lockToken = randomUUID();
+  if (!(await acquireServerPatchLock(serverId, lockToken))) {
+    return c.json(
+      { error: { code: 'PATCH_RUN_IN_PROGRESS', message: 'Security updates are already being applied to this server' } },
+      409
+    );
+  }
+
+  let job: Awaited<ReturnType<typeof addServerPatchJob>>;
+  try {
+    job = await addServerPatchJob({ serverId, organizationId, requestedBy: userId, lockToken });
+  } catch (err) {
+    await releaseServerPatchLock(serverId, lockToken);
+    throw err;
+  }
+  if (!job) {
+    await releaseServerPatchLock(serverId, lockToken);
+    return c.json(
+      { error: { code: 'QUEUE_UNAVAILABLE', message: 'Background jobs are not available (Redis is not configured)' } },
+      503
+    );
+  }
+
+  await activityService.log({
+    organizationId,
+    userId,
+    action: 'server.patches_requested',
+    description: `Requested security updates on server "${server.name}"`,
+    metadata: { serverId, serverName: server.name, jobId: job.id },
+    ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
+    userAgent: c.req.header('user-agent'),
+    source: auditSource(c),
+  });
+
+  return c.json(
+    {
+      data: { jobId: job.id, serverId, status: 'queued' },
+      message: 'Applying security updates. The result will appear on the server timeline.',
+    },
+    202
+  );
 });
 
 // Get a single server

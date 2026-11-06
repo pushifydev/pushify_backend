@@ -55,6 +55,10 @@ export const activityActionEnum = pgEnum('activity_action', [
   'healthcheck.enabled',
   'healthcheck.disabled',
   'healthcheck.updated',
+  // Server OS security updates (POST /servers/:serverId/patches/apply)
+  'server.patches_requested',
+  'server.patches_applied',
+  'server.patches_failed',
 ]);
 
 export type ActivityAction = typeof activityActionEnum.enumValues[number];
