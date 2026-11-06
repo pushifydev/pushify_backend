@@ -19,10 +19,16 @@
 # version from package.json and the CHANGELOG.md releases in between ([security] marks a release
 # with a Security section), refuses a MAJOR bump without --allow-major, warns to take a backup,
 # then fast-forwards both checkouts, refreshes docker-compose.yml and runs
-# `docker compose up -d --build` (migrations run on start). The commits that were built are
-# recorded in .pushify-deployed, so running it again when nothing changed does nothing, and a run
-# whose build failed is built again next time. Your .env and data volumes are not touched.
+# `docker compose up -d --build` (migrations run on start). Then it checks the stack: the API
+# answers its readiness check (/api/v1/health/ready, database reachable) and the worker and the
+# dashboard are running, retried for up to PUSHIFY_HEALTH_TIMEOUT seconds (default 120). The
+# commits that passed are recorded in .pushify-deployed, so running it again when nothing changed
+# does nothing. A run whose build or health check failed exits non-zero, prints the commits that
+# ran before (to roll back: docs/SELF_HOSTING.md#rolling-back-an-update) and is built again next
+# time. Your .env and data volumes are not touched.
 set -euo pipefail
+
+ROLLBACK_DOC='https://github.com/pushifydev/pushify_backend/blob/master/docs/SELF_HOSTING.md#rolling-back-an-update'
 
 # Everything runs from main(): bash has the whole script in memory before the pull below replaces
 # this file on disk.
@@ -33,10 +39,13 @@ main() {
       --dry-run) DRY=1 ;;
       --yes|-y) YES=1 ;;
       --allow-major) ALLOW_MAJOR=1 ;;
-      -h|--help) sed -n '2,24p' "${BASH_SOURCE[0]:-$0}" 2>/dev/null || true; exit 0 ;;
+      -h|--help) sed -n '2,28p' "${BASH_SOURCE[0]:-$0}" 2>/dev/null || true; exit 0 ;;
       *) echo "Unknown option: $arg" >&2; exit 2 ;;
     esac
   done
+
+  local HEALTH_TIMEOUT="${PUSHIFY_HEALTH_TIMEOUT:-120}"
+  [[ "$HEALTH_TIMEOUT" =~ ^[0-9]+$ ]] || fail "PUSHIFY_HEALTH_TIMEOUT must be a number of seconds, got: ${HEALTH_TIMEOUT}"
 
   local INSTALL_DIR
   if [ -n "${PUSHIFY_DIR:-}" ]; then INSTALL_DIR="$PUSHIFY_DIR"
@@ -81,10 +90,15 @@ main() {
     exit 0
   fi
 
+  # What ran before this update, printed for a rollback: the checked-out commits — unless an
+  # earlier run already moved the checkouts and failed; then the last stack that passed, if recorded.
+  local prev_be="$be_head" prev_fe="$fe_head"
   say "Backend:  ${current} (${be_head:0:7}) → ${latest} (${be_new:0:7})"
   say "Frontend: ${fe_head:0:7} → ${fe_new:0:7}"
   if [ "$be_head" = "$be_new" ] && [ "$fe_head" = "$fe_new" ]; then
     say "Code is current, but no successful update of these commits is recorded — the stack will be rebuilt"
+    prev_be="$(sed -n 's/^backend=//p' <<<"$deployed")"
+    prev_fe="$(sed -n 's/^frontend=//p' <<<"$deployed")"
   elif [ "$be_head" != "$be_new" ]; then
     say "Releases since ${current} (details in pushify_backend/CHANGELOG.md):"
     git -C pushify_backend show '@{upstream}:CHANGELOG.md' 2>/dev/null | releases_since "$current" || true
@@ -99,7 +113,7 @@ main() {
   warn "  Keep .env as well: secrets in the database are encrypted with its ENCRYPTION_KEY."
 
   if [ "$DRY" -eq 1 ]; then
-    say "Dry run — would fast-forward both checkouts, copy pushify_backend/selfhost/docker-compose.yml to ./docker-compose.yml and run: docker compose up -d --build"
+    say "Dry run — would fast-forward both checkouts, copy pushify_backend/selfhost/docker-compose.yml to ./docker-compose.yml, run: docker compose up -d --build, then check that the API is ready and the worker and dashboard are running"
     say "Nothing was changed."
     exit 0
   fi
@@ -117,16 +131,58 @@ main() {
   done
   cp -f pushify_backend/selfhost/docker-compose.yml ./docker-compose.yml
 
+  local previous="backend ${prev_be:-unknown}, frontend ${prev_fe:-unknown}"
   say "Building and restarting the stack"
-  docker compose up -d --build
+  docker compose up -d --build \
+    || update_failed "docker compose up failed — running this script again builds again" "$previous"
+
+  say "Checking the stack (up to ${HEALTH_TIMEOUT}s)"
+  check_stack "$HEALTH_TIMEOUT" \
+    || update_failed "Pushify ${latest} failed its health check — running this script again rebuilds and checks again" "$previous"
   printf '%s\n' "$want" > .pushify-deployed
 
-  say "Pushify is now ${latest}. Check it: docker compose ps && docker compose logs --tail 50 api worker"
+  say "Pushify is now ${latest}: the API is ready, the worker and the dashboard are running."
+  say "Ran before this update: ${previous} (to go back: ${ROLLBACK_DOC})"
 }
 
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m  %s\n' "$*"; }
 fail() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# After `docker compose up`: the API answers its readiness check (database reachable) from inside
+# its container — no published port, proxy or ADMIN_ALLOWED_CIDRS in the way — and the worker and
+# the dashboard are running. Retried every 5 seconds until $1 seconds have passed; then prints what
+# is still wrong and returns 1.
+check_stack() {
+  local timeout="$1" start="$SECONDS" problem running svc
+  while :; do
+    problem=""
+    if ! docker compose exec -T api curl -fsS --max-time 5 -o /dev/null http://localhost:4000/api/v1/health/ready >/dev/null 2>&1; then
+      problem="the API does not answer its readiness check (/api/v1/health/ready)"
+    else
+      running="$(docker compose ps --services --status running 2>/dev/null || true)"
+      for svc in worker frontend; do
+        grep -qx "$svc" <<<"$running" || { problem="the ${svc} container is not running"; break; }
+      done
+    fi
+    if [ -z "$problem" ]; then return 0; fi
+    if [ $((SECONDS - start)) -ge "$timeout" ]; then
+      warn "Health check failed: ${problem}"
+      return 1
+    fi
+    sleep 5
+  done
+}
+
+# The checkouts were moved but the stack did not come up healthy. Nothing is rolled back
+# automatically: the new version's migrations may already have run, and only the operator's backup
+# can undo them. Print what ran before and where the steps are, then exit non-zero.
+update_failed() { # <message> <"backend <sha>, frontend <sha>" that ran before>
+  warn "Look at: docker compose ps && docker compose logs --tail 100 migrate api worker"
+  warn "Ran before this update: $2"
+  warn "To go back to it (with the backup you took before updating): ${ROLLBACK_DOC}"
+  fail "$1"
+}
 
 # The top-level "version" of a package.json on stdin. No node needed: the host only has Docker.
 package_version() {

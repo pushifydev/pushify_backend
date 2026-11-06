@@ -46,6 +46,9 @@ Back up the control-plane database and keep the `.env` before every update (see
 ```
 
 The script is safe to re-run: when the install is already on the latest version it does nothing.
+After the update it checks that the API is ready and the worker and dashboard are running, and
+exits non-zero when they are not. To go back to the previous version, see
+[Rolling back an update](docs/SELF_HOSTING.md#rolling-back-an-update).
 
 ## Scope notes
 

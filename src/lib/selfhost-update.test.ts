@@ -57,9 +57,21 @@ beforeEach(() => {
   root = mkdtempSync(path.join(FAKE_ROOT, 'install-'));
   const bin = path.join(root, 'bin');
   mkdirSync(bin);
+  // DOCKER_FAIL_UP fails `compose up`, DOCKER_API_DOWN the API readiness check (`compose exec`),
+  // DOCKER_STOPPED=<service> leaves that service out of `compose ps --status running`.
   writeFileSync(
     path.join(bin, 'docker'),
-    '#!/usr/bin/env bash\necho "$*" >> "$DOCKER_LOG"\n[ "$1 $2" = "compose up" ] && [ -n "${DOCKER_FAIL_UP:-}" ] && exit 1\nexit 0\n',
+    [
+      '#!/usr/bin/env bash',
+      'echo "$*" >> "$DOCKER_LOG"',
+      '[ "$1 $2" = "compose up" ] && [ -n "${DOCKER_FAIL_UP:-}" ] && exit 1',
+      '[ "$1 $2" = "compose exec" ] && [ -n "${DOCKER_API_DOWN:-}" ] && exit 1',
+      'if [ "$1 $2" = "compose ps" ]; then',
+      '  for s in postgres redis api worker frontend; do [ "$s" = "${DOCKER_STOPPED:-}" ] || echo "$s"; done',
+      'fi',
+      'exit 0',
+      '',
+    ].join('\n'),
   );
   chmodSync(path.join(bin, 'docker'), 0o755);
   env = {
@@ -150,6 +162,70 @@ describe('selfhost/update.sh', () => {
     expect(retried.out).toContain('the stack will be rebuilt');
     expect(composeUps()).toBe(2);
     expect(run('--yes').out).toContain('up to date');
+  });
+
+  it('checks the API readiness and the worker and dashboard after the stack is up', () => {
+    release({ version: '0.6.1', date: '2026-10-22' });
+    const before = git(path.join(install(), 'pushify_backend'), 'rev-parse', 'HEAD');
+
+    const { status, out } = run('--yes');
+    expect(status).toBe(0);
+    const calls = dockerCalls().split('\n');
+    const up = calls.indexOf('compose up -d --build');
+    const ready = calls.findIndex((l) => l.startsWith('compose exec -T api curl') && l.includes('/api/v1/health/ready'));
+    expect(up).toBeGreaterThanOrEqual(0);
+    expect(ready).toBeGreaterThan(up);
+    expect(calls).toContain('compose ps --services --status running');
+    expect(out).toContain('the API is ready, the worker and the dashboard are running');
+    expect(out).toContain(`Ran before this update: backend ${before}`);
+    expect(existsSync(path.join(install(), '.pushify-deployed'))).toBe(true);
+  });
+
+  it('exits non-zero with the commits to go back to when the health check fails, and checks again next run', () => {
+    release({ version: '0.6.1', date: '2026-10-22' });
+    expect(run('--yes').status).toBe(0);
+    const good = git(path.join(install(), 'pushify_backend'), 'rev-parse', 'HEAD');
+    const recorded = () => readFileSync(path.join(install(), '.pushify-deployed'), 'utf8');
+    release({ version: '0.6.2', date: '2026-10-23' });
+    env.PUSHIFY_HEALTH_TIMEOUT = '0';
+
+    env.DOCKER_API_DOWN = '1';
+    const failed = run('--yes');
+    expect(failed.status).toBe(1);
+    expect(failed.out).toContain('readiness check');
+    expect(failed.out).toContain('failed its health check');
+    expect(failed.out).toContain(`Ran before this update: backend ${good}`);
+    expect(failed.out).toContain('docs/SELF_HOSTING.md#rolling-back-an-update');
+    expect(installedVersion()).toBe('0.6.2');
+    expect(recorded()).toContain(`backend=${good}`);
+
+    // The checkouts are already on 0.6.2 now; what ran before is still the last update that passed.
+    delete env.DOCKER_API_DOWN;
+    env.DOCKER_STOPPED = 'worker';
+    const workerDown = run('--yes');
+    expect(workerDown.status).toBe(1);
+    expect(workerDown.out).toContain('the worker container is not running');
+    expect(workerDown.out).toContain(`Ran before this update: backend ${good}`);
+    expect(recorded()).toContain(`backend=${good}`);
+
+    delete env.DOCKER_STOPPED;
+    const healthy = run('--yes');
+    expect(healthy.status).toBe(0);
+    expect(healthy.out).toContain('the stack will be rebuilt');
+    expect(recorded()).not.toContain(`backend=${good}`);
+    expect(composeUps()).toBe(4);
+    expect(run('--yes').out).toContain('up to date');
+  });
+
+  it('rejects a PUSHIFY_HEALTH_TIMEOUT that is not a number before changing anything', () => {
+    release({ version: '0.6.1', date: '2026-10-22' });
+    env.PUSHIFY_HEALTH_TIMEOUT = 'soon';
+
+    const { status, out } = run('--yes');
+    expect(status).toBe(1);
+    expect(out).toContain('PUSHIFY_HEALTH_TIMEOUT must be a number of seconds');
+    expect(installedVersion()).toBe('0.6.0');
+    expect(composeUps()).toBe(0);
   });
 
   it('refuses a MAJOR version jump unless --allow-major is given', () => {
