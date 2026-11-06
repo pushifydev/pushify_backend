@@ -3,6 +3,7 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { memberProjectAccess } from '../db/schema/organizations';
 import { t, type SupportedLocale } from '../i18n';
+import { currentApiKeyProjectIds } from './api-key-project-scope';
 
 export type MembershipScope = {
   role: string;
@@ -18,8 +19,24 @@ export function memberHasFullProjectAccess(membership: MembershipScope): boolean
   );
 }
 
-/** Returns the allowlisted project ids for a restricted member, or null for unrestricted access */
+/**
+ * Returns the allowlisted project ids for a restricted member, or null for unrestricted access.
+ * During a request made with a project-scoped API key the result is also limited to the key's
+ * projects (lib/api-key-project-scope), whatever the creator's role.
+ */
 export async function getMemberAllowedProjectIds(
+  membership: MembershipScope,
+  organizationId: string,
+  userId: string
+): Promise<string[] | null> {
+  const memberIds = await getMemberOwnAllowedProjectIds(membership, organizationId, userId);
+  const keyIds = currentApiKeyProjectIds();
+  if (!keyIds) return memberIds;
+  if (!memberIds) return [...keyIds];
+  return memberIds.filter((id) => keyIds.includes(id.toLowerCase()));
+}
+
+async function getMemberOwnAllowedProjectIds(
   membership: MembershipScope,
   organizationId: string,
   userId: string
@@ -45,6 +62,9 @@ export async function memberCanAccessProject(
   userId: string,
   projectId: string
 ): Promise<boolean> {
+  const keyIds = currentApiKeyProjectIds();
+  if (keyIds && !keyIds.includes(projectId.toLowerCase())) return false;
+
   if (memberHasFullProjectAccess(membership)) return true;
 
   const row = await db.query.memberProjectAccess.findFirst({

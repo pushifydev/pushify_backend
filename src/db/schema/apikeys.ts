@@ -28,6 +28,12 @@ export const apiKeys = pgTable('api_keys', {
   // e.g., "deployments:read,deployments:write,projects:read"
   scopes: text('scopes').notNull().default('*'), // '*' means all permissions
 
+  /**
+   * Projects the key is limited to (lib/api-key-project-scope); null = every project its creator
+   * can reach. Checked against the creator's own access on every request, never instead of it.
+   */
+  projectIds: uuid('project_ids').array(),
+
   // Status
   isActive: boolean('is_active').notNull().default(true),
 

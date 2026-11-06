@@ -183,6 +183,8 @@ export interface TranslationKeys {
     insufficientScope: string;
     sessionOnly: string;
     limitReached: string;
+    projectScoped: string;
+    invalidProjects: string;
   };
   twoFactor: {
     codeRequiredForOAuth: string;
@@ -579,6 +581,8 @@ export const en: TranslationKeys = {
     insufficientScope: 'API key does not have required permissions',
     sessionOnly: 'This endpoint requires a dashboard session token, not an API key',
     limitReached: 'Maximum number of API keys reached',
+    projectScoped: 'This API key is limited to specific projects and can only use their project endpoints',
+    invalidProjects: 'One or more projects do not exist or are not available to you',
   },
 
   // Two-Factor Authentication

@@ -5,8 +5,12 @@ import { t, type SupportedLocale } from '../i18n';
 import { HTTPException } from 'hono/http-exception';
 import { API_KEY_SCOPES, type ApiKey, type ApiKeyScope } from '../db/schema';
 import { isUserBanned } from '../lib/user-ban';
+import { projectRepository } from '../repositories/project.repository';
+import { getMemberAllowedProjectIds, type MembershipScope } from '../lib/member-project-scope';
+import { normalizeApiKeyProjectIds } from '../lib/api-key-project-scope';
 
 const MAX_KEYS_PER_USER = 10;
+const MAX_PROJECTS_PER_KEY = 50;
 const KEY_PREFIX = 'pk_live_';
 
 /**
@@ -41,6 +45,36 @@ function validateScopes(scopes: string[]): boolean {
 }
 
 /**
+ * A key may only be limited to projects of its organization that its creator can reach right now
+ * (lib/api-key-project-scope). Returns the normalised list, or null for an unrestricted key. A
+ * missing project and one outside the creator's access get the same 400, so neither can be probed.
+ */
+async function resolveKeyProjectIds(
+  projectIds: string[] | null | undefined,
+  membership: MembershipScope,
+  organizationId: string,
+  userId: string,
+  locale: SupportedLocale
+): Promise<string[] | null> {
+  const ids = normalizeApiKeyProjectIds(projectIds);
+  if (!ids) return null;
+
+  const invalid = new HTTPException(400, { message: t(locale, 'apiKeys', 'invalidProjects') });
+  if (ids.length === 0 || ids.length > MAX_PROJECTS_PER_KEY) throw invalid;
+
+  const memberAllowed = await getMemberAllowedProjectIds(membership, organizationId, userId);
+  const reachable = memberAllowed
+    ? ids.filter((id) => memberAllowed.some((allowed) => allowed.toLowerCase() === id))
+    : ids;
+  if (reachable.length !== ids.length) throw invalid;
+
+  const found = await projectRepository.findByOrganization(organizationId, reachable);
+  if (found.length !== ids.length) throw invalid;
+
+  return ids;
+}
+
+/**
  * Check if a key has a specific scope
  */
 export function hasScope(keyScopes: string, requiredScope: ApiKeyScope): boolean {
@@ -53,6 +87,8 @@ export interface CreateApiKeyInput {
   name: string;
   scopes?: string[]; // Array of scope strings, defaults to ['*']
   expiresAt?: Date;
+  /** Limit the key to these projects; omitted or null = every project the creator can reach */
+  projectIds?: string[] | null;
 }
 
 export interface ApiKeyWithSecret {
@@ -60,6 +96,7 @@ export interface ApiKeyWithSecret {
   name: string;
   prefix: string;
   scopes: string;
+  projectIds: string[] | null;
   secretKey: string; // Only returned on creation
   createdAt: Date;
   expiresAt: Date | null;
@@ -70,6 +107,7 @@ export interface ApiKeyInfo {
   name: string;
   prefix: string;
   scopes: string;
+  projectIds: string[] | null;
   isActive: boolean;
   lastUsedAt: Date | null;
   createdAt: Date;
@@ -109,6 +147,8 @@ export const apiKeyService = {
       throw new HTTPException(400, { message: t(locale, 'apiKeys', 'invalidScopes') });
     }
 
+    const projectIds = await resolveKeyProjectIds(input.projectIds, membership, organizationId, userId, locale);
+
     // Generate key
     const secretKey = generateApiKey();
     const keyHash = hashApiKey(secretKey);
@@ -122,6 +162,7 @@ export const apiKeyService = {
       prefix,
       keyHash,
       scopes: scopes.join(','),
+      projectIds,
       expiresAt: input.expiresAt || null,
     });
 
@@ -130,6 +171,7 @@ export const apiKeyService = {
       name: apiKey.name,
       prefix: apiKey.prefix,
       scopes: apiKey.scopes,
+      projectIds: apiKey.projectIds ?? null,
       secretKey, // Only returned once!
       createdAt: apiKey.createdAt,
       expiresAt: apiKey.expiresAt,
@@ -197,6 +239,7 @@ export const apiKeyService = {
       name: key.name,
       prefix: key.prefix,
       scopes: key.scopes,
+      projectIds: key.projectIds ?? null,
       isActive: key.isActive,
       lastUsedAt: key.lastUsedAt,
       createdAt: key.createdAt,
@@ -225,6 +268,7 @@ export const apiKeyService = {
       name: key.name,
       prefix: key.prefix,
       scopes: key.scopes,
+      projectIds: key.projectIds ?? null,
       isActive: key.isActive,
       lastUsedAt: key.lastUsedAt,
       createdAt: key.createdAt,
@@ -264,13 +308,13 @@ export const apiKeyService = {
   },
 
   /**
-   * Update an API key's name or scopes
+   * Update an API key's name, scopes or project list (`projectIds: null` lifts the limit)
    */
   async update(
     keyId: string,
     userId: string,
     organizationId: string,
-    input: { name?: string; scopes?: string[] },
+    input: { name?: string; scopes?: string[]; projectIds?: string[] | null },
     locale: SupportedLocale = 'en'
   ): Promise<ApiKeyInfo> {
     const apiKey = await apiKeyRepository.findById(keyId);
@@ -289,9 +333,23 @@ export const apiKeyService = {
       throw new HTTPException(400, { message: t(locale, 'apiKeys', 'invalidScopes') });
     }
 
-    const updateData: { name?: string; scopes?: string } = {};
+    const updateData: { name?: string; scopes?: string; projectIds?: string[] | null } = {};
     if (input.name) updateData.name = input.name;
     if (input.scopes) updateData.scopes = input.scopes.join(',');
+    if (input.projectIds !== undefined) {
+      // Checked against the key's own organization and the creator's access there now
+      const membership = await organizationRepository.findMember(apiKey.organizationId, userId);
+      if (!membership) {
+        throw new HTTPException(403, { message: t(locale, 'organizations', 'noAccess') });
+      }
+      updateData.projectIds = await resolveKeyProjectIds(
+        input.projectIds,
+        membership,
+        apiKey.organizationId,
+        userId,
+        locale
+      );
+    }
 
     const updated = await apiKeyRepository.update(keyId, updateData);
 
@@ -304,6 +362,7 @@ export const apiKeyService = {
       name: updated.name,
       prefix: updated.prefix,
       scopes: updated.scopes,
+      projectIds: updated.projectIds ?? null,
       isActive: updated.isActive,
       lastUsedAt: updated.lastUsedAt,
       createdAt: updated.createdAt,

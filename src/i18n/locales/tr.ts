@@ -208,6 +208,8 @@ export const tr: TranslationKeys = {
     insufficientScope: 'API anahtarı gerekli izinlere sahip değil',
     sessionOnly: 'Bu uç nokta API anahtarı yerine panel oturum tokenı gerektirir',
     limitReached: 'Maksimum API anahtarı sayısına ulaşıldı',
+    projectScoped: 'Bu API anahtarı belirli projelerle sınırlı ve yalnızca bu projelerin uç noktalarını kullanabilir',
+    invalidProjects: 'Projelerden biri veya birkaçı yok ya da size açık değil',
   },
 
   // Two-Factor Authentication
