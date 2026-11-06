@@ -5,6 +5,7 @@ import { t, type SupportedLocale } from '../i18n';
 import type { ApiKeyScope } from '../db/schema';
 import { applyPlanApiRateLimit } from './rate-limit';
 import { runWithAuditApiKey } from '../lib/audit';
+import { apiKeyProjectPathAccess, runWithApiKeyProjectScope } from '../lib/api-key-project-scope';
 
 export const API_KEY_PREFIX = 'pk_live_';
 
@@ -81,14 +82,30 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     });
   }
 
+  // A key limited to projects only reaches the project API, and only for its own projects
+  // (lib/api-key-project-scope); a project outside the list is not found, as for a restricted member.
+  const projectIds = result.apiKey.projectIds ?? null;
+  if (projectIds) {
+    const access = apiKeyProjectPathAccess(c.req.method, c.req.path, projectIds);
+    if (access === 'project_not_in_scope') {
+      throw new HTTPException(404, { message: t(locale, 'projects', 'notFound') });
+    }
+    if (access === 'outside_project_api') {
+      throw new HTTPException(403, { message: t(locale, 'apiKeys', 'projectScoped') });
+    }
+  }
+
   c.set('userId', result.userId);
   c.set('organizationId', result.organizationId);
   c.set('apiKey', result.apiKey);
   c.set('isApiKeyAuth', true);
   c.set('authVerified', true);
 
-  // Audit entries written while handling this request record which key made it (id + name).
-  await runWithAuditApiKey(result.apiKey, () => applyPlanApiRateLimit(c, next));
+  // Audit entries written while handling this request record which key made it (id + name), and
+  // every project check made while handling it is limited to the key's projects.
+  await runWithAuditApiKey(result.apiKey, () =>
+    runWithApiKeyProjectScope(projectIds, () => applyPlanApiRateLimit(c, next)),
+  );
 }
 
 /**

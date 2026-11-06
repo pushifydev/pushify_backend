@@ -83,7 +83,7 @@ export const apiKeyRepository = {
   // Update API key name or scopes
   async update(
     id: string,
-    data: { name?: string; scopes?: string }
+    data: { name?: string; scopes?: string; projectIds?: string[] | null }
   ): Promise<ApiKey | undefined> {
     const [apiKey] = await db
       .update(apiKeys)

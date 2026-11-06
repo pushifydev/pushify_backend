@@ -17,15 +17,20 @@ apiKeyRouter.use('*', authMiddleware);
 apiKeyRouter.use('*', rejectApiKeyAuth());
 
 // Validation schemas
+// Limits the key to these projects (lib/api-key-project-scope); null/omitted = no project limit
+const projectIdsSchema = z.array(z.string().uuid()).min(1).max(50).nullable().optional();
+
 const createApiKeySchema = z.object({
   name: z.string().min(1).max(255),
   scopes: z.array(z.string()).optional(),
   expiresAt: z.string().datetime().optional(),
+  projectIds: projectIdsSchema,
 });
 
 const updateApiKeySchema = z.object({
   name: z.string().min(1).max(255).optional(),
   scopes: z.array(z.string()).optional(),
+  projectIds: projectIdsSchema,
 });
 
 // Get all API keys for the current user
@@ -59,6 +64,7 @@ apiKeyRouter.post('/', zValidator('json', createApiKeySchema), async (c) => {
       name: body.name,
       scopes: body.scopes,
       expiresAt: body.expiresAt ? new Date(body.expiresAt) : undefined,
+      projectIds: body.projectIds,
     },
     locale
   );
@@ -98,6 +104,7 @@ apiKeyRouter.patch('/:keyId', zValidator('json', updateApiKeySchema), async (c) 
     {
       name: body.name,
       scopes: body.scopes,
+      projectIds: body.projectIds,
     },
     locale
   );
