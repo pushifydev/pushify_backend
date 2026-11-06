@@ -21,6 +21,7 @@ import { startScheduledTaskWorker, stopScheduledTaskWorker } from '../workers/sc
 import { startAppSleepWorker, stopAppSleepWorker } from '../workers/app-sleep.worker';
 import { startAbuseRuntimeWorker, stopAbuseRuntimeWorker } from '../workers/abuse-runtime.worker';
 import { startAdminNotifyWorker, stopAdminNotifyWorker } from '../workers/admin-notify.worker';
+import { startServerPatchWorker, stopServerPatchWorker } from '../workers/server-patch.worker';
 import { startDomainRenewalWorker, stopDomainRenewalWorker } from '../workers/domain-renewal.worker';
 import { startBillingReconcileWorker, stopBillingReconcileWorker } from '../workers/billing-reconcile.worker';
 import { startDeletionPurgeWorker, stopDeletionPurgeWorker } from '../workers/deletion-purge.worker';
@@ -99,6 +100,10 @@ export async function startBackgroundWorkers(): Promise<void> {
     logger.info('Admin notify queue worker started');
   }
 
+  if (startServerPatchWorker()) {
+    logger.info('Server patch queue worker started');
+  }
+
   const notificationWorker = startNotificationWorker();
   if (notificationWorker) {
     logger.info('Notification queue worker started');
@@ -175,6 +180,7 @@ export async function stopBackgroundWorkers(): Promise<void> {
   }
   stopScheduledTaskWorker();
   void stopAdminNotifyWorker();
+  await stopServerPatchWorker();
   stopAppSleepWorker();
   stopAbuseRuntimeWorker();
   stopDomainRenewalWorker();

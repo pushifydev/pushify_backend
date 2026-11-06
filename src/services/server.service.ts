@@ -1,9 +1,10 @@
 import { HTTPException } from 'hono/http-exception';
 import { requireOrgMember } from '../lib/org-access';
 import { env } from '../config/env';
-import { eq, and, desc, count, ne, inArray } from 'drizzle-orm';
+import { eq, and, desc, count, ne, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { servers } from '../db/schema/servers';
+import { activityLogs } from '../db/schema/activity';
 import { projects } from '../db/schema/projects';
 import { databases } from '../db/schema/databases';
 import { deployments } from '../db/schema/deployments';
@@ -1848,9 +1849,34 @@ export const serverService = {
       recentDeployments = rows;
     }
 
-    const lifecycle: Array<{ type: string; at: Date; detail?: string }> = [
+    const lifecycle: Array<{ type: string; at: Date; detail?: string; output?: string }> = [
       { type: 'created', at: server.createdAt },
     ];
+
+    // Security-update runs (POST /:serverId/patches/apply), recorded on the audit log by the worker
+    const patchRuns = await db
+      .select({ action: activityLogs.action, description: activityLogs.description, metadata: activityLogs.metadata, createdAt: activityLogs.createdAt })
+      .from(activityLogs)
+      .where(
+        and(
+          eq(activityLogs.organizationId, organizationId),
+          inArray(activityLogs.action, ['server.patches_applied', 'server.patches_failed']),
+          sql`${activityLogs.metadata}->>'serverId' = ${serverId}`,
+        ),
+      )
+      .orderBy(desc(activityLogs.createdAt))
+      .limit(10);
+
+    for (const run of patchRuns) {
+      const meta = run.metadata as { summary?: unknown; error?: unknown; output?: unknown };
+      const detail = run.action === 'server.patches_applied' ? meta.summary : meta.error;
+      lifecycle.push({
+        type: run.action === 'server.patches_applied' ? 'patches_applied' : 'patches_failed',
+        at: run.createdAt,
+        detail: typeof detail === 'string' ? detail : run.description,
+        output: typeof meta.output === 'string' ? meta.output : undefined,
+      });
+    }
 
     if (server.lastSeenAt) {
       lifecycle.push({ type: 'synced', at: server.lastSeenAt });

@@ -48,6 +48,9 @@ const ActivityActionEnum = z.enum([
   'database.data_modified',
   'database.query_executed',
   'database.schema_changed',
+  'server.patches_requested',
+  'server.patches_applied',
+  'server.patches_failed',
 ]);
 
 const UserSchema = z.object({
