@@ -6,6 +6,7 @@ import { githubAppService } from '../services/github-app.service';
 import {
   handlePullRequestEvent,
   handlePushEvent,
+  isPreviewTeardownEvent,
   resolvePushTarget,
   type GitHubPullRequestPayload,
   type GitHubPushPayload,
@@ -159,7 +160,9 @@ webhookRouter.openapi(webhookRoute, async (c) => {
       throw new HTTPException(400, { message: 'Invalid JSON payload' });
     }
 
-    if (!(await canOrganizationDeploy(project.organizationId))) {
+    // Billing blocks starting deployments, not tearing a preview down (see isPreviewTeardownEvent).
+    const teardown = event === 'pull_request' && isPreviewTeardownEvent(rawPayload);
+    if (!teardown && !(await canOrganizationDeploy(project.organizationId))) {
       return c.json({ message: 'Deployments blocked: organization billing is past due or suspended' });
     }
 
@@ -257,7 +260,8 @@ webhookRouter.openapi(gitlabWebhookRoute, async (c) => {
 
     const payload = rawPayload as { object_kind?: string };
 
-    if (!(await canOrganizationDeploy(project.organizationId))) {
+    // Billing blocks starting deployments, not tearing a preview down (see isPreviewTeardownEvent).
+    if (!isPreviewTeardownEvent(rawPayload) && !(await canOrganizationDeploy(project.organizationId))) {
       return c.json({ message: 'Deployments blocked: organization billing is past due or suspended' });
     }
 

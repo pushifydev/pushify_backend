@@ -6,15 +6,21 @@ const h = vi.hoisted(() => ({
   schedule: vi.fn(),
   isPreviewEnabled: vi.fn(),
   createOrUpdatePreview: vi.fn(),
+  cleanupPreview: vi.fn(),
+  canOrganizationDeploy: vi.fn(),
 }));
 
 vi.mock('../repositories/project.repository', () => ({ projectRepository: { findById: h.findById } }));
 vi.mock('../repositories/deployment.repository', () => ({ deploymentRepository: { create: h.create } }));
 vi.mock('../services/github-app.service', () => ({ githubAppService: {} }));
 vi.mock('../services/preview.service', () => ({
-  previewService: { isPreviewEnabled: h.isPreviewEnabled, createOrUpdatePreview: h.createOrUpdatePreview },
+  previewService: {
+    isPreviewEnabled: h.isPreviewEnabled,
+    createOrUpdatePreview: h.createOrUpdatePreview,
+    cleanupPreview: h.cleanupPreview,
+  },
 }));
-vi.mock('../services/organization-billing.service', () => ({ canOrganizationDeploy: async () => true }));
+vi.mock('../services/organization-billing.service', () => ({ canOrganizationDeploy: h.canOrganizationDeploy }));
 vi.mock('../lib/push-deploy-gate', () => ({
   checkPushDeployAllowed: async () => ({ allowed: true }),
   recordRefusedPushDeploy: vi.fn(),
@@ -31,6 +37,11 @@ vi.mock('../lib/deployment-scheduler', () => ({ scheduleDeploymentProcessing: h.
 import { webhookRoutes } from './webhooks';
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
+
+beforeEach(() => {
+  h.canOrganizationDeploy.mockReset().mockResolvedValue(true);
+  h.cleanupPreview.mockReset().mockResolvedValue(undefined);
+});
 
 const push = (ref: string) =>
   webhookRoutes.request(`/gitlab/${PROJECT_ID}`, {
@@ -130,5 +141,43 @@ describe('GitLab merge_request webhook fork protection', () => {
   it('fails closed when project ids are missing', async () => {
     await mergeRequest('open', undefined, undefined);
     expect(h.createOrUpdatePreview).not.toHaveBeenCalled();
+  });
+});
+
+describe('GitLab merge_request webhook while billing blocks deployments', () => {
+  beforeEach(() => {
+    h.findById.mockReset().mockResolvedValue({
+      id: PROJECT_ID,
+      name: 'p',
+      organizationId: 'org-1',
+      status: 'active',
+      webhookSecret: 'secret',
+      autoDeploy: true,
+      gitBranch: 'main',
+    });
+    h.isPreviewEnabled.mockReset().mockResolvedValue(true);
+    h.createOrUpdatePreview.mockReset().mockResolvedValue({ id: 'prev-1' });
+    h.create.mockReset().mockResolvedValue({ id: 'dep-1' });
+    h.canOrganizationDeploy.mockResolvedValue(false);
+  });
+
+  it.each(['close', 'merge'])('still cleans up the preview on %s', async (action) => {
+    const res = await mergeRequest(action, 42, 42);
+    expect(res.status).toBe(200);
+    expect(h.cleanupPreview).toHaveBeenCalledWith(PROJECT_ID, 3);
+    expect(((await res.json()) as { message: string }).message).toContain('cleaned up');
+  });
+
+  it.each(['open', 'update', 'reopen'])('blocks a preview on %s', async (action) => {
+    const res = await mergeRequest(action, 42, 42);
+    expect(((await res.json()) as { message: string }).message).toContain('Deployments blocked');
+    expect(h.createOrUpdatePreview).not.toHaveBeenCalled();
+    expect(h.cleanupPreview).not.toHaveBeenCalled();
+  });
+
+  it('blocks a push', async () => {
+    const res = await push('refs/heads/main');
+    expect(((await res.json()) as { message: string }).message).toContain('Deployments blocked');
+    expect(h.create).not.toHaveBeenCalled();
   });
 });
