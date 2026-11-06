@@ -140,6 +140,33 @@ export function isForkPullRequest(payload: GitHubPullRequestPayload): boolean {
   return headRepo.toLowerCase() !== baseRepo.toLowerCase();
 }
 
+/**
+ * True for the deliveries that tear a preview down: a GitHub `pull_request` closed (merged or
+ * not) or a GitLab merge request closed/merged. The webhook routes let these through even when
+ * the organization's billing blocks deployments — that gate is for what starts a deployment, and
+ * swallowing the close left the preview's container, port, vhost and DNS record running for good
+ * (a 2xx is never retried and nothing else sweeps previews). Creation stays gated inside
+ * previewService.createOrUpdatePreview.
+ *
+ * Reads the parsed body only, so GitHub callers must also check `X-GitHub-Event: pull_request`.
+ */
+export function isPreviewTeardownEvent(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object') return false;
+  const body = payload as {
+    action?: unknown;
+    pull_request?: unknown;
+    object_kind?: unknown;
+    object_attributes?: { action?: unknown } | null;
+  };
+
+  if (body.object_kind === 'merge_request') {
+    const action = body.object_attributes?.action;
+    return action === 'close' || action === 'merge';
+  }
+
+  return body.action === 'closed' && typeof body.pull_request === 'object' && body.pull_request !== null;
+}
+
 export async function handlePullRequestEvent(
   project: DeployTargetProject,
   payload: GitHubPullRequestPayload

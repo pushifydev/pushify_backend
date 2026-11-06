@@ -19,7 +19,11 @@ vi.mock('./push-deploy-gate', () => ({
   recordRefusedPushDeploy: vi.fn(),
 }));
 
-import { handlePullRequestEvent, type GitHubPullRequestPayload } from './github-deploy-trigger';
+import {
+  handlePullRequestEvent,
+  isPreviewTeardownEvent,
+  type GitHubPullRequestPayload,
+} from './github-deploy-trigger';
 
 const project = { id: 'p1', name: 'p', organizationId: 'org-1', autoDeploy: true, gitBranch: 'main' };
 
@@ -72,5 +76,32 @@ describe('handlePullRequestEvent fork protection', () => {
   it('still cleans up on close for a fork PR', async () => {
     await handlePullRequestEvent(project, prPayload('closed', { full_name: 'attacker/app' }));
     expect(h.cleanupPreview).toHaveBeenCalledWith('p1', 7);
+  });
+});
+
+describe('isPreviewTeardownEvent', () => {
+  it('is true for a closed GitHub pull_request', () => {
+    expect(isPreviewTeardownEvent(prPayload('closed', { full_name: 'acme/app' }))).toBe(true);
+  });
+
+  it.each(['opened', 'synchronize', 'reopened', 'edited'])('is false for a GitHub pull_request %s', (action) => {
+    expect(isPreviewTeardownEvent(prPayload(action, { full_name: 'acme/app' }))).toBe(false);
+  });
+
+  it.each(['close', 'merge'])('is true for a GitLab merge request %s', (action) => {
+    expect(isPreviewTeardownEvent({ object_kind: 'merge_request', object_attributes: { action } })).toBe(true);
+  });
+
+  it.each(['open', 'update', 'reopen'])('is false for a GitLab merge request %s', (action) => {
+    expect(isPreviewTeardownEvent({ object_kind: 'merge_request', object_attributes: { action } })).toBe(false);
+  });
+
+  it('is false for pushes and malformed bodies', () => {
+    expect(isPreviewTeardownEvent({ ref: 'refs/heads/main', head_commit: null })).toBe(false);
+    expect(isPreviewTeardownEvent({ object_kind: 'push', action: 'closed' })).toBe(false);
+    expect(isPreviewTeardownEvent({ action: 'closed' })).toBe(false);
+    expect(isPreviewTeardownEvent({ object_kind: 'merge_request' })).toBe(false);
+    expect(isPreviewTeardownEvent(null)).toBe(false);
+    expect(isPreviewTeardownEvent('closed')).toBe(false);
   });
 });

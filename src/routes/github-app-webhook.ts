@@ -10,6 +10,7 @@ import { claimGitHubWebhookDelivery, processClaimedWebhookDelivery } from '../li
 import {
   handlePullRequestEvent,
   handlePushEvent,
+  isPreviewTeardownEvent,
   type GitHubPullRequestPayload,
   type GitHubPushPayload,
 } from '../lib/github-deploy-trigger';
@@ -155,9 +156,11 @@ appWebhookRouter.post('/github/app', async (c) => {
     }
 
     const results: { projectId: string; message: string; deploymentId?: string }[] = [];
+    // Billing blocks starting deployments, not tearing a preview down (see isPreviewTeardownEvent).
+    const teardown = event === 'pull_request' && isPreviewTeardownEvent(repositoryEvent);
 
     for (const project of targets) {
-      if (!(await canOrganizationDeploy(project.organizationId))) {
+      if (!teardown && !(await canOrganizationDeploy(project.organizationId))) {
         results.push({
           projectId: project.id,
           message: 'Deployments blocked: organization billing is past due or suspended',
