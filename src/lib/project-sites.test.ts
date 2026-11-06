@@ -15,7 +15,11 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('dns', () => ({ promises: { resolve4: mocks.resolve4 } }));
 vi.mock('../config/env', () => ({
-  env: { PREVIEW_BASE_URL: 'pushify.dev', WILDCARD_SSL_PATH: '/etc/letsencrypt/live/pushify.dev-0001' },
+  env: {
+    PREVIEW_BASE_URL: 'pushify.dev',
+    WILDCARD_SSL_PATH: '/etc/letsencrypt/live/pushify.dev-0001',
+    API_BASE_URL: 'https://api.pushify.dev',
+  },
 }));
 vi.mock('../repositories/domain.repository', () => ({
   domainRepository: {
@@ -476,6 +480,48 @@ describe('syncProjectSites in maintenance mode', () => {
 
     expect(server.vhost()).toContain('proxy_pass http://127.0.0.1:3001;');
     expect(server.vhost()).not.toContain('return 503');
+  });
+});
+
+/**
+ * A slug is only unique within an organization, so the 502 fallback names the project by id —
+ * otherwise another organization's `yeli` could be the one the wake endpoint finds.
+ */
+describe('wake fallback', () => {
+  const PROJECT_ID = '5b0e7c1a-9d3f-4a2e-8c61-2f4d9e7a1b30';
+
+  it('sends the production project by id', async () => {
+    mocks.findProject.mockResolvedValue({ id: PROJECT_ID, slug: 'yeli', settings: {} });
+    mocks.findByProject.mockResolvedValue([row('yeliapp.com', { isPrimary: true })]);
+    dnsPointsHere('yeliapp.com');
+    const server = fakeServer();
+
+    await sync(server.ssh, { projectId: PROJECT_ID, requestCertificates: false });
+
+    expect(server.vhost()).toContain(`rewrite ^ /api/v1/wake/p/${PROJECT_ID} break;`);
+    expect(server.vhost()).not.toContain('/api/v1/wake/yeli');
+  });
+
+  it('never wakes the production app from a staging vhost', async () => {
+    mocks.findProject.mockResolvedValue({ id: PROJECT_ID, slug: 'yeli', settings: {} });
+    mocks.findByProject.mockResolvedValue([row('staging.yeliapp.com', { isPrimary: true, environment: 'staging' })]);
+    dnsPointsHere('staging.yeliapp.com');
+    const server = fakeServer();
+
+    await sync(server.ssh, { projectId: PROJECT_ID, requestCertificates: false, environment: 'staging' });
+
+    expect(server.vhost()).toContain('@pushify_wake');
+    expect(server.vhost()).not.toContain('/api/v1/wake/p/');
+  });
+
+  it('falls back to the slug when no id is given', () => {
+    const config = generateProjectSitesConfig({
+      projectSlug: 'yeli',
+      containerPort: 3001,
+      domains: [{ domain: 'a.com', kind: 'custom', ssl: false }],
+    });
+
+    expect(config).toContain('rewrite ^ /api/v1/wake/yeli break;');
   });
 });
 
