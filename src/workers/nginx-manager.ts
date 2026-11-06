@@ -6,6 +6,8 @@ export interface SiteConfig {
   domain: string;
   containerPort: number;
   projectSlug: string;
+  /** Project id the 502 wake fallback sends (production only; see generateWakeFallback) */
+  projectId?: string;
   ssl?: boolean;
   additionalDomains?: string[];
   nginxSettings?: NginxSettings;
@@ -69,8 +71,13 @@ function generateRateLimitLocation(projectSlug: string, rateLimit?: NginxSetting
  * 502 fallback: when the upstream is down (nginx-generated 502, e.g. a slept container),
  * proxy the request to the control plane's wake endpoint, which starts the container and
  * serves a "waking up" page. Requires API_BASE_URL; without it no fallback is emitted.
+ *
+ * The project is named by its id: a slug is only unique within an organization, so another
+ * organization's project could answer to it. Without an id (staging and PR preview vhosts —
+ * sleep only ever stops production, so they must not wake the production app) the slug is
+ * sent, and the wake endpoint acts only on an unambiguous one.
  */
-function generateWakeFallback(projectSlug: string): string {
+function generateWakeFallback(projectSlug: string, projectId?: string): string {
   if (!env.API_BASE_URL) return '';
   let origin: string;
   let host: string;
@@ -81,10 +88,11 @@ function generateWakeFallback(projectSlug: string): string {
   } catch {
     return '';
   }
+  const target = projectId && UUID_RE.test(projectId) ? `p/${projectId.toLowerCase()}` : projectSlug;
   return `
     error_page 502 = @pushify_wake;
     location @pushify_wake {
-        rewrite ^ /api/v1/wake/${projectSlug} break;
+        rewrite ^ /api/v1/wake/${target} break;
         proxy_pass ${origin};
         proxy_set_header Host ${host};
         proxy_ssl_server_name on;
@@ -96,6 +104,7 @@ function generateSiteConfig(config: SiteConfig): string {
     domain,
     containerPort,
     projectSlug,
+    projectId,
     ssl = false,
     additionalDomains = [],
     nginxSettings = {}
@@ -211,7 +220,7 @@ server {
 ${gzipConfig}
 
     location / {${proxyConfig}
-    }${customLocations}${generateWakeFallback(projectSlug)}
+    }${customLocations}${generateWakeFallback(projectSlug, projectId)}
 }
 `;
   }
@@ -232,7 +241,7 @@ server {
 ${gzipConfig}
 
     location / {${proxyConfig}
-    }${customLocations}${generateWakeFallback(projectSlug)}
+    }${customLocations}${generateWakeFallback(projectSlug, projectId)}
 }
 `;
 }
@@ -314,6 +323,11 @@ export interface ProjectSitesConfig {
    * TRAFFIC_LOG_DIR/<id>.log for traffic analytics (unset = analytics off for this site).
    */
   trafficLogId?: string;
+  /**
+   * Project id the 502 wake fallback sends. Production only: sleep never stops a staging or
+   * preview container, so their vhosts must not wake the production app (see generateWakeFallback).
+   */
+  wakeProjectId?: string;
   /**
    * Maintenance mode: when enabled, every block that would serve the app answers with a 503
    * maintenance page instead. Redirects and ACME challenges stay as they are; the containers
@@ -456,7 +470,8 @@ function appLocation(
   containerPort: number,
   nginxSettings: NginxSettings | undefined,
   upstreamName?: string | null,
-  staticRoot?: string
+  staticRoot?: string,
+  wakeProjectId?: string
 ): { zone: string; body: string; forceHttps: boolean } {
   const settings = { ...DEFAULT_NGINX_SETTINGS, ...(nginxSettings || {}) };
   if (staticRoot) {
@@ -519,7 +534,7 @@ ${gzipConfig}
         proxy_send_timeout ${settings.proxyTimeout};
         proxy_connect_timeout 60;
         proxy_buffering off;${rateLimitLocation ? '\n' + rateLimitLocation : ''}${cachingConfig}${customHeadersBlock ? '\n' + customHeadersBlock : ''}
-    }${customLocations}${generateWakeFallback(projectSlug)}`;
+    }${customLocations}${generateWakeFallback(projectSlug, wakeProjectId)}`;
 
   return {
     zone: generateRateLimitZone(zoneKey, settings.rateLimit),
@@ -536,12 +551,21 @@ function renderProjectDomain(
   upstreamName?: string | null,
   staticRoot?: string,
   trafficLogId?: string,
-  maintenance?: MaintenanceMode | null
+  maintenance?: MaintenanceMode | null,
+  wakeProjectId?: string
 ) {
   // One rate-limit zone per domain: two domains of one project each with rate limiting on
   // would otherwise declare the same zone twice and fail `nginx -t`.
   const zoneKey = index === 0 ? projectSlug : `${projectSlug}_${index}`;
-  const appServed = appLocation(projectSlug, zoneKey, containerPort, site.nginxSettings, upstreamName, staticRoot);
+  const appServed = appLocation(
+    projectSlug,
+    zoneKey,
+    containerPort,
+    site.nginxSettings,
+    upstreamName,
+    staticRoot,
+    wakeProjectId
+  );
   // Maintenance: same blocks, redirects and certificates — only what they serve changes.
   const location = maintenance?.enabled
     ? { ...appServed, zone: '', body: maintenanceLocation(maintenance) }
@@ -647,7 +671,8 @@ export function generateProjectSitesConfig(config: ProjectSitesConfig): string {
       upstream.name,
       config.staticRoot,
       config.trafficLogId,
-      config.maintenance
+      config.maintenance,
+      config.wakeProjectId
     )
   );
   // Declared before any server block that uses it; only when some block actually logs.
@@ -862,6 +887,8 @@ export interface AutoSubdomainSiteConfig {
   domain: string;
   containerPort: number;
   projectSlug: string;
+  /** Project id the 502 wake fallback sends (production only; see generateWakeFallback) */
+  projectId?: string;
   nginxSettings?: NginxSettings;
 }
 
@@ -873,6 +900,7 @@ function generateAutoSubdomainSiteConfig(config: AutoSubdomainSiteConfig): strin
     domain,
     containerPort,
     projectSlug,
+    projectId,
     nginxSettings = {},
   } = config;
 
@@ -974,7 +1002,7 @@ server {
 ${gzipConfig}
 
     location / {${proxyConfig}
-    }${customLocations}${generateWakeFallback(projectSlug)}
+    }${customLocations}${generateWakeFallback(projectSlug, projectId)}
 }
 `;
 }

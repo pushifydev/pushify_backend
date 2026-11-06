@@ -1,5 +1,5 @@
-import { Hono } from 'hono';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { Hono, type Context } from 'hono';
+import { and, desc, eq, inArray, ne } from 'drizzle-orm';
 import { db } from '../db';
 import { projects } from '../db/schema/projects';
 import { deployments } from '../db/schema/deployments';
@@ -8,6 +8,7 @@ import { authMiddleware } from '../middleware/auth';
 import { organizationRepository } from '../repositories/organization.repository';
 import { projectRepository } from '../repositories/project.repository';
 import { HTTPException } from 'hono/http-exception';
+import { logger } from '../lib/logger';
 import type { AppEnv } from '../types';
 
 function wakePage(options: { title: string; message: string; refresh?: boolean }): string {
@@ -71,11 +72,11 @@ export async function neverServedBecauseBuildFailed(projectId: string): Promise<
 // gets a branded unavailable page instead of a raw nginx 502.
 const wakeRouter = new Hono<AppEnv>();
 
-wakeRouter.all('/:slug', async (c) => {
-  const slug = c.req.param('slug');
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-  const project = await db.query.projects.findFirst({ where: eq(projects.slug, slug) });
+type WakeProject = typeof projects.$inferSelect;
 
+async function wakeResponse(c: Context<AppEnv>, project: WakeProject | undefined): Promise<Response> {
   // Neutral on purpose: visitors learn the app is suspended, not why.
   if (project?.suspendedAt) {
     return c.html(
@@ -121,6 +122,35 @@ wakeRouter.all('/:slug', async (c) => {
     }),
     503
   );
+}
+
+// Vhosts name their project by id: a slug is only unique within an organization.
+wakeRouter.all('/p/:projectId', async (c) => {
+  const projectId = c.req.param('projectId');
+  const project = UUID_RE.test(projectId)
+    ? await db.query.projects.findFirst({
+        where: and(eq(projects.id, projectId), ne(projects.status, 'deleted')),
+      })
+    : undefined;
+  return wakeResponse(c, project);
+});
+
+// Vhosts written before the id route (and staging / PR preview vhosts, which carry no id) still
+// send a slug. Two organizations can share one, so only an unambiguous match is acted on —
+// otherwise a visitor could wake, or get the suspended page of, another organization's app.
+wakeRouter.all('/:slug', async (c) => {
+  const slug = c.req.param('slug');
+
+  const matches = await db.query.projects.findMany({
+    where: and(eq(projects.slug, slug), ne(projects.status, 'deleted')),
+    limit: 2,
+  });
+  if (matches.length > 1) {
+    logger.warn({ slug }, 'Wake by slug matches several projects; serving the unavailable page');
+    return wakeResponse(c, undefined);
+  }
+
+  return wakeResponse(c, matches[0]);
 });
 
 export { wakeRouter as wakeRoutes };

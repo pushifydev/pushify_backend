@@ -217,6 +217,8 @@ export async function syncProjectSites(
       domains: plan.map(toSite),
       trafficLogId,
       maintenance,
+      // Sleep only stops production; a staging vhost must not wake the production app.
+      wakeProjectId: environment === 'production' ? options.projectId : undefined,
     });
     if (!result.success) return result;
     const reload = await reloadNginx(ssh);
