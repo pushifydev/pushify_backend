@@ -294,8 +294,15 @@ first (above), then from the install directory:
 ```
 
 `--yes` skips the question (for cron or no terminal). A MAJOR version jump stops until you re-run
-with `--allow-major`. Running it again when nothing changed does nothing. If a build failed, the
-next run builds again. Migrations run automatically on start. `.env` and the data volumes are kept.
+with `--allow-major`. Running it again when nothing changed does nothing. Migrations run
+automatically on start. `.env` and the data volumes are kept.
+
+After `docker compose up` the script checks the stack: the API has to answer its readiness check
+(`/api/v1/health/ready`, which needs the database) from inside its container, and the `worker` and
+`frontend` containers have to be running. It retries for up to `PUSHIFY_HEALTH_TIMEOUT` seconds
+(120 by default). When the build or the check fails, the script exits with status 1, prints the
+commits that ran before and does not record the update, so the next run builds and checks again.
+It never rolls back by itself; see [Rolling back an update](#rolling-back-an-update).
 Re-running the installer still works too, but it shows no versions, has no dry run and does not
 remind you to back up. An install older than the script doesn't have it yet, so run it from GitHub
 once, in the install directory:
@@ -306,6 +313,40 @@ To see whether an update is due without logging in to the host, a platform admin
 release (checked at most every 6 hours) and sets `securityRelease: true` when a release you are
 missing is a security release. `PUSHIFY_DISABLE_UPDATE_CHECK=true` in `.env` turns that check off,
 and then the API never contacts GitHub. The update itself is always done with the script above.
+
+### Rolling back an update
+
+If the new version does not work (the health check failed, or something broke later), go back to
+the version that ran before. Nothing is rolled back automatically: the new version may already have
+migrated the database, and only the backup you took before updating can undo that.
+
+1. Find the commits that ran before. `update.sh` prints them when it finishes or fails
+   (`Ran before this update: backend <sha>, frontend <sha>`); a re-run after a failed update
+   prints the last update that passed. When it says `unknown`,
+   `git -C pushify_backend rev-parse 'HEAD@{1}'` (and the same for `pushify_frontend`) gives the
+   commit before the last update.
+2. From the install directory, stop the containers that use the database, put the code and the
+   compose file back, restore the backup into an empty database and start the stack:
+
+   ```bash
+   cd pushify
+   docker compose stop frontend api worker
+   git -C pushify_backend reset --hard <backend-sha>
+   git -C pushify_frontend reset --hard <frontend-sha>
+   cp -f pushify_backend/selfhost/docker-compose.yml ./docker-compose.yml
+   docker compose exec -T postgres dropdb -U pushify --force pushify
+   docker compose exec -T postgres createdb -U pushify pushify
+   gunzip -c pushify-backup-<stamp>.sql.gz | docker compose exec -T postgres psql -U pushify -d pushify -q -v ON_ERROR_STOP=1
+   docker compose up -d --build
+   ```
+
+3. Check it:
+   `docker compose ps && docker compose exec -T api curl -fsS http://localhost:4000/api/v1/health/ready`.
+
+Whatever was written to the platform database after the backup is lost. Keep `.env` as it is:
+secrets in the backup are encrypted with its `ENCRYPTION_KEY`. The next `update.sh` run offers the
+same version again, so wait for the release that fixes it (CHANGELOG.md) and report the problem —
+privately, as described in [SECURITY.md](../SECURITY.md), if it is a security problem.
 
 ## Troubleshooting
 
