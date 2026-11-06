@@ -1283,6 +1283,11 @@ export const serverService = {
       logger.info({ serverId, ipv4 }, 'BYOS server setup completed');
       adminNotify('server.created', { serverId, type: 'byos', ipv4 });
 
+      // Install the log agent when the organization has log drains (best-effort, never throws)
+      void import('./log-drain.service')
+        .then(({ logDrainService }) => logDrainService.syncServer(serverId))
+        .catch(() => {});
+
       // Notify the org owner that the server is ready (fire-and-forget, no locale here → 'en')
       void (async () => {
         try {

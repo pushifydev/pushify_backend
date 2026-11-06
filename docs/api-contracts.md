@@ -19,6 +19,7 @@ The response shapes of sections 1 and 3 are checked by `src/routes/api-contracts
 | 6a | PR preview list | `GET /api/v1/projects/:projectId/previews`, `…/previews/active` | yes (read-only) |
 | 6b | PR preview actions (redeploy / close) | `POST /api/v1/projects/:projectId/previews/:previewId/redeploy`, `…/close` | yes (no delete) |
 | 6c | Volume backups | — | **no** |
+| 7 | Log and metric drains | `GET/POST /api/v1/log-drains`, `PATCH/DELETE /api/v1/log-drains/:id`, `POST /api/v1/log-drains/:id/test`, `POST /api/v1/log-drains/sync` | yes |
 
 ## Conventions (all sections)
 
@@ -527,3 +528,120 @@ Source: `src/routes/project-volumes.ts`, `src/services/project-volume.service.ts
 `201`. The backup endpoints under `/api/v1/databases/:id/backups` (`src/routes/databases.ts`) are
 for managed databases only and do not cover project volumes. A volume backup UI needs a backend
 change first.
+
+---
+
+## 7. Log and metric drains
+
+A drain sends container logs (and optionally container and host metrics) of the organization's
+**own servers** to an external tool. A Vector agent (`pushify_log_agent` container) is installed,
+updated or removed on each server whenever a drain changes and when a server finishes setup.
+Projects on Pushify's shared runners are **not** covered.
+
+- **Source**: `src/routes/log-drains.ts`, `src/services/log-drain.service.ts` (`PublicLogDrain`,
+  `LogDrainInput`, `LogDrainTestResult`, `LogAgentSyncResult`), `src/lib/log-drains.ts`
+  (validation, agent configuration), `src/db/schema/log-drains.ts` (`log_drains`).
+- **Auth**: **session only** (API keys get `403`). **Role**: list — any member; everything else —
+  `owner` / `admin`.
+- **Audit log**: `log_drain.created`, `log_drain.updated` (`metadata.secretChanged`),
+  `log_drain.deleted`. The secret is never in the audit log.
+
+### Drain object
+
+```json
+{
+  "id": "5a0e…",
+  "projectId": null,
+  "name": "Grafana Cloud",
+  "type": "loki",
+  "endpoint": "https://logs-prod-eu-west-0.grafana.net",
+  "options": { "username": "123456" },
+  "hasSecret": true,
+  "sendLogs": true,
+  "sendMetrics": false,
+  "enabled": true,
+  "lastTestedAt": "2026-11-06T12:00:00.000Z",
+  "lastTestOk": true,
+  "lastTestError": null,
+  "createdAt": "2026-11-06T11:58:00.000Z",
+  "updatedAt": "2026-11-06T11:58:00.000Z"
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `projectId` | string \| null | `null` = every project on the organization's servers; a project id = only that project's containers (no host metrics) |
+| `type` | `"http"` \| `"loki"` \| `"datadog"` \| `"elastic"` \| `"s3"` | |
+| `endpoint` | string \| null | http(s) URL, no credentials in it. Required for `http`, `loki` (base URL; `/loki/api/v1/push` is appended), `elastic`; optional S3-compatible endpoint for `s3`; always `null` for `datadog` |
+| `options` | object | per type, see below; unknown keys are dropped |
+| `hasSecret` | boolean | the secret itself is **never** returned |
+| `sendLogs`, `sendMetrics` | boolean | at least one is `true`; defaults `true` / `false` |
+| `enabled` | boolean | a disabled drain stays stored but is left out of the agent |
+| `lastTestOk`, `lastTestError` | boolean \| null, string \| null | outcome of the last connection test |
+
+| `type` | `options` | `secret` |
+|--------|-----------|----------|
+| `http` | `username?` | optional: Bearer token, or the password when `username` is set (Basic) |
+| `loki` | `username?` | optional: Bearer token, or the password when `username` is set (Grafana Cloud: user id + token) |
+| `datadog` | `site?` (default `datadoghq.com`; e.g. `datadoghq.eu`, `us5.datadoghq.com`, `ddog-gov.com`) | **required**: API key |
+| `elastic` | `username?`, `index?` (default `pushify-logs`) | optional: password with `username`, else an API key (`Authorization: ApiKey …`) |
+| `s3` | `bucket`, `region` (`auto` for R2), `accessKeyId` (all required), `prefix?` (default `pushify/`) | **required**: secret access key |
+
+Every shipped event carries `pushify.project` (slug), `pushify.project_id` (empty for a project
+created after the last sync), `pushify.environment` (`production` \| `staging` \| `preview`),
+`pushify.service` (`app` \| `worker:<name>` \| `database`), `pushify.server`, `pushify.server_id`
+and `pushify.kind` (`log` \| `container_metrics` \| `host_metrics`). Loki gets `project`,
+`environment`, `service`, `server`, `kind` and `source=pushify` as labels. Container metrics are
+`cpu_percent`, `memory_percent`, `pids` every 30 s (Datadog: gauges `pushify.container_*`); host
+metrics come from Vector's `host_metrics` (cpu, memory, load, network, disk, host). Except for
+Datadog, metrics are sent as JSON log events. Logs are shipped as the app writes them: Pushify's
+secret masking of the logs it stores does not apply to drains.
+
+### Endpoints
+
+| Method | Path | Body | Success |
+|--------|------|------|---------|
+| GET | `/api/v1/log-drains` | — | `200 { "data": [<drain>…] }`, newest first |
+| POST | `/api/v1/log-drains` | `{ name, type, projectId?, endpoint?, secret?, options?, sendLogs?, sendMetrics?, enabled? }` | `201 { "data": <drain> }` |
+| PATCH | `/api/v1/log-drains/:id` | any of the create fields; `secret` omitted keeps it, `null` / `""` removes it | `200 { "data": <drain> }` |
+| DELETE | `/api/v1/log-drains/:id` | — | `200 { "data": { "success": true } }` |
+| POST | `/api/v1/log-drains/:id/test` | — | `200 { "data": <test result> }` |
+| POST | `/api/v1/log-drains/sync` | — | `200 { "data": [<sync result>…] }` |
+
+`name`: 1–100 characters. `secret`: at most 4096 characters, no line breaks or control characters.
+Create, update and delete answer before the agent is updated (it runs in the background); call
+`sync` to apply and see the outcome.
+
+**Test result** — one test event is sent **from the Pushify API** (not from the servers), with a
+10 s timeout; the outcome is also stored on the drain (`lastTestedAt`, `lastTestOk`, `lastTestError`):
+
+```json
+{ "ok": false, "status": 401, "message": "HTTP 401: {\"error\":\"invalid token\"}", "testedAt": "2026-11-06T12:00:00.000Z" }
+```
+
+`status` is `null` when no HTTP answer came (timeout, DNS, TLS). An endpoint on a private address
+is not tested (`ok: false`, message starts with `Not tested:`) — the agent on the servers may still
+reach it. Any secret is replaced by `***` in `message`.
+
+**Sync result** — one entry per server of the organization (shared runners excluded); the run
+waits for every server (first install pulls the agent image, so allow a few minutes):
+
+```json
+[
+  { "serverId": "…", "serverName": "prod-1", "status": "installed", "drains": 2, "message": null },
+  { "serverId": "…", "serverName": "old", "status": "skipped", "drains": 0, "message": "server is not running or not reachable over SSH" }
+]
+```
+
+`status`: `installed` (started or restarted with a new configuration), `unchanged`, `removed` (no
+drain applies any more), `skipped`, `failed` (`message` says why, e.g. `invalid-config`,
+`image-pull-failed`, `docker-missing` or an SSH error). A failed run leaves the running agent as it
+was. `message` may be `no-systemd-no-container-metrics` on a server without systemd.
+
+### Errors
+
+| Status | `code` | `message` / when |
+|--------|--------|------------------|
+| 400 | `BAD_REQUEST` | validation, e.g. `type must be one of: http, loki, datadog, elastic, s3`, `endpoint is required for loki drains`, `secret is required for datadog drains`, `options.bucket must be a valid S3 bucket name`, `enable at least one of sendLogs and sendMetrics` |
+| 403 | `FORBIDDEN` | `This endpoint requires a dashboard session token, not an API key`; `You do not have access to this organization` (not a member); `Only owners and admins can perform this action` (member / viewer on writes, test and sync) |
+| 404 | `NOT_FOUND` | `Log drain not found` (not in the caller's organization); `Project not found` for a `projectId` outside the organization |

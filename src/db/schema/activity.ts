@@ -62,6 +62,10 @@ export const activityActionEnum = pgEnum('activity_action', [
   // PR preview actions (POST /projects/:projectId/previews/:previewId/redeploy | close)
   'preview.redeployed',
   'preview.closed',
+  // Log and metric drains (/api/v1/log-drains)
+  'log_drain.created',
+  'log_drain.updated',
+  'log_drain.deleted',
 ]);
 
 export type ActivityAction = typeof activityActionEnum.enumValues[number];

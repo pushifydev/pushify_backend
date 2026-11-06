@@ -53,6 +53,9 @@ const ActivityActionEnum = z.enum([
   'server.patches_failed',
   'preview.redeployed',
   'preview.closed',
+  'log_drain.created',
+  'log_drain.updated',
+  'log_drain.deleted',
 ]);
 
 const UserSchema = z.object({

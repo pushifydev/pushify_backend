@@ -92,6 +92,11 @@ async function processServerSetupJob(job: Job<ServerSetupJobData>): Promise<stri
       }
     })();
 
+    // Install the log agent when the organization has log drains (best-effort, never throws)
+    void import('../../services/log-drain.service')
+      .then(({ logDrainService }) => logDrainService.syncServer(serverId))
+      .catch(() => {});
+
     logger.info(`[ServerSetup] Server ${serverId} setup completed!`);
     return 'completed';
   }
