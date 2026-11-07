@@ -624,6 +624,13 @@
       "when": 1787270400048,
       "tag": "0089_log_drains",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1787270400049,
+      "tag": "0090_project_transfer_activity",
+      "breakpoints": true
     }
   ]
 }

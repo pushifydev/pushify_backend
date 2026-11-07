@@ -13,7 +13,8 @@ export type WSEventType =
   | 'healthcheck:result'
   | 'notification:new'
   | 'backup:status'
-  | 'backup:verification';
+  | 'backup:verification'
+  | 'project:transfer';
 
 // ============ Event Payloads ============
 
@@ -92,6 +93,16 @@ export interface BackupVerificationEvent {
   };
 }
 
+/** Moving a project to another server (services/project-transfer.service.ts) */
+export interface ProjectTransferEvent {
+  projectId: string;
+  deploymentId: string;
+  fromServerId: string;
+  toServerId: string;
+  status: 'started' | 'completed' | 'failed';
+  message?: string;
+}
+
 // ============ Discriminated Union ============
 
 export type WSEvent =
@@ -103,7 +114,8 @@ export type WSEvent =
   | { type: 'healthcheck:result'; data: HealthCheckResultEvent }
   | { type: 'notification:new'; data: NotificationNewEvent }
   | { type: 'backup:status'; data: BackupStatusEvent }
-  | { type: 'backup:verification'; data: BackupVerificationEvent };
+  | { type: 'backup:verification'; data: BackupVerificationEvent }
+  | { type: 'project:transfer'; data: ProjectTransferEvent };
 
 // ============ Client → Server Messages ============
 

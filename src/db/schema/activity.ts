@@ -16,6 +16,10 @@ export const activityActionEnum = pgEnum('activity_action', [
   'project.unsuspended',
   'project.maintenance_enabled',
   'project.maintenance_disabled',
+  // Moving a project to another server (POST /projects/:projectId/transfer)
+  'project.transfer_started',
+  'project.transferred',
+  'project.transfer_failed',
   // Deployment actions
   'deployment.created',
   'deployment.cancelled',

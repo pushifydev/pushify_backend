@@ -92,6 +92,11 @@ export const dnsProviderService = {
     return { connected: true, tokenHint: hint, updatedAt: row.updatedAt };
   },
 
+  /** Whether the organization connected Cloudflare (no access check — callers have done theirs). */
+  async isCloudflareConnected(organizationId: string): Promise<boolean> {
+    return (await findRow(organizationId)) !== null;
+  },
+
   /** Store (or replace) the organization's Cloudflare token after checking it with Cloudflare. */
   async setCloudflare(
     organizationId: string,
