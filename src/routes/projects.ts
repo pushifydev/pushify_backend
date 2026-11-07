@@ -1,5 +1,6 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { projectService } from '../services/project.service';
+import { projectTransferService } from '../services/project-transfer.service';
 import { activityService } from '../services/activity.service';
 import { combinedAuthMiddleware } from '../middleware/auth';
 import { requireScope } from '../middleware/apikey-auth';
@@ -167,6 +168,54 @@ const UpdateMaintenanceModeSchema = z
       }),
   })
   .openapi('UpdateMaintenanceMode');
+
+const TransferProjectSchema = z
+  .object({
+    targetServerId: z.string().uuid().openapi({ description: 'A ready server of the same organization' }),
+    dryRun: z.boolean().optional().default(false).openapi({
+      description: 'Only run the checks; nothing is changed',
+    }),
+  })
+  .openapi('TransferProject');
+
+const TransferPreflightSchema = z
+  .object({
+    ok: z.boolean().openapi({ description: 'False when at least one check blocks the move' }),
+    fromServerId: z.string().nullable(),
+    toServerId: z.string(),
+    checks: z.array(
+      z.object({
+        id: z.enum([
+          'project',
+          'source_server',
+          'target_server',
+          'deployment',
+          'app_type',
+          'volumes',
+          'databases',
+          'plan_quota',
+          'dns',
+        ]),
+        status: z.enum(['pass', 'warn', 'block']),
+        message: z.string(),
+      })
+    ),
+    blockers: z.array(z.string()),
+    dns: z.object({
+      targetIpv4: z.string().nullable(),
+      targetIpv6: z.string().nullable(),
+      cloudflareConnected: z.boolean(),
+      domains: z.array(
+        z.object({
+          domain: z.string(),
+          autoUpdate: z.boolean().openapi({
+            description: 'Cloudflare is connected: Pushify re-points the records it created after the move',
+          }),
+        })
+      ),
+    }),
+  })
+  .openapi('TransferPreflight');
 
 // ============ Route Definitions ============
 
@@ -380,6 +429,55 @@ const updateMaintenanceRoute = createRoute({
   },
 });
 
+const transferProjectRoute = createRoute({
+  method: 'post',
+  path: '/{projectId}/transfer',
+  tags: ['Projects'],
+  summary: 'Move a project to another server',
+  description:
+    'With dryRun, only the checks run. Otherwise the live commit is deployed on the target server through the deploy queue; ' +
+    'once it is healthy there (nginx and SSL set up), the project switches to the target and its containers on the current ' +
+    'server are stopped, not removed. When the deploy fails the project keeps running where it is. ' +
+    'Projects with persistent volumes, compose stacks or a linked database on the current server cannot be moved yet.',
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: z.object({
+      projectId: z.string().uuid(),
+    }),
+    body: {
+      content: {
+        'application/json': {
+          schema: TransferProjectSchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: 'dryRun: the checks',
+      content: {
+        'application/json': {
+          schema: z.object({ data: TransferPreflightSchema }),
+        },
+      },
+    },
+    202: {
+      description: 'The move started; follow the deployment',
+      content: {
+        'application/json': {
+          schema: z.object({
+            data: z.object({ deploymentId: z.string(), preflight: TransferPreflightSchema }),
+            message: z.string(),
+          }),
+        },
+      },
+    },
+    409: {
+      description: 'A check blocks the move; the message lists why',
+    },
+  },
+});
+
 // ============ Router ============
 
 const projectRouter = new OpenAPIHono<AppEnv>();
@@ -395,6 +493,7 @@ projectRouter.patch('/:projectId', requireScope('projects:write'));
 projectRouter.delete('/:projectId', requireScope('projects:write'));
 projectRouter.patch('/:projectId/status', requireScope('projects:write'));
 projectRouter.put('/:projectId/maintenance', requireScope('projects:write'));
+projectRouter.post('/:projectId/transfer', requireScope('projects:write'));
 projectRouter.get('/:projectId/webhook', requireScope('projects:read'));
 projectRouter.post('/:projectId/webhook/regenerate', requireScope('projects:write'));
 projectRouter.post('/:projectId/webhook/github/install', requireScope('projects:write'));
@@ -620,6 +719,33 @@ projectRouter.openapi(updateMaintenanceRoute, async (c) => {
     data: { ...maintenance, applied },
     message: t(locale, 'projects', maintenance.enabled ? 'maintenanceEnabled' : 'maintenanceDisabled'),
   });
+});
+
+// Move to another server (dryRun: checks only)
+projectRouter.openapi(transferProjectRoute, async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const { projectId } = c.req.valid('param');
+  const { targetServerId, dryRun } = c.req.valid('json');
+
+  if (dryRun) {
+    const preflight = await projectTransferService.preflight(projectId, organizationId, userId, targetServerId, locale);
+    return c.json({ data: preflight }, 200);
+  }
+
+  const result = await projectTransferService.start(projectId, organizationId, userId, targetServerId, locale, {
+    ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
+    userAgent: c.req.header('user-agent'),
+    source: auditSource(c),
+  });
+  return c.json(
+    {
+      data: result,
+      message: 'The move started. The project switches to the new server once its deploy there is healthy.',
+    },
+    202
+  );
 });
 
 // ============ Webhook Management ============

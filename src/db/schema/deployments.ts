@@ -108,6 +108,11 @@ export interface DeploymentBuildMetadata {
   composeImages?: Record<string, string>;
   /** Compose stacks: `docker compose build` was skipped because nothing it reads changed */
   composeBuildSkipped?: boolean;
+  /**
+   * Moving the project to another server (POST /projects/:projectId/transfer): this deploy runs on
+   * `toServerId` while the project still points at `fromServerId`, and only a success moves it.
+   */
+  transfer?: { fromServerId: string; toServerId: string };
 }
 
 // Relations

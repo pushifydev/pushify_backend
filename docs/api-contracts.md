@@ -20,6 +20,7 @@ The response shapes of sections 1 and 3 are checked by `src/routes/api-contracts
 | 6b | PR preview actions (redeploy / close) | `POST /api/v1/projects/:projectId/previews/:previewId/redeploy`, `…/close` | yes (no delete) |
 | 6c | Volume backups | — | **no** |
 | 7 | Log and metric drains | `GET/POST /api/v1/log-drains`, `PATCH/DELETE /api/v1/log-drains/:id`, `POST /api/v1/log-drains/:id/test`, `POST /api/v1/log-drains/sync` | yes |
+| 8 | Move a project to another server | `POST /api/v1/projects/:projectId/transfer` | yes (stateless apps only) |
 
 ## Conventions (all sections)
 
@@ -645,3 +646,60 @@ was. `message` may be `no-systemd-no-container-metrics` on a server without syst
 | 400 | `BAD_REQUEST` | validation, e.g. `type must be one of: http, loki, datadog, elastic, s3`, `endpoint is required for loki drains`, `secret is required for datadog drains`, `options.bucket must be a valid S3 bucket name`, `enable at least one of sendLogs and sendMetrics` |
 | 403 | `FORBIDDEN` | `This endpoint requires a dashboard session token, not an API key`; `You do not have access to this organization` (not a member); `Only owners and admins can perform this action` (member / viewer on writes, test and sync) |
 | 404 | `NOT_FOUND` | `Log drain not found` (not in the caller's organization); `Project not found` for a `projectId` outside the organization |
+
+---
+
+## 8. Move a project to another server
+
+`POST /api/v1/projects/:projectId/transfer` — `src/routes/projects.ts` →
+`src/services/project-transfer.service.ts`, checks in `src/lib/project-transfer.ts`. In the
+OpenAPI document (`TransferProject`, `TransferPreflight`). Member and up, in their projects; API
+keys need `projects:write`.
+
+Body: `{ "targetServerId": "<uuid>", "dryRun": true }` (`dryRun` defaults to `false`).
+
+**`dryRun: true` → `200`** — the checks; nothing changes:
+
+```json
+{
+  "data": {
+    "ok": false,
+    "fromServerId": "…",
+    "toServerId": "…",
+    "checks": [
+      { "id": "volumes", "status": "block", "message": "The project has persistent volumes (\"uploads\") …" },
+      { "id": "dns", "status": "warn", "message": "After the move, point the DNS records of \"app.example.com\" at 203.0.113.9." }
+    ],
+    "blockers": ["The project has persistent volumes (\"uploads\") …"],
+    "dns": {
+      "targetIpv4": "203.0.113.9",
+      "targetIpv6": null,
+      "cloudflareConnected": false,
+      "domains": [{ "domain": "app.example.com", "autoUpdate": false }]
+    }
+  }
+}
+```
+
+`checks[].id`: `project`, `source_server`, `target_server`, `deployment`, `app_type`, `volumes`,
+`databases`, `plan_quota`, `dns` (always all nine, in this order). `status`: `pass`, `warn`
+(needs attention, does not block — only `dns`), `block`. `dns.domains` lists the custom domains;
+`autoUpdate` is true when Cloudflare is connected (Pushify re-points the records it created).
+
+**`dryRun: false` → `202`** `{ "data": { "deploymentId": "…", "preflight": { … } }, "message": "…" }`.
+The live commit is deployed on the target through the normal deploy queue (follow `deploymentId`).
+When it is healthy there (nginx and SSL set up), `serverId` switches to the target and the
+containers on the previous server are stopped, not removed. A failed deploy changes nothing.
+
+WebSocket, channel `project:<projectId>`: `{ "type": "project:transfer", "data": { "projectId",
+"deploymentId", "fromServerId", "toServerId", "status": "started" | "completed" | "failed",
+"message"? } }`. Audit log actions: `project.transfer_started`, `project.transferred`,
+`project.transfer_failed`.
+
+### Errors
+
+| Status | `code` | `message` / when |
+|--------|--------|------------------|
+| 409 | `CONFLICT` | `This project cannot be moved: <blocker messages>` (real run only; a dry run returns them in `blockers`) |
+| 403 | `FORBIDDEN` | viewer |
+| 404 | `NOT_FOUND` | `Project not found` |

@@ -1,5 +1,6 @@
 import { db } from '../db';
-import { deployments } from '../db/schema/deployments';
+import { deployments, type DeploymentBuildMetadata } from '../db/schema/deployments';
+import { projectTransferOf } from '../lib/project-transfer';
 import { projects, environmentVariables } from '../db/schema/projects';
 import { organizations } from '../db/schema/organizations';
 import { eq, and, count } from 'drizzle-orm';
@@ -104,6 +105,8 @@ export interface DeploymentJob {
   commitHash?: string | null;
   promotedFromDeploymentId?: string | null;
   serverId: string | null; // Server ID for concurrency tracking
+  /** Carries `transfer` when this deploy moves the project to another server (lib/project-transfer.ts) */
+  buildMetadata?: DeploymentBuildMetadata | null;
   isPreview: boolean;
   previewPrNumber: number | null;
   status?: string;
@@ -234,6 +237,7 @@ const deploymentJobSelect = {
   promotedFromDeploymentId: deployments.promotedFromDeploymentId,
   isPreview: deployments.isPreview,
   previewPrNumber: deployments.previewPrNumber,
+  buildMetadata: deployments.buildMetadata,
   serverId: projects.serverId,
 };
 
@@ -433,6 +437,8 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
   let workDir: string | null = null;
   let githubStatusCtx: GitHubStatusContext | null = null;
   let wasSleepingBeforeDeploy = false;
+  // Moving the project to another server: deploy there; the project keeps its server until it succeeds
+  const transfer = projectTransferOf(job.buildMetadata);
 
   try {
     addLog('🚀 Starting deployment...');
@@ -452,7 +458,10 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
     // Deploy target: the user's own assigned server if set, otherwise the dedicated shared
     // runner (PUSHIFY_RUNNER_SERVER_ID) so free/unassigned deploys never run on the control
     // plane. Falls back to the local host only when no runner is configured.
-    const deployTargetServerId = project.serverId || pickRunnerServerId(project.id);
+    const deployTargetServerId = transfer?.toServerId ?? (project.serverId || pickRunnerServerId(project.id));
+    if (transfer) {
+      addLog('🚚 Moving the project to another server — the current server keeps serving until this deploy succeeds');
+    }
     // A shared runner names containers, files, ports and vhosts after the slug, and slugs are
     // only unique within an organization: deploying a slug another project on the same runner
     // answers to would replace that project's app. Refuse instead.
@@ -802,7 +811,8 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
           repoUrl: project.gitRepoUrl,
           branch,
           // A promotion builds the commit staging proved, not whatever the branch points at now
-          commit: job.promotedFromDeploymentId ? job.commitHash ?? undefined : undefined,
+          // A move builds the commit that is live now
+          commit: job.promotedFromDeploymentId || transfer ? job.commitHash ?? undefined : undefined,
           accessToken,
           onProgress: addLog,
         });
@@ -1069,6 +1079,12 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
           })
           .where(eq(projects.id, job.projectId));
         addLog(`✅ Remote deployment successful! URL: ${remoteResult.deploymentUrl}`);
+
+        // Healthy on the target with nginx/SSL set up there: only now does the project move.
+        if (transfer) {
+          const { projectTransferService } = await import('../services/project-transfer.service');
+          await projectTransferService.complete(job.id, job.projectId, transfer, addLog);
+        }
       }
 
       // Empty the CDN's copy of this site. Cloudflare sits in front of every auto subdomain, and
@@ -1600,6 +1616,12 @@ server {
 
     if (job.isPreview && job.previewPrNumber != null) {
       await previewService.updatePreviewStatus(job.projectId, job.previewPrNumber, 'failed');
+    }
+
+    // A failed move changes nothing: the project keeps running on its current server.
+    if (transfer) {
+      const { projectTransferService } = await import('../services/project-transfer.service');
+      await projectTransferService.fail(job.id, job.projectId, transfer, errorMessage);
     }
 
     // Publish failed status via WebSocket
