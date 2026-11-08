@@ -72,6 +72,8 @@ export const activityActionEnum = pgEnum('activity_action', [
   'log_drain.created',
   'log_drain.updated',
   'log_drain.deleted',
+  // Organization-wide 2FA refused a member without 2FA (lib/org-two-factor, any access path)
+  'auth.org_2fa_denied',
 ]);
 
 export type ActivityAction = typeof activityActionEnum.enumValues[number];

@@ -148,9 +148,10 @@ Access is checked before the range, so a bad project id wins over a bad range.
 
 - **Source**: `src/routes/organizations.ts` (`GET /`, `PUT /two-factor-policy`),
   `src/services/organization.service.ts` (`getOrganization`, `setTwoFactorPolicy`),
-  `src/lib/org-two-factor.ts` (enforcement, exemptions, `orgTwoFactorRequiredError`),
-  `src/middleware/auth.ts` (where it is enforced), `src/db/schema/organizations.ts`
-  (`requireTwoFactor` / `require_two_factor`).
+  `src/lib/org-two-factor.ts` (enforcement, exemptions, `orgTwoFactorRequiredError`, audit),
+  `src/middleware/auth.ts` and `src/middleware/apikey-auth.ts`, `src/routes/ws.ts`,
+  `src/routes/server-terminal-ws.ts`, `src/routes/cli-auth.ts` (where it is enforced),
+  `src/db/schema/organizations.ts` (`requireTwoFactor` / `require_two_factor`).
 
 ### 2.1 Read: `GET /api/v1/organizations`
 
@@ -233,9 +234,33 @@ UI can send them to 2FA setup:
 - `POST /api/v1/organizations/switch`
 - `GET /api/v1/organizations/mine`
 
-Not affected: API key requests (the policy is not applied to API keys yet). Signing in with SSO does
-not satisfy the policy. The policy is cached for up to 30 s per API process, so other processes
-pick up a change within that time.
+**API keys** (`src/middleware/apikey-auth.ts`): a key acts as its creator, so while the key's
+organization requires 2FA and the creator has none, every request with the key gets the same
+`403 ORG_2FA_REQUIRED` body. No route is exempt for a key. Keys are not revoked: they work again
+once the creator enables 2FA or the policy is turned off. New keys cannot be created by such a
+member: `/api/v1/api-keys` is session-only (refused above), and a CLI login
+(`GET /api/v1/auth/cli/poll/:code`) collected after the policy was turned on answers
+`{ "status": "expired", "apiKey": null }`.
+
+**WebSockets** (`src/routes/ws.ts`, `src/routes/server-terminal-ws.ts`): `/api/v1/ws` (the token's
+organization) and `/api/v1/ws/servers/:serverId/terminal`, `/api/v1/ws/projects/:projectId/shell`
+(the organization that owns the server or project) send one frame and close the connection with
+`4003` before anything is opened:
+
+```json
+{ "type": "error", "code": "ORG_2FA_REQUIRED", "message": "This organization requires two-factor authentication. Enable it under Settings → Security to continue." }
+```
+
+The check runs when a connection opens; a connection already open is not closed when the policy is
+turned on.
+
+Every refusal is written to the audit log as `auth.org_2fa_denied` with `metadata.accessPath`
+(`session`, `api_key`, `websocket`, `server_terminal`, `project_shell`, `cli_login`), the method and
+path (never the query string or token), and for keys `metadata.apiKey { id, name }`; at most one
+entry per user, organization and access path every 10 minutes per API process.
+
+Signing in with SSO does not satisfy the policy. The policy is cached for up to 30 s per API
+process, so other processes pick up a change within that time.
 
 ---
 

@@ -1,4 +1,5 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
+import type { WSContext } from 'hono/ws';
 import type { createNodeWebSocket } from '@hono/node-ws';
 import { verifyToken } from '../lib/jwt';
 import { logger } from '../lib/logger';
@@ -8,6 +9,14 @@ import {
   authorizeProjectShellAccess,
   ServerTerminalAuthError,
 } from '../lib/server-terminal-auth';
+import {
+  isOrganizationTwoFactorRequired,
+  orgTwoFactorRequiredWsError,
+  recordOrgTwoFactorDenial,
+  userHasTwoFactorEnabled,
+  type OrgTwoFactorDenial,
+} from '../lib/org-two-factor';
+import type { SupportedLocale } from '../i18n';
 
 /**
  * Remote command that attaches to the project's running production app container — exactly
@@ -51,6 +60,32 @@ function parseClientMessage(raw: string | ArrayBuffer): ClientMessage | null {
   }
 }
 
+/**
+ * Organization-wide 2FA (lib/org-two-factor) for the organization that owns the server or project,
+ * whichever organization the token was issued for: while it requires 2FA and the user has none,
+ * the connection is refused (4003) before any SSH session opens. Returns true when refused.
+ */
+async function refusedByOrgTwoFactor(
+  c: Context,
+  ws: WSContext,
+  denial: Pick<OrgTwoFactorDenial, 'organizationId' | 'userId' | 'accessPath' | 'serverId' | 'projectId'>,
+  closeReason: string,
+): Promise<boolean> {
+  if (!(await isOrganizationTwoFactorRequired(denial.organizationId))) return false;
+  if (await userHasTwoFactorEnabled(denial.userId)) return false;
+
+  await recordOrgTwoFactorDenial({
+    ...denial,
+    path: c.req.path,
+    ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
+    userAgent: c.req.header('user-agent'),
+  });
+  const locale: SupportedLocale = c.get('locale') || 'en';
+  sendJson(ws, orgTwoFactorRequiredWsError(locale));
+  ws.close(4003, closeReason);
+  return true;
+}
+
 export function createServerTerminalWSRoute(
   upgradeWebSocket: ReturnType<typeof createNodeWebSocket>['upgradeWebSocket'],
 ): Hono {
@@ -87,6 +122,16 @@ export function createServerTerminalWSRoute(
             }
 
             const access = await authorizeServerTerminalAccess(serverId, payload.sub);
+            if (
+              await refusedByOrgTwoFactor(
+                c,
+                ws,
+                { organizationId: access.organizationId, userId: payload.sub, accessPath: 'server_terminal', serverId },
+                'Terminal unavailable',
+              )
+            ) {
+              return;
+            }
 
             shell = new SSHShellSession();
             activeSessions.add(shell);
@@ -205,6 +250,16 @@ export function createServerTerminalWSRoute(
             }
 
             const access = await authorizeProjectShellAccess(projectId, payload.sub);
+            if (
+              await refusedByOrgTwoFactor(
+                c,
+                ws,
+                { organizationId: access.organizationId, userId: payload.sub, accessPath: 'project_shell', projectId },
+                'Shell unavailable',
+              )
+            ) {
+              return;
+            }
 
             shell = new SSHShellSession();
             activeSessions.add(shell);

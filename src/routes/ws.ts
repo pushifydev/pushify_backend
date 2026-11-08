@@ -6,6 +6,13 @@ import { logger } from '../lib/logger';
 import { randomUUID } from 'crypto';
 import type { WSClientMessage } from '../types/ws';
 import { isUserBanned } from '../lib/user-ban';
+import {
+  isOrganizationTwoFactorRequired,
+  orgTwoFactorRequiredWsError,
+  recordOrgTwoFactorDenial,
+  userHasTwoFactorEnabled,
+} from '../lib/org-two-factor';
+import type { SupportedLocale } from '../i18n';
 
 export function createWSRoute(
   upgradeWebSocket: ReturnType<typeof createNodeWebSocket>['upgradeWebSocket']
@@ -16,6 +23,7 @@ export function createWSRoute(
     '/',
     upgradeWebSocket((c) => {
       const token = c.req.query('token');
+      const locale: SupportedLocale = c.get('locale') || 'en';
       let clientId = '';
       let authenticated = false;
 
@@ -36,6 +44,26 @@ export function createWSRoute(
             }
             if (payload.sub && (await isUserBanned(payload.sub))) {
               ws.send(JSON.stringify({ type: 'error', message: 'Account suspended' }));
+              ws.close(4003, 'Forbidden');
+              return;
+            }
+            // Organization-wide 2FA (lib/org-two-factor), as authMiddleware does for requests
+            if (
+              payload.org &&
+              (await isOrganizationTwoFactorRequired(payload.org)) &&
+              !(payload.sub && (await userHasTwoFactorEnabled(payload.sub)))
+            ) {
+              if (payload.sub) {
+                await recordOrgTwoFactorDenial({
+                  organizationId: payload.org,
+                  userId: payload.sub,
+                  accessPath: 'websocket',
+                  path: c.req.path,
+                  ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
+                  userAgent: c.req.header('user-agent'),
+                });
+              }
+              ws.send(JSON.stringify(orgTwoFactorRequiredWsError(locale)));
               ws.close(4003, 'Forbidden');
               return;
             }

@@ -6,6 +6,12 @@ import type { ApiKeyScope } from '../db/schema';
 import { applyPlanApiRateLimit } from './rate-limit';
 import { runWithAuditApiKey } from '../lib/audit';
 import { apiKeyProjectPathAccess, runWithApiKeyProjectScope } from '../lib/api-key-project-scope';
+import {
+  isOrganizationTwoFactorRequired,
+  orgTwoFactorRequiredError,
+  recordOrgTwoFactorDenial,
+  userHasTwoFactorEnabled,
+} from '../lib/org-two-factor';
 
 export const API_KEY_PREFIX = 'pk_live_';
 
@@ -80,6 +86,27 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     throw new HTTPException(401, {
       message: t(locale, 'apiKeys', 'invalidKey'),
     });
+  }
+
+  // Organization-wide 2FA (lib/org-two-factor): a key acts as its creator, so while the key's
+  // organization requires 2FA and the creator has none, every request with it is refused. No route
+  // is exempt (a key cannot set up 2FA or switch organization). The key is not revoked: it works
+  // again once the creator enables 2FA or the policy is turned off.
+  if (
+    (await isOrganizationTwoFactorRequired(result.organizationId)) &&
+    !(await userHasTwoFactorEnabled(result.userId))
+  ) {
+    await recordOrgTwoFactorDenial({
+      organizationId: result.organizationId,
+      userId: result.userId,
+      accessPath: 'api_key',
+      method: c.req.method,
+      path: c.req.path,
+      apiKey: { id: result.apiKey.id, name: result.apiKey.name },
+      ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
+      userAgent: c.req.header('user-agent'),
+    });
+    throw orgTwoFactorRequiredError(locale);
   }
 
   // A key limited to projects only reaches the project API, and only for its own projects
