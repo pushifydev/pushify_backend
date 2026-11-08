@@ -4,6 +4,7 @@ import { projects } from '../db/schema/projects';
 import { decrypt } from './encryption';
 import { checkServerDiskSpace, type ServerDiskCheckResult } from './server-disk-check';
 import { checkServerPatchStatus, type ServerPatchStatus } from './server-patch-status';
+import type { ServerAutoPatchLastRun } from './server-auto-patch';
 import { getSSHConnection } from '../utils/ssh';
 
 export interface OrphanContainer {
@@ -19,6 +20,8 @@ export interface ServerHealthReport {
   pushifyContainerCount: number;
   /** OS updates (Debian/Ubuntu, read-only); fields are `unknown` when they could not be read */
   patch: ServerPatchStatus;
+  /** Outcome of the last scheduled automatic security update run; null when none ran yet */
+  lastAutoPatch: ServerAutoPatchLastRun | null;
 }
 
 function containerMatchesProjectSlug(containerName: string, slug: string): boolean {
@@ -35,6 +38,7 @@ function containerMatchesProjectSlug(containerName: string, slug: string): boole
 export type ServerHealthScanTarget = {
   ipv4: string | null;
   sshPrivateKey: string | null;
+  lastAutoPatch?: ServerAutoPatchLastRun | null;
 };
 
 export async function scanServerHealth(
@@ -94,6 +98,7 @@ export async function scanServerHealth(
       orphans,
       pushifyContainerCount: lines.length,
       patch,
+      lastAutoPatch: server.lastAutoPatch ?? null,
     };
   } finally {
     ssh.disconnect();

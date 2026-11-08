@@ -63,6 +63,8 @@ export const activityActionEnum = pgEnum('activity_action', [
   'server.patches_requested',
   'server.patches_applied',
   'server.patches_failed',
+  // A scheduled run that did not happen: a deploy went on for its whole maintenance window
+  'server.patches_skipped',
   // PR preview actions (POST /projects/:projectId/previews/:previewId/redeploy | close)
   'preview.redeployed',
   'preview.closed',

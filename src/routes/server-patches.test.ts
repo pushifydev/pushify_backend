@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono, type Context } from 'hono';
+import { OpenAPIHono } from '@hono/zod-openapi';
 
 /**
  * POST /servers/:serverId/patches/apply: owners and admins queue a security-update run, viewers and
@@ -18,6 +19,8 @@ const { h } = vi.hoisted(() => ({
     jobs: [] as Array<Record<string, unknown>>,
     audit: [] as Array<Record<string, unknown>>,
     redis: new Map<string, string>(),
+    updates: [] as Array<Record<string, unknown>>,
+    schedulers: new Map<string, Record<string, unknown>>(),
   },
 }));
 
@@ -27,7 +30,21 @@ const KEYS: Record<string, { userId: string; scopes: string }> = {
   pk_live_member_servers_write: { userId: 'u-member', scopes: 'servers:read,servers:write' },
 };
 
-vi.mock('../db', () => ({ db: { query: { servers: { findFirst: async () => h.server } } } }));
+vi.mock('../db', () => ({
+  db: {
+    query: { servers: { findFirst: async () => h.server } },
+    update: () => ({
+      set: (values: Record<string, unknown>) => ({
+        where: () => ({
+          returning: async () => {
+            h.updates.push(values);
+            return [{ ...h.server, ...values }];
+          },
+        }),
+      }),
+    }),
+  },
+}));
 vi.mock('../services/server.service', () => ({ serverService: {} }));
 vi.mock('../repositories/metrics.repository', () => ({ metricsRepository: {} }));
 vi.mock('../utils/ssh', () => ({ SSHClient: class {} }));
@@ -71,6 +88,16 @@ vi.mock('../lib/queue', () => ({
     h.jobs.push(data);
     return { id: `job-${h.jobs.length}` };
   }),
+  // Job schedulers of the automatic security updates (lib/server-auto-patch.ts)
+  getServerPatchQueue: () =>
+    h.queueAvailable
+      ? {
+          upsertJobScheduler: async (id: string, repeat: Record<string, unknown>, template: Record<string, unknown>) => {
+            h.schedulers.set(id, { ...repeat, template });
+          },
+          removeJobScheduler: async (id: string) => h.schedulers.delete(id),
+        }
+      : null,
 }));
 vi.mock('../lib/redis-client', () => ({
   getOptionalRedis: () => ({
@@ -134,6 +161,8 @@ beforeEach(() => {
   h.jobs = [];
   h.audit = [];
   h.redis = new Map();
+  h.updates = [];
+  h.schedulers = new Map();
 });
 
 describe('who may apply security updates', () => {
@@ -234,5 +263,119 @@ describe('servers that cannot be patched', () => {
     expect(res.status).toBe(503);
     expect((await errorOf(res)).code).toBe('QUEUE_UNAVAILABLE');
     expect(h.redis.size).toBe(0);
+  });
+});
+
+/**
+ * PUT /servers/:serverId/auto-patch: owners and admins turn scheduled security updates on (daily /
+ * weekly, UTC window hour) or off. The BullMQ job scheduler follows the setting; off by default.
+ */
+describe('PUT /servers/:serverId/auto-patch', () => {
+  const VALID_ID = '00000000-0000-4000-8000-000000000001';
+  const SCHEDULER = `auto-patch-${VALID_ID}`;
+
+  const put = (token: string, body: unknown) =>
+    app.request(`/api/v1/servers/${VALID_ID}/auto-patch`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  beforeEach(() => {
+    Object.assign(h.server!, { id: VALID_ID, autoPatch: 'off', autoPatchHour: 3, autoPatchWeekday: 0, lastAutoPatch: null });
+  });
+
+  it.each(['owner', 'admin'])('an %s turns on a weekly schedule: scheduler written, setting stored, audited', async (role) => {
+    const res = await put(`session-${role}`, { autoPatch: 'weekly', autoPatchHour: 4, autoPatchWeekday: 6 });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: Record<string, unknown> };
+    expect(body.data).toEqual({ autoPatch: 'weekly', autoPatchHour: 4, autoPatchWeekday: 6, windowMinutes: 60, lastRun: null });
+
+    expect(h.schedulers.get(SCHEDULER)).toEqual({
+      pattern: '0 4 * * 6',
+      tz: 'UTC',
+      template: {
+        name: 'auto-apply',
+        data: { serverId: VALID_ID, organizationId: 'org-1', requestedBy: null, trigger: 'auto' },
+      },
+    });
+    expect(h.updates).toEqual([expect.objectContaining({ autoPatch: 'weekly', autoPatchHour: 4, autoPatchWeekday: 6 })]);
+    expect(h.audit).toEqual([
+      expect.objectContaining({
+        userId: `u-${role}`,
+        action: 'settings.updated',
+        metadata: { setting: 'server_auto_patch', serverId: VALID_ID, serverName: 'web-1' },
+        changes: {
+          autoPatch: { from: 'off', to: 'weekly' },
+          autoPatchHour: { from: 3, to: 4 },
+          autoPatchWeekday: { from: 0, to: 6 },
+        },
+      }),
+    ]);
+  });
+
+  it('turning it off stores off and removes the scheduler; the window keeps its stored hour', async () => {
+    Object.assign(h.server!, { autoPatch: 'daily', autoPatchHour: 5 });
+    h.schedulers.set(SCHEDULER, { pattern: '0 5 * * *' });
+    const res = await put('session-owner', { autoPatch: 'off' });
+    expect(res.status).toBe(200);
+    expect(h.schedulers.has(SCHEDULER)).toBe(false);
+    expect(h.updates).toEqual([expect.objectContaining({ autoPatch: 'off', autoPatchHour: 5 })]);
+  });
+
+  it('the last scheduled run comes back with the setting', async () => {
+    const lastAutoPatch = { at: '2026-11-08T03:04:00.000Z', status: 'failed', packagesApplied: null, rebootRequired: null, summary: null, error: 'x', code: 'INSTALL_FAILED' };
+    Object.assign(h.server!, { lastAutoPatch });
+    const res = await put('session-owner', { autoPatch: 'daily' });
+    expect(((await res.json()) as { data: { lastRun: unknown } }).data.lastRun).toEqual(lastAutoPatch);
+  });
+
+  it.each(['member', 'viewer'])('a %s gets 403 and nothing changes', async (role) => {
+    const res = await put(`session-${role}`, { autoPatch: 'daily' });
+    expect(res.status).toBe(403);
+    expect(h.updates).toEqual([]);
+    expect(h.schedulers.size).toBe(0);
+  });
+
+  it('an API key needs servers:write', async () => {
+    expect((await put('pk_live_owner_servers_read', { autoPatch: 'daily' })).status).toBe(403);
+    expect((await put('pk_live_owner_servers_write', { autoPatch: 'daily' })).status).toBe(200);
+  });
+
+  it.each([{ autoPatch: 'hourly' }, { autoPatch: 'daily', autoPatchHour: 24 }, { autoPatch: 'weekly', autoPatchWeekday: 7 }, {}])(
+    '400 for %o',
+    async (body) => {
+      expect((await put('session-owner', body)).status).toBe(400);
+      expect(h.updates).toEqual([]);
+      expect(h.schedulers.size).toBe(0);
+    }
+  );
+
+  it('404 for a server of another organization (or none)', async () => {
+    h.server = null;
+    expect((await put('session-owner', { autoPatch: 'daily' })).status).toBe(404);
+    expect(h.schedulers.size).toBe(0);
+  });
+
+  it('the route, the setting and the last-run fields are in the OpenAPI document', () => {
+    const docApp = new OpenAPIHono();
+    docApp.route('/api/v1/servers', serverRoutes);
+    const doc = docApp.getOpenAPI31Document({ openapi: '3.1.0', info: { title: 't', version: '0' } });
+    expect(doc.paths?.['/api/v1/servers/{serverId}/auto-patch']?.put).toBeDefined();
+    const schemas = doc.components?.schemas ?? {};
+    expect(Object.keys(schemas)).toEqual(
+      expect.arrayContaining(['UpdateServerAutoPatch', 'ServerAutoPatch', 'ServerAutoPatchLastRun'])
+    );
+    expect(Object.keys((schemas.ServerAutoPatchLastRun as { properties: object }).properties).sort()).toEqual(
+      ['at', 'code', 'error', 'packagesApplied', 'rebootRequired', 'status', 'summary']
+    );
+  });
+
+  it('turning it on without Redis answers 503 and stores nothing', async () => {
+    h.queueAvailable = false;
+    const res = await put('session-owner', { autoPatch: 'daily' });
+    expect(res.status).toBe(503);
+    expect((await errorOf(res)).code).toBe('QUEUE_UNAVAILABLE');
+    expect(h.updates).toEqual([]);
   });
 });

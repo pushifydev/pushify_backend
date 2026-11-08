@@ -1,9 +1,19 @@
 import { randomUUID } from 'crypto';
-import { Hono } from 'hono';
+import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { HTTPException } from 'hono/http-exception';
 import { requireOrgMember } from '../lib/org-access';
-import { auditSource } from '../lib/audit';
+import { auditSource, diffChanges } from '../lib/audit';
+import { logger } from '../lib/logger';
 import { addServerPatchJob, isQueueAvailable } from '../lib/queue';
 import { acquireServerPatchLock, releaseServerPatchLock } from '../lib/server-patch-lock';
+import {
+  AUTO_PATCH_SCHEDULES,
+  AUTO_PATCH_WINDOW_MINUTES,
+  removeServerAutoPatchSchedule,
+  syncServerAutoPatchSchedule,
+  toAutoPatchSettings,
+  type AutoPatchSettings,
+} from '../lib/server-auto-patch';
 import { activityService } from '../services/activity.service';
 import { metricsRepository } from '../repositories/metrics.repository';
 import { serverService } from '../services/server.service';
@@ -22,7 +32,7 @@ import type { AppEnv } from '../types';
 import type { ProviderType } from '../providers';
 import type { ServerSize } from '../providers/cloud-provider.interface';
 
-const serverRouter = new Hono<AppEnv>();
+const serverRouter = new OpenAPIHono<AppEnv>();
 
 // JWT or API key (pk_live_...)
 serverRouter.use('*', combinedAuthMiddleware);
@@ -250,6 +260,147 @@ serverRouter.post('/:serverId/patches/apply', requireScope('servers:write'), asy
       message: 'Applying security updates. The result will appear on the server timeline.',
     },
     202
+  );
+});
+
+// ============ Automatic security updates (scheduled) ============
+
+const ServerAutoPatchLastRunSchema = z
+  .object({
+    at: z.string().openapi({ description: 'When the run ended (ISO)' }),
+    status: z.enum(['applied', 'failed', 'skipped']).openapi({
+      description: 'skipped: a deploy was going on for the whole maintenance window, nothing was installed',
+    }),
+    packagesApplied: z.number().int().nullable().openapi({
+      description: 'Packages upgraded (apt). Null on dnf, which picks them itself, and when nothing ran',
+    }),
+    rebootRequired: z.union([z.boolean(), z.literal('unknown')]).nullable().openapi({
+      description: 'Whether the server now needs a reboot (Pushify never reboots it). Null when nothing ran',
+    }),
+    summary: z.string().nullable(),
+    error: z.string().nullable(),
+    code: z.string().nullable().openapi({ example: 'DEPLOY_IN_PROGRESS' }),
+  })
+  .openapi('ServerAutoPatchLastRun');
+
+const ServerAutoPatchSchema = z
+  .object({
+    autoPatch: z.enum(AUTO_PATCH_SCHEDULES),
+    autoPatchHour: z.number().int().openapi({ description: 'Hour (UTC) the maintenance window starts' }),
+    autoPatchWeekday: z.number().int().openapi({ description: 'Weekly: day of the week (UTC), 0 = Sunday … 6 = Saturday' }),
+    windowMinutes: z.number().int().openapi({ description: 'A scheduled run only starts inside the window' }),
+    lastRun: ServerAutoPatchLastRunSchema.nullable().openapi({
+      description: 'Last scheduled run, also returned as `lastAutoPatch` by GET /servers/{serverId}/health',
+    }),
+  })
+  .openapi('ServerAutoPatch');
+
+const UpdateServerAutoPatchSchema = z
+  .object({
+    autoPatch: z.enum(AUTO_PATCH_SCHEDULES).openapi({ example: 'weekly' }),
+    autoPatchHour: z.number().int().min(0).max(23).optional().openapi({
+      example: 3,
+      description: 'Hour (UTC) the 60-minute maintenance window starts. Left out keeps the stored one (default 3)',
+    }),
+    autoPatchWeekday: z.number().int().min(0).max(6).optional().openapi({
+      example: 0,
+      description: 'Weekly only: day of the week (UTC), 0 = Sunday … 6 = Saturday. Left out keeps the stored one (default 0)',
+    }),
+  })
+  .openapi('UpdateServerAutoPatch');
+
+const updateAutoPatchRoute = createRoute({
+  method: 'put',
+  path: '/{serverId}/auto-patch',
+  tags: ['Servers'],
+  summary: 'Schedule automatic security updates',
+  description:
+    'Owner/admin only, off by default. Daily or weekly, the pending OS security updates are applied as by ' +
+    'POST /servers/{serverId}/patches/apply (Docker/containerd excluded, never reboots), starting inside a ' +
+    '60-minute maintenance window in UTC. While a deploy is going on on the server the run waits; if that lasts ' +
+    'the whole window it is skipped. Every run goes to the audit log and the server timeline.',
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: z.object({ serverId: z.string().uuid() }),
+    body: { content: { 'application/json': { schema: UpdateServerAutoPatchSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Setting stored and schedule updated',
+      content: { 'application/json': { schema: z.object({ data: ServerAutoPatchSchema, message: z.string() }) } },
+    },
+    503: { description: 'Turning it on needs background jobs (Redis)' },
+  },
+});
+
+serverRouter.put('/:serverId/auto-patch', requireScope('servers:write'));
+serverRouter.openapi(updateAutoPatchRoute, async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const { serverId } = c.req.valid('param');
+  const input = c.req.valid('json');
+
+  await requireOrgMember(organizationId, userId, 'admin', locale);
+
+  const server = await db.query.servers.findFirst({
+    where: and(eq(servers.id, serverId), eq(servers.organizationId, organizationId)),
+  });
+  if (!server) {
+    throw new HTTPException(404, { message: t(locale, 'servers', 'notFound') });
+  }
+
+  const previous = toAutoPatchSettings(server);
+  const next: AutoPatchSettings = {
+    autoPatch: input.autoPatch,
+    autoPatchHour: input.autoPatchHour ?? previous.autoPatchHour,
+    autoPatchWeekday: input.autoPatchWeekday ?? previous.autoPatchWeekday,
+  };
+
+  // Schedule first, so a setting nothing would run is never stored
+  if (next.autoPatch !== 'off' && !(await syncServerAutoPatchSchedule({ id: serverId, organizationId, ...next }))) {
+    throw new HTTPException(503, {
+      message: 'Background jobs are not available (Redis is not configured)',
+      cause: { code: 'QUEUE_UNAVAILABLE' },
+    });
+  }
+
+  const [updated] = await db
+    .update(servers)
+    .set({ ...next, updatedAt: new Date() })
+    .where(eq(servers.id, serverId))
+    .returning();
+
+  if (next.autoPatch === 'off') {
+    // Best effort: a scheduled run that still fires finds the setting off and removes the schedule
+    await removeServerAutoPatchSchedule(serverId).catch((err) => {
+      logger.warn({ err, serverId }, 'Could not remove the automatic security update schedule');
+    });
+  }
+
+  const when =
+    next.autoPatch === 'off'
+      ? 'off'
+      : `${next.autoPatch}${next.autoPatch === 'weekly' ? ` (weekday ${next.autoPatchWeekday})` : ''} at ${String(next.autoPatchHour).padStart(2, '0')}:00 UTC`;
+
+  await activityService.log({
+    organizationId,
+    userId,
+    action: 'settings.updated',
+    description: `Automatic security updates on server "${server.name}": ${when}`,
+    metadata: { setting: 'server_auto_patch', serverId, serverName: server.name },
+    changes: diffChanges({ ...previous }, { ...next }),
+    ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
+    userAgent: c.req.header('user-agent'),
+    source: auditSource(c),
+  });
+
+  return c.json(
+    {
+      data: { ...next, windowMinutes: AUTO_PATCH_WINDOW_MINUTES, lastRun: updated?.lastAutoPatch ?? null },
+      message: next.autoPatch === 'off' ? 'Automatic security updates turned off' : `Automatic security updates scheduled: ${when}`,
+    },
+    200
   );
 });
 

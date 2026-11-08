@@ -226,7 +226,9 @@ describe('GET /api/v1/servers/:serverId/health', () => {
 
     expect(Object.keys(body)).toEqual(['data']);
     const data = body.data;
-    expect(Object.keys(data).sort()).toEqual(['disk', 'orphans', 'patch', 'pushifyContainerCount']);
+    expect(Object.keys(data).sort()).toEqual(['disk', 'lastAutoPatch', 'orphans', 'patch', 'pushifyContainerCount']);
+    // No scheduled automatic security update run yet
+    expect(data.lastAutoPatch).toBeNull();
 
     expect(Object.keys(data.disk).sort()).toEqual([
       'availGb',
@@ -267,6 +269,22 @@ describe('GET /api/v1/servers/:serverId/health', () => {
     });
     expect(Object.keys(data.patch.unattendedUpgrades).sort()).toEqual(['enabled', 'lastRunAt']);
     expect(typeof data.patch.checkedAt).toBe('string');
+  });
+
+  it('returns the outcome of the last scheduled security update run as lastAutoPatch', async () => {
+    const lastAutoPatch = {
+      at: '2026-11-08T03:04:00.000Z',
+      status: 'applied',
+      packagesApplied: 4,
+      rebootRequired: true,
+      summary: 'Installed 4 security updates (apt); reboot required',
+      error: null,
+      code: null,
+    };
+    h.serverRow = { ipv4: '203.0.113.7', sshPrivateKey: 'k', lastAutoPatch };
+    const res = await app().request('/api/v1/servers/srv-1/health');
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.lastAutoPatch).toEqual(lastAutoPatch);
   });
 
   it('answers 400 SERVER_NOT_READY before setup is completed', async () => {

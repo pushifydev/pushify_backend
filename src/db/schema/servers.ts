@@ -13,6 +13,7 @@ import {
 import { relations } from 'drizzle-orm';
 import { organizations } from './organizations';
 import type { ServerDiskBreakdown } from '../../lib/server-disk-cleanup';
+import type { ServerAutoPatchLastRun } from '../../lib/server-auto-patch';
 
 // Enums
 export const serverStatusEnum = pgEnum('server_status', [
@@ -104,6 +105,17 @@ export const servers = pgTable('servers', {
   /** Weekly automatic Hetzner snapshots (Pro+ with snapshot quota) */
   autoSnapshotEnabled: boolean('auto_snapshot_enabled').default(false).notNull(),
   lastAutoSnapshotAt: timestamp('last_auto_snapshot_at', { withTimezone: true }),
+
+  /**
+   * Scheduled automatic security updates (lib/server-auto-patch.ts): 'off' | 'daily' | 'weekly',
+   * starting in a 60-minute maintenance window at auto_patch_hour UTC (weekly: on auto_patch_weekday,
+   * 0 = Sunday). Off by default.
+   */
+  autoPatch: varchar('auto_patch', { length: 10 }).default('off').notNull(),
+  autoPatchHour: smallint('auto_patch_hour').default(3).notNull(),
+  autoPatchWeekday: smallint('auto_patch_weekday').default(0).notNull(),
+  /** Outcome of the last scheduled run, returned by the health report as `lastAutoPatch` */
+  lastAutoPatch: jsonb('last_auto_patch').$type<ServerAutoPatchLastRun>(),
 
   // Timestamps
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

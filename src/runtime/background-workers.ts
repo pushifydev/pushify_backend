@@ -22,6 +22,7 @@ import { startAppSleepWorker, stopAppSleepWorker } from '../workers/app-sleep.wo
 import { startAbuseRuntimeWorker, stopAbuseRuntimeWorker } from '../workers/abuse-runtime.worker';
 import { startAdminNotifyWorker, stopAdminNotifyWorker } from '../workers/admin-notify.worker';
 import { startServerPatchWorker, stopServerPatchWorker } from '../workers/server-patch.worker';
+import { reconcileAutoPatchSchedules } from '../lib/server-auto-patch';
 import { startDomainRenewalWorker, stopDomainRenewalWorker } from '../workers/domain-renewal.worker';
 import { startBillingReconcileWorker, stopBillingReconcileWorker } from '../workers/billing-reconcile.worker';
 import { startDeletionPurgeWorker, stopDeletionPurgeWorker } from '../workers/deletion-purge.worker';
@@ -102,6 +103,12 @@ export async function startBackgroundWorkers(): Promise<void> {
 
   if (startServerPatchWorker()) {
     logger.info('Server patch queue worker started');
+    // Automatic security update schedules follow the servers table (lost or stale ones after a Redis reset)
+    await reconcileAutoPatchSchedules()
+      .then((res) => logger.info(res, 'Automatic security update schedules reconciled'))
+      .catch((error) => {
+        logger.error({ err: error }, 'Failed to reconcile automatic security update schedules');
+      });
   }
 
   const notificationWorker = startNotificationWorker();

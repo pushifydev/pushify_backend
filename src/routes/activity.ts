@@ -54,6 +54,7 @@ const ActivityActionEnum = z.enum([
   'server.patches_requested',
   'server.patches_applied',
   'server.patches_failed',
+  'server.patches_skipped',
   'preview.redeployed',
   'preview.closed',
   'log_drain.created',
