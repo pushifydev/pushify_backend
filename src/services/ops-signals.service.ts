@@ -70,9 +70,17 @@ export interface OpsSignals {
    */
   userServerUnreachable: SiteDown[];
   /**
+   * User side, deploy failed: down sites diagnosed `build_failed`. The latest deployment failed on
+   * the project's side and no version of the app runs behind the site (the inspected container is
+   * stopped or missing, or the proxy answers with nothing behind it), so nothing will serve until
+   * the owner fixes the build and redeploys. Not a platform outage: kept out of sitesDown and only
+   * listed here. A site whose server or app is down for any other reason stays in sitesDown.
+   */
+  userDeployFailed: SiteDown[];
+  /**
    * Sites whose last health check said down but whose project was stopped on purpose since:
    * paused by the owner, suspended under the Acceptable Use Policy, asleep (auto-sleep), in
-   * maintenance mode or deleted. Never an outage, so never in sitesDown or userServerUnreachable;
+   * maintenance mode or deleted. Never an outage, so never in sitesDown, userServerUnreachable or userDeployFailed;
    * listed with why, so a site that left sitesDown can be told apart from one that was fixed.
    * Most recently down first.
    */
@@ -405,6 +413,9 @@ export const opsSignalsService = {
       };
     });
     const userServer = (s: SiteDown) => s.diagnosis.kind === 'user_server_unreachable';
+    // build_failed is only diagnosed when the latest deploy failed on the project's side and no app
+    // runs behind the site; a Pushify- or server-side failure, or an app that runs, stays in sitesDown.
+    const userDeploy = (s: SiteDown) => s.diagnosis.kind === 'build_failed' && s.diagnosis.userSide === true;
     return {
       generatedAt: new Date().toISOString(),
       windowHours: WINDOW_HOURS,
@@ -442,8 +453,9 @@ export const opsSignalsService = {
           };
         }),
       },
-      sitesDown: diagnosed.filter((s) => !userServer(s)),
+      sitesDown: diagnosed.filter((s) => !userServer(s) && !userDeploy(s)),
       userServerUnreachable: diagnosed.filter(userServer),
+      userDeployFailed: diagnosed.filter(userDeploy),
       sitesStopped,
       servers: servers.map(({ diskBreakdown, ...s }) => ({
         ...s,
