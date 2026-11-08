@@ -6,11 +6,18 @@ import { projects } from '../db/schema/projects';
 import { deployments } from '../db/schema/deployments';
 import { projectVolumes } from '../db/schema/project-volumes';
 import { requireProjectMember } from '../lib/org-access';
-import { evaluateTransferPreflight, type TransferPreflight } from '../lib/project-transfer';
+import {
+  evaluateTransferPreflight,
+  requiredTargetFreeBytes,
+  type TransferPreflight,
+  type TransferVolume,
+} from '../lib/project-transfer';
+import { copyVolumesToTarget, measureVolumes, restartOnSource } from '../lib/project-volume-transfer';
+import { volumeDockerName } from '../lib/volume-validate';
 import { decrypt } from '../lib/encryption';
 import { logger } from '../lib/logger';
 import { wsManager } from '../lib/ws';
-import { getSSHConnection } from '../utils/ssh';
+import { getSSHConnection, SSHClient } from '../utils/ssh';
 import type { AuditSource } from '../lib/audit';
 import { t, type SupportedLocale } from '../i18n';
 import { projectRepository } from '../repositories/project.repository';
@@ -30,7 +37,16 @@ import type { ProjectTransferEvent } from '../types/ws';
  */
 
 type ProjectRow = typeof projects.$inferSelect;
+type ServerRow = typeof servers.$inferSelect;
 type Transfer = { fromServerId: string; toServerId: string };
+
+/** The volume step of a move, handed to the deployer (`beforeStart`) */
+export interface TransferVolumeStep {
+  /** Stops what uses the volumes on the source, copies them to `target` and checks the copy */
+  run: (target: SSHClient) => Promise<void>;
+  /** Containers `run` stopped on the source: `fail` starts them again */
+  stoppedOnSource: string[];
+}
 
 interface RequestContext {
   ipAddress?: string;
@@ -70,6 +86,61 @@ async function quotaProblem(organizationId: string, locale: SupportedLocale): Pr
   } catch (err) {
     if (err instanceof HTTPException) return err.message;
     throw err;
+  }
+}
+
+/**
+ * A connection of its own, not the pool: the pool's reaper closes a connection that was not
+ * handed out for 5 minutes, and copying a volume can take longer than that.
+ */
+async function connectTo(server: ServerRow): Promise<SSHClient> {
+  if (!server.ipv4 || !server.sshPrivateKey) throw new Error(`Server "${server.name}" has no IP address or SSH key`);
+  const ssh = new SSHClient();
+  await ssh.connect({ host: server.ipv4, port: 22, username: 'root', privateKey: decrypt(server.sshPrivateKey) });
+  return ssh;
+}
+
+/** Size of each volume on the source and free disk on the target (null where not measured) */
+async function measureTransferVolumes(
+  project: ProjectRow,
+  target: ServerRow | undefined,
+  names: string[]
+): Promise<{ volumes: TransferVolume[]; targetFreeBytes: number | null }> {
+  if (names.length === 0) return { volumes: [], targetFreeBytes: null };
+  const dockerNames = names.map((name) => volumeDockerName(project.slug, name));
+  const source = project.serverId ? await db.query.servers.findFirst({ where: eq(servers.id, project.serverId) }) : undefined;
+  // Never connect to a server of another organization, nor to one that is not ready
+  const targetUsable =
+    !!target &&
+    target.organizationId === project.organizationId &&
+    target.id !== project.serverId &&
+    target.status === 'running' &&
+    target.setupStatus === 'completed';
+  const [sourceSsh, targetSsh] = await Promise.all([
+    source ? connectTo(source).catch(() => null) : null,
+    targetUsable ? connectTo(target).catch(() => null) : null,
+  ]);
+  try {
+    const { sizes, targetFreeBytes } = await measureVolumes(sourceSsh, targetSsh, dockerNames);
+    return {
+      volumes: names.map((name, i) => ({ name, sizeBytes: sizes.get(dockerNames[i])?.bytes ?? null })),
+      targetFreeBytes,
+    };
+  } finally {
+    sourceSsh?.disconnect();
+    targetSsh?.disconnect();
+  }
+}
+
+/** Start again what the volume step stopped on the source. True when it worked. */
+async function restartStoppedOnSource(serverId: string, containers: string[]): Promise<boolean> {
+  const server = await db.query.servers.findFirst({ where: eq(servers.id, serverId) });
+  if (!server) return false;
+  const ssh = await connectTo(server);
+  try {
+    return await restartOnSource(ssh, containers);
+  } finally {
+    ssh.disconnect();
   }
 }
 
@@ -122,6 +193,12 @@ export const projectTransferService = {
       quotaProblem(project.organizationId, locale),
     ]);
 
+    const measured = await measureTransferVolumes(
+      project,
+      target,
+      volumes.map((v) => v.name)
+    );
+
     return evaluateTransferPreflight({
       project: {
         organizationId: project.organizationId,
@@ -147,7 +224,8 @@ export const projectTransferService = {
         : null,
       hasSuccessfulDeployment: !!live,
       deploymentInProgress: running.length > 0,
-      volumes: volumes.map((v) => v.name),
+      volumes: measured.volumes,
+      targetFreeBytes: measured.targetFreeBytes,
       // Reached by container name over the server's `pushify` network (lib/managed-database.ts)
       sourceDatabases: connections
         .filter((c) => !!project.serverId && c.database.serverId === project.serverId && !!c.database.containerName)
@@ -230,11 +308,44 @@ export const projectTransferService = {
   },
 
   /**
+   * The volume step of a move (`dockerNames`: the volumes the deploy mounts). The deployer runs it
+   * on the target once the image is built, right before the container starts there.
+   */
+  volumeStep(transfer: Transfer, dockerNames: string[], onLog: (message: string) => void): TransferVolumeStep {
+    const stoppedOnSource: string[] = [];
+    return {
+      stoppedOnSource,
+      run: async (target) => {
+        const server = await db.query.servers.findFirst({ where: eq(servers.id, transfer.fromServerId) });
+        if (!server) throw new Error('The current server was not found, so the volumes cannot be copied');
+        onLog(`🚚 Copying ${dockerNames.length} persistent volume(s) from the current server`);
+        const source = await connectTo(server);
+        try {
+          await copyVolumesToTarget(source, target, {
+            names: dockerNames,
+            requiredFreeBytes: requiredTargetFreeBytes,
+            onLog,
+            onStopping: (containers) => stoppedOnSource.push(...containers),
+          });
+        } finally {
+          source.disconnect();
+        }
+      },
+    };
+  },
+
+  /**
    * The move's deploy passed its health check on the target and nginx/SSL are set up there: point
    * the project at the target, stop (keep) the source's containers, re-point the Cloudflare
    * records Pushify created. Never throws — the app already runs on the target.
    */
-  async complete(deploymentId: string, projectId: string, transfer: Transfer, onLog: (message: string) => void = () => {}): Promise<boolean> {
+  async complete(
+    deploymentId: string,
+    projectId: string,
+    transfer: Transfer,
+    onLog: (message: string) => void = () => {},
+    stoppedOnSource: string[] = []
+  ): Promise<boolean> {
     try {
       const existing = await projectRepository.findById(projectId);
       if (!existing) return false;
@@ -244,7 +355,8 @@ export const projectTransferService = {
           deploymentId,
           projectId,
           transfer,
-          'The project was assigned to another server while it was being moved; it was left as it is.'
+          'The project was assigned to another server while it was being moved; it was left as it is.',
+          stoppedOnSource
         );
         return false;
       }
@@ -289,17 +401,36 @@ export const projectTransferService = {
     }
   },
 
-  /** The move's deploy failed: nothing changes, the project keeps running on its server. */
-  async fail(deploymentId: string, projectId: string, transfer: Transfer, error: string): Promise<void> {
+  /**
+   * The move's deploy failed: nothing changes, the project keeps running on its server. What the
+   * volume step stopped there (`stoppedOnSource`) is started again — unless the project already
+   * runs on the target. The volumes on the source were only read.
+   */
+  async fail(deploymentId: string, projectId: string, transfer: Transfer, error: string, stoppedOnSource: string[] = []): Promise<void> {
     try {
       const project = await projectRepository.findById(projectId);
+      let sourceRestarted: boolean | undefined;
+      if (project && stoppedOnSource.length > 0 && project.serverId !== transfer.toServerId) {
+        sourceRestarted = await restartStoppedOnSource(transfer.fromServerId, stoppedOnSource).catch((err) => {
+          logger.error({ projectId, serverId: transfer.fromServerId, err }, 'Starting the project again on its server failed');
+          return false;
+        });
+        if (!sourceRestarted) {
+          error = `The app could not be started again on its current server: start ${stoppedOnSource.join(', ')} there by hand. ${error}`;
+        }
+      }
       if (project) {
         await activityService.log({
           organizationId: project.organizationId,
           projectId,
           action: 'project.transfer_failed',
           description: `Moving project "${project.name}" to another server failed; it keeps running on its current server`,
-          metadata: { deploymentId, ...transfer, error: error.slice(0, 500) },
+          metadata: {
+            deploymentId,
+            ...transfer,
+            error: error.slice(0, 500),
+            ...(sourceRestarted === undefined ? {} : { sourceRestarted, stoppedOnSource }),
+          },
         });
       }
       publish({ projectId, deploymentId, ...transfer, status: 'failed', message: error.slice(0, 500) });

@@ -20,6 +20,9 @@ const h = vi.hoisted(() => ({
   teardown: vi.fn(),
   syncDns: vi.fn(async () => [{ domain: 'app.example.com', status: 'updated' }]),
   disconnect: vi.fn(),
+  connect: vi.fn(async () => undefined),
+  copyVolumes: vi.fn(async (_source: unknown, _target: unknown, _options: { onStopping: (c: string[]) => void }) => undefined),
+  restartOnSource: vi.fn(async () => true),
 }));
 
 vi.mock('../lib/org-access', () => ({ requireProjectMember: h.requireProjectMember }));
@@ -46,7 +49,18 @@ vi.mock('./domain.service', () => ({ domainService: { syncProjectDnsRecords: h.s
 vi.mock('../lib/deployment-scheduler', () => ({ scheduleDeploymentProcessing: h.schedule }));
 vi.mock('../lib/ws', () => ({ wsManager: { publish: h.publish } }));
 vi.mock('../lib/encryption', () => ({ decrypt: (v: string) => `plain-${v}` }));
-vi.mock('../utils/ssh', () => ({ getSSHConnection: vi.fn(async () => ({ disconnect: h.disconnect })) }));
+vi.mock('../utils/ssh', () => ({
+  getSSHConnection: vi.fn(async () => ({ disconnect: h.disconnect })),
+  SSHClient: class {
+    connect = h.connect;
+    disconnect = h.disconnect;
+  },
+}));
+vi.mock('../lib/project-volume-transfer', () => ({
+  copyVolumesToTarget: h.copyVolumes,
+  restartOnSource: h.restartOnSource,
+  measureVolumes: vi.fn(),
+}));
 vi.mock('../lib/project-remote-cleanup', () => ({
   pauseProjectContainersOnServer: h.pause,
   teardownProjectOnRemoteServer: h.teardown,
@@ -75,6 +89,7 @@ const preflight = (ok: boolean, blockers: string[] = []) => ({
   checks: [],
   blockers,
   dns: { targetIpv4: '203.0.113.9', targetIpv6: null, cloudflareConnected: false, domains: [] },
+  volumes: { items: [], totalBytes: 0, requiredFreeBytes: null, targetFreeBytes: null, estimatedDowntimeSeconds: 0 },
 });
 
 beforeEach(() => {
@@ -87,6 +102,8 @@ beforeEach(() => {
   h.createDeployment.mockResolvedValue({ id: 'dep-1' });
   h.updateProject.mockImplementation(async (_id: string, data: Record<string, unknown>) => ({ ...h.project, ...data }));
   h.pause.mockResolvedValue(true);
+  h.restartOnSource.mockResolvedValue(true);
+  h.copyVolumes.mockResolvedValue(undefined);
 });
 
 describe('projectTransferService.start', () => {
@@ -199,5 +216,70 @@ describe('projectTransferService.fail (deploy on the target failed, e.g. health 
       type: 'project:transfer',
       data: expect.objectContaining({ status: 'failed', message: 'Container failed health check after 60s' }),
     });
+  });
+});
+
+describe('moving persistent volumes', () => {
+  const stopped = ['pushify-yeli-blue'];
+
+  it('copies from the source server into the target the deployer is connected to', async () => {
+    const onLog = vi.fn();
+    const step = projectTransferService.volumeStep(transfer, ['pushify-vol-yeli-uploads'], onLog);
+    h.copyVolumes.mockImplementation(async (_source: unknown, _target: unknown, options: { onStopping: (c: string[]) => void }) => {
+      options.onStopping(stopped);
+    });
+    const target = { exec: vi.fn() };
+
+    await step.run(target as never);
+
+    expect(h.connect).toHaveBeenCalledWith(expect.objectContaining({ host: '198.51.100.1', privateKey: 'plain-enc-key' }));
+    expect(h.copyVolumes).toHaveBeenCalledWith(
+      expect.anything(),
+      target,
+      expect.objectContaining({ names: ['pushify-vol-yeli-uploads'] })
+    );
+    expect(step.stoppedOnSource).toEqual(stopped);
+    expect(h.disconnect).toHaveBeenCalled();
+  });
+
+  it('a failed step (copy, checksum, health check) starts the stopped containers again on the source', async () => {
+    await projectTransferService.fail('dep-1', 'project-1', transfer, 'The copy of volume "pushify-vol-yeli-uploads" does not match', stopped);
+
+    expect(h.restartOnSource).toHaveBeenCalledWith(expect.anything(), stopped);
+    expect(h.updateProject).not.toHaveBeenCalled();
+    expect(h.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'project.transfer_failed',
+        metadata: expect.objectContaining({ sourceRestarted: true, stoppedOnSource: stopped }),
+      })
+    );
+  });
+
+  it('says so when the source could not be started again', async () => {
+    h.restartOnSource.mockResolvedValue(false);
+    await projectTransferService.fail('dep-1', 'project-1', transfer, 'Container failed health check', stopped);
+
+    expect(h.publish).toHaveBeenCalledWith('project:project-1', {
+      type: 'project:transfer',
+      data: expect.objectContaining({ status: 'failed', message: expect.stringMatching(/start pushify-yeli-blue there by hand/) }),
+    });
+  });
+
+  it('never restarts the source once the project runs on the target', async () => {
+    h.project = { ...baseProject(), serverId: 'srv-new' };
+    await projectTransferService.fail('dep-1', 'project-1', transfer, 'CDN purge failed', stopped);
+    expect(h.restartOnSource).not.toHaveBeenCalled();
+  });
+
+  it('restarts nothing for a move without volumes', async () => {
+    await projectTransferService.fail('dep-1', 'project-1', transfer, 'Build failed');
+    expect(h.restartOnSource).not.toHaveBeenCalled();
+    expect(h.connect).not.toHaveBeenCalled();
+  });
+
+  it('restarts the source when the project was assigned elsewhere during the move', async () => {
+    h.project = { ...baseProject(), serverId: 'srv-other' };
+    expect(await projectTransferService.complete('dep-1', 'project-1', transfer, () => {}, stopped)).toBe(false);
+    expect(h.restartOnSource).toHaveBeenCalledWith(expect.anything(), stopped);
   });
 });
