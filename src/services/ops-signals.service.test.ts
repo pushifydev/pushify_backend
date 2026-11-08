@@ -216,8 +216,10 @@ describe('opsSignalsService sitesDown stored failure and container facts', () =>
         diagnostics: { checkedAt: '2026-10-22T09:00:00.000Z', checks: [], failedCheck: null, advice: null, managed: true, container: exited },
       },
     ];
-    const { sitesDown } = await opsSignalsService.getSignals();
-    const [site] = sitesDown;
+    const { sitesDown, userDeployFailed } = await opsSignalsService.getSignals();
+    // A failed build on the project's side with no container running: user side, not a platform outage.
+    expect(sitesDown).toEqual([]);
+    const [site] = userDeployFailed;
     // The stored category wins over the message ("Docker build failed" would say docker_build, pushify side).
     expect(site.latestDeploy).toMatchObject({
       status: 'failed', createdAt: base.latestCreatedAt, category: 'application_build', blame: 'project', label: 'Application build failed',
@@ -263,6 +265,65 @@ describe('opsSignalsService sitesDown stored failure and container facts', () =>
     expect(none.diagnosis.kind).toBe('container_not_running');
     expect(uninspected.diagnosis.summary).toContain('could not be inspected');
     expect(broken.diagnosis).toMatchObject({ kind: 'unknown', userSide: null });
+  });
+});
+
+describe('opsSignalsService user side: deploy failed', () => {
+  beforeEach(() => {
+    h.queries = [];
+    h.downRows = [];
+  });
+
+  // b1cecd19: ECONNREFUSED, the latest deploy a failed build on the project's side.
+  const base = {
+    downSince: '2026-09-22T22:54:41Z', statusCode: null, error: 'fetch failed (ECONNREFUSED)', managed: true,
+    serverStatus: 'running', serverStatusMessage: null, serverLastSeenAt: null, lastSuccessfulDeployAt: '2026-09-01T00:00:00Z',
+    ownerLastLoginAt: null, downReason: 'app_error', latestStatus: 'failed', latestCreatedAt: '2026-09-22T22:50:00Z',
+    latestError: '[Project] Application build failed: npm ERR! Missing script: "build"', latestFailureCategory: 'application_build',
+  };
+  const inspected = (container: Record<string, unknown>) => ({
+    checkedAt: '2026-10-22T09:00:00.000Z', checks: [], failedCheck: null, advice: null, managed: true,
+    container: { checkedAt: '2026-10-22T09:00:00.000Z', exitCode: 1, restartCount: 0, oomKilled: false, configuredPort: 3000, listeningPorts: null, loopbackPorts: null, ...container },
+  });
+
+  it('does not count a failed build with no version running as an outage', async () => {
+    h.downRows = [
+      { ...base, projectId: 'b1cecd19', diagnostics: inspected({ state: 'exited', cause: 'container_exited' }) },
+      { ...base, projectId: 'missing', diagnostics: inspected({ state: 'missing', cause: null }) },
+      { ...base, projectId: 'bad-gateway', statusCode: 502, error: 'Bad gateway', diagnostics: null },
+    ];
+    const { sitesDown, userServerUnreachable, userDeployFailed } = await opsSignalsService.getSignals();
+    expect(sitesDown).toEqual([]);
+    expect(userServerUnreachable).toEqual([]);
+    expect(userDeployFailed.map((s) => s.projectId)).toEqual(['b1cecd19', 'missing', 'bad-gateway']);
+    for (const site of userDeployFailed) {
+      expect(site.diagnosis).toMatchObject({ kind: 'build_failed', userSide: true });
+      expect(site.latestDeploy).toMatchObject({ status: 'failed', category: 'application_build', blame: 'project' });
+    }
+  });
+
+  it('still raises the alarm for a real outage of a project that had a successful version', async () => {
+    h.downRows = [
+      // The server running the previous version does not answer: Pushify's, whatever the build did.
+      {
+        ...base, projectId: 'unreachable',
+        diagnostics: { checkedAt: '2026-10-22T09:00:00.000Z', failedCheck: 'ssh', advice: null, managed: true, checks: [{ check: 'ssh', outcome: 'timeout', ok: false, advice: null }] },
+      },
+      // The container could not be inspected: nothing says the build is why.
+      { ...base, projectId: 'uninspected', diagnostics: inspected({ state: 'unknown', cause: null }) },
+      // The previous version runs but crash-loops: the app's own cause, not the failed build.
+      { ...base, projectId: 'crash-loop', diagnostics: inspected({ state: 'restarting', cause: 'crash_loop', restartCount: 40 }) },
+      // A failed build blamed on Pushify stays a platform candidate.
+      { ...base, projectId: 'pushify-build', latestError: '[Pushify] Docker build failed: exit code 1', latestFailureCategory: 'docker_build', diagnostics: inspected({ state: 'exited', cause: 'container_exited' }) },
+      // The latest deploy succeeded, yet its container is down.
+      { ...base, projectId: 'deployed', latestStatus: 'running', latestError: null, latestFailureCategory: null, diagnostics: inspected({ state: 'exited', cause: 'container_exited' }) },
+    ];
+    const { sitesDown, userDeployFailed } = await opsSignalsService.getSignals();
+    expect(userDeployFailed).toEqual([]);
+    expect(sitesDown.map((s) => s.projectId)).toEqual(['unreachable', 'uninspected', 'crash-loop', 'pushify-build', 'deployed']);
+    expect(sitesDown.every((s) => s.lastSuccessfulDeployAt === base.lastSuccessfulDeployAt)).toBe(true);
+    expect(sitesDown[0].diagnosis).toMatchObject({ kind: 'unreachable', userSide: false });
+    expect(sitesDown.slice(1).map((s) => s.diagnosis.kind)).toEqual(Array(4).fill('container_not_running'));
   });
 });
 

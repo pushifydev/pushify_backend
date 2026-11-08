@@ -294,10 +294,11 @@ describe('site down with ECONNREFUSED behind a failed Docker build: health check
     expect(adminNotify).not.toHaveBeenCalled();
 
     // The ops record now carries the container state, the port result and the latest deploy, and
-    // waits on the user's build instead of standing as a platform outage.
-    const { sitesDown } = await opsSignalsService.getSignals();
-    expect(sitesDown).toHaveLength(1);
-    const [site] = sitesDown;
+    // waits on the user's build instead of standing as a platform outage: it leaves sitesDown.
+    const { sitesDown, userDeployFailed } = await opsSignalsService.getSignals();
+    expect(sitesDown).toEqual([]);
+    expect(userDeployFailed).toHaveLength(1);
+    const [site] = userDeployFailed;
     expect(site.latestDeploy).toMatchObject({ status: 'failed', blame: 'project', label: 'Application build failed' });
     expect(site.diagnosis).toMatchObject({ kind: 'build_failed', userSide: true, cause: 'container_exited' });
     expect(site.diagnosis.summary).toContain('fetch failed (ECONNREFUSED)');
