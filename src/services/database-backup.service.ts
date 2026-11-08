@@ -906,9 +906,29 @@ export const databaseBackupService = {
 
   async cleanupExpiredBackups() {
     const expiredBackups = await databaseRepository.findExpiredBackups();
+    /** databaseId → id of its newest finished backup */
+    const newestFinished = new Map<string, string | undefined>();
+    let kept = 0;
 
     for (const backup of expiredBackups) {
       try {
+        // Never expire a database's newest finished backup. When backups have been failing for
+        // longer than the retention period, or were turned off, it is the only one left to
+        // restore from — deleting it would leave the database with no backup at all.
+        if (!newestFinished.has(backup.databaseId)) {
+          const newest = await databaseRepository.findLatestFinishedBackup(backup.databaseId);
+          newestFinished.set(backup.databaseId, newest?.id);
+        }
+        const newestId = newestFinished.get(backup.databaseId);
+        if (!newestId || newestId === backup.id) {
+          kept++;
+          logger.warn(
+            { backupId: backup.id, databaseId: backup.databaseId, expiresAt: backup.expiresAt },
+            'Keeping expired backup: it is the newest successful backup of this database'
+          );
+          continue;
+        }
+
         // Find the database to get server info
         const database = await databaseRepository.findById(backup.databaseId);
         if (!database?.serverId) {
@@ -946,7 +966,7 @@ export const databaseBackupService = {
     }
 
     if (expiredBackups.length > 0) {
-      logger.info({ count: expiredBackups.length }, 'Expired backups cleanup completed');
+      logger.info({ count: expiredBackups.length, kept }, 'Expired backups cleanup completed');
     }
   },
 };

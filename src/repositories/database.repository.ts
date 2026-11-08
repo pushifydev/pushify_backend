@@ -1,4 +1,4 @@
-import { eq, and, desc, lte, gte, ne } from 'drizzle-orm';
+import { eq, and, desc, lte, gte, ne, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import {
   databases,
@@ -160,6 +160,20 @@ export const databaseRepository = {
         lte(databaseBackups.expiresAt, new Date()),
         eq(databaseBackups.status, 'completed')
       ),
+    });
+  },
+
+  /**
+   * The newest finished backup of a database (`restored` is a legacy finished status). Expiry
+   * cleanup keeps it whatever its age, so a database is never left with nothing to restore.
+   */
+  async findLatestFinishedBackup(databaseId: string): Promise<DatabaseBackup | undefined> {
+    return db.query.databaseBackups.findFirst({
+      where: and(
+        eq(databaseBackups.databaseId, databaseId),
+        inArray(databaseBackups.status, ['completed', 'restored'])
+      ),
+      orderBy: [desc(databaseBackups.startedAt)],
     });
   },
 
