@@ -5,6 +5,11 @@ import { authMiddleware } from '../middleware/auth';
 import { authRateLimiter } from '../middleware/rate-limit';
 import { apiKeyService } from '../services/apikey.service';
 import { isOrganizationPendingDeletion } from '../lib/deletion-lock';
+import {
+  isOrganizationTwoFactorRequired,
+  recordOrgTwoFactorDenial,
+  userHasTwoFactorEnabled,
+} from '../lib/org-two-factor';
 import { cliAuthStore } from '../lib/cli-auth-store';
 import type { AppEnv } from '../types';
 
@@ -135,6 +140,20 @@ cliAuthRouter.openapi(pollRoute, async (c) => {
     const { userId, organizationId } = approval;
     // Approved, then the organization was scheduled for deletion: its keys are revoked, so no new one.
     if (await isOrganizationPendingDeletion(organizationId)) {
+      return c.json({ status: 'expired' as const, apiKey: null });
+    }
+    // Approved, then the organization started requiring 2FA (or the user turned theirs off): no new
+    // key for a member without 2FA (lib/org-two-factor). Approving itself is refused by authMiddleware.
+    if ((await isOrganizationTwoFactorRequired(organizationId)) && !(await userHasTwoFactorEnabled(userId))) {
+      await recordOrgTwoFactorDenial({
+        organizationId,
+        userId,
+        accessPath: 'cli_login',
+        method: c.req.method,
+        path: '/api/v1/auth/cli/poll', // not the real path: it carries the login code
+        ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
+        userAgent: c.req.header('user-agent'),
+      });
       return c.json({ status: 'expired' as const, apiKey: null });
     }
     const result = await apiKeyService.create(userId, organizationId, {

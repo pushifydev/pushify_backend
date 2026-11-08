@@ -15,6 +15,7 @@ import {
   isExemptFromOrgTwoFactor,
   isOrganizationTwoFactorRequired,
   orgTwoFactorRequiredError,
+  recordOrgTwoFactorDenial,
   userHasTwoFactorEnabled,
 } from '../lib/org-two-factor';
 
@@ -64,13 +65,24 @@ export async function authMiddleware(c: Context, next: Next) {
           cause: { code: 'ORGANIZATION_PENDING_DELETION' },
         });
       }
-      // Organization-wide 2FA (lib/org-two-factor): sessions only. API key requests returned to
-      // apiKeyAuthMiddleware above and are deliberately not affected by the policy in this step.
+      // Organization-wide 2FA (lib/org-two-factor), session branch. API key requests returned to
+      // apiKeyAuthMiddleware above, which applies the same policy to the key's creator.
       if (
         !isExemptFromOrgTwoFactor(c.req.path) &&
         (await isOrganizationTwoFactorRequired(payload.org)) &&
         !(payload.sub && (await userHasTwoFactorEnabled(payload.sub)))
       ) {
+        if (payload.sub) {
+          await recordOrgTwoFactorDenial({
+            organizationId: payload.org,
+            userId: payload.sub,
+            accessPath: 'session',
+            method: c.req.method,
+            path: c.req.path,
+            ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
+            userAgent: c.req.header('user-agent'),
+          });
+        }
         throw orgTwoFactorRequiredError(locale);
       }
     }

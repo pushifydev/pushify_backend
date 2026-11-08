@@ -1,9 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const h = vi.hoisted(() => ({ create: vi.fn(), pending: vi.fn() }));
+const h = vi.hoisted(() => ({
+  create: vi.fn(),
+  pending: vi.fn(),
+  required: vi.fn(),
+  hasTwoFactor: vi.fn(),
+  denied: vi.fn(),
+}));
 
 vi.mock('../services/apikey.service', () => ({ apiKeyService: { create: h.create } }));
 vi.mock('../lib/deletion-lock', () => ({ isOrganizationPendingDeletion: h.pending }));
+vi.mock('../lib/org-two-factor', () => ({
+  isOrganizationTwoFactorRequired: h.required,
+  userHasTwoFactorEnabled: h.hasTwoFactor,
+  recordOrgTwoFactorDenial: h.denied,
+}));
 // Process memory, as without REDIS_URL (the Redis path is covered in lib/cli-auth-store.test.ts).
 vi.mock('../lib/redis-client', () => ({ getOptionalRedis: () => null }));
 vi.mock('../middleware/rate-limit', () => ({ authRateLimiter: async (_c: unknown, next: () => Promise<void>) => next() }));
@@ -29,6 +40,9 @@ describe('CLI device login', () => {
   beforeEach(() => {
     h.create.mockReset().mockResolvedValue({ secretKey: 'pk_live_secret' });
     h.pending.mockReset().mockResolvedValue(false);
+    h.required.mockReset().mockResolvedValue(false);
+    h.hasTwoFactor.mockReset().mockResolvedValue(false);
+    h.denied.mockReset().mockResolvedValue(undefined);
   });
 
   it('creates the key when the CLI collects it, once', async () => {
@@ -54,6 +68,32 @@ describe('CLI device login', () => {
     h.pending.mockResolvedValue(true);
     expect(await poll(code)).toEqual({ status: 'expired', apiKey: null });
     expect(h.create).not.toHaveBeenCalled();
+  });
+
+  it('issues no key once the organization requires 2FA and the user has none, and audits it', async () => {
+    const code = await createSession();
+    await approve(code);
+    h.required.mockResolvedValue(true);
+
+    expect(await poll(code)).toEqual({ status: 'expired', apiKey: null });
+    expect(h.create).not.toHaveBeenCalled();
+    expect(h.required).toHaveBeenCalledWith('org-1');
+    expect(h.hasTwoFactor).toHaveBeenCalledWith('user-1');
+    expect(h.denied).toHaveBeenCalledWith(
+      expect.objectContaining({ organizationId: 'org-1', userId: 'user-1', accessPath: 'cli_login' }),
+    );
+    // The login code is never written to the audit entry
+    expect(JSON.stringify(h.denied.mock.calls)).not.toContain(code);
+  });
+
+  it('issues the key when the organization requires 2FA and the user has it', async () => {
+    const code = await createSession();
+    await approve(code);
+    h.required.mockResolvedValue(true);
+    h.hasTwoFactor.mockResolvedValue(true);
+
+    expect(await poll(code)).toEqual({ status: 'approved', apiKey: 'pk_live_secret' });
+    expect(h.denied).not.toHaveBeenCalled();
   });
 
   it('reports pending before approval', async () => {

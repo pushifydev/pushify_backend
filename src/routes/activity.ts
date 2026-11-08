@@ -60,6 +60,7 @@ const ActivityActionEnum = z.enum([
   'log_drain.created',
   'log_drain.updated',
   'log_drain.deleted',
+  'auth.org_2fa_denied',
 ]);
 
 const UserSchema = z.object({

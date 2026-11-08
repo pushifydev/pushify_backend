@@ -20,6 +20,8 @@ export class ServerTerminalAuthError extends Error {
 }
 
 export interface AuthorizedServerTerminal {
+  /** The organization that owns the server (or project): its 2FA policy applies to the session. */
+  organizationId: string;
   serverId: string;
   host: string;
   username: string;
@@ -78,6 +80,7 @@ export async function authorizeServerTerminalAccess(
   }
 
   return {
+    organizationId: server.organizationId,
     serverId: server.id,
     host: server.ipv4,
     username: 'root',
@@ -161,6 +164,7 @@ export async function authorizeProjectShellAccess(
   }
 
   return {
+    organizationId: project.organizationId,
     serverId: server.id,
     host: server.ipv4,
     username: 'root',
