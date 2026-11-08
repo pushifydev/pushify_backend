@@ -278,6 +278,15 @@ pick up a change within that time.
       "rebootRequired": true,
       "unattendedUpgrades": { "enabled": true, "lastRunAt": "2026-10-26T07:33:20.000Z" },
       "checkedAt": "2026-11-06T12:34:00.000Z"
+    },
+    "lastAutoPatch": {
+      "at": "2026-11-08T03:04:12.000Z",
+      "status": "applied",
+      "packagesApplied": 4,
+      "rebootRequired": true,
+      "summary": "Installed 4 security updates (apt); 0 security / 8 total updates left; reboot required",
+      "error": null,
+      "code": null
     }
   }
 }
@@ -298,6 +307,11 @@ pick up a change within that time.
 | `patch.unattendedUpgrades.enabled` | boolean \| `"unknown"` | installed, enabled in `APT::Periodic`, timer not disabled |
 | `patch.unattendedUpgrades.lastRunAt` | string (ISO) \| null | `null` when it never ran or is not known |
 | `patch.checkedAt` | string (ISO) | time of this check |
+| `lastAutoPatch` | object \| null | last **scheduled** security update run (`PUT /api/v1/servers/:serverId/auto-patch`, OpenAPI schema `ServerAutoPatchLastRun`); `null` until one ran. Stored, not read over SSH |
+| `lastAutoPatch.status` | `"applied"` \| `"failed"` \| `"skipped"` | `skipped`: a deploy went on for the whole maintenance window, nothing was installed |
+| `lastAutoPatch.packagesApplied` | number \| null | packages upgraded (apt); `null` on dnf and when nothing ran |
+| `lastAutoPatch.rebootRequired` | boolean \| `"unknown"` \| null | after the run; Pushify never reboots. `null` when nothing ran |
+| `lastAutoPatch.summary`, `.error`, `.code` | string \| null | `code`: `PatchApplyError` code, `SSH_ERROR` or `DEPLOY_IN_PROGRESS` |
 
 `"unknown"` is a literal string. All patch fields are `"unknown"` (and `lastRunAt` `null`) on a
 non-Debian/Ubuntu server or when the patch command fails; the rest of the report is still

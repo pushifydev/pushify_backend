@@ -30,6 +30,7 @@ import { wsManager } from '../lib/ws';
 import { logger } from '../lib/logger';
 import { adminNotify } from './admin-notify.service';
 import { DOCKER_DAEMON_JSON } from '../lib/server-disk-cleanup';
+import { toAutoPatchSettings, type AutoPatchSchedule } from '../lib/server-auto-patch';
 
 /**
  * Take Pushify's SSH key off a connected (BYOS) server. Never throws: an unreachable server comes
@@ -374,6 +375,12 @@ export interface ServerWithDetails {
   isManaged: boolean;
   autoSnapshotEnabled: boolean;
   lastAutoSnapshotAt: Date | null;
+  /** Scheduled automatic security updates (PUT /servers/:serverId/auto-patch) */
+  autoPatch: AutoPatchSchedule;
+  /** Hour (UTC) the maintenance window starts */
+  autoPatchHour: number;
+  /** Weekly schedule: day of the week (UTC), 0 = Sunday */
+  autoPatchWeekday: number;
   infraBilling?: ServerInfraBillingDetails;
   createdAt: Date;
   updatedAt: Date;
@@ -483,6 +490,7 @@ function mapServerRow(
     isManaged: s.isManaged,
     autoSnapshotEnabled: s.autoSnapshotEnabled,
     lastAutoSnapshotAt: s.lastAutoSnapshotAt,
+    ...toAutoPatchSettings(s),
     createdAt: s.createdAt,
     updatedAt: s.updatedAt,
     lastSeenAt: s.lastSeenAt,
@@ -1854,18 +1862,26 @@ export const serverService = {
       recentDeployments = rows;
     }
 
-    const lifecycle: Array<{ type: string; at: Date; detail?: string; output?: string }> = [
+    const lifecycle: Array<{
+      type: string;
+      at: Date;
+      detail?: string;
+      output?: string;
+      /** Security-update runs: asked for, or from the automatic schedule */
+      trigger?: 'manual' | 'auto';
+    }> = [
       { type: 'created', at: server.createdAt },
     ];
 
-    // Security-update runs (POST /:serverId/patches/apply), recorded on the audit log by the worker
+    // Security-update runs (POST /:serverId/patches/apply and the automatic schedule), recorded on the
+    // audit log by the worker
     const patchRuns = await db
       .select({ action: activityLogs.action, description: activityLogs.description, metadata: activityLogs.metadata, createdAt: activityLogs.createdAt })
       .from(activityLogs)
       .where(
         and(
           eq(activityLogs.organizationId, organizationId),
-          inArray(activityLogs.action, ['server.patches_applied', 'server.patches_failed']),
+          inArray(activityLogs.action, ['server.patches_applied', 'server.patches_failed', 'server.patches_skipped']),
           sql`${activityLogs.metadata}->>'serverId' = ${serverId}`,
         ),
       )
@@ -1873,13 +1889,14 @@ export const serverService = {
       .limit(10);
 
     for (const run of patchRuns) {
-      const meta = run.metadata as { summary?: unknown; error?: unknown; output?: unknown };
+      const meta = run.metadata as { summary?: unknown; error?: unknown; output?: unknown; trigger?: unknown };
       const detail = run.action === 'server.patches_applied' ? meta.summary : meta.error;
       lifecycle.push({
-        type: run.action === 'server.patches_applied' ? 'patches_applied' : 'patches_failed',
+        type: run.action.replace(/^server\./, ''),
         at: run.createdAt,
         detail: typeof detail === 'string' ? detail : run.description,
         output: typeof meta.output === 'string' ? meta.output : undefined,
+        trigger: meta.trigger === 'auto' ? 'auto' : 'manual',
       });
     }
 

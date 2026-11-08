@@ -1,8 +1,9 @@
+import { randomUUID } from 'crypto';
 import { Worker, type Job } from 'bullmq';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { servers } from '../db/schema/servers';
-import { QUEUE_NAMES, type ServerPatchJobData } from '../lib/queue';
+import { addServerPatchJob, QUEUE_NAMES, type ServerPatchJobData } from '../lib/queue';
 import { getBullRedisConnection } from '../lib/redis-connection';
 import { decrypt } from '../lib/encryption';
 import { logger } from '../lib/logger';
@@ -14,22 +15,133 @@ import {
   type PatchApplyResult,
 } from '../lib/server-patch-apply';
 import { acquireServerPatchLock, releaseServerPatchLock } from '../lib/server-patch-lock';
+import {
+  AUTO_PATCH_DEFER_MS,
+  autoPatchWindowEnd,
+  hasDeployInProgress,
+  removeServerAutoPatchSchedule,
+  toAutoPatchSettings,
+  type ServerAutoPatchLastRun,
+} from '../lib/server-auto-patch';
 import { activityService } from '../services/activity.service';
 import { SSHClient } from '../utils/ssh';
 
 let serverPatchWorker: Worker<ServerPatchJobData> | null = null;
 
 type ServerPatchJobResult =
-  | { status: 'skipped'; reason: 'locked' | 'server_deleted' }
+  | {
+      status: 'skipped';
+      reason: 'locked' | 'server_deleted' | 'disabled' | 'outside_window' | 'server_not_ready' | 'deploy_in_progress';
+    }
+  | { status: 'deferred'; until: string }
   | ({ status: 'applied'; summary: string } & Omit<PatchApplyResult, 'output'>);
 
+/** Keep the outcome of a scheduled run on the server row (health report). Never throws. */
+async function recordAutoPatchRun(serverId: string, lastRun: ServerAutoPatchLastRun): Promise<void> {
+  try {
+    await db.update(servers).set({ lastAutoPatch: lastRun }).where(eq(servers.id, serverId));
+  } catch (err) {
+    logger.warn({ err, serverId }, 'Could not store the outcome of the scheduled security update run');
+  }
+}
+
 /**
- * One security-update run: holds the server's patch lock for the whole run, records the outcome
- * on the audit log (where the server timeline reads it from) and never reboots.
+ * What a scheduled run (trigger 'auto') checks before it touches the server. Null when it may go
+ * ahead. Nothing runs when the setting was turned off (the schedule is removed), outside the
+ * maintenance window or on a server that is not running. While a deploy is going on the run is put
+ * off; when that lasts the whole window it is recorded as skipped.
+ */
+async function gateScheduledRun(job: Job<ServerPatchJobData>, now: Date = new Date()): Promise<ServerPatchJobResult | null> {
+  const { serverId, organizationId } = job.data;
+  const [server] = await db
+    .select({
+      id: servers.id,
+      name: servers.name,
+      status: servers.status,
+      setupStatus: servers.setupStatus,
+      autoPatch: servers.autoPatch,
+      autoPatchHour: servers.autoPatchHour,
+      autoPatchWeekday: servers.autoPatchWeekday,
+    })
+    .from(servers)
+    .where(and(eq(servers.id, serverId), eq(servers.organizationId, organizationId)))
+    .limit(1);
+
+  const settings = server ? toAutoPatchSettings(server) : null;
+  if (!server || !settings || settings.autoPatch === 'off') {
+    // Deleted or turned off since the schedule was written: drop the schedule, run nothing
+    await removeServerAutoPatchSchedule(serverId).catch((err) => {
+      logger.warn({ err, serverId }, 'Could not remove the automatic security update schedule');
+    });
+    return { status: 'skipped', reason: server ? 'disabled' : 'server_deleted' };
+  }
+
+  const windowEnd = autoPatchWindowEnd(now, settings);
+  if (!windowEnd) {
+    logger.warn({ jobId: job.id, serverId }, 'Scheduled security update run skipped: outside the maintenance window');
+    return { status: 'skipped', reason: 'outside_window' };
+  }
+
+  if (server.status !== 'running' || server.setupStatus !== 'completed') {
+    return { status: 'skipped', reason: 'server_not_ready' };
+  }
+
+  if (!(await hasDeployInProgress(serverId))) return null;
+
+  const deferrals = (job.data.deferrals ?? 0) + 1;
+  if (now.getTime() + AUTO_PATCH_DEFER_MS < windowEnd.getTime()) {
+    const retry = await addServerPatchJob({ ...job.data, deferrals }, { delay: AUTO_PATCH_DEFER_MS });
+    if (retry) {
+      const until = new Date(now.getTime() + AUTO_PATCH_DEFER_MS).toISOString();
+      logger.info({ jobId: job.id, retryJobId: retry.id, serverId, until }, 'Scheduled security update run put off: a deploy is going on');
+      return { status: 'deferred', until };
+    }
+  }
+
+  const error = 'A deploy was going on on the server for the whole maintenance window; nothing was installed';
+  await activityService.log({
+    organizationId,
+    action: 'server.patches_skipped',
+    description: `Server "${server.name}": automatic security updates skipped: ${error}`,
+    metadata: {
+      serverId,
+      serverName: server.name,
+      requestedBy: null,
+      jobId: job.id,
+      trigger: 'auto',
+      code: 'DEPLOY_IN_PROGRESS',
+      error,
+      deferrals: deferrals - 1,
+    },
+  });
+  await recordAutoPatchRun(serverId, {
+    at: now.toISOString(),
+    status: 'skipped',
+    packagesApplied: null,
+    rebootRequired: null,
+    summary: null,
+    error,
+    code: 'DEPLOY_IN_PROGRESS',
+  });
+  return { status: 'skipped', reason: 'deploy_in_progress' };
+}
+
+/**
+ * One security-update run, asked for (POST /servers/:serverId/patches/apply) or scheduled: holds
+ * the server's patch lock for the whole run, records the outcome on the audit log (where the server
+ * timeline reads it from) and never reboots. A scheduled run also keeps its outcome on the server.
  */
 export async function processServerPatchJob(job: Job<ServerPatchJobData>): Promise<ServerPatchJobResult> {
-  const { serverId, organizationId, requestedBy, lockToken } = job.data;
+  const { serverId, organizationId, requestedBy } = job.data;
+  const trigger = job.data.trigger ?? 'manual';
 
+  if (trigger === 'auto') {
+    const gated = await gateScheduledRun(job);
+    if (gated) return gated;
+  }
+
+  // A scheduled run was not queued with a lock: it takes one here (a manual run in progress wins)
+  const lockToken = job.data.lockToken ?? randomUUID();
   if (!(await acquireServerPatchLock(serverId, lockToken))) {
     logger.warn({ jobId: job.id, serverId }, 'Server patch run skipped: another run holds the lock');
     return { status: 'skipped', reason: 'locked' };
@@ -44,7 +156,8 @@ export async function processServerPatchJob(job: Job<ServerPatchJobData>): Promi
 
     if (!server) return { status: 'skipped', reason: 'server_deleted' };
 
-    const metadata = { serverId, serverName: server.name, requestedBy, jobId: job.id };
+    const metadata = { serverId, serverName: server.name, requestedBy, jobId: job.id, trigger };
+    const label = trigger === 'auto' ? `Server "${server.name}" (automatic)` : `Server "${server.name}"`;
     let ssh: SSHClient | null = null;
     try {
       if (!server.ipv4 || !server.sshPrivateKey) {
@@ -58,10 +171,21 @@ export async function processServerPatchJob(job: Job<ServerPatchJobData>): Promi
       await activityService.log({
         organizationId,
         action: 'server.patches_applied',
-        description: `Server "${server.name}": ${summary}`,
+        description: `${label}: ${summary}`,
         metadata: { ...metadata, summary, ...result },
       });
-      logger.info({ jobId: job.id, serverId, summary }, 'Server security updates applied');
+      if (trigger === 'auto') {
+        await recordAutoPatchRun(serverId, {
+          at: new Date().toISOString(),
+          status: 'applied',
+          packagesApplied: result.packageManager === 'apt' ? result.packages.length : null,
+          rebootRequired: result.rebootRequired,
+          summary,
+          error: null,
+          code: null,
+        });
+      }
+      logger.info({ jobId: job.id, serverId, trigger, summary }, 'Server security updates applied');
 
       const { output: _output, ...rest } = result;
       return { status: 'applied', summary, ...rest };
@@ -71,7 +195,7 @@ export async function processServerPatchJob(job: Job<ServerPatchJobData>): Promi
       await activityService.log({
         organizationId,
         action: 'server.patches_failed',
-        description: `Server "${server.name}": applying security updates failed: ${message}`,
+        description: `${label}: applying security updates failed: ${message}`,
         metadata: {
           ...metadata,
           code,
@@ -79,6 +203,17 @@ export async function processServerPatchJob(job: Job<ServerPatchJobData>): Promi
           output: err instanceof PatchApplyError ? tailOutput(err.output) : '',
         },
       });
+      if (trigger === 'auto') {
+        await recordAutoPatchRun(serverId, {
+          at: new Date().toISOString(),
+          status: 'failed',
+          packagesApplied: null,
+          rebootRequired: null,
+          summary: null,
+          error: message,
+          code,
+        });
+      }
       throw err;
     } finally {
       ssh?.disconnect();

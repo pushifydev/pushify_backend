@@ -126,15 +126,25 @@ export async function addAdminNotifyJob(data: AdminNotifyJobData): Promise<boole
 export interface ServerPatchJobData {
   serverId: string;
   organizationId: string;
-  /** Who asked for the run (the request itself is audited as server.patches_requested) */
-  requestedBy: string;
-  /** Token of the per-server lock taken when the run was queued (lib/server-patch-lock.ts) */
-  lockToken: string;
+  /** Who asked for the run (the request itself is audited as server.patches_requested); null for a scheduled run */
+  requestedBy: string | null;
+  /**
+   * Token of the per-server lock taken when the run was queued (lib/server-patch-lock.ts). A
+   * scheduled run has none: the worker takes the lock itself.
+   */
+  lockToken?: string;
+  /** 'auto': queued by the server's automatic security update schedule (lib/server-auto-patch.ts) */
+  trigger?: 'manual' | 'auto';
+  /** Scheduled runs: how many times this run was put off because a deploy was going on */
+  deferrals?: number;
 }
 
 let serverPatchQueue: Queue<ServerPatchJobData> | null = null;
 
-/** Security-update runs (POST /servers/:serverId/patches/apply). Never retried: an upgrade is not replayed blindly. */
+/**
+ * Security-update runs (POST /servers/:serverId/patches/apply, and the per-server automatic
+ * schedules of lib/server-auto-patch.ts). Never retried: an upgrade is not replayed blindly.
+ */
 export function getServerPatchQueue(): Queue<ServerPatchJobData> | null {
   const connection = getRedisConnection();
   if (!connection) return null;
@@ -153,10 +163,13 @@ export function getServerPatchQueue(): Queue<ServerPatchJobData> | null {
   return serverPatchQueue;
 }
 
-export async function addServerPatchJob(data: ServerPatchJobData): Promise<Job<ServerPatchJobData> | null> {
+export async function addServerPatchJob(
+  data: ServerPatchJobData,
+  opts: { delay?: number } = {}
+): Promise<Job<ServerPatchJobData> | null> {
   const queue = getServerPatchQueue();
   if (!queue) return null;
-  return queue.add('apply', data);
+  return queue.add('apply', data, opts);
 }
 
 // Get or create deployment queue
