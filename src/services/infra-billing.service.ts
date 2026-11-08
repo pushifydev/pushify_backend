@@ -26,7 +26,10 @@ import {
 import { getIncludedInfraCreditCents, type PlanType } from '../lib/plans';
 import { splitCharge } from '../lib/included-credit';
 import { logger } from '../lib/logger';
+import { withAdvisoryLock } from '../lib/advisory-lock';
 import { adminNotify } from './admin-notify.service';
+
+const HOURLY_BILLING_LOCK_KEY = 'pushify:infra-hourly-billing';
 
 function getProviderToken(provider: ProviderType): string {
   switch (provider) {
@@ -678,8 +681,22 @@ export const infraBillingService = {
 
   /**
    * Hourly billing for running managed servers. Stops servers when wallet is empty.
+   *
+   * The wallet debit and the `infraLastChargedAt` update are separate steps, so two worker
+   * processes reading the same anchor would charge the same time twice. Guarded by a Postgres
+   * advisory lock (see `withAdvisoryLock`); when another process holds it, this run is skipped.
    */
   async processHourlyBilling(): Promise<{ charged: number; stopped: number; skipped: number }> {
+    const run = await withAdvisoryLock(HOURLY_BILLING_LOCK_KEY, () => this.chargeRunningServers());
+    if (!run.acquired) {
+      logger.info('Infra hourly billing skipped: another worker holds the lock');
+      return { charged: 0, stopped: 0, skipped: 0 };
+    }
+    return run.result;
+  },
+
+  /** One billing pass over running managed servers. Call it through `processHourlyBilling`. */
+  async chargeRunningServers(): Promise<{ charged: number; stopped: number; skipped: number }> {
     const rows = await db
       .select()
       .from(servers)

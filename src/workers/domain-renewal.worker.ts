@@ -10,6 +10,7 @@ import {
   sendDomainTransferResultEmail,
 } from '../lib/email';
 import { logger } from '../lib/logger';
+import { withAdvisoryLock } from '../lib/advisory-lock';
 import { adminNotify } from '../services/admin-notify.service';
 import { infraBillingService } from '../services/infra-billing.service';
 import { refundDomainCharge } from '../services/registrar-domain.service';
@@ -17,6 +18,7 @@ import { refundDomainCharge } from '../services/registrar-domain.service';
 const SWEEP_INTERVAL_MS = 12 * 60 * 60 * 1000;
 const RENEW_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const REMINDER_THROTTLE_MS = 7 * 24 * 60 * 60 * 1000;
+const SWEEP_LOCK_KEY = 'pushify:domain-renewal';
 
 let isRunning = false;
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
@@ -273,6 +275,33 @@ export async function sweepPendingTransfers(): Promise<{ completed: number; fail
   return stats;
 }
 
+/**
+ * One tick: renewals, then in-flight transfers. Both move money (a wallet debit before a registrar
+ * renewal, a refund for a failed transfer), so the tick holds a Postgres advisory lock and is
+ * skipped — returning null — when another worker process is already running it.
+ */
+export async function runDomainSweeps(now: Date = new Date()): Promise<{
+  renewals: Awaited<ReturnType<typeof sweepDomainRenewals>>;
+  transfers: Awaited<ReturnType<typeof sweepPendingTransfers>>;
+} | null> {
+  const run = await withAdvisoryLock(SWEEP_LOCK_KEY, async () => {
+    const renewals = await sweepDomainRenewals(now);
+    if (renewals.renewed || renewals.reminded || renewals.expired) {
+      logger.info(renewals, 'Domain renewal sweep completed');
+    }
+    const transfers = await sweepPendingTransfers();
+    if (transfers.completed || transfers.failed) {
+      logger.info(transfers, 'Domain transfer sweep completed');
+    }
+    return { renewals, transfers };
+  });
+  if (!run.acquired) {
+    logger.info('Domain renewal sweep skipped: another worker holds the lock');
+    return null;
+  }
+  return run.result;
+}
+
 export function startDomainRenewalWorker(): void {
   if (isRunning) {
     logger.warn('Domain renewal worker is already running');
@@ -289,18 +318,7 @@ export function startDomainRenewalWorker(): void {
   const tick = () => {
     if (sweepInProgress) return;
     sweepInProgress = true;
-    sweepDomainRenewals()
-      .then((stats) => {
-        if (stats.renewed || stats.reminded || stats.expired) {
-          logger.info(stats, 'Domain renewal sweep completed');
-        }
-        return sweepPendingTransfers();
-      })
-      .then((stats) => {
-        if (stats.completed || stats.failed) {
-          logger.info(stats, 'Domain transfer sweep completed');
-        }
-      })
+    runDomainSweeps()
       .catch((err) => logger.error({ err }, 'Domain renewal sweep failed'))
       .finally(() => {
         sweepInProgress = false;
