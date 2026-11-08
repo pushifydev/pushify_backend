@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { evaluateTransferPreflight, projectTransferOf, type TransferFacts } from './project-transfer';
+import {
+  estimateVolumeDowntimeSeconds,
+  evaluateTransferPreflight,
+  projectTransferOf,
+  requiredTargetFreeBytes,
+  type TransferFacts,
+} from './project-transfer';
 
 const facts = (over: Partial<TransferFacts> = {}, project: Partial<TransferFacts['project']> = {}): TransferFacts => ({
   project: {
@@ -25,12 +31,15 @@ const facts = (over: Partial<TransferFacts> = {}, project: Partial<TransferFacts
   hasSuccessfulDeployment: true,
   deploymentInProgress: false,
   volumes: [],
+  targetFreeBytes: null,
   sourceDatabases: [],
   quotaProblem: null,
   customDomains: [],
   cloudflareConnected: false,
   ...over,
 });
+
+const GiB = 1024 ** 3;
 
 const statusOf = (result: ReturnType<typeof evaluateTransferPreflight>, id: string) =>
   result.checks.find((c) => c.id === id)?.status;
@@ -46,7 +55,24 @@ describe('evaluateTransferPreflight', () => {
   });
 
   it.each([
-    ['persistent volumes', facts({ volumes: ['uploads'] }), 'volumes', /persistent volumes \("uploads"\)/],
+    [
+      'a volume whose size could not be measured',
+      facts({ volumes: [{ name: 'uploads', sizeBytes: null }], targetFreeBytes: 50 * GiB }),
+      'volumes',
+      /size of persistent volume "uploads" .* could not be measured/,
+    ],
+    [
+      'volumes when free disk on the target is unknown',
+      facts({ volumes: [{ name: 'uploads', sizeBytes: GiB }], targetFreeBytes: null }),
+      'volumes',
+      /Free disk space on the target server could not be measured/,
+    ],
+    [
+      'volumes that do not fit on the target',
+      facts({ volumes: [{ name: 'uploads', sizeBytes: 10 * GiB }], targetFreeBytes: 10 * GiB }),
+      'volumes',
+      /Not enough disk on the target server .*"uploads".*10\.0 GB free, 11\.0 GB needed/,
+    ],
     [
       'a linked database on the source server',
       facts({ sourceDatabases: ['main-db'] }),
@@ -76,9 +102,49 @@ describe('evaluateTransferPreflight', () => {
   });
 
   it('lists every blocker, not just the first', () => {
-    const result = evaluateTransferPreflight(facts({ volumes: ['data'], sourceDatabases: ['pg'], quotaProblem: 'Limit' }));
+    const result = evaluateTransferPreflight(
+      facts({ volumes: [{ name: 'data', sizeBytes: null }], sourceDatabases: ['pg'], quotaProblem: 'Limit' })
+    );
     expect(result.ok).toBe(false);
     expect(result.blockers).toHaveLength(3);
+  });
+
+  it('moves persistent volumes that fit on the target, reporting their size and the downtime', () => {
+    const result = evaluateTransferPreflight(
+      facts({
+        volumes: [
+          { name: 'uploads', sizeBytes: 2 * GiB },
+          { name: 'cache', sizeBytes: 0 },
+        ],
+        targetFreeBytes: 40 * GiB,
+      })
+    );
+    expect(result.ok).toBe(true);
+    expect(statusOf(result, 'volumes')).toBe('warn');
+    expect(result.checks.find((c) => c.id === 'volumes')?.message).toMatch(
+      /"uploads", "cache" \(2\.0 GB\) are copied .* stopped on the current server .* about 4 minutes of downtime/
+    );
+    expect(result.volumes).toEqual({
+      items: [
+        { name: 'uploads', sizeBytes: 2 * GiB },
+        { name: 'cache', sizeBytes: 0 },
+      ],
+      totalBytes: 2 * GiB,
+      requiredFreeBytes: 3 * GiB,
+      targetFreeBytes: 40 * GiB,
+      estimatedDowntimeSeconds: estimateVolumeDowntimeSeconds(2 * GiB),
+    });
+  });
+
+  it('reports no downtime and no disk need without volumes', () => {
+    const result = evaluateTransferPreflight(facts());
+    expect(result.volumes).toEqual({
+      items: [],
+      totalBytes: 0,
+      requiredFreeBytes: null,
+      targetFreeBytes: null,
+      estimatedDowntimeSeconds: 0,
+    });
   });
 
   it('returns the new IP for custom domains and marks them for automatic update when Cloudflare is connected', () => {
@@ -116,5 +182,19 @@ describe('projectTransferOf', () => {
   it('is null for ordinary deployments', () => {
     expect(projectTransferOf(null)).toBeNull();
     expect(projectTransferOf({ forceBuild: true })).toBeNull();
+  });
+});
+
+describe('volume sizing', () => {
+  it('asks the target for the data plus 10% headroom, at least 1 GiB', () => {
+    expect(requiredTargetFreeBytes(0)).toBe(GiB);
+    expect(requiredTargetFreeBytes(2 * GiB)).toBe(3 * GiB);
+    expect(requiredTargetFreeBytes(20 * GiB)).toBe(22 * GiB);
+  });
+
+  it('estimates downtime from a fixed restart plus copy and checksum time', () => {
+    expect(estimateVolumeDowntimeSeconds(0)).toBe(60);
+    // 1 GiB: 51.2 s copying at 20 MiB/s, 10.24 s checksumming at 100 MiB/s
+    expect(estimateVolumeDowntimeSeconds(GiB)).toBe(122);
   });
 });

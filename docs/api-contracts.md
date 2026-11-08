@@ -20,7 +20,7 @@ The response shapes of sections 1 and 3 are checked by `src/routes/api-contracts
 | 6b | PR preview actions (redeploy / close) | `POST /api/v1/projects/:projectId/previews/:previewId/redeploy`, `…/close` | yes (no delete) |
 | 6c | Volume backups | — | **no** |
 | 7 | Log and metric drains | `GET/POST /api/v1/log-drains`, `PATCH/DELETE /api/v1/log-drains/:id`, `POST /api/v1/log-drains/:id/test`, `POST /api/v1/log-drains/sync` | yes |
-| 8 | Move a project to another server | `POST /api/v1/projects/:projectId/transfer` | yes (stateless apps only) |
+| 8 | Move a project to another server | `POST /api/v1/projects/:projectId/transfer` | yes (stateless apps and persistent volumes) |
 
 ## Conventions (all sections)
 
@@ -706,15 +706,22 @@ Body: `{ "targetServerId": "<uuid>", "dryRun": true }` (`dryRun` defaults to `fa
     "fromServerId": "…",
     "toServerId": "…",
     "checks": [
-      { "id": "volumes", "status": "block", "message": "The project has persistent volumes (\"uploads\") …" },
+      { "id": "volumes", "status": "block", "message": "Not enough disk on the target server for the persistent volumes (\"uploads\"): 10.0 GB free, 11.0 GB needed …" },
       { "id": "dns", "status": "warn", "message": "After the move, point the DNS records of \"app.example.com\" at 203.0.113.9." }
     ],
-    "blockers": ["The project has persistent volumes (\"uploads\") …"],
+    "blockers": ["Not enough disk on the target server for the persistent volumes (\"uploads\"): …"],
     "dns": {
       "targetIpv4": "203.0.113.9",
       "targetIpv6": null,
       "cloudflareConnected": false,
       "domains": [{ "domain": "app.example.com", "autoUpdate": false }]
+    },
+    "volumes": {
+      "items": [{ "name": "uploads", "sizeBytes": 10737418240 }],
+      "totalBytes": 10737418240,
+      "requiredFreeBytes": 11811160064,
+      "targetFreeBytes": 10737418240,
+      "estimatedDowntimeSeconds": 675
     }
   }
 }
@@ -722,13 +729,29 @@ Body: `{ "targetServerId": "<uuid>", "dryRun": true }` (`dryRun` defaults to `fa
 
 `checks[].id`: `project`, `source_server`, `target_server`, `deployment`, `app_type`, `volumes`,
 `databases`, `plan_quota`, `dns` (always all nine, in this order). `status`: `pass`, `warn`
-(needs attention, does not block — only `dns`), `block`. `dns.domains` lists the custom domains;
+(needs attention, does not block — `dns`, and `volumes` when they fit), `block`. `dns.domains` lists the custom domains;
 `autoUpdate` is true when Cloudflare is connected (Pushify re-points the records it created).
+
+`volumes`: the project's persistent volumes with their size on the current server (`sizeBytes`
+null when it could not be measured), the free space on the target's Docker filesystem, what the
+target needs (data plus 10%, at least 1 GiB) and the estimated downtime (60 s restart plus copy at
+20 MiB/s plus checksum at 100 MiB/s; 0 without volumes). The `volumes` check blocks when a size or
+the target's free space cannot be measured, or when the volumes do not fit.
 
 **`dryRun: false` → `202`** `{ "data": { "deploymentId": "…", "preflight": { … } }, "message": "…" }`.
 The live commit is deployed on the target through the normal deploy queue (follow `deploymentId`).
 When it is healthy there (nginx and SSL set up), `serverId` switches to the target and the
 containers on the previous server are stopped, not removed. A failed deploy changes nothing.
+
+With persistent volumes: once the image is built on the target, the sizes and the target's free
+space are measured again (not enough: the deploy fails before anything stops), the running
+containers that mount the volumes on the current server are stopped, each volume is streamed as a
+tar archive over SSH (current server → Pushify → target) and checked: file count, bytes and a
+sha256 over every file's content and every entry's path, type, mode and owner must match. Only then
+does the container start on the target. If any step fails (copy, check, health check, nginx), the
+containers that were stopped are started again on the current server. The volumes on the current
+server are only read — never changed or removed; removing them is a separate step (not part of
+this endpoint). A copy left on the target by an earlier move is replaced.
 
 WebSocket, channel `project:<projectId>`: `{ "type": "project:transfer", "data": { "projectId",
 "deploymentId", "fromServerId", "toServerId", "status": "started" | "completed" | "failed",

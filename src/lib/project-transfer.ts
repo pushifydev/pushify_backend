@@ -9,9 +9,12 @@ import type { DeploymentBuildMetadata } from '../db/schema/deployments';
  * (not removed), so moving back is a start away. Until then — and when the deploy fails — the
  * project keeps running where it was.
  *
- * This first step moves stateless apps only: anything whose data lives on the source server
- * (persistent volumes, compose stacks, a managed database reached over the source's private
- * Docker network) is refused with a reason. The checks below are what `dryRun` reports.
+ * Persistent volumes move with the app (lib/project-volume-transfer.ts): once the image is built
+ * on the target, the containers using them are stopped on the source, the volumes are copied and
+ * checked, and only then does the container start on the target — the downtime is that copy. The
+ * source's volumes are kept; removing them is a separate step. Compose stacks, static sites and a
+ * managed database reached over the source's private Docker network are still refused with a
+ * reason. The checks below are what `dryRun` reports.
  */
 
 export type TransferCheckId =
@@ -45,6 +48,13 @@ export interface TransferTargetServer {
   hasSshKey: boolean;
 }
 
+export interface TransferVolume {
+  /** The project volume's name (project_volumes.name) */
+  name: string;
+  /** Bytes of data in it on the current server; null when they could not be measured */
+  sizeBytes: number | null;
+}
+
 /** Everything the checks need, gathered by services/project-transfer.service.ts */
 export interface TransferFacts {
   project: {
@@ -62,8 +72,10 @@ export interface TransferFacts {
   target: TransferTargetServer | null;
   hasSuccessfulDeployment: boolean;
   deploymentInProgress: boolean;
-  /** Names of the project's persistent volumes */
-  volumes: string[];
+  /** The project's persistent volumes, with their size on the current server */
+  volumes: TransferVolume[];
+  /** Free bytes on the target's Docker filesystem; null when not measured (or no volumes) */
+  targetFreeBytes: number | null;
   /** Linked managed databases on the source server, reached over its private Docker network */
   sourceDatabases: string[];
   /** Why billing or the plan does not allow another deploy, null when it does */
@@ -93,6 +105,46 @@ export interface TransferPreflight {
     /** Custom domains whose DNS records must point at the target after the move */
     domains: TransferDnsDomain[];
   };
+  volumes: {
+    items: TransferVolume[];
+    /** null when a volume could not be measured */
+    totalBytes: number | null;
+    /** Free space the target needs for them: the data plus headroom */
+    requiredFreeBytes: number | null;
+    targetFreeBytes: number | null;
+    /** How long the app is down while the volumes are copied (0 without volumes) */
+    estimatedDowntimeSeconds: number;
+  };
+}
+
+/** Headroom on the target on top of the volumes' data: 10%, at least 1 GiB */
+const MIN_HEADROOM_BYTES = 1024 ** 3;
+/** The copy is relayed source → Pushify → target over SSH; a conservative rate */
+const COPY_BYTES_PER_SECOND = 20 * 1024 * 1024;
+/** Both copies are read back for the checksum, at the same time */
+const VERIFY_BYTES_PER_SECOND = 100 * 1024 * 1024;
+/** Stopping the source, starting the container on the target, its health check */
+const RESTART_SECONDS = 60;
+
+export function requiredTargetFreeBytes(totalBytes: number): number {
+  return totalBytes + Math.max(Math.ceil(totalBytes * 0.1), MIN_HEADROOM_BYTES);
+}
+
+/** Rough downtime of a move with volumes: restart plus copy plus checksum */
+export function estimateVolumeDowntimeSeconds(totalBytes: number): number {
+  return Math.ceil(RESTART_SECONDS + totalBytes / COPY_BYTES_PER_SECOND + totalBytes / VERIFY_BYTES_PER_SECOND);
+}
+
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(0, Math.round(bytes / 1024))} KB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 120) return `${seconds} seconds`;
+  if (seconds < 7200) return `${Math.ceil(seconds / 60)} minutes`;
+  return `${(seconds / 3600).toFixed(1)} hours`;
 }
 
 function list(names: string[]): string {
@@ -159,14 +211,36 @@ export function evaluateTransferPreflight(facts: TransferFacts): TransferPreflig
     add('app_type', 'pass', 'The app runs as a container.');
   }
 
-  if (facts.volumes.length > 0) {
+  const volumeNames = facts.volumes.map((v) => v.name);
+  const unmeasured = facts.volumes.filter((v) => v.sizeBytes === null).map((v) => v.name);
+  const totalBytes = unmeasured.length > 0 ? null : facts.volumes.reduce((sum, v) => sum + (v.sizeBytes ?? 0), 0);
+  const requiredFreeBytes = totalBytes === null || facts.volumes.length === 0 ? null : requiredTargetFreeBytes(totalBytes);
+  const estimatedDowntimeSeconds = totalBytes === null || facts.volumes.length === 0 ? 0 : estimateVolumeDowntimeSeconds(totalBytes);
+  if (facts.volumes.length === 0) {
+    add('volumes', 'pass', 'The project has no persistent volumes.');
+  } else if (totalBytes === null) {
     add(
       'volumes',
       'block',
-      `The project has persistent volumes (${list(facts.volumes)}) whose data stays on the current server. Moving volumes is not supported yet.`
+      `The size of persistent volume ${list(unmeasured)} on the current server could not be measured, so the move cannot be planned. Check that the server is reachable and try again.`
+    );
+  } else if (facts.targetFreeBytes === null) {
+    add('volumes', 'block', `Free disk space on the target server could not be measured, so the persistent volumes (${list(volumeNames)}) cannot be moved there.`);
+  } else if (requiredFreeBytes !== null && facts.targetFreeBytes < requiredFreeBytes) {
+    add(
+      'volumes',
+      'block',
+      `Not enough disk on the target server for the persistent volumes (${list(volumeNames)}): ${formatBytes(facts.targetFreeBytes)} free, ` +
+        `${formatBytes(requiredFreeBytes)} needed (${formatBytes(totalBytes)} of data plus headroom). Free space on it or choose another server.`
     );
   } else {
-    add('volumes', 'pass', 'The project has no persistent volumes.');
+    add(
+      'volumes',
+      'warn',
+      `Persistent volumes ${list(volumeNames)} (${formatBytes(totalBytes)}) are copied to the target. The app is stopped on the current server ` +
+        `during the copy: about ${formatDuration(estimatedDowntimeSeconds)} of downtime. If anything fails it is started again there; ` +
+        'the volumes on the current server are kept either way.'
+    );
   }
 
   if (facts.sourceDatabases.length > 0) {
@@ -214,6 +288,13 @@ export function evaluateTransferPreflight(facts: TransferFacts): TransferPreflig
     checks,
     blockers,
     dns: { targetIpv4, targetIpv6, cloudflareConnected: facts.cloudflareConnected, domains },
+    volumes: {
+      items: facts.volumes,
+      totalBytes,
+      requiredFreeBytes,
+      targetFreeBytes: facts.volumes.length > 0 ? facts.targetFreeBytes : null,
+      estimatedDowntimeSeconds,
+    },
   };
 }
 

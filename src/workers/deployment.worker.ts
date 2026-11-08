@@ -439,6 +439,8 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
   let wasSleepingBeforeDeploy = false;
   // Moving the project to another server: deploy there; the project keeps its server until it succeeds
   const transfer = projectTransferOf(job.buildMetadata);
+  // …with its persistent volumes: copied right before the container starts on the target
+  let volumeStep: import('../services/project-transfer.service').TransferVolumeStep | null = null;
 
   try {
     addLog('🚀 Starting deployment...');
@@ -975,6 +977,19 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       const composeBaseline =
         project.composePath && !deployImage ? await deploymentRepository.findComposeBuildBaseline(job.id) : null;
 
+      if (transfer && volumeMounts.length > 0) {
+        // Only the standard deploy path runs the copy; the move's checks refuse the others
+        if (marketplaceConfig || project.composePath) {
+          throw new Error('Only single-container apps can be moved with their persistent volumes');
+        }
+        const { projectTransferService } = await import('../services/project-transfer.service');
+        volumeStep = projectTransferService.volumeStep(
+          transfer,
+          volumeMounts.map((mount) => mount.split(':')[0]),
+          onRemoteProgress
+        );
+      }
+
       const remoteResult = await deployToRemoteServer({
         serverId: deployTargetServerId,
         projectId: project.id,
@@ -1013,6 +1028,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         // Previews stay a single container whatever the project runs in production.
         replicas: previewCtx ? 1 : project.replicas ?? 1,
         previewDomain: previewCtx ? previewHostname(previewCtx.previewUrl) ?? undefined : undefined,
+        beforeStart: volumeStep?.run,
       });
 
       if (!remoteResult.success) {
@@ -1083,7 +1099,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         // Healthy on the target with nginx/SSL set up there: only now does the project move.
         if (transfer) {
           const { projectTransferService } = await import('../services/project-transfer.service');
-          await projectTransferService.complete(job.id, job.projectId, transfer, addLog);
+          await projectTransferService.complete(job.id, job.projectId, transfer, addLog, volumeStep?.stoppedOnSource ?? []);
         }
       }
 
@@ -1618,10 +1634,11 @@ server {
       await previewService.updatePreviewStatus(job.projectId, job.previewPrNumber, 'failed');
     }
 
-    // A failed move changes nothing: the project keeps running on its current server.
+    // A failed move changes nothing: the project keeps running on its current server, and what
+    // the volume copy stopped there is started again.
     if (transfer) {
       const { projectTransferService } = await import('../services/project-transfer.service');
-      await projectTransferService.fail(job.id, job.projectId, transfer, errorMessage);
+      await projectTransferService.fail(job.id, job.projectId, transfer, errorMessage, volumeStep?.stoppedOnSource ?? []);
     }
 
     // Publish failed status via WebSocket

@@ -115,6 +115,12 @@ export interface RemoteDeploymentConfig {
   composeService?: string | null;
   /** The container port of that service, when it is not the first one it publishes */
   composePort?: number | null;
+  /**
+   * Moving the project with its persistent volumes (lib/project-volume-transfer.ts): runs once the
+   * image is built, right before the container starts, so the app is down only while the volumes
+   * are copied. Standard (single-container) deploys only.
+   */
+  beforeStart?: (ssh: SSHClient) => Promise<void>;
   /** Compose stacks: build even when the build inputs are unchanged (a forced redeploy) */
   forceBuild?: boolean;
   /** Compose stacks: the previous deploy of the same stack, to skip an unneeded build */
@@ -1398,6 +1404,8 @@ export async function deployToRemoteServer(
       // Non-fatal error - image is still built
       onProgress(`⚠️ Image tagging warning: ${tagError instanceof Error ? tagError.message : 'Unknown error'}`);
     }
+
+    if (config.beforeStart) await config.beforeStart(ssh);
 
     // Determine host port: if user specified PORT in env, use that; otherwise use port-manager
     let hostPort: number;

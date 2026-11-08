@@ -214,6 +214,20 @@ const TransferPreflightSchema = z
         })
       ),
     }),
+    volumes: z.object({
+      items: z.array(
+        z.object({
+          name: z.string(),
+          sizeBytes: z.number().nullable().openapi({ description: 'Data in it on the current server; null when not measured' }),
+        })
+      ),
+      totalBytes: z.number().nullable(),
+      requiredFreeBytes: z.number().nullable().openapi({ description: 'Free space the target needs: the data plus headroom' }),
+      targetFreeBytes: z.number().nullable(),
+      estimatedDowntimeSeconds: z.number().openapi({
+        description: 'The app is stopped on the current server while the volumes are copied; 0 without volumes',
+      }),
+    }),
   })
   .openapi('TransferPreflight');
 
@@ -438,7 +452,10 @@ const transferProjectRoute = createRoute({
     'With dryRun, only the checks run. Otherwise the live commit is deployed on the target server through the deploy queue; ' +
     'once it is healthy there (nginx and SSL set up), the project switches to the target and its containers on the current ' +
     'server are stopped, not removed. When the deploy fails the project keeps running where it is. ' +
-    'Projects with persistent volumes, compose stacks or a linked database on the current server cannot be moved yet.',
+    'Persistent volumes are copied once the image is built on the target: the app is stopped on the current server, ' +
+    'each volume is streamed over SSH and checked (files, bytes, checksum), then the container starts on the target. ' +
+    'On any failure the stopped containers are started again; the volumes on the current server are never removed. ' +
+    'Compose stacks, static sites and a linked database on the current server cannot be moved yet.',
   security: [{ bearerAuth: [] }],
   request: {
     params: z.object({

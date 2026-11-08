@@ -1,4 +1,4 @@
-import { Client, type ConnectConfig, type ExecOptions } from 'ssh2';
+import { Client, type ClientChannel, type ConnectConfig, type ExecOptions } from 'ssh2';
 import { generateKeyPairSync } from 'crypto';
 import { sshConnectHost } from '../lib/server-address';
 
@@ -153,6 +153,63 @@ export class SSHClient {
         });
       });
     });
+  }
+
+  /**
+   * Run `command` here with its stdout streamed into `targetCommand`'s stdin on another server —
+   * a volume's tar archive going from one server to another through Pushify, never held in
+   * memory. When the receiving side stops early (full disk, tar error) the sending side is closed
+   * too, so neither waits forever. Resolves with both exit codes and the tail of each stderr.
+   */
+  async execPipeTo(
+    command: string,
+    target: SSHClient,
+    targetCommand: string
+  ): Promise<{ code: number; stderr: string; targetCode: number; targetStderr: string }> {
+    if (!this.connected || !target.connected) {
+      throw new Error('SSH client is not connected');
+    }
+
+    const open = (client: Client, cmd: string) =>
+      new Promise<ClientChannel>((resolve, reject) => {
+        client.exec(cmd, (err, stream) => (err ? reject(new Error(`SSH exec error: ${err.message}`)) : resolve(stream)));
+      });
+    const finished = (channel: ClientChannel) =>
+      new Promise<{ code: number; stderr: string }>((resolve, reject) => {
+        let stderr = '';
+        channel.stderr.on('data', (data: Buffer) => {
+          stderr = (stderr + data.toString()).slice(-2000);
+        });
+        channel.on('error', (err: Error) => reject(new Error(`SSH stream error: ${err.message}`)));
+        // No exit status (killed by a signal, closed by us) is a failure, not a 0
+        channel.on('close', (code: number | null | undefined) => resolve({ code: typeof code === 'number' ? code : 255, stderr }));
+      });
+
+    const writer = await open(target.client, targetCommand);
+    let reader: ClientChannel;
+    try {
+      reader = await open(this.client, command);
+    } catch (err) {
+      writer.close();
+      throw err;
+    }
+
+    const writerDone = finished(writer);
+    const readerDone = finished(reader);
+    let readerClosed = false;
+    readerDone.finally(() => (readerClosed = true)).catch(() => undefined);
+    writerDone
+      .finally(() => {
+        if (readerClosed) return;
+        reader.unpipe(writer);
+        reader.close();
+        reader.resume();
+      })
+      .catch(() => undefined);
+    reader.pipe(writer);
+
+    const [sent, received] = await Promise.all([readerDone, writerDone]);
+    return { code: sent.code, stderr: sent.stderr, targetCode: received.code, targetStderr: received.stderr };
   }
 
   /**
