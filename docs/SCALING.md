@@ -14,7 +14,7 @@ Production (recommended):
 # Instance(s) behind reverse proxy / LB
 PROCESS_ROLE=api npm run start:api
 
-# One or more worker instances (deploy leader lock uses Redis when REDIS_URL is set)
+# Exactly one worker instance (see "Worker replicas" below)
 PROCESS_ROLE=worker npm run start:worker
 ```
 
@@ -59,8 +59,18 @@ Heavy builds share CPU with other workers on the same machine — prefer a dedic
 2. Deploy new backend build.
 3. **Phase A** — same server, `PROCESS_ROLE=all` (no behavior change).
 4. **Phase B** — add worker service with `PROCESS_ROLE=worker`, switch API to `PROCESS_ROLE=api`.
-5. Scale API horizontally; keep 1–2 worker replicas (Redis deploy lock prevents duplicate deploy polling).
+5. Scale API horizontally; keep a single worker replica (see "Worker replicas").
 6. Monitor: CPU, memory, 429 rate, deploy queue time, Postgres connections.
+
+## Worker replicas
+
+Run **one** worker process — the same rule as `pushify-worker` in [JENKINS_BACKEND.md](./JENKINS_BACKEND.md):
+deploys, backups and schedules must not run twice. Scale the API, not the worker.
+
+Some loops are also guarded in case two workers overlap (e.g. briefly during a restart): the deploy
+poller by a Redis leader lock, and the deletion purge, domain renewal/transfer sweep and hourly
+infra billing by a Postgres advisory lock (a worker that cannot take it skips that tick). These are
+a safety net, not a reason to run more worker replicas.
 
 ## Deploy queue (BullMQ)
 

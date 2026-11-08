@@ -1,5 +1,5 @@
 import { and, eq, isNotNull, isNull, lte, sql } from 'drizzle-orm';
-import { db, pool } from '../db';
+import { db } from '../db';
 import {
   authEvents,
   deletedOrganizations,
@@ -17,6 +17,7 @@ import {
 } from '../db/schema';
 import { env } from '../config/env';
 import { logger } from '../lib/logger';
+import { withAdvisoryLock } from '../lib/advisory-lock';
 import { decrypt } from '../lib/encryption';
 import { getStripe } from '../lib/stripe';
 import { getRegistrar } from '../lib/registrar';
@@ -412,32 +413,15 @@ async function purgeDue(now: Date): Promise<SweepStats> {
 export const deletionPurgeService = {
   /**
    * One sweep: reminders, then every organization and account whose date has passed. Guarded by
-   * a Postgres advisory lock so two worker processes never purge the same thing at once.
-   *
-   * The lock belongs to a session, so it is taken and released on one dedicated connection while
-   * the work itself runs through `db`. Through `db` the unlock could land on another pooled
-   * connection, fail, and leave the lock held, so later sweeps skipped without a trace.
+   * a Postgres advisory lock (see `withAdvisoryLock`) so two worker processes never purge the
+   * same thing at once.
    */
   async sweep(now: Date = new Date()): Promise<SweepStats> {
-    const lockClient = await pool.connect();
-    let unlockError: Error | undefined;
-    try {
-      const lock = await lockClient.query<{ ok: boolean }>('select pg_try_advisory_lock(hashtext($1)) as ok', [SWEEP_LOCK_KEY]);
-      if (lock.rows[0]?.ok !== true) {
-        logger.info('Deletion purge sweep skipped: another sweep holds the lock');
-        return { reminded: 0, organizations: 0, accounts: 0, pending: 0 };
-      }
-      try {
-        return await purgeDue(now);
-      } finally {
-        await lockClient.query('select pg_advisory_unlock(hashtext($1))', [SWEEP_LOCK_KEY]).catch((err: unknown) => {
-          unlockError = err instanceof Error ? err : new Error(String(err));
-          logger.warn({ err: unlockError }, 'Deletion purge lock release failed; closing its connection');
-        });
-      }
-    } finally {
-      // A connection whose unlock failed is closed instead of returned to the pool, ending the lock.
-      lockClient.release(unlockError);
+    const run = await withAdvisoryLock(SWEEP_LOCK_KEY, () => purgeDue(now));
+    if (!run.acquired) {
+      logger.info('Deletion purge sweep skipped: another sweep holds the lock');
+      return { reminded: 0, organizations: 0, accounts: 0, pending: 0 };
     }
+    return run.result;
   },
 };
