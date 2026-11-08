@@ -6,8 +6,9 @@ import type { Context, Next } from 'hono';
  * The admin API exposes every customer's data to whoever gets through the gate, so the gate
  * is the whole security model. This file walks the router's own route table, so a route added
  * later is covered automatically: each one must be invisible (404) without a session, to an
- * API key, and to a signed-in non-operator; refused (403) to an operator without 2FA; and
- * served (200, with an audit row) to an operator with 2FA.
+ * API key, to a signed-in non-operator, and to an account holding a listed email it never
+ * verified; refused (403) to an operator without 2FA; and served (200, with an audit row) to an
+ * operator with 2FA.
  *
  * The JWT middleware is replaced by a header-driven stand-in — it is tested elsewhere; here we
  * only care about what sits behind it. Repositories and the service are mocked so nothing
@@ -16,11 +17,22 @@ import type { Context, Next } from 'hono';
 const ADMIN = '11111111-1111-4111-8111-111111111111';
 const ADMIN_NO_2FA = '22222222-2222-4222-8222-222222222222';
 const NON_ADMIN = '33333333-3333-4333-8333-333333333333';
+// Someone who signed up with a listed address the operator had not registered yet, and turned on
+// their own TOTP — registration gives a session before the email is verified.
+const ADMIN_UNVERIFIED = '44444444-4444-4444-8444-444444444444';
+const ADMIN_UNVERIFIED_NO_2FA = '55555555-5555-4555-8555-555555555555';
 
-const USERS: Record<string, { id: string; email: string; twoFactorEnabled: boolean }> = {
-  [ADMIN]: { id: ADMIN, email: 'Root@Example.com', twoFactorEnabled: true },
-  [ADMIN_NO_2FA]: { id: ADMIN_NO_2FA, email: 'ops@example.com', twoFactorEnabled: false },
-  [NON_ADMIN]: { id: NON_ADMIN, email: 'user@example.com', twoFactorEnabled: true },
+const USERS: Record<string, { id: string; email: string; emailVerified: boolean; twoFactorEnabled: boolean }> = {
+  [ADMIN]: { id: ADMIN, email: 'Root@Example.com', emailVerified: true, twoFactorEnabled: true },
+  [ADMIN_NO_2FA]: { id: ADMIN_NO_2FA, email: 'ops@example.com', emailVerified: true, twoFactorEnabled: false },
+  [NON_ADMIN]: { id: NON_ADMIN, email: 'user@example.com', emailVerified: true, twoFactorEnabled: true },
+  [ADMIN_UNVERIFIED]: { id: ADMIN_UNVERIFIED, email: 'new-ops@example.com', emailVerified: false, twoFactorEnabled: true },
+  [ADMIN_UNVERIFIED_NO_2FA]: {
+    id: ADMIN_UNVERIFIED_NO_2FA,
+    email: 'new-ops@example.com',
+    emailVerified: false,
+    twoFactorEnabled: false,
+  },
 };
 
 const mocks = vi.hoisted(() => ({
@@ -63,7 +75,7 @@ vi.mock('../lib/platform-version', () => ({
 }));
 
 vi.mock('../config/env', () => ({
-  env: { ADMIN_EMAILS: 'root@example.com, ops@example.com', TRUSTED_PROXY_HOPS: 0 },
+  env: { ADMIN_EMAILS: 'root@example.com, ops@example.com, new-ops@example.com', TRUSTED_PROXY_HOPS: 0 },
 }));
 
 vi.mock('../middleware/rate-limit', () => ({
@@ -115,6 +127,14 @@ describe('admin routes', () => {
     expect(res.status).toBe(404);
   });
 
+  it('answers 404 (not the 2FA 403) to a listed email that was never verified', async () => {
+    // The 2FA hint would confirm the panel to whoever squatted the address; unverified is a non-operator.
+    const res = await call('/overview', 'GET', { 'x-test-user': ADMIN_UNVERIFIED_NO_2FA });
+    expect(res.status).toBe(404);
+    expect(mocks.service).not.toHaveBeenCalled();
+    expect(mocks.recordAdminAccess).not.toHaveBeenCalled();
+  });
+
   it('walks the platform version route too, and keeps it out of the OpenAPI document', async () => {
     expect(endpoints).toContainEqual({ method: 'GET', path: '/platform/version' });
     const { OpenAPIHono } = await import('@hono/zod-openapi');
@@ -140,6 +160,13 @@ describe.each(endpoints)('$method $path', ({ method, path }) => {
     const res = await call(path, method, { 'x-test-user': NON_ADMIN });
     expect(res.status).toBe(404);
     expect(mocks.service).not.toHaveBeenCalled();
+  });
+
+  it('is invisible to an unverified account with a listed email, even with two-factor', async () => {
+    const res = await call(path, method, { 'x-test-user': ADMIN_UNVERIFIED });
+    expect(res.status).toBe(404);
+    expect(mocks.service).not.toHaveBeenCalled();
+    expect(mocks.recordAdminAccess).not.toHaveBeenCalled();
   });
 
   it('refuses an operator without two-factor', async () => {

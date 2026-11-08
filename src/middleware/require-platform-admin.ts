@@ -9,10 +9,15 @@ import { t, type SupportedLocale } from '../i18n';
 /**
  * Platform-operator gate for /api/v1/admin/*. Runs after authMiddleware.
  *
- * Who gets through: a person (never an API key) whose account email is in ADMIN_EMAILS and who
- * has two-factor enabled. Everyone else gets 404 — the same answer an unknown URL gives, so the
- * panel's existence is not confirmed to non-operators. The one exception is an operator without
- * 2FA, who gets a 403 that says what to fix.
+ * Who gets through: a person (never an API key) whose account email is in ADMIN_EMAILS and
+ * verified, and who has two-factor enabled. Everyone else gets 404 — the same answer an unknown
+ * URL gives, so the panel's existence is not confirmed to non-operators. The one exception is an
+ * operator without 2FA, who gets a 403 that says what to fix.
+ *
+ * The verified email is what makes the account the operator's: registering hands out a session
+ * before the address is confirmed, so anyone can sign up with a listed address nobody has
+ * registered yet (a newly added operator, a self-host configured before its first sign-up) and
+ * turn on their own TOTP. Such an account is treated as a non-operator (404), 2FA or not.
  *
  * The check is repeated on every request from the database row, never cached in the token, so
  * removing an email from the list takes effect immediately. Every request that passes is
@@ -28,7 +33,7 @@ export async function requirePlatformAdmin(c: Context, next: Next) {
   }
 
   const user = await userRepository.findById(userId);
-  if (!user || !isPlatformAdminEmail(user.email)) {
+  if (!user || !isPlatformAdminEmail(user.email) || !user.emailVerified) {
     throw notFound();
   }
 
