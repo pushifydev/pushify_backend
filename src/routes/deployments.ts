@@ -78,6 +78,21 @@ const DeploymentSchema = z
       description: 'Stopped by the automatic Acceptable Use check (failureCategory policy_blocked) and a review can be requested with POST …/review-request',
     }),
     reviewRequestedAt: z.coerce.date().nullable().optional().openapi({ description: 'When a review of this stopped deploy was requested' }),
+    policyBlock: z
+      .object({
+        policy: z.literal('acceptable_use'),
+        clause: z.string().nullable().openapi({ example: 'proxy-vpn', description: 'Policy section the suspension cites; null once it was lifted' }),
+        clauseTitle: z.string().nullable().openapi({ example: 'Acceptable Use §2.1 — proxy, VPN, tunnel and relay services' }),
+        reason: z.string().nullable().openapi({ description: 'Reason of the suspension, as emailed to the owner; null once it was lifted' }),
+        docsUrl: z.string().openapi({ example: 'https://pushify.dev/acceptable-use#proxy-vpn' }),
+        appealEmail: z.string().openapi({ example: 'abuse@pushify.dev' }),
+      })
+      .nullable()
+      .optional()
+      .openapi({
+        description:
+          'Set when failureCategory is policy_blocked: which policy section stopped the deploy, why, where to read it and where to appeal (or see reviewRequestable). Never the rules, files or lines the check matched.',
+      }),
     buildStartedAt: z.coerce.date().nullable(),
     buildFinishedAt: z.coerce.date().nullable(),
     deployStartedAt: z.coerce.date().nullable(),
