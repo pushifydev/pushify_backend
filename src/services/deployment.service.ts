@@ -7,24 +7,27 @@ import { t, type SupportedLocale } from '../i18n';
 import { assertMemberProjectScope } from '../lib/member-project-scope';
 import { assertOrganizationCanMutateResources } from './organization-billing.service';
 import { planLimitsService } from './plan-limits.service';
+import { env } from '../config/env';
 import { isPolicyBlocked } from '../lib/deploy-failure-summary';
-import { policyReviewFields } from '../lib/deploy-policy-review';
+import { policyBlockDetails, policyReviewFields } from '../lib/deploy-policy-review';
 
 /**
- * Adds reviewRequestable / reviewRequestedAt to each deployment. Only deploys stopped under the
- * Acceptable Use Policy look anything up.
+ * Adds reviewRequestable / reviewRequestedAt and policyBlock to each deployment. Only deploys
+ * stopped under the Acceptable Use Policy look anything up.
  */
 async function withPolicyReview<T extends { id: string; failureCategory: string | null }>(
-  project: { suspendedAt: Date | null },
+  project: { suspendedAt: Date | null; suspensionClause?: string | null; suspensionReason?: string | null },
   rows: T[],
 ) {
   const blockedIds = rows.filter(isPolicyBlocked).map((d) => d.id);
   let detectionEnabled = false;
   let requested = new Map<string, Date>();
+  let clauseTitles: Readonly<Record<string, string>> = {};
   if (blockedIds.length > 0) {
-    const { abuseService, abuseDetectionEnabled } = await import('./abuse.service');
+    const { abuseService, abuseDetectionEnabled, AUP_CLAUSES } = await import('./abuse.service');
     detectionEnabled = abuseDetectionEnabled();
     requested = await abuseService.reviewRequestsFor(blockedIds);
+    clauseTitles = AUP_CLAUSES;
   }
   return rows.map((d) => ({
     ...d,
@@ -32,6 +35,11 @@ async function withPolicyReview<T extends { id: string; failureCategory: string 
       detectionEnabled,
       projectSuspended: !!project.suspendedAt,
       requestedAt: requested.get(d.id) ?? null,
+    }),
+    policyBlock: policyBlockDetails(d, project, {
+      clauseTitles,
+      frontendUrl: env.FRONTEND_URL,
+      appealEmail: env.ABUSE_CONTACT_EMAIL,
     }),
   }));
 }

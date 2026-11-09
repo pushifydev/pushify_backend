@@ -3,13 +3,21 @@ import { HTTPException } from 'hono/http-exception';
 
 /**
  * A deploy stopped by the automatic Acceptable Use check: what the owner sees about it
- * (reviewRequestable / reviewRequestedAt, nothing about the detection) and asking for a review —
+ * (reviewRequestable / reviewRequestedAt, policyBlock with the suspension's section and reason,
+ * nothing about the detection) and asking for a review —
  * once per deploy, member and up, only while the project is suspended.
  */
 
 const h = vi.hoisted(() => ({
   role: 'member',
-  project: { id: 'proj-1', organizationId: 'org-1', status: 'paused', suspendedAt: new Date('2026-10-29T00:00:00Z') as Date | null },
+  project: {
+    id: 'proj-1',
+    organizationId: 'org-1',
+    status: 'paused',
+    suspendedAt: new Date('2026-10-29T00:00:00Z') as Date | null,
+    suspensionClause: 'proxy-vpn' as string | null,
+    suspensionReason: 'Automatic review found downloads or runs xray (vless/vmess proxy).' as string | null,
+  },
   deployment: { id: 'dep-1', projectId: 'proj-1', status: 'failed', failureCategory: 'policy_blocked' as string | null },
   detectionEnabled: true,
   requested: new Map<string, Date>(),
@@ -37,9 +45,11 @@ vi.mock('./plan-limits.service', () => ({ planLimitsService: {} }));
 vi.mock('./abuse.service', () => ({
   abuseDetectionEnabled: () => h.detectionEnabled,
   abuseService: { requestDeployReview: h.requestDeployReview, reviewRequestsFor: h.reviewRequestsFor },
+  AUP_CLAUSES: { 'proxy-vpn': 'Acceptable Use §2.1 — proxy, VPN, tunnel and relay services' },
 }));
 
 import { deploymentService } from './deployment.service';
+import { env } from '../config/env';
 
 const request = (note: string | null = 'This is a WebSocket chat, not a proxy.') =>
   deploymentService.requestPolicyReview('dep-1', 'proj-1', 'org-1', 'user-1', note, 'en');
@@ -57,6 +67,8 @@ async function statusOf(promise: Promise<unknown>): Promise<number> {
 beforeEach(() => {
   h.role = 'member';
   h.project.suspendedAt = new Date('2026-10-29T00:00:00Z');
+  h.project.suspensionClause = 'proxy-vpn';
+  h.project.suspensionReason = 'Automatic review found downloads or runs xray (vless/vmess proxy).';
   h.deployment.failureCategory = 'policy_blocked';
   h.detectionEnabled = true;
   h.requested = new Map();
@@ -70,6 +82,25 @@ describe('deployments stopped by the automatic Acceptable Use check', () => {
     expect(rows[0]).toMatchObject({ id: 'dep-1', reviewRequestable: true, reviewRequestedAt: null });
     expect(rows[1]).toMatchObject({ id: 'dep-0', reviewRequestable: false, reviewRequestedAt: null });
     expect(h.reviewRequestsFor).toHaveBeenCalledWith(['dep-1']);
+  });
+
+  it('says which policy section stopped the deploy, why, and where to read and appeal — nothing about the detection', async () => {
+    const rows = await deploymentService.getByProject('proj-1', 'org-1', 'user-1', 'en');
+    expect(rows[0].policyBlock).toEqual({
+      policy: 'acceptable_use',
+      clause: 'proxy-vpn',
+      clauseTitle: 'Acceptable Use §2.1 — proxy, VPN, tunnel and relay services',
+      reason: 'Automatic review found downloads or runs xray (vless/vmess proxy).',
+      docsUrl: `${env.FRONTEND_URL}/acceptable-use#proxy-vpn`,
+      appealEmail: env.ABUSE_CONTACT_EMAIL,
+    });
+    expect(rows[1].policyBlock).toBeNull();
+  });
+
+  it('keeps policyBlock without a section or reason once the suspension was lifted', async () => {
+    Object.assign(h.project, { suspendedAt: null, suspensionClause: null, suspensionReason: null });
+    const deployment = await deploymentService.getById('dep-1', 'proj-1', 'org-1', 'user-1', 'en');
+    expect(deployment.policyBlock).toMatchObject({ clause: null, reason: null, docsUrl: `${env.FRONTEND_URL}/acceptable-use` });
   });
 
   it('shows when a review was requested, and no longer offers one', async () => {
