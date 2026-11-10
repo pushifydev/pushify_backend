@@ -10,8 +10,10 @@ const h = vi.hoisted(() => ({
   removeContainer: vi.fn(),
   requireProjectMember: vi.fn(),
   server: null as Record<string, unknown> | null,
+  cancelSuperseded: vi.fn(),
 }));
 
+vi.mock('../lib/deploy-supersede', () => ({ cancelSupersededDeployments: h.cancelSuperseded }));
 vi.mock('../repositories/project.repository', () => ({
   projectRepository: { findById: async () => h.project },
 }));
@@ -130,6 +132,17 @@ describe.each(Object.entries(projects))('PR preview lifecycle — %s project', (
     );
     expect(h.schedule).toHaveBeenCalledWith('dep-1', PROJECT_ID);
     expect(preview).toMatchObject({ prNumber: 7, status: 'pending', containerName: 'pushify-preview-shop-pr-7' });
+  });
+
+  it('new commit on the PR → the new preview deploy cancels the older queued ones of the PR', async () => {
+    await openPr7();
+    h.cancelSuperseded.mockReset().mockResolvedValue([]);
+    await previewService.createOrUpdatePreview(PROJECT_ID, {
+      prNumber: 7, prBranch: 'feature/x', baseBranch: 'main', commitHash: 'def',
+    });
+    expect(h.cancelSuperseded).toHaveBeenCalledWith(
+      expect.objectContaining({ trigger: 'git_push', isPreview: true, previewPrNumber: 7, commitHash: 'def' })
+    );
   });
 
   it('deploy finished → running with the URL the deployer reported', async () => {

@@ -36,6 +36,7 @@ vi.mock('../lib/webhook-dedupe', () => ({
   processClaimedWebhookDelivery: (_id: unknown, fn: () => Promise<unknown>) => fn(),
 }));
 vi.mock('../lib/deployment-scheduler', () => ({ scheduleDeploymentProcessing: vi.fn() }));
+vi.mock('../lib/deploy-supersede', () => ({ cancelSupersededDeployments: vi.fn(async () => []) }));
 
 import { githubAppWebhookRoutes } from './github-app-webhook';
 

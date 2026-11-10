@@ -21,6 +21,7 @@ The response shapes of sections 1 and 3 are checked by `src/routes/api-contracts
 | 6c | Volume backups | — | **no** |
 | 7 | Log and metric drains | `GET/POST /api/v1/log-drains`, `PATCH/DELETE /api/v1/log-drains/:id`, `POST /api/v1/log-drains/:id/test`, `POST /api/v1/log-drains/sync` | yes |
 | 8 | Move a project to another server | `POST /api/v1/projects/:projectId/transfer` | yes (stateless apps and persistent volumes) |
+| 9 | Superseded webhook deploys (auto-cancel) | `PATCH /api/v1/projects/:projectId/settings`, `GET /api/v1/projects/:projectId/deployments` | yes |
 
 ## Conventions (all sections)
 
@@ -765,3 +766,33 @@ WebSocket, channel `project:<projectId>`: `{ "type": "project:transfer", "data":
 | 409 | `CONFLICT` | `This project cannot be moved: <blocker messages>` (real run only; a dry run returns them in `blockers`) |
 | 403 | `FORBIDDEN` | viewer |
 | 404 | `NOT_FOUND` | `Project not found` |
+
+---
+
+## 9. Superseded webhook deploys (auto-cancel)
+
+`src/lib/deploy-supersede.ts`, `deploymentRepository.cancelSuperseded`, called where a webhook queues a
+deploy (`src/lib/github-deploy-trigger.ts`, `src/routes/webhooks.ts`, `previewService.createOrUpdatePreview`).
+
+When a push queues a deploy (`trigger: "git_push"`), the older `git_push` deploys of the same project
+with the same `branch` and `environment` — or, for a preview, the same `previewPrNumber` — are set to
+`status: "cancelled"` while they are still `pending` (and, when opted in, `building`). Deploys with
+`trigger` `manual`, `redeploy` or `rollback` are never cancelled and never cancel others; a deploy in
+`deploying` is never cancelled.
+
+**Settings** — `PATCH /api/v1/projects/:projectId/settings` (member and up), stored in `settings`;
+a non-boolean value answers `400` (`<key> must be true or false`):
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `cancelSupersededDeploys` | on (absent) | `false` turns auto-cancel off |
+| `cancelSupersededBuilds` | off (absent) | `true` also cancels older deploys still `building`; ignored when `cancelSupersededDeploys` is `false` |
+
+**In the deployment list** (`GET /api/v1/projects/:projectId/deployments`): a deploy cancelled this way
+has `status: "cancelled"` and `errorMessage` starting with `[Superseded]`, e.g.
+`"[Superseded] Cancelled automatically: a newer push to main (abc1234) replaced it"` (`to PR #7` for a
+preview). A deploy cancelled by hand has `errorMessage: null`. WebSocket, channel `project:<projectId>`:
+`{ "type": "deployment:status", "data": { "projectId", "deploymentId", "status": "cancelled", "message" } }`.
+
+**GitHub**: with `settings.prStatusChecksEnabled: true`, the cancelled commit gets the commit status
+`error` (context `Pushify/deployment`) with the same text; the commit the new deploy builds is left alone.

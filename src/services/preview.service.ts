@@ -19,6 +19,7 @@ import { env } from '../config/env';
 import type { PreviewDeployment } from '../db/schema';
 import { assertOrganizationCanMutateResources, canOrganizationDeploy } from './organization-billing.service';
 import { planLimitsService } from './plan-limits.service';
+import { cancelSupersededDeployments } from '../lib/deploy-supersede';
 
 /** Site Studio / uploaded static sites: published from stored files, not built from git. */
 export function isPublishedStaticSite(settings: Record<string, unknown> | null | undefined): boolean {
@@ -126,6 +127,9 @@ export const previewService = {
         isPreview: true,
         previewPrNumber: input.prNumber,
       });
+
+      // A webhook push: the PR's older preview deploys still waiting would build a replaced commit.
+      await cancelSupersededDeployments(deployment);
 
       const { scheduleDeploymentProcessing } = await import('../lib/deployment-scheduler');
       await scheduleDeploymentProcessing(deployment.id, projectId);

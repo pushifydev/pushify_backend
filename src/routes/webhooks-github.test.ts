@@ -7,8 +7,10 @@ const h = vi.hoisted(() => ({
   createOrUpdatePreview: vi.fn(),
   cleanupPreview: vi.fn(),
   canOrganizationDeploy: vi.fn(),
+  cancelSuperseded: vi.fn(),
 }));
 
+vi.mock('../lib/deploy-supersede', () => ({ cancelSupersededDeployments: h.cancelSuperseded }));
 vi.mock('../repositories/project.repository', () => ({ projectRepository: { findById: h.findById } }));
 vi.mock('../repositories/deployment.repository', () => ({ deploymentRepository: { create: h.create } }));
 vi.mock('../services/github-app.service', () => ({
@@ -101,6 +103,15 @@ describe('GitHub webhook while billing blocks deployments', () => {
     const res = await deliver('push', { ref: 'refs/heads/main', head_commit: { id: 'abc', message: 'm' } });
     expect(((await res.json()) as { message: string }).message).toContain('Deployments blocked');
     expect(h.create).not.toHaveBeenCalled();
+    expect(h.cancelSuperseded).not.toHaveBeenCalled();
+  });
+
+  it('a push that queues a deploy cancels the older queued deploys it supersedes', async () => {
+    h.canOrganizationDeploy.mockResolvedValue(true);
+    h.cancelSuperseded.mockReset().mockResolvedValue([]);
+    const res = await deliver('push', { ref: 'refs/heads/main', head_commit: { id: 'abc', message: 'm' } });
+    expect(await res.json()).toMatchObject({ deploymentId: 'dep-1' });
+    expect(h.cancelSuperseded).toHaveBeenCalledWith({ id: 'dep-1' });
   });
 
   it('does not treat a closed-looking body on another event as teardown', async () => {

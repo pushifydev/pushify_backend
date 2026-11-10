@@ -8,8 +8,10 @@ const h = vi.hoisted(() => ({
   createOrUpdatePreview: vi.fn(),
   cleanupPreview: vi.fn(),
   canOrganizationDeploy: vi.fn(),
+  cancelSuperseded: vi.fn(),
 }));
 
+vi.mock('../lib/deploy-supersede', () => ({ cancelSupersededDeployments: h.cancelSuperseded }));
 vi.mock('../repositories/project.repository', () => ({ projectRepository: { findById: h.findById } }));
 vi.mock('../repositories/deployment.repository', () => ({ deploymentRepository: { create: h.create } }));
 vi.mock('../services/github-app.service', () => ({ githubAppService: {} }));
@@ -82,6 +84,13 @@ describe('GitLab push webhook', () => {
   it('deploys a push to the production branch to production', async () => {
     await push('refs/heads/main');
     expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ branch: 'main', environment: 'production' }));
+  });
+
+  it('cancels the older queued deploys the new push supersedes, before queueing it', async () => {
+    h.cancelSuperseded.mockReset().mockResolvedValue([]);
+    await push('refs/heads/main');
+    expect(h.cancelSuperseded).toHaveBeenCalledWith({ id: 'dep-1' });
+    expect(h.cancelSuperseded.mock.invocationCallOrder[0]).toBeLessThan(h.schedule.mock.invocationCallOrder[0]);
   });
 
   it('ignores a push to an untracked branch', async () => {

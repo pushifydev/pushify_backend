@@ -517,8 +517,8 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
       throw new Error('Organization billing does not allow deployments');
     }
 
-    // Update status to building
-    await updateDeploymentStatus(job.id, 'building', logBuffer.join('\n'), job.projectId);
+    // Update status to building (unless it was cancelled since it was picked up)
+    await updateDeploymentStatus(job.id, 'building', logBuffer.join('\n'), job.projectId, 'pending');
     addLog('📦 Status: Building');
 
     // Send deployment started notification
@@ -552,7 +552,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         where: (d, { eq, and }) => and(eq(d.projectId, project.id), eq(d.isPrimary, true)),
       });
 
-      await updateDeploymentStatus(job.id, 'deploying', logBuffer.join('\n'), job.projectId);
+      await updateDeploymentStatus(job.id, 'deploying', logBuffer.join('\n'), job.projectId, 'building');
 
       // An uploaded site publishes its stored files; a Site Studio site renders its design.
       let uploadedFiles: SiteFile[] | undefined;
@@ -697,7 +697,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
           addLog('⚠️ Quick rollback unavailable - source image not found, falling back to full rebuild');
         } else {
           // Perform quick rollback
-          await updateDeploymentStatus(job.id, 'deploying', logBuffer.join('\n'), job.projectId);
+          await updateDeploymentStatus(job.id, 'deploying', logBuffer.join('\n'), job.projectId, 'building');
           addLog('🚀 Status: Rolling back (no build required)');
 
           const rollbackResult = await quickRollbackToDeployment({
@@ -876,8 +876,8 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         }
       }
 
-      // Perform remote deployment
-      await updateDeploymentStatus(job.id, 'deploying', logBuffer.join('\n'), job.projectId);
+      // Perform remote deployment (from here on, nothing cancels it: containers are built and switched)
+      await updateDeploymentStatus(job.id, 'deploying', logBuffer.join('\n'), job.projectId, 'building');
       addLog('🚀 Status: Deploying to remote server');
 
       // Create a progress handler that both adds to buffer AND saves to DB
@@ -1354,7 +1354,7 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
     const imageTag = cloneResult.commitHash.substring(0, 7);
 
     addLog(`🔨 Building image: ${imageName}:${imageTag}`);
-    await updateDeploymentStatus(job.id, 'building', logBuffer.join('\n'), job.projectId);
+    await updateDeploymentStatus(job.id, 'building', logBuffer.join('\n'), job.projectId, 'building');
 
     // Pass all env vars as build args
     const buildArgs: Record<string, string> = { ...envVarsDecrypted };
@@ -1373,8 +1373,8 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
     // so we no longer add each deploy's image size cumulatively here — that inflated the
     // meter on every redeploy even though cleanupOldImages bounds actual disk to last 5.
 
-    // Update status to deploying
-    await updateDeploymentStatus(job.id, 'deploying', logBuffer.join('\n'), job.projectId);
+    // Update status to deploying (from here on, nothing cancels it: the container is switched)
+    await updateDeploymentStatus(job.id, 'deploying', logBuffer.join('\n'), job.projectId, 'building');
     addLog('🚀 Status: Deploying');
 
     // Run container (envVarsDecrypted already loaded above)
@@ -1602,6 +1602,46 @@ server {
       });
     }
   } catch (error) {
+    if (error instanceof DeploymentCancelledError) {
+      // Cancelled (by a person, or by a newer push) before a container was touched: not a failure.
+      const [row] = await db
+        .select({ status: deployments.status, errorMessage: deployments.errorMessage })
+        .from(deployments)
+        .where(eq(deployments.id, job.id))
+        .limit(1);
+      if (row?.status !== 'cancelled') {
+        // Another run of the same job moved it on; that run owns it.
+        logger.warn({ deploymentId: job.id, status: row?.status }, 'Deployment moved on in another run; this run stops');
+        return;
+      }
+      const reason = row.errorMessage || 'Deployment cancelled';
+      addLog(`⏹️ ${reason} — stopped before any container was changed`);
+
+      if (wasSleepingBeforeDeploy) {
+        await wakeAfterFailedDeploy(job.projectId).catch(() => 'failed' as const);
+      }
+      if (transfer) {
+        const { projectTransferService } = await import('../services/project-transfer.service');
+        await projectTransferService.fail(job.id, job.projectId, transfer, reason, volumeStep?.stoppedOnSource ?? []);
+      }
+      // Replaces the `pending` status this run may have set on the commit
+      if (githubStatusCtx) {
+        const logsUrl = `${env.FRONTEND_URL}/dashboard/projects/${job.projectId}?tab=deployments&deployment=${job.id}`;
+        await githubService.setCommitStatus(
+          githubStatusCtx.accessToken,
+          githubStatusCtx.owner,
+          githubStatusCtx.repo,
+          githubStatusCtx.commitHash,
+          'error',
+          reason,
+          logsUrl
+        );
+        addLog('📋 GitHub status: error (cancelled)');
+      }
+      logger.info({ deploymentId: job.id, projectId: job.projectId }, 'Deployment cancelled before its container step');
+      return;
+    }
+
     // Start-up failures carry the container's runtime log tail, which may print env values.
     const rawError = logMasker.mask(error instanceof Error ? error.message : String(error));
     const classified = classifyDeployError(error, logBuffer.join('\n'), rawError);
@@ -1750,14 +1790,25 @@ async function markDeploymentFailed(
   await db.update(deployments).set(patch).where(eq(deployments.id, deploymentId));
 }
 
+/** The deployment row was no longer in the status this step expected: it was cancelled meanwhile. */
+class DeploymentCancelledError extends Error {
+  constructor(deploymentId: string) {
+    super(`Deployment ${deploymentId} was cancelled`);
+  }
+}
+
 /**
- * Update deployment status with logs
+ * Update deployment status with logs. With `onlyFrom`, the row moves only while it still has that
+ * status, and DeploymentCancelledError is thrown otherwise: a deploy cancelled meanwhile (by a
+ * person, or by a newer push — lib/deploy-supersede.ts) stops before its next step instead of
+ * being written back to `building` / `deploying`.
  */
 async function updateDeploymentStatus(
   deploymentId: string,
   status: 'pending' | 'building' | 'deploying' | 'running' | 'failed' | 'stopped' | 'cancelled',
   logs?: string,
-  projectId?: string
+  projectId?: string,
+  onlyFrom?: 'pending' | 'building'
 ): Promise<void> {
   const updateData: Record<string, unknown> = { status };
 
@@ -1794,10 +1845,19 @@ async function updateDeploymentStatus(
     updateData.buildLogs = logs;
   }
 
-  await db
-    .update(deployments)
-    .set(updateData)
-    .where(eq(deployments.id, deploymentId));
+  if (onlyFrom) {
+    const moved = await db
+      .update(deployments)
+      .set(updateData)
+      .where(and(eq(deployments.id, deploymentId), eq(deployments.status, onlyFrom)))
+      .returning({ id: deployments.id });
+    if (moved.length === 0) throw new DeploymentCancelledError(deploymentId);
+  } else {
+    await db
+      .update(deployments)
+      .set(updateData)
+      .where(eq(deployments.id, deploymentId));
+  }
 
   // Publish WebSocket event for status transitions
   if (projectId) {

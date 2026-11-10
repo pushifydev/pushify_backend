@@ -14,6 +14,7 @@ import {
 import { previewService } from '../services/preview.service';
 import { canOrganizationDeploy } from '../services/organization-billing.service';
 import { checkPushDeployAllowed, recordRefusedPushDeploy } from '../lib/push-deploy-gate';
+import { cancelSupersededDeployments } from '../lib/deploy-supersede';
 import { webhookRateLimiter } from '../middleware/rate-limit';
 import { verifyGitHubSignature } from '../lib/github-webhook';
 import { verifyGitLabWebhookToken } from '../lib/gitlab-webhook';
@@ -353,6 +354,9 @@ webhookRouter.openapi(gitlabWebhookRoute, async (c) => {
       branch,
       environment,
     });
+
+    // Older deploys of this branch still waiting would only build a replaced commit.
+    await cancelSupersededDeployments(deployment);
 
     const { scheduleDeploymentProcessing } = await import('../lib/deployment-scheduler');
     await scheduleDeploymentProcessing(deployment.id, project.id);
