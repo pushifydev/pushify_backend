@@ -48,6 +48,15 @@ export const projects = pgTable('projects', {
   composePath: varchar('compose_path', { length: 255 }),
   composeService: varchar('compose_service', { length: 100 }),
   composePort: integer('compose_port'),
+  /**
+   * When a compose deploy pulls the stack's images (lib/compose-pull.ts): `always` every deploy
+   * (the default — a moving tag like `:latest` stays current even when the build is skipped) or
+   * `missing`, only images not on the server yet. pushify.yaml `pullPolicy` wins over it.
+   */
+  composePullPolicy: varchar('compose_pull_policy', { length: 10 })
+    .$type<'always' | 'missing'>()
+    .default('always')
+    .notNull(),
 
   // Runtime configuration
   port: integer('port').default(3000),

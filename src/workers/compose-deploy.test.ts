@@ -20,7 +20,15 @@ const state = {
   runtimeValue: 'one',
   /** The image of the `web` service on the server; null = not there */
   imageId: 'sha256:111' as string | null,
+  /** Registry images of the stack: name → ID on the server (null = not there) */
+  serverImages: {} as Record<string, string | null>,
+  /** What a pull of each of them brings: name → ID in the registry now */
+  registryImages: {} as Record<string, string>,
 };
+
+const imageIdOf = (name: string) => (name === 'pushify-shop-web' ? state.imageId : state.serverImages[name] ?? null);
+/** The single-quoted arguments of a command, in order */
+const quotedArgs = (command: string) => [...command.matchAll(/'([^']*)'/g)].map((match) => match[1]);
 
 vi.mock('./port-manager', () => ({
   getOrAssignPort: vi.fn(async () => ({ port: 5123, isNew: false })),
@@ -68,9 +76,25 @@ function fakeSsh() {
       if (command.startsWith('cat ')) return ok(COMPOSE_YAML);
       if (command.startsWith('git -C ') && command.includes(' rev-parse HEAD')) return ok(`${state.head}\n`);
       if (/ config 2>\/dev\/null$/.test(command)) return ok(resolvedConfig());
-      if (/ config --images 2>\/dev\/null$/.test(command)) return ok('pushify-shop-web\n');
+      if (/ config --images 2>\/dev\/null$/.test(command)) {
+        return ok(`${['pushify-shop-web', ...Object.keys(state.serverImages)].join('\n')}\n`);
+      }
       if (command.startsWith('docker image inspect')) {
-        return state.imageId ? ok(`${state.imageId}\n`) : { code: 1, stdout: '', stderr: 'No such image' };
+        // `--format '{{.Id}}' 'a' 'b'`: the IDs of those found; any missing one fails the command
+        const ids = quotedArgs(command).slice(1).map(imageIdOf);
+        const found = ids.filter(Boolean).map((id) => `${id}\n`).join('');
+        return ids.every(Boolean) ? ok(found) : { code: 1, stdout: found, stderr: 'No such image' };
+      }
+      if (command.startsWith('for image in ')) {
+        const names = quotedArgs(command.slice(0, command.indexOf('; do')));
+        return ok(names.map((name) => `${imageIdOf(name) ?? '-'}\n`).join(''));
+      }
+      if (/ pull (--policy missing )?--ignore-pull-failures 2>&1$/.test(command)) {
+        const onlyMissing = command.includes('--policy missing');
+        for (const [name, id] of Object.entries(state.registryImages)) {
+          if (!onlyMissing || !state.serverImages[name]) state.serverImages[name] = id;
+        }
+        return ok();
       }
       if (/ build 2>&1$/.test(command)) {
         if (state.buildExit !== 0) {
@@ -114,8 +138,8 @@ function deploy(overrides: Partial<Options> = {}) {
 }
 
 /** A first deploy that built, recorded the way the worker stores it on the deployment row */
-async function firstDeploy() {
-  const first = await deploy();
+async function firstDeploy(overrides: Partial<Options> = {}) {
+  const first = await deploy(overrides);
   state.commands = [];
   progress.length = 0;
   return { status: 'running', commitHash: COMMIT, buildMetadata: first.buildMetadata };
@@ -130,6 +154,8 @@ beforeEach(() => {
   state.head = COMMIT;
   state.runtimeValue = 'one';
   state.imageId = 'sha256:111';
+  state.serverImages = {};
+  state.registryImages = {};
   progress.length = 0;
   vi.clearAllMocks();
 });
@@ -222,5 +248,73 @@ describe('deployComposeFromRepo: skips the build when its inputs did not change'
     await deploy({ previous: { ...previous, status: 'failed' } });
 
     expect(built()).toBe(true);
+  });
+});
+
+describe('deployComposeFromRepo: pull policy', () => {
+  const pullIndex = () => indexOf(/ pull (--policy missing )?--ignore-pull-failures 2>&1$/);
+
+  it('always (the default): pulls every image even when the build is skipped', async () => {
+    state.serverImages = { 'redis:7': 'sha256:r1' };
+    state.registryImages = { 'redis:7': 'sha256:r1' };
+    const previous = await firstDeploy();
+
+    await deploy({ previous });
+
+    expect(built()).toBe(false);
+    expect(pullIndex()).toBeGreaterThan(-1);
+    expect(state.commands[pullIndex()]).not.toContain('--policy');
+    expect(pullIndex()).toBeLessThan(indexOf(/ down /));
+    expect(progress).toContain('⬇️ Pulling images (pull policy: always)...');
+    expect(progress).toContain('✅ Images are up to date, nothing new pulled');
+  });
+
+  it('always: a moving tag is updated and the deploy log names the pulled images', async () => {
+    state.serverImages = { 'postgres:16': null, 'redis:latest': 'sha256:r1' };
+    state.registryImages = { 'postgres:16': 'sha256:p1', 'redis:latest': 'sha256:r1' };
+    const previous = await firstDeploy({ pullPolicy: 'always' });
+    state.registryImages['redis:latest'] = 'sha256:r2';
+
+    await deploy({ previous, pullPolicy: 'always' });
+
+    expect(state.serverImages['redis:latest']).toBe('sha256:r2');
+    expect(progress).toContain('⬇️ Pulled 1 image(s): redis:latest (updated)');
+    // The stack runs the new image: the build cache sees another image ID
+    expect(progress).toContain(
+      '🔨 Building images (the images on the server are not the ones the previous deploy ran)...'
+    );
+    expect(indexOf(/ up -d /)).toBeGreaterThan(pullIndex());
+  });
+
+  it('missing: pulls only images not on the server and keeps the tag already there', async () => {
+    state.serverImages = { 'postgres:16': null, 'redis:latest': 'sha256:r1' };
+    state.registryImages = { 'postgres:16': 'sha256:p1', 'redis:latest': 'sha256:r2' };
+
+    await deploy({ pullPolicy: 'missing' });
+
+    expect(state.commands[pullIndex()]).toContain(' pull --policy missing --ignore-pull-failures');
+    expect(state.serverImages).toEqual({ 'postgres:16': 'sha256:p1', 'redis:latest': 'sha256:r1' });
+    expect(progress).toContain('⬇️ Pulling images (pull policy: missing)...');
+    expect(progress).toContain('⬇️ Pulled 1 image(s): postgres:16 (new)');
+  });
+
+  it('missing: every image on the server, nothing pulled and the build is skipped', async () => {
+    state.serverImages = { 'redis:latest': 'sha256:r1' };
+    state.registryImages = { 'redis:latest': 'sha256:r1' };
+    const previous = await firstDeploy({ pullPolicy: 'missing' });
+    state.registryImages['redis:latest'] = 'sha256:r2';
+
+    await deploy({ previous, pullPolicy: 'missing' });
+
+    expect(state.serverImages['redis:latest']).toBe('sha256:r1');
+    expect(built()).toBe(false);
+    expect(progress).toContain('✅ Nothing pulled: the images already on the server are kept (pull policy: missing)');
+  });
+
+  it('an unknown policy (an old row) behaves like always', async () => {
+    await deploy({ pullPolicy: 'sometimes' as never });
+
+    expect(state.commands[pullIndex()]).not.toContain('--policy');
+    expect(progress).toContain('⬇️ Pulling images (pull policy: always)...');
   });
 });

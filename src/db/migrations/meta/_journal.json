@@ -652,6 +652,13 @@
       "when": 1787270400052,
       "tag": "0093_passkeys",
       "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1787270400053,
+      "tag": "0094_compose_pull_policy",
+      "breakpoints": true
     }
   ]
 }

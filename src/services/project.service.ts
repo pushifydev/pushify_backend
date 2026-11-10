@@ -23,6 +23,7 @@ import {
   validateRepoRelativePath,
 } from '../lib/repo-settings-validate';
 import { validateImageReference } from '../lib/registry';
+import { COMPOSE_PULL_POLICIES, type ComposePullPolicy } from '../lib/compose-pull';
 import { env } from '../config/env';
 
 // Types
@@ -71,6 +72,8 @@ interface UpdateProjectInput {
   composePath?: string | null;
   composeService?: string | null;
   composePort?: number | null;
+  /** Compose stacks: pull every image each deploy (`always`) or only missing ones */
+  composePullPolicy?: ComposePullPolicy;
   serverId?: string | null; // Server to deploy to (optional, null to remove)
   sleepEnabled?: boolean;
   sleepAfterMinutes?: number;
@@ -294,6 +297,12 @@ export const projectService = {
       (!Number.isInteger(input.composePort) || input.composePort < 1 || input.composePort > 65535)
     ) {
       throw new HTTPException(400, { message: 'Compose port must be between 1 and 65535' });
+    }
+    if (
+      input.composePullPolicy !== undefined &&
+      !(COMPOSE_PULL_POLICIES as readonly string[]).includes(input.composePullPolicy)
+    ) {
+      throw new HTTPException(400, { message: 'Compose pull policy must be always or missing' });
     }
 
     // The staging branch reaches a shell on the deploy server, same as the production one.

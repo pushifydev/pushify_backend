@@ -11,6 +11,12 @@ import {
   decideComposeBuild,
   type ComposeBuildBaseline,
 } from '../lib/compose-build-cache';
+import {
+  composePullArgs,
+  normalizeComposePullPolicy,
+  pulledImages,
+  type ComposePullPolicy,
+} from '../lib/compose-pull';
 import type { DeploymentBuildMetadata } from '../db/schema/deployments';
 import { env } from '../config/env';
 
@@ -47,6 +53,8 @@ export interface ComposeDeployOptions {
   forceBuild: boolean;
   /** The previous deploy of the same stack, to skip the build when nothing it reads changed */
   previous: ComposeBuildBaseline | null;
+  /** Pull every image each deploy (`always`, the default) or only those not on the server */
+  pullPolicy?: ComposePullPolicy;
   onProgress: (message: string) => void;
 }
 
@@ -169,10 +177,30 @@ export async function deployComposeFromRepo(
 
   // Pull and build while the previous stack is still serving: a broken `build:` step must fail
   // the deploy before anything that is live is taken down (otherwise nginx answers 502 until
-  // the next good deploy). Neither step needs the ports the running stack holds.
-  onProgress('⬇️ Pulling images...');
-  const pull = await ssh.exec(`${compose('pull --ignore-pull-failures')} 2>&1`);
+  // the next good deploy). Neither step needs the ports the running stack holds. The pull runs
+  // before the build decision, so with `always` a moving tag is updated even when the build is
+  // skipped (and a new image ID makes it build).
+  const pullPolicy = normalizeComposePullPolicy(options.pullPolicy);
+  onProgress(`⬇️ Pulling images (pull policy: ${pullPolicy})...`);
+  const imageNames = await stackImageNames(ssh, compose);
+  const idsBeforePull = imageNames ? await imageIdsByName(ssh, imageNames) : null;
+  const pull = await ssh.exec(`${compose(composePullArgs(pullPolicy))} 2>&1`);
   if (pull.code !== 0) onProgress('⚠️ Some images could not be pulled; they will be built or already exist');
+  const idsAfterPull = imageNames && idsBeforePull ? await imageIdsByName(ssh, imageNames) : null;
+  if (idsBeforePull && idsAfterPull) {
+    const pulled = pulledImages(idsBeforePull, idsAfterPull);
+    if (pulled.length > 0) {
+      onProgress(
+        `⬇️ Pulled ${pulled.length} image(s): ${pulled.map(({ image, change }) => `${image} (${change})`).join(', ')}`
+      );
+    } else if (pull.code === 0) {
+      onProgress(
+        pullPolicy === 'missing'
+          ? '✅ Nothing pulled: the images already on the server are kept (pull policy: missing)'
+          : '✅ Images are up to date, nothing new pulled'
+      );
+    }
+  }
 
   // Build only when something the build reads may have changed (lib/compose-build-cache.ts): a
   // redeploy that changed only runtime variables or replicas starts the images it already has.
@@ -252,10 +280,8 @@ async function stackImages(
   ssh: SSHClient,
   compose: (args: string) => string
 ): Promise<Record<string, string> | null> {
-  const listed = await ssh.exec(`${compose('config --images')} 2>/dev/null`);
-  if (listed.code !== 0) return null;
-  const names = [...new Set(listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean))].sort();
-  if (names.length === 0) return null;
+  const names = await stackImageNames(ssh, compose);
+  if (!names) return null;
 
   // One ID per name, in the order given; a missing image makes the command fail
   const inspect = await ssh.exec(
@@ -265,6 +291,29 @@ async function stackImages(
   const ids = inspect.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
   if (ids.length !== names.length) return null;
   return Object.fromEntries(names.map((name, i) => [name, ids[i]]));
+}
+
+/** The image names of the stack's services, sorted (`docker compose config --images`), or null. */
+async function stackImageNames(ssh: SSHClient, compose: (args: string) => string): Promise<string[] | null> {
+  const listed = await ssh.exec(`${compose('config --images')} 2>/dev/null`);
+  if (listed.code !== 0) return null;
+  const names = [...new Set(listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean))].sort();
+  return names.length > 0 ? names : null;
+}
+
+/**
+ * Image name → image ID, null for an image not on the server — one line per name, so a missing
+ * image does not shift the others. Null when the answer cannot be read.
+ */
+async function imageIdsByName(ssh: SSHClient, names: string[]): Promise<Record<string, string | null> | null> {
+  const inspect = await ssh.exec(
+    `for image in ${names.map((name) => shSingleQuote(name)).join(' ')}; do ` +
+      `docker image inspect --format '{{.Id}}' "$image" 2>/dev/null || echo -; done`
+  );
+  if (inspect.code !== 0) return null;
+  const lines = inspect.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+  if (lines.length !== names.length) return null;
+  return Object.fromEntries(names.map((name, i) => [name, lines[i] === '-' ? null : lines[i]]));
 }
 
 /** Workers and cron jobs configured on a project that now deploys as a stack. */
