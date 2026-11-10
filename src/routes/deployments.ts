@@ -68,7 +68,10 @@ const DeploymentSchema = z
     commitHash: z.string().nullable(),
     commitMessage: z.string().nullable(),
     branch: z.string().nullable(),
-    errorMessage: z.string().nullable(),
+    errorMessage: z.string().nullable().openapi({
+      description:
+        'Why the deployment failed; for one cancelled automatically because a newer push replaced it, starts with [Superseded]',
+    }),
     failureCategory: z.string().nullable().openapi({ description: 'Why a failed deployment failed, e.g. dependency_install or unknown' }),
     failureSummary: z
       .string()

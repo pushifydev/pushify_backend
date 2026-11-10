@@ -1,4 +1,4 @@
-import { eq, desc, and, ne, lt, isNull } from 'drizzle-orm';
+import { eq, desc, and, ne, lt, isNull, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { deployments, type DeploymentBuildMetadata } from '../db/schema/deployments';
 import { projects } from '../db/schema/projects';
@@ -196,6 +196,58 @@ export const deploymentRepository = {
       .limit(1);
 
     return { forceBuild: current.buildMetadata?.forceBuild === true, previous: previous ?? null };
+  },
+
+  /**
+   * Cancel the older webhook deploys of the same copy of the project as `newer` — the same branch
+   * and environment, or the same PR preview — that are still in one of `statuses`. One UPDATE, so
+   * a row the worker moves on meanwhile is left alone (the worker's own moves are conditional too).
+   * Closes the build window of a row whose build had started, like updateStatus('cancelled').
+   */
+  async cancelSuperseded(
+    newer: {
+      id: string;
+      projectId: string;
+      createdAt: Date;
+      environment: string;
+      branch: string | null;
+      isPreview: boolean;
+      previewPrNumber: number | null;
+    },
+    statuses: Array<'pending' | 'building'>,
+    errorMessage: string
+  ) {
+    const lane = newer.isPreview
+      ? newer.previewPrNumber == null
+        ? null
+        : and(eq(deployments.isPreview, true), eq(deployments.previewPrNumber, newer.previewPrNumber))
+      : newer.branch
+        ? and(
+            eq(deployments.isPreview, false),
+            eq(deployments.environment, newer.environment),
+            eq(deployments.branch, newer.branch)
+          )
+        : null;
+    if (!lane || statuses.length === 0) return [];
+
+    return db
+      .update(deployments)
+      .set({
+        status: 'cancelled',
+        errorMessage,
+        buildFinishedAt: sql`coalesce(${deployments.buildFinishedAt}, case when ${deployments.buildStartedAt} is not null then now() end)`,
+      })
+      .where(
+        and(
+          eq(deployments.projectId, newer.projectId),
+          eq(deployments.trigger, 'git_push'),
+          ne(deployments.id, newer.id),
+          lt(deployments.createdAt, newer.createdAt),
+          inArray(deployments.status, statuses),
+          lane
+        )
+      )
+      .returning({ id: deployments.id, commitHash: deployments.commitHash });
   },
 
   /**

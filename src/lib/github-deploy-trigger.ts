@@ -8,6 +8,7 @@
 import { deploymentRepository } from '../repositories/deployment.repository';
 import { previewService } from '../services/preview.service';
 import { checkPushDeployAllowed, recordRefusedPushDeploy } from './push-deploy-gate';
+import { cancelSupersededDeployments } from './deploy-supersede';
 import { logger } from './logger';
 
 export interface GitHubPushPayload {
@@ -115,6 +116,9 @@ export async function handlePushEvent(
     branch,
     environment,
   });
+
+  // Older deploys of this branch still waiting would only build a replaced commit.
+  await cancelSupersededDeployments(deployment);
 
   const { scheduleDeploymentProcessing } = await import('./deployment-scheduler');
   await scheduleDeploymentProcessing(deployment.id, project.id);
