@@ -246,14 +246,21 @@ export async function sweepPendingTransfers(): Promise<{ completed: number; fail
         continue;
       }
 
-      // cancelled / failed — money back, mark the row
-      await refundDomainCharge(
-        domain.organizationId,
-        domain.purchasePriceCents,
-        `Refund: domain transfer ${status} — ${domain.domainName}`
-      ).catch((err) =>
-        logger.error({ err, domain: domain.domainName }, 'Transfer refund failed')
-      );
+      // cancelled / failed — money back, then mark the row. If the refund fails the row stays
+      // transfer_pending so the next sweep retries the refund instead of dropping it.
+      try {
+        await refundDomainCharge(
+          domain.organizationId,
+          domain.purchasePriceCents,
+          `Refund: domain transfer ${status} — ${domain.domainName}`
+        );
+      } catch (err) {
+        logger.error(
+          { err, domain: domain.domainName },
+          'Transfer refund failed; leaving transfer pending for retry'
+        );
+        continue;
+      }
       await db
         .update(purchasedDomains)
         .set({ status: 'transfer_failed', lastRenewalError: `transfer_${status}`, updatedAt: new Date() })

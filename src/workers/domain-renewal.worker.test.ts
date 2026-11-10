@@ -12,6 +12,9 @@ const h = vi.hoisted(() => ({
   selects: 0,
   debitWallet: vi.fn(),
   renew: vi.fn(),
+  refund: vi.fn(),
+  transferStatus: 'pending' as string,
+  updates: [] as Record<string, unknown>[],
 }));
 
 vi.mock('../db', () => ({
@@ -54,22 +57,27 @@ vi.mock('../db', () => ({
         }),
       };
     },
-    update: () => ({ set: () => ({ where: async () => undefined }) }),
+    update: () => ({
+      set: (values: Record<string, unknown>) => {
+        h.updates.push(values);
+        return { where: async () => undefined };
+      },
+    }),
   },
 }));
 vi.mock('../lib/registrar', () => ({
   getRegistrar: () => ({
     getRenewalWholesaleCents: async () => 1000,
     renew: h.renew,
-    getTransferStatus: async () => 'pending',
+    getTransferStatus: async () => h.transferStatus,
   }),
 }));
 vi.mock('../lib/billing-notify', () => ({ resolveBillingNotifyEmail: async () => null }));
 vi.mock('../services/admin-notify.service', () => ({ adminNotify: () => {} }));
 vi.mock('../services/infra-billing.service', () => ({ infraBillingService: { debitWallet: h.debitWallet } }));
-vi.mock('../services/registrar-domain.service', () => ({ refundDomainCharge: async () => undefined }));
+vi.mock('../services/registrar-domain.service', () => ({ refundDomainCharge: h.refund }));
 
-import { runDomainSweeps } from './domain-renewal.worker';
+import { runDomainSweeps, sweepPendingTransfers } from './domain-renewal.worker';
 
 const NOW = new Date('2026-11-08T00:00:00Z');
 
@@ -80,6 +88,9 @@ beforeEach(() => {
   h.selects = 0;
   h.debitWallet.mockReset().mockResolvedValue(5000);
   h.renew.mockReset().mockResolvedValue({ expiresAt: new Date('2027-11-18T00:00:00Z') });
+  h.refund.mockReset().mockResolvedValue(undefined);
+  h.transferStatus = 'pending';
+  h.updates = [];
 });
 
 describe('runDomainSweeps lock', () => {
@@ -104,5 +115,27 @@ describe('runDomainSweeps lock', () => {
     expect(h.queries[0]).toContain('pg_try_advisory_lock');
     expect(h.queries[1]).toContain('pg_advisory_unlock');
     expect(h.released).toBe(1);
+  });
+});
+
+describe('sweepPendingTransfers refund', () => {
+  it('marks a cancelled transfer failed once the refund went through', async () => {
+    h.transferStatus = 'cancelled';
+    expect(await sweepPendingTransfers()).toEqual({ completed: 0, failed: 1 });
+    expect(h.refund).toHaveBeenCalledTimes(1);
+    expect(h.updates).toContainEqual(expect.objectContaining({ status: 'transfer_failed' }));
+  });
+
+  it('leaves the transfer pending when the refund fails so the next sweep retries it', async () => {
+    h.transferStatus = 'cancelled';
+    h.refund.mockRejectedValueOnce(new Error('db down'));
+    expect(await sweepPendingTransfers()).toEqual({ completed: 0, failed: 0 });
+    expect(h.refund).toHaveBeenCalledTimes(1);
+    expect(h.updates).toEqual([]);
+
+    // Next sweep: the refund succeeds and only then is the row marked failed.
+    expect(await sweepPendingTransfers()).toEqual({ completed: 0, failed: 1 });
+    expect(h.refund).toHaveBeenCalledTimes(2);
+    expect(h.updates).toContainEqual(expect.objectContaining({ status: 'transfer_failed' }));
   });
 });

@@ -17,7 +17,7 @@ import {
 } from '../lib/email';
 import { logger } from '../lib/logger';
 import { adminNotify } from './admin-notify.service';
-import { infraBillingService } from './infra-billing.service';
+import { addToWalletBalance, infraBillingService } from './infra-billing.service';
 import { domainService } from './domain.service';
 import { t, type SupportedLocale } from '../i18n';
 
@@ -89,23 +89,18 @@ function validateDnsInput(record: {
   return { host: host || '@', type, answer, ttl, priority };
 }
 
-/** Credit back a failed charge. Uses `adjustment` so it never masquerades as a top-up. */
+/**
+ * Credit back a failed charge. Uses `adjustment` so it never masquerades as a top-up.
+ * The balance is bumped with a relative UPDATE, so a concurrent debit or top-up is never
+ * overwritten by a stale read.
+ */
 async function refundWallet(
   organizationId: string,
   amountCents: number,
   description: string
 ): Promise<void> {
   await db.transaction(async (tx) => {
-    const [org] = await tx
-      .select({ balance: organizations.infraWalletBalanceCents })
-      .from(organizations)
-      .where(eq(organizations.id, organizationId))
-      .limit(1);
-    const newBalance = (org?.balance ?? 0) + amountCents;
-    await tx
-      .update(organizations)
-      .set({ infraWalletBalanceCents: newBalance, updatedAt: new Date() })
-      .where(eq(organizations.id, organizationId));
+    const newBalance = await addToWalletBalance(tx, organizationId, amountCents);
     await tx.insert(infraWalletTransactions).values({
       organizationId,
       type: 'adjustment',
