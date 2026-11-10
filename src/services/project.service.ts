@@ -23,6 +23,7 @@ import {
   validateRepoRelativePath,
 } from '../lib/repo-settings-validate';
 import { validateImageReference } from '../lib/registry';
+import type { ComposePullPolicy } from '../lib/compose-project';
 import { env } from '../config/env';
 
 // Types
@@ -71,6 +72,8 @@ interface UpdateProjectInput {
   composePath?: string | null;
   composeService?: string | null;
   composePort?: number | null;
+  /** Compose stacks: pull the images on every deploy (`always`) or only when missing */
+  composePullPolicy?: ComposePullPolicy;
   serverId?: string | null; // Server to deploy to (optional, null to remove)
   sleepEnabled?: boolean;
   sleepAfterMinutes?: number;

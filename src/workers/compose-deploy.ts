@@ -4,7 +4,12 @@ import type { servers } from '../db/schema/servers';
 import { getOrAssignPort } from './port-manager';
 import { shSingleQuote } from './shell';
 import { checkComposeFile } from '../lib/host-access-guard';
-import { COMPOSE_FILENAMES, planCompose, renderDeployableCompose } from '../lib/compose-project';
+import {
+  COMPOSE_FILENAMES,
+  planCompose,
+  renderDeployableCompose,
+  type ComposePullPolicy,
+} from '../lib/compose-project';
 import { dockerConfigPrefix } from '../lib/registry';
 import {
   composeBuildInputsHash,
@@ -47,6 +52,8 @@ export interface ComposeDeployOptions {
   forceBuild: boolean;
   /** The previous deploy of the same stack, to skip the build when nothing it reads changed */
   previous: ComposeBuildBaseline | null;
+  /** `always`: pull every image each deploy, build skipped or not; `missing`: only absent ones */
+  pullPolicy: ComposePullPolicy;
   onProgress: (message: string) => void;
 }
 
@@ -97,6 +104,7 @@ export async function deployComposeFromRepo(
     commitHash,
     forceBuild,
     previous,
+    pullPolicy,
     onProgress,
   } = options;
 
@@ -170,9 +178,26 @@ export async function deployComposeFromRepo(
   // Pull and build while the previous stack is still serving: a broken `build:` step must fail
   // the deploy before anything that is live is taken down (otherwise nginx answers 502 until
   // the next good deploy). Neither step needs the ports the running stack holds.
-  onProgress('⬇️ Pulling images...');
-  const pull = await ssh.exec(`${compose('pull --ignore-pull-failures')} 2>&1`);
+  // `always` pulls before the build decision below, so a moving tag like `:latest` is updated
+  // even when the build is skipped (a changed image ID also makes the stack build again).
+  // `missing` leaves the images already on the server as they are.
+  const imageNames = await stackImageNames(ssh, compose);
+  const idsBeforePull = imageNames ? await imageIdsByName(ssh, imageNames) : null;
+  onProgress(
+    pullPolicy === 'missing'
+      ? '⬇️ Pulling images not on the server yet (pull policy: missing)...'
+      : '⬇️ Pulling images...'
+  );
+  const pullArgs =
+    pullPolicy === 'missing' ? 'pull --policy missing --ignore-pull-failures' : 'pull --ignore-pull-failures';
+  const pull = await ssh.exec(`${compose(pullArgs)} 2>&1`);
   if (pull.code !== 0) onProgress('⚠️ Some images could not be pulled; they will be built or already exist');
+  if (imageNames && idsBeforePull) {
+    const idsAfterPull = await imageIdsByName(ssh, imageNames);
+    if (idsAfterPull) {
+      for (const line of describePull(idsBeforePull, idsAfterPull, pullPolicy)) onProgress(line);
+    }
+  }
 
   // Build only when something the build reads may have changed (lib/compose-build-cache.ts): a
   // redeploy that changed only runtime variables or replicas starts the images it already has.
@@ -252,10 +277,8 @@ async function stackImages(
   ssh: SSHClient,
   compose: (args: string) => string
 ): Promise<Record<string, string> | null> {
-  const listed = await ssh.exec(`${compose('config --images')} 2>/dev/null`);
-  if (listed.code !== 0) return null;
-  const names = [...new Set(listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean))].sort();
-  if (names.length === 0) return null;
+  const names = await stackImageNames(ssh, compose);
+  if (!names) return null;
 
   // One ID per name, in the order given; a missing image makes the command fail
   const inspect = await ssh.exec(
@@ -265,6 +288,57 @@ async function stackImages(
   const ids = inspect.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
   if (ids.length !== names.length) return null;
   return Object.fromEntries(names.map((name, i) => [name, ids[i]]));
+}
+
+/** The stack's image names (`docker compose config --images`), sorted; null when unreadable or none. */
+async function stackImageNames(ssh: SSHClient, compose: (args: string) => string): Promise<string[] | null> {
+  const listed = await ssh.exec(`${compose('config --images')} 2>/dev/null`);
+  if (listed.code !== 0) return null;
+  const names = [...new Set(listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean))].sort();
+  return names.length > 0 ? names : null;
+}
+
+/**
+ * Image name → image ID on the server, null for an image that is not there (yet); null overall
+ * when the answer cannot be read. Unlike stackImages(), a missing image is an answer, not a failure.
+ */
+async function imageIdsByName(ssh: SSHClient, names: string[]): Promise<Record<string, string | null> | null> {
+  const inspect = await ssh.exec(
+    `for image in ${names.map((name) => shSingleQuote(name)).join(' ')}; do ` +
+      `docker image inspect --format '{{.Id}}' "$image" 2>/dev/null || echo -; done`
+  );
+  if (inspect.code !== 0) return null;
+  const ids = inspect.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+  if (ids.length !== names.length) return null;
+  return Object.fromEntries(names.map((name, i) => [name, ids[i] === '-' ? null : ids[i]]));
+}
+
+/**
+ * For the deploy log: which images the pull brought (a new image ID, or one that was not on the
+ * server), and which it left as they were. Images still absent are built, or pulled by `up`.
+ */
+function describePull(
+  before: Record<string, string | null>,
+  after: Record<string, string | null>,
+  pullPolicy: ComposePullPolicy
+): string[] {
+  const names = Object.keys(after);
+  const pulled = names.filter((name) => after[name] && after[name] !== before[name]);
+  const unchanged = names.filter((name) => after[name] && after[name] === before[name]);
+
+  const lines = [
+    pulled.length > 0
+      ? `⬇️ Pulled ${pulled.length} image(s): ${pulled.map((name) => `${name} (${before[name] ? 'updated' : 'new'})`).join(', ')}`
+      : '⬇️ No image was pulled or updated',
+  ];
+  if (unchanged.length > 0) {
+    lines.push(
+      pullPolicy === 'missing'
+        ? `📦 Already on the server, not pulled (pull policy: missing): ${unchanged.join(', ')}`
+        : `✅ Unchanged on the server: ${unchanged.join(', ')}`
+    );
+  }
+  return lines;
 }
 
 /** Workers and cron jobs configured on a project that now deploys as a stack. */

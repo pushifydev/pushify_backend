@@ -12,6 +12,14 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 /** Read in this order, like `docker compose` itself. */
 export const COMPOSE_FILENAMES = ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'];
 
+/**
+ * When a compose deploy pulls the stack's images (`projects.compose_pull_policy`, or `pullPolicy`
+ * in pushify.yaml). `always` (the default) pulls every deploy, so a moving tag like `:latest`
+ * is updated even when the build is skipped; `missing` pulls only images not on the server yet.
+ */
+export const COMPOSE_PULL_POLICIES = ['always', 'missing'] as const;
+export type ComposePullPolicy = (typeof COMPOSE_PULL_POLICIES)[number];
+
 export interface ComposeService {
   image?: unknown;
   build?: unknown;

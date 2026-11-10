@@ -80,6 +80,27 @@ volumes:
   });
 });
 
+describe('pullPolicy key', () => {
+  it('accepts always and missing', () => {
+    for (const policy of ['always', 'missing']) {
+      const { config, error } = parsePushifyConfig(`pullPolicy: ${policy}`);
+      expect(error).toBeNull();
+      expect(config?.pullPolicy).toBe(policy);
+      expect(describeOverrides(config!)).toBe(`pull policy ${policy}`);
+    }
+  });
+
+  it('rejects any other value', () => {
+    const { config, error } = parsePushifyConfig('pullPolicy: never');
+    expect(config).toBeNull();
+    expect(error).toContain('pullPolicy');
+  });
+
+  it('is optional: a file without it leaves the project setting in charge', () => {
+    expect(parsePushifyConfig('port: 8080').config?.pullPolicy).toBeUndefined();
+  });
+});
+
 describe('workers key', () => {
   it('accepts valid workers', () => {
     const { config, error } = parsePushifyConfig(`

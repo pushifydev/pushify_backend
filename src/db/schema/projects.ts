@@ -2,6 +2,7 @@ import { pgTable, uuid, varchar, timestamp, boolean, integer, text, pgEnum, json
 import { relations } from 'drizzle-orm';
 import { organizations } from './organizations';
 import { servers } from './servers';
+import type { ComposePullPolicy } from '../../lib/compose-project';
 
 // Enums
 export const projectStatusEnum = pgEnum('project_status', ['active', 'paused', 'deleted']);
@@ -48,6 +49,15 @@ export const projects = pgTable('projects', {
   composePath: varchar('compose_path', { length: 255 }),
   composeService: varchar('compose_service', { length: 100 }),
   composePort: integer('compose_port'),
+  /**
+   * `always` pulls the stack's images on every deploy, even when the build is skipped, so a
+   * moving tag like `:latest` is updated; `missing` pulls only images not on the server yet.
+   * `pullPolicy` in pushify.yaml wins over it.
+   */
+  composePullPolicy: varchar('compose_pull_policy', { length: 10 })
+    .$type<ComposePullPolicy>()
+    .default('always')
+    .notNull(),
 
   // Runtime configuration
   port: integer('port').default(3000),

@@ -2,6 +2,7 @@ import { eq, and, desc, ne, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { projects, domains } from '../db/schema/projects';
 import { servers } from '../db/schema/servers';
+import type { ComposePullPolicy } from '../lib/compose-project';
 
 // Types
 export type CreateProjectInput = {
@@ -48,6 +49,8 @@ export type UpdateProjectInput = {
   composePath?: string | null;
   composeService?: string | null;
   composePort?: number | null;
+  /** Compose stacks: pull the images on every deploy (`always`) or only when missing */
+  composePullPolicy?: ComposePullPolicy;
   port?: number;
   autoDeploy?: boolean;
   serverId?: string | null; // Allow null to clear server assignment

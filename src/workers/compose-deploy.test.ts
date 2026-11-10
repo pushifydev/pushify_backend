@@ -20,7 +20,23 @@ const state = {
   runtimeValue: 'one',
   /** The image of the `web` service on the server; null = not there */
   imageId: 'sha256:111' as string | null,
+  /**
+   * A registry image of the stack (`cache: image: redis:latest`), off by default: its ID on the
+   * server (null = not there) and the one the registry serves now
+   */
+  registryImage: null as { name: string; localId: string | null; remoteId: string } | null,
 };
+
+/** The ID of an image on the server, null when it is not there */
+function localImageId(name: string): string | null {
+  if (name === 'pushify-shop-web') return state.imageId;
+  if (state.registryImage?.name === name) return state.registryImage.localId;
+  return null;
+}
+
+/** The image names a command lists in single quotes, without the `--format` template */
+const quotedImageNames = (command: string) =>
+  [...command.matchAll(/'([^']+)'/g)].map((match) => match[1]).filter((name) => name !== '{{.Id}}');
 
 vi.mock('./port-manager', () => ({
   getOrAssignPort: vi.fn(async () => ({ port: 5123, isNew: false })),
@@ -68,9 +84,24 @@ function fakeSsh() {
       if (command.startsWith('cat ')) return ok(COMPOSE_YAML);
       if (command.startsWith('git -C ') && command.includes(' rev-parse HEAD')) return ok(`${state.head}\n`);
       if (/ config 2>\/dev\/null$/.test(command)) return ok(resolvedConfig());
-      if (/ config --images 2>\/dev\/null$/.test(command)) return ok('pushify-shop-web\n');
+      if (/ config --images 2>\/dev\/null$/.test(command)) {
+        return ok(['pushify-shop-web', state.registryImage?.name].filter(Boolean).join('\n') + '\n');
+      }
       if (command.startsWith('docker image inspect')) {
-        return state.imageId ? ok(`${state.imageId}\n`) : { code: 1, stdout: '', stderr: 'No such image' };
+        const ids = quotedImageNames(command).map(localImageId);
+        return ids.every(Boolean) ? ok(`${ids.join('\n')}\n`) : { code: 1, stdout: '', stderr: 'No such image' };
+      }
+      // One line per image, `-` for one that is not on the server
+      if (command.startsWith('for image in ')) {
+        return ok(`${quotedImageNames(command).map((name) => localImageId(name) ?? '-').join('\n')}\n`);
+      }
+      // `pull` leaves images built from the compose file alone; `--policy missing` pulls only absent ones
+      if (/ pull (--policy missing )?--ignore-pull-failures 2>&1$/.test(command)) {
+        const image = state.registryImage;
+        if (image && (!command.includes('--policy missing') || image.localId === null)) {
+          image.localId = image.remoteId;
+        }
+        return ok();
       }
       if (/ build 2>&1$/.test(command)) {
         if (state.buildExit !== 0) {
@@ -108,6 +139,7 @@ function deploy(overrides: Partial<Options> = {}) {
     commitHash: COMMIT,
     forceBuild: false,
     previous: null,
+    pullPolicy: 'always',
     onProgress: (message) => progress.push(message),
     ...overrides,
   });
@@ -130,6 +162,7 @@ beforeEach(() => {
   state.head = COMMIT;
   state.runtimeValue = 'one';
   state.imageId = 'sha256:111';
+  state.registryImage = null;
   progress.length = 0;
   vi.clearAllMocks();
 });
@@ -222,5 +255,75 @@ describe('deployComposeFromRepo: skips the build when its inputs did not change'
     await deploy({ previous: { ...previous, status: 'failed' } });
 
     expect(built()).toBe(true);
+  });
+});
+
+describe('deployComposeFromRepo: pull policy', () => {
+  const pullIndex = () => indexOf(/ pull (--policy missing )?--ignore-pull-failures 2>&1$/);
+  const REDIS = 'redis:latest';
+
+  beforeEach(() => {
+    state.registryImage = { name: REDIS, localId: null, remoteId: 'sha256:r1' };
+  });
+
+  it('always (the default): pulls on every deploy and logs the images it pulled', async () => {
+    await deploy();
+
+    expect(state.commands[pullIndex()]).toMatch(/ pull --ignore-pull-failures 2>&1$/);
+    expect(state.commands.some((c) => c.includes('--policy'))).toBe(false);
+    expect(progress).toContain('⬇️ Pulled 1 image(s): redis:latest (new)');
+  });
+
+  it('always: the pull still runs when the build is skipped, before the build decision', async () => {
+    const previous = await firstDeploy();
+
+    const result = await deploy({ previous });
+
+    expect(pullIndex()).toBeGreaterThan(-1);
+    expect(pullIndex()).toBeLessThan(indexOf(/^docker image inspect/));
+    expect(built()).toBe(false);
+    expect(result.buildMetadata.composeBuildSkipped).toBe(true);
+    expect(progress).toContain('⬇️ No image was pulled or updated');
+    expect(progress).toContain(`✅ Unchanged on the server: pushify-shop-web, ${REDIS}`);
+  });
+
+  it('always: a moved tag is pulled and logged, and the stack builds and starts with it', async () => {
+    const previous = await firstDeploy();
+    state.registryImage!.remoteId = 'sha256:r2';
+
+    const result = await deploy({ previous });
+
+    expect(state.registryImage!.localId).toBe('sha256:r2');
+    expect(progress).toContain('⬇️ Pulled 1 image(s): redis:latest (updated)');
+    expect(progress).toContain('✅ Unchanged on the server: pushify-shop-web');
+    expect(progress).toContain(
+      '🔨 Building images (the images on the server are not the ones the previous deploy ran)...'
+    );
+    expect(indexOf(/ up -d /)).toBeGreaterThan(indexOf(/ down /));
+    expect(result.buildMetadata.composeImages).toEqual({ 'pushify-shop-web': 'sha256:222', [REDIS]: 'sha256:r2' });
+  });
+
+  it('missing: pulls an image that is not on the server yet', async () => {
+    await deploy({ pullPolicy: 'missing' });
+
+    expect(state.commands[pullIndex()]).toMatch(/ pull --policy missing --ignore-pull-failures 2>&1$/);
+    expect(progress).toContain('⬇️ Pulling images not on the server yet (pull policy: missing)...');
+    expect(progress).toContain('⬇️ Pulled 1 image(s): redis:latest (new)');
+  });
+
+  it('missing: keeps the images already on the server, a moved tag included, and skips the build', async () => {
+    const previous = await firstDeploy();
+    state.registryImage!.remoteId = 'sha256:r2';
+
+    const result = await deploy({ previous, pullPolicy: 'missing' });
+
+    expect(state.commands[pullIndex()]).toContain('--policy missing');
+    expect(state.registryImage!.localId).toBe('sha256:r1');
+    expect(built()).toBe(false);
+    expect(result.buildMetadata.composeBuildSkipped).toBe(true);
+    expect(progress).toContain('⬇️ No image was pulled or updated');
+    expect(progress).toContain(
+      `📦 Already on the server, not pulled (pull policy: missing): pushify-shop-web, ${REDIS}`
+    );
   });
 });

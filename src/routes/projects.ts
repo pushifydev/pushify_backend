@@ -7,6 +7,7 @@ import { requireScope } from '../middleware/apikey-auth';
 import { omitWebhookSecret } from '../lib/project-public';
 import { getApiBaseUrl } from '../lib/api-base-url';
 import { MAINTENANCE_MESSAGE_MAX_LENGTH } from '../workers/nginx-manager';
+import { COMPOSE_PULL_POLICIES } from '../lib/compose-project';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 import { auditSource, diffChanges } from '../lib/audit';
@@ -46,6 +47,10 @@ const ProjectSchema = z
     composePath: z.string().nullable(),
     composeService: z.string().nullable(),
     composePort: z.number().nullable(),
+    composePullPolicy: z.enum(COMPOSE_PULL_POLICIES).openapi({
+      description:
+        'Compose stacks: `always` pulls the images on every deploy, even when the build is skipped; `missing` pulls only images not on the server yet. pushify.yaml `pullPolicy` wins over it.',
+    }),
     /** Scale containers on load instead of by hand */
     autoscaleEnabled: z.boolean().optional(),
     autoscaleMin: z.number().optional(),
@@ -131,6 +136,11 @@ const UpdateProjectSchema = z
     composePath: z.string().max(255).nullable().optional(),
     composeService: z.string().max(100).nullable().optional(),
     composePort: z.number().int().min(1).max(65535).nullable().optional(),
+    composePullPolicy: z.enum(COMPOSE_PULL_POLICIES).optional().openapi({
+      example: 'always',
+      description:
+        'Compose stacks: `always` (default) pulls the images on every deploy, even when the build is skipped; `missing` pulls only images not on the server yet',
+    }),
     port: z.number().int().min(1).max(65535).optional(),
     replicas: z.number().int().min(1).max(10).optional(),
     autoscaleEnabled: z.boolean().optional(),

@@ -1020,6 +1020,8 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         composePort: project.composePort,
         forceBuild: composeBaseline?.forceBuild ?? false,
         previousComposeDeploy: composeBaseline?.previous ?? null,
+        // pushify.yaml `pullPolicy` wins over the project setting, like its other keys
+        composePullPolicy: fileConfig?.pullPolicy ?? project.composePullPolicy,
         // The organization's private-registry logins: for a private `FROM` base image and for
         // image projects on a private registry. Empty for everyone who has none.
         registryCredentials: deployRegistries,

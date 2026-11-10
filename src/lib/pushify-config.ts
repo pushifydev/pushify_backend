@@ -7,6 +7,7 @@ import { validateVolumeName, validateContainerPath } from './volume-validate';
 import { validateWorkerName, validateWorkerCommand } from './worker-validate';
 import { PROJECT_LIMITS } from './project-limits';
 import { validateSingleLineCommand, validateRepoRelativePath } from './repo-settings-validate';
+import { COMPOSE_PULL_POLICIES } from './compose-project';
 
 /**
  * Config-as-code: a `pushify.yaml` at the repo root (or project root directory)
@@ -47,6 +48,8 @@ const fileSchema = z
     cron: z.array(cronItemSchema).max(TASK.maxPerProject).optional(),
     volumes: z.array(volumeItemSchema).max(PROJECT_LIMITS.volumes.maxPerProject).optional(),
     workers: z.array(workerItemSchema).max(PROJECT_LIMITS.workers.maxPerProject).optional(),
+    /** Compose stacks: pull the images on every deploy (`always`) or only when missing */
+    pullPolicy: z.enum(COMPOSE_PULL_POLICIES).optional(),
   })
   .strict();
 
@@ -172,6 +175,7 @@ export function describeOverrides(config: PushifyFileConfig): string {
   if (config.cron?.length) parts.push(`${config.cron.length} cron`);
   if (config.volumes?.length) parts.push(`${config.volumes.length} volume(s)`);
   if (config.workers?.length) parts.push(`${config.workers.length} worker(s)`);
+  if (config.pullPolicy) parts.push(`pull policy ${config.pullPolicy}`);
   return parts.join(', ');
 }
 
