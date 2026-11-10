@@ -71,7 +71,17 @@ export const healthCheckService = {
     const existing = await healthCheckRepository.findByProjectId(projectId);
 
     if (existing) {
-      const updated = await healthCheckRepository.update(projectId, input);
+      // Picked field by field: the input type is only a compile-time promise, and a stray
+      // projectId would move the record to another project.
+      const changes: Parameters<typeof healthCheckRepository.update>[1] = {};
+      if (input.endpoint !== undefined) changes.endpoint = input.endpoint;
+      if (input.intervalSeconds !== undefined) changes.intervalSeconds = input.intervalSeconds;
+      if (input.timeoutSeconds !== undefined) changes.timeoutSeconds = input.timeoutSeconds;
+      if (input.unhealthyThreshold !== undefined) changes.unhealthyThreshold = input.unhealthyThreshold;
+      if (input.autoRestart !== undefined) changes.autoRestart = input.autoRestart;
+      if (input.isActive !== undefined) changes.isActive = input.isActive;
+
+      const updated = await healthCheckRepository.update(projectId, changes);
       if (!updated) {
         throw new HTTPException(500, { message: 'Failed to update health check config' });
       }
