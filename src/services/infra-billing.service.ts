@@ -98,8 +98,9 @@ type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 /**
  * Add to the wallet with a relative UPDATE so a concurrent debit (which holds the row lock)
  * is never overwritten by a stale read. Returns the balance actually stored.
+ * Also used by the domain refund path (registrar-domain.service).
  */
-async function addToWalletBalance(
+export async function addToWalletBalance(
   tx: DbTransaction,
   organizationId: string,
   amountCents: number,

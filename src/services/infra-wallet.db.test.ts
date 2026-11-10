@@ -21,6 +21,7 @@ import { eq, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { organizations, infraWalletTransactions } from '../db/schema';
 import { infraBillingService } from './infra-billing.service';
+import { refundDomainCharge } from './registrar-domain.service';
 
 let seq = 0;
 
@@ -71,6 +72,26 @@ describe.skipIf(!TEST_URL)('infra wallet concurrency (real Postgres)', () => {
     expect(rows.reduce((sum, r) => sum + r.amountCents, 0)).toBe(-250);
     // The last serialized write recorded the balance the org actually has.
     expect(rows.map((r) => r.balanceAfterCents)).toContain(9_750);
+  });
+
+  it('parallel domain refunds, debits and top-ups all land in the balance and the ledger', async () => {
+    const o = await makeOrg(10_000);
+    const ops: Promise<unknown>[] = [];
+    for (let i = 0; i < 10; i++) {
+      ops.push(infraBillingService.debitWallet(o.id, 100, 'server_hourly_charge', `hourly ${i}`));
+      ops.push(refundDomainCharge(o.id, 1_200, `Refund: domain renewal failed ${i}`));
+      ops.push(infraBillingService.creditWallet(o.id, 50, `credit ${i}`));
+    }
+    await Promise.all(ops);
+
+    // 10_000 - 10*100 + 10*1_200 + 10*50
+    expect(await balanceOf(o.id)).toBe(21_500);
+
+    const rows = await ledger(o.id);
+    expect(rows).toHaveLength(30);
+    expect(rows.reduce((sum, r) => sum + r.amountCents, 0)).toBe(11_500);
+    expect(rows.filter((r) => r.type === 'adjustment')).toHaveLength(10);
+    expect(rows.map((r) => r.balanceAfterCents)).toContain(21_500);
   });
 
   it('parallel credits for the same checkout session credit the wallet once', async () => {
