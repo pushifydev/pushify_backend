@@ -27,6 +27,18 @@ volumes:
     expect(describeOverrides(config!)).toContain('port 8080');
   });
 
+  it('accepts a compose pull policy of always or missing, and nothing else', () => {
+    for (const policy of ['always', 'missing'] as const) {
+      const { config, error } = parsePushifyConfig(`pullPolicy: ${policy}`);
+      expect(error).toBeNull();
+      expect(config?.pullPolicy).toBe(policy);
+      expect(describeOverrides(config!)).toBe(`pull policy ${policy}`);
+    }
+    const { config, error } = parsePushifyConfig('pullPolicy: never');
+    expect(config).toBeNull();
+    expect(error).toContain('pullPolicy');
+  });
+
   it('rejects invalid YAML without throwing', () => {
     const { config, error } = parsePushifyConfig('build: [unclosed');
     expect(config).toBeNull();

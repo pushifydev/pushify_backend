@@ -10,6 +10,7 @@ import { MAINTENANCE_MESSAGE_MAX_LENGTH } from '../workers/nginx-manager';
 import { t } from '../i18n';
 import type { AppEnv } from '../types';
 import { auditSource, diffChanges } from '../lib/audit';
+import { COMPOSE_PULL_POLICIES } from '../lib/compose-pull';
 
 // ============ Schemas ============
 
@@ -46,6 +47,10 @@ const ProjectSchema = z
     composePath: z.string().nullable(),
     composeService: z.string().nullable(),
     composePort: z.number().nullable(),
+    composePullPolicy: z.enum(COMPOSE_PULL_POLICIES).optional().openapi({
+      description:
+        'Compose stacks: `always` pulls every image on each deploy (default), `missing` only images not on the server',
+    }),
     /** Scale containers on load instead of by hand */
     autoscaleEnabled: z.boolean().optional(),
     autoscaleMin: z.number().optional(),
@@ -131,6 +136,11 @@ const UpdateProjectSchema = z
     composePath: z.string().max(255).nullable().optional(),
     composeService: z.string().max(100).nullable().optional(),
     composePort: z.number().int().min(1).max(65535).nullable().optional(),
+    composePullPolicy: z.enum(COMPOSE_PULL_POLICIES).optional().openapi({
+      example: 'always',
+      description:
+        'Compose stacks: `always` pulls every image on each deploy, so moving tags like `:latest` stay current even when the build is skipped; `missing` pulls only images not on the server. pushify.yaml `pullPolicy` wins over it.',
+    }),
     port: z.number().int().min(1).max(65535).optional(),
     replicas: z.number().int().min(1).max(10).optional(),
     autoscaleEnabled: z.boolean().optional(),

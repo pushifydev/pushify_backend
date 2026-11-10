@@ -48,6 +48,8 @@ export type UpdateProjectInput = {
   composePath?: string | null;
   composeService?: string | null;
   composePort?: number | null;
+  /** Compose stacks: pull every image each deploy (`always`) or only missing ones */
+  composePullPolicy?: 'always' | 'missing';
   port?: number;
   autoDeploy?: boolean;
   serverId?: string | null; // Allow null to clear server assignment

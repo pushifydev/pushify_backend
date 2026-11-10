@@ -50,6 +50,7 @@ import { checkComposeFile, checkVolumes } from '../lib/host-access-guard';
 import { encodeRunSpec } from '../lib/run-spec';
 import { deployComposeFromRepo, findComposeFile } from './compose-deploy';
 import type { ComposeBuildBaseline } from '../lib/compose-build-cache';
+import type { ComposePullPolicy } from '../lib/compose-pull';
 import type { DeploymentBuildMetadata } from '../db/schema/deployments';
 import {
   buildLoginCommand,
@@ -125,6 +126,8 @@ export interface RemoteDeploymentConfig {
   forceBuild?: boolean;
   /** Compose stacks: the previous deploy of the same stack, to skip an unneeded build */
   previousComposeDeploy?: ComposeBuildBaseline | null;
+  /** Compose stacks: pull every image each deploy (`always`, default) or only missing ones */
+  composePullPolicy?: ComposePullPolicy;
   // Marketplace fields
   marketplace?: {
     id?: string;
@@ -1261,6 +1264,7 @@ export async function deployToRemoteServer(
           commitHash,
           forceBuild: config.forceBuild === true,
           previous: config.previousComposeDeploy ?? null,
+          pullPolicy: config.composePullPolicy,
           onProgress,
         });
       }
