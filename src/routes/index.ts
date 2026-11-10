@@ -25,6 +25,7 @@ import { metricsRoutes } from './metrics';
 import { apiKeyRoutes } from './apikeys';
 import { activityRoutes } from './activity';
 import { twoFactorRoutes } from './twoFactor';
+import { passkeyRoutes } from './passkeys';
 import { organizationRoutes } from './organizations';
 import { billingRoutes } from './billing';
 import { publicPricingRoutes } from './public-pricing';
@@ -54,6 +55,7 @@ export function registerRoutes(app: OpenAPIHono<any>) {
   app.route('/api/v1/ops', opsRoutes);
   app.route('/api/v1/auth', authRoutes);
   app.route('/api/v1/auth/2fa', twoFactorRoutes);
+  app.route('/api/v1/auth/passkeys', passkeyRoutes);
   app.route('/api/v1/api-keys', apiKeyRoutes);
   // Sub-routers with specific paths must be registered BEFORE the generic
   // project router, otherwise /{projectId} catches /overview, etc.

@@ -15,10 +15,12 @@ export const AUTH_EVENT_TYPES = [
   'login_failed',
   'two_factor_required',
   'two_factor_failed',
+  'passkey_added',
+  'passkey_removed',
 ] as const;
 export type AuthEventType = (typeof AUTH_EVENT_TYPES)[number];
 
-export const AUTH_METHODS = ['password', 'two_factor', 'github', 'google', 'sso'] as const;
+export const AUTH_METHODS = ['password', 'two_factor', 'github', 'google', 'sso', 'passkey'] as const;
 export type AuthMethod = (typeof AUTH_METHODS)[number];
 
 export const authEvents = pgTable(

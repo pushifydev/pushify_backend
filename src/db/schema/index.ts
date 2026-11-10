@@ -17,6 +17,9 @@ export * from './dns-providers';
 // Single sign-on
 export * from './sso';
 
+// Passkeys (WebAuthn)
+export * from './passkeys';
+
 // Autoscaling decisions
 export * from './scale-events';
 
