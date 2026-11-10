@@ -1,4 +1,6 @@
 import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
+import { z } from 'zod';
 import { requireScopeByMethod } from '../middleware/apikey-auth';
 import { healthCheckService } from '../services/healthcheck.service';
 import { authMiddleware } from '../middleware/auth';
@@ -6,6 +8,16 @@ import { t } from '../i18n';
 import type { AppEnv } from '../types';
 
 const healthCheckRouter = new Hono<AppEnv>();
+
+// Only these fields are accepted; anything else (projectId, id, createdAt, …) is dropped.
+const healthCheckConfigSchema = z.object({
+  endpoint: z.string().startsWith('/').max(500).optional(),
+  intervalSeconds: z.number().int().min(10).max(3600).optional(),
+  timeoutSeconds: z.number().int().min(1).max(60).optional(),
+  unhealthyThreshold: z.number().int().min(1).max(20).optional(),
+  autoRestart: z.boolean().optional(),
+  isActive: z.boolean().optional(),
+});
 
 // All routes require authentication
 healthCheckRouter.use('*', authMiddleware);
@@ -47,13 +59,16 @@ healthCheckRouter.put('/:projectId/health-check', async (c) => {
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
   const projectId = c.req.param('projectId');
-  const body = await c.req.json();
+  const body = healthCheckConfigSchema.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) {
+    throw new HTTPException(400, { message: t(locale, 'validation', 'invalidRequest') });
+  }
 
   const config = await healthCheckService.upsertConfig(
     projectId,
     organizationId,
     userId,
-    body,
+    body.data,
     locale
   );
 
