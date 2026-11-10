@@ -66,6 +66,12 @@ const envSchema = z.object({
   // Frontend URL (for links in notifications, commit status, etc.)
   FRONTEND_URL: z.string().url().default('http://localhost:3000'),
 
+  /** Passkeys (WebAuthn). RP ID: the domain passkeys are bound to — changing it later orphans
+   *  every registered passkey. Unset = FRONTEND_URL's hostname. */
+  WEBAUTHN_RP_ID: z.string().optional(),
+  /** Comma-separated origins allowed to run the ceremony. Unset = FRONTEND_URL's origin. */
+  WEBAUTHN_ORIGINS: z.string().optional(),
+
   // Gmail SMTP (for email notifications)
   GMAIL_USER: z.string().email().optional(),
   GMAIL_APP_PASSWORD: z.string().optional(),

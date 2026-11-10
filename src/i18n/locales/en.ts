@@ -205,6 +205,15 @@ export interface TranslationKeys {
     backupCodesRegenerated: string;
     verificationRequired: string;
   };
+  passkey: {
+    challengeExpired: string;
+    verificationFailed: string;
+    invalidCredential: string;
+    alreadyRegistered: string;
+    limitReached: string;
+    notFound: string;
+    removed: string;
+  };
   billing: {
     emailUpdated: string;
     stripeNotConfigured: string;
@@ -614,6 +623,17 @@ export const en: TranslationKeys = {
     disabled: '2FA disabled successfully',
     backupCodesRegenerated: 'Backup codes regenerated successfully',
     verificationRequired: '2FA verification required',
+  },
+
+  // Passkeys (WebAuthn)
+  passkey: {
+    challengeExpired: 'This passkey request has expired. Please start again.',
+    verificationFailed: 'The passkey could not be verified',
+    invalidCredential: 'This passkey could not sign you in',
+    alreadyRegistered: 'This passkey is already registered',
+    limitReached: 'You have reached the maximum number of passkeys. Remove one to add another.',
+    notFound: 'Passkey not found',
+    removed: 'Passkey removed',
   },
 
   // Billing

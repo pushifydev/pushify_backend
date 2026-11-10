@@ -236,6 +236,17 @@ export const tr: TranslationKeys = {
     verificationRequired: '2FA doğrulaması gerekli',
   },
 
+  // Passkeys (WebAuthn)
+  passkey: {
+    challengeExpired: 'Bu passkey isteğinin süresi doldu. Lütfen yeniden başlayın.',
+    verificationFailed: 'Passkey doğrulanamadı',
+    invalidCredential: 'Bu passkey ile giriş yapılamadı',
+    alreadyRegistered: 'Bu passkey zaten kayıtlı',
+    limitReached: 'En fazla passkey sayısına ulaştınız. Yenisini eklemek için birini kaldırın.',
+    notFound: 'Passkey bulunamadı',
+    removed: 'Passkey kaldırıldı',
+  },
+
   // Billing
   billing: {
     emailUpdated: 'Fatura e-postası başarıyla güncellendi',

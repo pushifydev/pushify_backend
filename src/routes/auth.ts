@@ -102,7 +102,8 @@ const TwoFactorRequiredSchema = z
   })
   .openapi('TwoFactorRequired');
 
-const LoginResponseSchema = z.union([
+/** Also the answer of a passkey sign-in (routes/passkeys.ts). */
+export const LoginResponseSchema = z.union([
   AuthResponseSchema,
   TwoFactorRequiredSchema,
 ]).openapi('LoginResponse');
