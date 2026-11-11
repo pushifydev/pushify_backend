@@ -36,6 +36,13 @@ describe('apiKeyProjectPathAccess', () => {
     expect(apiKeyProjectPathAccess('GET', '/api/v1/projects/overview/extra', keyProjects)).toBe('project_not_in_scope');
   });
 
+  it('allows the MCP endpoint, whose tools apply the key\'s list themselves', () => {
+    expect(apiKeyProjectPathAccess('POST', '/api/v1/mcp', keyProjects)).toBe('allowed');
+    expect(apiKeyProjectPathAccess('POST', '/api/v1/mcp/', keyProjects)).toBe('allowed');
+    expect(apiKeyProjectPathAccess('POST', '/api/v1/mcpx', keyProjects)).toBe('outside_project_api');
+    expect(apiKeyProjectPathAccess('GET', '/api/v1/mcp/other', keyProjects)).toBe('outside_project_api');
+  });
+
   it('refuses everything outside the project API', () => {
     for (const path of [
       '/api/v1/servers',

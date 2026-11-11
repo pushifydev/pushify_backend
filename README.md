@@ -112,6 +112,7 @@ See [.env.example](.env.example) for the full list with defaults.
 | `/api/v1/organizations` | Team & role management |
 | `/api/v1/billing` | Plans & usage |
 | `/api/v1/ai` | AI assistant |
+| `/api/v1/mcp` | Read-only MCP server for AI agents, API keys only ([docs/MCP.md](docs/MCP.md)) |
 | `/ws` | WebSocket for real-time updates |
 
 ## Project Structure

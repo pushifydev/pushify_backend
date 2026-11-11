@@ -7,7 +7,8 @@ import { AsyncLocalStorage } from 'node:async_hooks';
  *
  * Two places enforce the list:
  * - apiKeyAuthMiddleware lets a project-scoped key use the project API only
- *   (`/api/v1/projects…`, see `apiKeyProjectPathAccess`) and answers 404 for a project outside it.
+ *   (`/api/v1/projects…` and the MCP endpoint, see `apiKeyProjectPathAccess`) and answers 404 for
+ *   a project outside it.
  * - lib/member-project-scope intersects every project check and project list with the key's list,
  *   read here from the request's async context, so a project named in a body or a list endpoint
  *   is filtered the same way as for a restricted member.
@@ -35,6 +36,7 @@ export function currentApiKeyProjectIds(): readonly string[] | null {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PROJECTS_PREFIX = '/api/v1/projects';
+const MCP_PATH = '/api/v1/mcp';
 
 export type ApiKeyProjectPathAccess = 'allowed' | 'outside_project_api' | 'project_not_in_scope';
 
@@ -43,6 +45,8 @@ export type ApiKeyProjectPathAccess = 'allowed' | 'outside_project_api' | 'proje
  * - `GET /api/v1/projects` and `GET /api/v1/projects/overview`: lists, filtered to the key's projects
  * - `/api/v1/projects/<id>` and below: only for a project in the key's list (404 otherwise, as for
  *   a restricted member, so other projects cannot be probed)
+ * - `/api/v1/mcp`: the read-only MCP endpoint (routes/mcp.ts), one path for every tool; its project
+ *   tools apply the key's list themselves, and its organization-wide tools (servers) refuse the key
  * - anything else (creating a project, servers, databases, organization, dashboard, …): refused
  */
 export function apiKeyProjectPathAccess(
@@ -50,6 +54,7 @@ export function apiKeyProjectPathAccess(
   path: string,
   projectIds: readonly string[],
 ): ApiKeyProjectPathAccess {
+  if (path.replace(/\/+$/, '') === MCP_PATH) return 'allowed';
   if (path !== PROJECTS_PREFIX && !path.startsWith(`${PROJECTS_PREFIX}/`)) return 'outside_project_api';
 
   // '' (the list), '/overview', or '/<projectId>[/…]'

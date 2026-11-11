@@ -45,6 +45,7 @@ import { registrarDomainRoutes } from './registrar-domains';
 import { onboardingRoutes } from './onboarding';
 import { adminRoutes } from './admin';
 import { opsRoutes } from './ops';
+import { mcpRoutes } from './mcp';
 
 export function registerRoutes(app: OpenAPIHono<any>) {
   // API v1 routes
@@ -98,6 +99,8 @@ export function registerRoutes(app: OpenAPIHono<any>) {
   app.route('/api/v1/auth/cli', cliAuthRoutes);
   app.route('/api/v1/marketplace', marketplaceRoutes);
   app.route('/api/v1/site-studio', siteStudioRoutes);
+  // Read-only MCP server (Streamable HTTP), API keys only; see docs/MCP.md
+  app.route('/api/v1/mcp', mcpRoutes);
 
   // Webhook routes (no auth required - verified by signature).
   // The GitHub App endpoint (/github/app) MUST be mounted before the per-project one
