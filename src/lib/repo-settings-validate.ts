@@ -110,8 +110,9 @@ export function firstProjectSettingsError(settings: Record<string, unknown> | nu
   }
   const framework = str('framework');
   if (framework && !/^[A-Za-z0-9.+-]{1,50}$/.test(framework)) return 'Framework name is not valid';
-  // trafficAnalytics; cancelSuperseded* are read by lib/deploy-supersede.ts
-  for (const key of ['trafficAnalytics', 'cancelSupersededDeploys', 'cancelSupersededBuilds']) {
+  // trafficAnalytics; cancelSuperseded* are read by lib/deploy-supersede.ts; vulnerabilityScan
+  // (false turns image scans off) by lib/vulnerability-scan.ts
+  for (const key of ['trafficAnalytics', 'cancelSupersededDeploys', 'cancelSupersededBuilds', 'vulnerabilityScan']) {
     if (settings[key] !== undefined && typeof settings[key] !== 'boolean') {
       return `${key} must be true or false`;
     }

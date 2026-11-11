@@ -13,6 +13,7 @@ export const QUEUE_NAMES = {
   HEALTH_CHECKS: 'health-checks',
   ADMIN_NOTIFY: 'admin-notify',
   SERVER_PATCHES: 'server-patches',
+  VULNERABILITY_SCANS: 'vulnerability-scans',
 } as const;
 
 // Job types
@@ -172,6 +173,48 @@ export async function addServerPatchJob(
   return queue.add('apply', data, opts);
 }
 
+export interface VulnerabilityScanJobData {
+  deploymentId: string;
+  projectId: string;
+  /** The server the deploy ran on, where the image is */
+  serverId: string;
+  /** Image ID (or reference) the deploy started */
+  image: string;
+}
+
+let vulnerabilityScanQueue: Queue<VulnerabilityScanJobData> | null = null;
+
+/**
+ * Image vulnerability scans queued after a successful deploy (lib/vulnerability-scan.ts). One
+ * attempt: a failed scan is recorded as failed, the next deploy scans again.
+ */
+export function getVulnerabilityScanQueue(): Queue<VulnerabilityScanJobData> | null {
+  const connection = getRedisConnection();
+  if (!connection) return null;
+
+  if (!vulnerabilityScanQueue) {
+    vulnerabilityScanQueue = new Queue<VulnerabilityScanJobData>(QUEUE_NAMES.VULNERABILITY_SCANS, {
+      connection,
+      defaultJobOptions: {
+        attempts: 1,
+        removeOnComplete: { age: 24 * 3600, count: 500 },
+        removeOnFail: { age: 7 * 24 * 3600 },
+      },
+    });
+  }
+
+  return vulnerabilityScanQueue;
+}
+
+/** One scan per deployment (deduped by deployment id); null without Redis. */
+export async function addVulnerabilityScanJob(
+  data: VulnerabilityScanJobData
+): Promise<Job<VulnerabilityScanJobData> | null> {
+  const queue = getVulnerabilityScanQueue();
+  if (!queue) return null;
+  return queue.add('scan', data, { jobId: `vulnscan-${data.deploymentId}` });
+}
+
 // Get or create deployment queue
 export function getDeploymentQueue(): Queue<DeploymentJobData> | null {
   const connection = getRedisConnection();
@@ -296,7 +339,7 @@ function getPriority(event: string): number {
 
 // Close all queues (for graceful shutdown)
 export async function closeQueues(): Promise<void> {
-  const queues = [notificationQueue, deploymentQueue, healthCheckQueue, adminNotifyQueue, serverPatchQueue];
+  const queues = [notificationQueue, deploymentQueue, healthCheckQueue, adminNotifyQueue, serverPatchQueue, vulnerabilityScanQueue];
 
   await Promise.all(
     queues.filter(Boolean).map(async (queue) => {
@@ -311,6 +354,7 @@ export async function closeQueues(): Promise<void> {
   healthCheckQueue = null;
   adminNotifyQueue = null;
   serverPatchQueue = null;
+  vulnerabilityScanQueue = null;
 
   logger.info('All queues closed');
 }

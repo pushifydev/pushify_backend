@@ -21,6 +21,7 @@ import { resolveProjectServerId } from '../lib/runner-routing';
 import { getProjectLogMasker } from '../workers/log-collector';
 import { enrichDeploymentWithQueue } from '../lib/deploy-queue';
 import { auditSource } from '../lib/audit';
+import { toVulnerabilityScanResponse, vulnerabilitiesToCsv } from '../lib/vulnerability-scan';
 
 // Rate limiter for deployment operations
 const deploymentRateLimiter = createDeploymentRateLimiter();
@@ -370,6 +371,76 @@ const getLogsRoute = createRoute({
   },
 });
 
+const ImageVulnerabilitySchema = z
+  .object({
+    id: z.string().openapi({ example: 'CVE-2024-6119', description: 'CVE, GHSA or distribution advisory ID' }),
+    severity: z.enum(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'UNKNOWN']),
+    pkgName: z.string().openapi({ example: 'openssl' }),
+    installedVersion: z.string(),
+    fixedVersion: z.string().nullable().openapi({ description: 'Null when no fix is published' }),
+    title: z.string().nullable(),
+    target: z.string().nullable().openapi({ description: 'Where the package was found: the OS of the image, a lock file, a binary' }),
+  })
+  .openapi('ImageVulnerability');
+
+const VulnerabilityScanSchema = z
+  .object({
+    deploymentId: z.string(),
+    status: z.enum(['completed', 'skipped', 'failed']).openapi({
+      description:
+        'skipped: turned off for the organization or project, or the server disk was near the deploy disk guard. failed: the scanner could not run, erred or timed out. The deployment itself is never affected.',
+    }),
+    scanner: z.string().openapi({ example: 'trivy' }),
+    scannerVersion: z.string().nullable().openapi({ example: '0.58.1' }),
+    image: z.string().nullable().openapi({ description: 'Image ID or reference that was scanned' }),
+    counts: z.object({
+      critical: z.number().int(),
+      high: z.number().int(),
+      medium: z.number().int(),
+      low: z.number().int(),
+      unknown: z.number().int(),
+    }),
+    total: z.number().int(),
+    truncated: z.boolean().openapi({ description: 'More findings than stored: the list keeps the 2000 most severe, the counts cover all' }),
+    vulnerabilities: z.array(ImageVulnerabilitySchema).openapi({ description: 'Most severe first' }),
+    reason: z.string().nullable().openapi({ description: 'Why the scan was skipped or failed' }),
+    scannedAt: z.coerce.date(),
+  })
+  .openapi('DeploymentVulnerabilityScan');
+
+const getVulnerabilitiesRoute = createRoute({
+  method: 'get',
+  path: '/{deploymentId}/vulnerabilities',
+  tags: ['Deployments'],
+  summary: 'Get image vulnerabilities',
+  description:
+    'Known vulnerabilities of the image this deployment started, from the scan run in the background after the deploy succeeded (Trivy on the deploy server). `format=csv` or `format=json` downloads the list as a file. Needs `deployments:read` on an API key. 404 `NO_VULNERABILITY_SCAN` until a scan was recorded; compose stacks, static sites and previews are not scanned.',
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: z.object({
+      projectId: z.string().uuid(),
+      deploymentId: z.string().uuid(),
+    }),
+    query: z.object({
+      format: z.enum(['json', 'csv']).optional().openapi({ description: 'Download as a file instead of the API response' }),
+    }),
+  },
+  responses: {
+    200: {
+      description: 'The scan',
+      content: {
+        'application/json': { schema: z.object({ data: VulnerabilityScanSchema }) },
+        'text/csv': {
+          schema: z.string().openapi({
+            description: 'format=csv: severity, vulnerability_id, package, installed_version, fixed_version, title, target',
+          }),
+        },
+      },
+    },
+    404: { description: 'Deployment not found, or no scan recorded for it (NO_VULNERABILITY_SCAN)' },
+  },
+});
+
 // ============ Router ============
 
 const deploymentRouter = new OpenAPIHono<AppEnv>();
@@ -381,6 +452,7 @@ deploymentRouter.use('*', combinedAuthMiddleware);
 deploymentRouter.get('/', requireScope('deployments:read'));
 deploymentRouter.get('/:deploymentId', requireScope('deployments:read'));
 deploymentRouter.get('/:deploymentId/logs', requireScope('deployments:read', 'logs:read'));
+deploymentRouter.get('/:deploymentId/vulnerabilities', requireScope('deployments:read'));
 deploymentRouter.get('/:deploymentId/logs/stream', requireScope('deployments:read', 'logs:read'));
 deploymentRouter.get('/:deploymentId/container-logs/stream', requireScope('deployments:read', 'logs:read'));
 deploymentRouter.post('/', requireScope('deployments:write'), deploymentRateLimiter);
@@ -485,6 +557,27 @@ deploymentRouter.openapi(getDeploymentRoute, async (c) => {
   );
 
   return c.json({ data: enrichDeploymentWithQueue(deployment) });
+});
+
+// Image vulnerability scan of a deployment, as JSON or a CSV / JSON file
+deploymentRouter.openapi(getVulnerabilitiesRoute, async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const { projectId, deploymentId } = c.req.valid('param');
+  const { format } = c.req.valid('query');
+
+  const scan = await deploymentService.getVulnerabilityScan(deploymentId, projectId, organizationId, userId, locale);
+
+  if (format === 'csv') {
+    c.header('Content-Type', 'text/csv; charset=utf-8');
+    c.header('Content-Disposition', `attachment; filename="vulnerabilities-${deploymentId}.csv"`);
+    return c.body(vulnerabilitiesToCsv(scan.vulnerabilities ?? []), 200);
+  }
+  if (format === 'json') {
+    c.header('Content-Disposition', `attachment; filename="vulnerabilities-${deploymentId}.json"`);
+  }
+  return c.json({ data: toVulnerabilityScanResponse(scan) }, 200);
 });
 
 // Cancel deployment

@@ -48,6 +48,11 @@ export const organizations = pgTable('organizations', {
    * routes (see lib/org-two-factor). Owner-only toggle; API keys are not affected yet.
    */
   requireTwoFactor: boolean('require_two_factor').default(false).notNull(),
+  /**
+   * Scan each deployed image for known vulnerabilities after a successful deploy (on by default;
+   * owners/admins turn it off with PATCH /organizations). A project can also turn it off.
+   */
+  vulnerabilityScanEnabled: boolean('vulnerability_scan_enabled').default(true).notNull(),
   /** Deletion requested: locked until `deletionScheduledFor`, then purged (restorable until then) */
   deletionRequestedAt: timestamp('deletion_requested_at', { withTimezone: true }),
   deletionScheduledFor: timestamp('deletion_scheduled_for', { withTimezone: true }),
