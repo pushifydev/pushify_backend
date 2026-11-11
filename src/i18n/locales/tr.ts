@@ -353,6 +353,7 @@ export const tr: TranslationKeys = {
     resizeInvalidSize: 'Geçersiz veya yükseltme için uygun olmayan boyut',
     snapshotsNotSupported: 'Anlık görüntüler yalnızca yönetilen Hetzner sunucularında kullanılabilir',
     autoSnapshotPlanRequired: 'Otomatik anlık görüntü için anlık görüntü kotası olan bir plan gerekir (Hobby ve üzeri).',
+    diskAlertPercentInvalid: 'Disk uyarı eşiği 50 ile 99 arasında bir tam sayı olmalı; varsayılan için null gönderin.',
     snapshotRequiresRunning: 'Anlık görüntü için sunucu çalışıyor olmalı',
     snapshotLimitReached: 'Bu sunucuda planınızın izin verdiği kadar anlık görüntü var. Yenisini almak için birini silin.',
     snapshotCreated: 'Anlık görüntü oluşturma başlatıldı',

@@ -55,6 +55,50 @@ export async function checkServerDiskSpace(ssh: SSHClient): Promise<ServerDiskCh
   };
 }
 
+/**
+ * A crossing of the alert threshold is announced once. The next one is only announced after
+ * usage has come down this many points under the threshold: without the gap, a disk sitting on
+ * the line would alternate "over" and "under" every hour and mail each time.
+ */
+export const DISK_ALERT_CLEAR_MARGIN = 5;
+
+/** Range a server's own alert threshold may be set to (PATCH /servers/:serverId `diskAlertPercent`). */
+export const DISK_ALERT_PERCENT_MIN = 50;
+export const DISK_ALERT_PERCENT_MAX = 99;
+
+/** The server's own alert threshold, or the install-wide SERVER_DISK_WARN_PERCENT (85 by default). */
+export function diskAlertPercentOf(server: { diskAlertPercent: number | null }): number {
+  return server.diskAlertPercent ?? WARN_PERCENT;
+}
+
+export interface DiskAlertTransition {
+  /** When the current crossing was announced; null once usage is back under the clear line */
+  notifiedAt: Date | null;
+  /** True for the one reading of a crossing that is worth telling someone about */
+  notify: boolean;
+}
+
+/**
+ * One alert per crossing of the threshold, no reminders while the disk stays full. Re-armed only
+ * once usage is at or below `alertPercent - DISK_ALERT_CLEAR_MARGIN`; a reading between the two
+ * lines keeps whatever state it found. A reading that could not be parsed changes nothing.
+ */
+export function nextDiskAlert(
+  previousNotifiedAt: Date | null,
+  disk: Pick<ServerDiskCheckResult, 'usedPercent' | 'measured'>,
+  alertPercent: number,
+  now: Date
+): DiskAlertTransition {
+  if (!disk.measured) return { notifiedAt: previousNotifiedAt, notify: false };
+  if (disk.usedPercent >= alertPercent) {
+    return previousNotifiedAt
+      ? { notifiedAt: previousNotifiedAt, notify: false }
+      : { notifiedAt: now, notify: true };
+  }
+  if (disk.usedPercent <= alertPercent - DISK_ALERT_CLEAR_MARGIN) return { notifiedAt: null, notify: false };
+  return { notifiedAt: previousNotifiedAt, notify: false };
+}
+
 /** Prefix of the server status message written when a deploy is refused for disk space. */
 export const DISK_FULL_STATUS_PREFIX = 'Disk full:';
 
@@ -63,7 +107,7 @@ export interface DeployDiskThresholds {
   minFreeGb: number;
 }
 
-const DEFAULT_DEPLOY_THRESHOLDS: DeployDiskThresholds = {
+export const DEFAULT_DEPLOY_THRESHOLDS: DeployDiskThresholds = {
   blockPercent: env.SERVER_DISK_DEPLOY_BLOCK_PERCENT,
   minFreeGb: env.SERVER_DISK_DEPLOY_MIN_FREE_GB,
 };

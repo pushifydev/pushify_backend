@@ -666,6 +666,13 @@
       "when": 1787270400054,
       "tag": "0095_deployment_vulnerability_scans",
       "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1787270400055,
+      "tag": "0096_server_disk_alert_percent",
+      "breakpoints": true
     }
   ]
 }

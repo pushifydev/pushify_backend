@@ -4,7 +4,12 @@ import { db } from '../db';
 import { servers } from '../db/schema/servers';
 import { getSSHConnection } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
-import { checkServerDiskSpace } from '../lib/server-disk-check';
+import {
+  checkServerDiskSpace,
+  DEFAULT_DEPLOY_THRESHOLDS,
+  diskAlertPercentOf,
+  nextDiskAlert,
+} from '../lib/server-disk-check';
 import { buildDiskBreakdown, runServerDiskCleanup, type ServerDiskBreakdown } from '../lib/server-disk-cleanup';
 import { acquireServerDiskCleanupLock, releaseServerDiskCleanupLock } from '../lib/server-disk-cleanup-lock';
 import { env } from '../config/env';
@@ -23,14 +28,14 @@ import { logger } from '../lib/logger';
  * starved for as long as it took someone to deploy again, and on a box running managed databases
  * that is data loss territory, not an inconvenience.
  *
- * So: an hourly check of every reachable server, and one email when it crosses the line.
+ * So: an hourly check of every reachable server, and one email when it crosses the line — the
+ * server's own alert threshold (85% unless changed), before the deploy guard's 90%. No reminders
+ * while it stays full: the next email needs the disk to come down 5 points and cross again
+ * (`nextDiskAlert`).
  */
 
 /** Above this, a managed server gets the scheduled Docker cleanup before it is judged. */
 const CLEANUP_PERCENT = env.SERVER_DISK_CLEANUP_PERCENT;
-
-/** One mail per day while it stays full: enough to keep it in mind, not enough to be ignored. */
-const RENOTIFY_AFTER_MS = 24 * 60 * 60 * 1000;
 
 export const serverDiskService = {
   /** Check every running server with SSH credentials. Never throws — one bad host is not the run. */
@@ -106,19 +111,14 @@ export const serverDiskService = {
         };
         if (breakdown) values.diskBreakdown = breakdown;
 
-        if (result.warn) {
-          const due =
-            !server.diskNotifiedAt || now.getTime() - server.diskNotifiedAt.getTime() >= RENOTIFY_AFTER_MS;
-          if (due) {
-            values.diskNotifiedAt = now;
-            warned++;
-            await this.announce(server, { ...result, dataBytes }, now).catch((err) =>
-              logger.error({ err, serverId: server.id }, 'Server disk alert failed to send')
-            );
-          }
-        } else if (server.diskNotifiedAt) {
-          // Back under the line: forget, so the next time it fills up is a fresh warning
-          values.diskNotifiedAt = null;
+        const alertPercent = diskAlertPercentOf(server);
+        const alert = nextDiskAlert(server.diskNotifiedAt, result, alertPercent, now);
+        if (alert.notifiedAt !== server.diskNotifiedAt) values.diskNotifiedAt = alert.notifiedAt;
+        if (alert.notify) {
+          warned++;
+          await this.announce(server, { ...result, dataBytes, alertPercent }, now).catch((err) =>
+            logger.error({ err, serverId: server.id }, 'Server disk alert failed to send')
+          );
         }
 
         await db.update(servers).set(values).where(eq(servers.id, server.id));
@@ -133,7 +133,7 @@ export const serverDiskService = {
 
   async announce(
     server: typeof servers.$inferSelect,
-    result: { usedPercent: number; availGb: number; critical: boolean; dataBytes?: number },
+    result: { usedPercent: number; availGb: number; critical: boolean; dataBytes?: number; alertPercent: number },
     _now: Date
   ): Promise<void> {
     const [recipients, org] = await Promise.all([
@@ -150,6 +150,9 @@ export const serverDiskService = {
         availGb: result.availGb,
         critical: result.critical,
         dataGb: result.dataBytes !== undefined ? Math.round((result.dataBytes / 1e9) * 10) / 10 : undefined,
+        alertPercent: result.alertPercent,
+        deployBlockPercent: DEFAULT_DEPLOY_THRESHOLDS.blockPercent,
+        deployMinFreeGb: DEFAULT_DEPLOY_THRESHOLDS.minFreeGb,
       }).catch(() => {});
     }
 
@@ -157,6 +160,7 @@ export const serverDiskService = {
       server: server.name,
       serverId: server.id,
       usedPercent: result.usedPercent,
+      alertPercent: result.alertPercent,
       availGb: result.availGb,
       critical: result.critical ? 'yes' : 'no',
     });
