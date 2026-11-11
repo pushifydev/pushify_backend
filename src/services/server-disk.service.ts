@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { and, eq, isNotNull } from 'drizzle-orm';
 import { db } from '../db';
 import { servers } from '../db/schema/servers';
@@ -5,6 +6,7 @@ import { getSSHConnection } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
 import { checkServerDiskSpace } from '../lib/server-disk-check';
 import { buildDiskBreakdown, runServerDiskCleanup, type ServerDiskBreakdown } from '../lib/server-disk-cleanup';
+import { acquireServerDiskCleanupLock, releaseServerDiskCleanupLock } from '../lib/server-disk-cleanup-lock';
 import { env } from '../config/env';
 import { organizationRepository } from '../repositories/organization.repository';
 import { deploymentAlertRepository } from '../repositories/deployment-alert.repository';
@@ -58,9 +60,19 @@ export const serverDiskService = {
         // on what is left.
         let dataBytes: number | undefined;
         let breakdown: ServerDiskBreakdown | undefined;
-        if (server.isManaged && result.measured && result.usedPercent >= CLEANUP_PERCENT) {
+        // A deploy may be cleaning this server right now (deploy-disk-cleanup.ts): skip, the next
+        // hourly run will judge it.
+        const lockToken = randomUUID();
+        if (
+          server.isManaged &&
+          result.measured &&
+          result.usedPercent >= CLEANUP_PERCENT &&
+          (await acquireServerDiskCleanupLock(server.id, lockToken))
+        ) {
           const usedPercentBefore = result.usedPercent;
-          const cleanup = await runServerDiskCleanup(ssh);
+          const cleanup = await runServerDiskCleanup(ssh).finally(() =>
+            releaseServerDiskCleanupLock(server.id, lockToken)
+          );
           cleaned++;
           if (cleanup.ran) {
             result = await checkServerDiskSpace(ssh);
