@@ -30,6 +30,7 @@ import { wsManager } from '../lib/ws';
 import { logger } from '../lib/logger';
 import { adminNotify } from './admin-notify.service';
 import { DOCKER_DAEMON_JSON } from '../lib/server-disk-cleanup';
+import { DISK_ALERT_PERCENT_MAX, DISK_ALERT_PERCENT_MIN, diskAlertPercentOf } from '../lib/server-disk-check';
 import { toAutoPatchSettings, type AutoPatchSchedule } from '../lib/server-auto-patch';
 
 /**
@@ -362,6 +363,11 @@ export interface ServerWithDetails {
   /** Root filesystem usage from the hourly check; null until the first one runs */
   diskUsedPercent: number | null;
   diskCheckedAt: Date | null;
+  /**
+   * Disk alert threshold in effect (% used): the server's own one (PATCH /servers/:serverId) or
+   * the install-wide default. One alert per crossing.
+   */
+  diskAlertPercent: number;
   ipv4: string | null;
   ipv6: string | null;
   privateIp: string | null;
@@ -477,6 +483,7 @@ function mapServerRow(
     /** From the hourly check — how full the root filesystem actually is */
     diskUsedPercent: s.diskUsedPercent,
     diskCheckedAt: s.diskCheckedAt,
+    diskAlertPercent: diskAlertPercentOf(s),
     ipv4: s.ipv4,
     ipv6: s.ipv6,
     privateIp: s.privateIp,
@@ -1409,7 +1416,13 @@ export const serverService = {
     serverId: string,
     organizationId: string,
     userId: string,
-    input: { name?: string; description?: string | null; autoSnapshotEnabled?: boolean },
+    input: {
+      name?: string;
+      description?: string | null;
+      autoSnapshotEnabled?: boolean;
+      /** Disk alert threshold, 50-99 (% used); null goes back to the install-wide default */
+      diskAlertPercent?: number | null;
+    },
     locale: SupportedLocale = 'en',
   ): Promise<ServerWithDetails> {
     const membership = await organizationRepository.findMember(organizationId, userId);
@@ -1455,6 +1468,16 @@ export const serverService = {
         throw new HTTPException(400, { message: t(locale, 'servers', 'snapshotsNotSupported') });
       }
       updates.autoSnapshotEnabled = input.autoSnapshotEnabled;
+    }
+    if (input.diskAlertPercent !== undefined) {
+      const percent = input.diskAlertPercent;
+      if (
+        percent !== null &&
+        (!Number.isInteger(percent) || percent < DISK_ALERT_PERCENT_MIN || percent > DISK_ALERT_PERCENT_MAX)
+      ) {
+        throw new HTTPException(400, { message: t(locale, 'servers', 'diskAlertPercentInvalid') });
+      }
+      updates.diskAlertPercent = percent;
     }
 
     const [updated] = await db

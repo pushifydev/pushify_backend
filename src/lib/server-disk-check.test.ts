@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { checkServerDiskSpace, deployDiskBlockReason } from './server-disk-check';
+import {
+  checkServerDiskSpace,
+  deployDiskBlockReason,
+  diskAlertPercentOf,
+  nextDiskAlert,
+  DEFAULT_DEPLOY_THRESHOLDS,
+} from './server-disk-check';
 import { classifyDeployFailure } from './deploy-failure-classify';
 import type { SSHClient } from '../utils/ssh';
 
@@ -42,6 +48,39 @@ describe('deployDiskBlockReason', () => {
   it('is classified as a disk-space failure in the deploy log', () => {
     const reason = deployDiskBlockReason(disk(95, 0.5), T)!;
     expect(classifyDeployFailure('', reason).category).toBe('disk_space');
+  });
+});
+
+describe('nextDiskAlert', () => {
+  const now = new Date('2026-11-11T12:00:00Z');
+  const earlier = new Date('2026-11-10T12:00:00Z');
+  const reading = (usedPercent: number, measured = true) => ({ usedPercent, measured });
+
+  it('announces the first reading at or over the threshold', () => {
+    expect(nextDiskAlert(null, reading(84), 85, now)).toEqual({ notifiedAt: null, notify: false });
+    expect(nextDiskAlert(null, reading(85), 85, now)).toEqual({ notifiedAt: now, notify: true });
+  });
+
+  it('never announces the same crossing twice, however long it lasts', () => {
+    expect(nextDiskAlert(earlier, reading(99), 85, now)).toEqual({ notifiedAt: earlier, notify: false });
+  });
+
+  it('re-arms only at 5 points or more under the threshold', () => {
+    expect(nextDiskAlert(earlier, reading(81), 85, now)).toEqual({ notifiedAt: earlier, notify: false });
+    expect(nextDiskAlert(earlier, reading(80), 85, now)).toEqual({ notifiedAt: null, notify: false });
+  });
+
+  it('changes nothing on a reading it could not parse', () => {
+    expect(nextDiskAlert(earlier, reading(0, false), 85, now)).toEqual({ notifiedAt: earlier, notify: false });
+    expect(nextDiskAlert(null, reading(0, false), 85, now)).toEqual({ notifiedAt: null, notify: false });
+  });
+});
+
+describe('diskAlertPercentOf', () => {
+  it("uses the server's own threshold, or 85 — before the deploy guard's 90", () => {
+    expect(diskAlertPercentOf({ diskAlertPercent: 70 })).toBe(70);
+    expect(diskAlertPercentOf({ diskAlertPercent: null })).toBe(85);
+    expect(diskAlertPercentOf({ diskAlertPercent: null })).toBeLessThan(DEFAULT_DEPLOY_THRESHOLDS.blockPercent);
   });
 });
 

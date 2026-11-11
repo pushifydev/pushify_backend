@@ -10,6 +10,7 @@ import {
   getNotificationEventEmoji,
   getNotificationEventTitle,
 } from './email-templates';
+import { DISK_ALERT_CLEAR_MARGIN } from './server-disk-check';
 
 function esc(s: string): string {
   return s
@@ -1010,6 +1011,12 @@ export async function sendServerDiskEmail(
     critical: boolean;
     /** Set when the automatic cleanup already ran: GB still held by volumes (customer data) */
     dataGb?: number;
+    /** The server's alert threshold this email is for */
+    alertPercent: number;
+    /** Where the deploy guard refuses deploys: at or above this % used… */
+    deployBlockPercent: number;
+    /** …or with less than this many GB free */
+    deployMinFreeGb: number;
   },
   locale: 'en' | 'tr' = 'en'
 ): Promise<void> {
@@ -1019,8 +1026,10 @@ export async function sendServerDiskEmail(
   }
 
   const { orgName, serverName, serverId, usedPercent, availGb, critical, dataGb } = details;
-  const serverUrl = `${env.FRONTEND_URL}/dashboard/servers/${serverId}`;
+  const { alertPercent, deployBlockPercent, deployMinFreeGb } = details;
+  const healthUrl = `${env.FRONTEND_URL}/dashboard/servers/${serverId}?tab=health`;
   const cleanedUp = dataGb !== undefined;
+  const clearPercent = alertPercent - DISK_ALERT_CLEAR_MARGIN;
 
   const subjects = {
     en: critical
@@ -1033,23 +1042,27 @@ export async function sendServerDiskEmail(
   const copy = {
     en: {
       lead: `<strong>${escapeHtml(String(serverName))}</strong> is ${usedPercent}% full — ${availGb} GB left.`,
+      deploys: `Deploys to this server stop at ${deployBlockPercent}% used or when less than ${deployMinFreeGb} GB is free.`,
+      once: `This is the only email for this crossing of the ${alertPercent}% alert threshold. The next one is sent only after usage falls to ${clearPercent}% or below and crosses ${alertPercent}% again.`,
       why: critical
         ? 'At this level deploys fail and containers start losing writes. Everything on this server is affected, databases included.'
         : 'Old Docker images are usually most of it. Running <code>docker system prune -af</code> on the server reclaims the space that unused builds are holding.',
       data: cleanedUp
         ? `Pushify already cleared old logs, unused images and build cache. What is left is mostly your data (${dataGb} GB in volumes, e.g. databases) — we never delete it. Resize the server's disk to make room.`
         : null,
-      cta: 'Open the server',
+      cta: 'Open the server health page',
     },
     tr: {
       lead: `<strong>${escapeHtml(String(serverName))}</strong> diskinin %${usedPercent} kadarı dolu — ${availGb} GB kaldı.`,
+      deploys: `Bu sunucuya deploy'lar disk %${deployBlockPercent} dolduğunda ya da ${deployMinFreeGb} GB'tan az yer kaldığında durur.`,
+      once: `%${alertPercent} uyarı eşiğinin bu aşımı için gönderilen tek e-posta budur. Bir sonraki, kullanım %${clearPercent} ya da altına inip %${alertPercent} eşiğini yeniden aştığında gönderilir.`,
       why: critical
         ? 'Bu seviyede deploy\'lar başarısız olur ve container\'lar yazma kaybetmeye başlar. Bu sunucudaki her şey etkilenir, veritabanları dahil.'
         : 'Genelde suçlu eski Docker imajlarıdır. Sunucuda <code>docker system prune -af</code> çalıştırmak, kullanılmayan build\'lerin tuttuğu yeri geri kazandırır.',
       data: cleanedUp
         ? `Pushify eski logları, kullanılmayan imajları ve build cache'i zaten temizledi. Kalan alanın çoğu sizin verileriniz (volume'larda ${dataGb} GB, ör. veritabanları) — bunları asla silmeyiz. Yer açmak için sunucunun diskini büyütün.`
         : null,
-      cta: 'Sunucuyu aç',
+      cta: 'Sunucu sağlık sayfasını aç',
     },
   }[locale];
 
@@ -1058,9 +1071,10 @@ export async function sendServerDiskEmail(
     tone: critical ? 'danger' : 'warning',
     // After the cleanup, "run docker system prune" is no longer the advice — the critical warning is
     bodyHtml: copy.data
-      ? critical ? [copy.lead, copy.why, copy.data] : [copy.lead, copy.data]
-      : [copy.lead, copy.why],
-    button: { href: serverUrl, label: copy.cta },
+      ? critical ? [copy.lead, copy.deploys, copy.why, copy.data] : [copy.lead, copy.deploys, copy.data]
+      : [copy.lead, copy.deploys, copy.why],
+    button: { href: healthUrl, label: copy.cta },
+    notes: [copy.once],
   });
 
   try {

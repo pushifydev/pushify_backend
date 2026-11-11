@@ -129,7 +129,17 @@ export const servers = pgTable('servers', {
    */
   diskUsedPercent: integer('disk_used_percent'),
   diskCheckedAt: timestamp('disk_checked_at', { withTimezone: true }),
+  /**
+   * When the current crossing of the disk alert threshold was announced. Set once per crossing
+   * and cleared only when usage falls DISK_ALERT_CLEAR_MARGIN points under the threshold
+   * (lib/server-disk-check.ts `nextDiskAlert`), so a disk that stays full is not re-announced.
+   */
   diskNotifiedAt: timestamp('disk_notified_at', { withTimezone: true }),
+  /**
+   * The server's own disk alert threshold (PATCH /servers/:serverId), in % of the root
+   * filesystem. Null uses SERVER_DISK_WARN_PERCENT (85 by default).
+   */
+  diskAlertPercent: smallint('disk_alert_percent'),
   /**
    * What holds the disk (images / build cache / logs / volumes …), written by the scheduled
    * cleanup on managed servers. `userData: true` means volumes — customer data the cleanup
