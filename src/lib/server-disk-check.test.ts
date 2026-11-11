@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { checkServerDiskSpace, deployDiskBlockReason } from './server-disk-check';
+import {
+  checkServerDiskSpace,
+  deployDiskBlockReason,
+  diskAlertPercentFor,
+  isValidDiskAlertPercent,
+  nextDiskAlertState,
+} from './server-disk-check';
 import { classifyDeployFailure } from './deploy-failure-classify';
 import type { SSHClient } from '../utils/ssh';
 
@@ -54,5 +60,46 @@ describe('checkServerDiskSpace', () => {
   it('marks empty output as not measured', async () => {
     const r = await checkServerDiskSpace(sshReturning(''));
     expect(r.measured).toBe(false);
+  });
+});
+
+describe('nextDiskAlertState', () => {
+  const now = new Date('2026-11-11T12:00:00Z');
+  const earlier = new Date('2026-11-10T12:00:00Z');
+  const read = (usedPercent: number, measured = true) => ({ usedPercent, measured });
+
+  it('notifies on the first reading at or over the threshold', () => {
+    expect(nextDiskAlertState(null, read(84), 85, now)).toEqual({ notify: false, notifiedAt: null });
+    expect(nextDiskAlertState(null, read(85), 85, now)).toEqual({ notify: true, notifiedAt: now });
+  });
+
+  it('stays quiet while it is still over, with no reminder however long ago the alert went out', () => {
+    expect(nextDiskAlertState(earlier, read(97), 85, now)).toEqual({ notify: false, notifiedAt: earlier });
+  });
+
+  it('only re-arms once the disk is 5 points under the threshold', () => {
+    expect(nextDiskAlertState(earlier, read(81), 85, now)).toEqual({ notify: false, notifiedAt: earlier });
+    expect(nextDiskAlertState(earlier, read(80), 85, now)).toEqual({ notify: false, notifiedAt: null });
+  });
+
+  it('leaves the state alone on a reading it could not measure', () => {
+    expect(nextDiskAlertState(earlier, read(0, false), 85, now)).toEqual({ notify: false, notifiedAt: earlier });
+    expect(nextDiskAlertState(null, read(99, false), 85, now)).toEqual({ notify: false, notifiedAt: null });
+  });
+});
+
+describe('disk alert threshold setting', () => {
+  it('defaults to 85, before deploys stop at 90', () => {
+    expect(diskAlertPercentFor({ diskAlertPercent: null })).toBe(85);
+    expect(diskAlertPercentFor({ diskAlertPercent: 70 })).toBe(70);
+  });
+
+  it('accepts whole numbers from 50 up to just under the deploy block', () => {
+    expect(isValidDiskAlertPercent(50)).toBe(true);
+    expect(isValidDiskAlertPercent(89)).toBe(true);
+    expect(isValidDiskAlertPercent(90)).toBe(false);
+    expect(isValidDiskAlertPercent(49)).toBe(false);
+    expect(isValidDiskAlertPercent(85.5)).toBe(false);
+    expect(isValidDiskAlertPercent('85')).toBe(false);
   });
 });

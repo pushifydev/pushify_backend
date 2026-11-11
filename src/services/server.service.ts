@@ -31,6 +31,12 @@ import { logger } from '../lib/logger';
 import { adminNotify } from './admin-notify.service';
 import { DOCKER_DAEMON_JSON } from '../lib/server-disk-cleanup';
 import { toAutoPatchSettings, type AutoPatchSchedule } from '../lib/server-auto-patch';
+import {
+  DISK_ALERT_MIN_PERCENT,
+  diskAlertMaxPercent,
+  diskAlertPercentFor,
+  isValidDiskAlertPercent,
+} from '../lib/server-disk-check';
 
 /**
  * Take Pushify's SSH key off a connected (BYOS) server. Never throws: an unreachable server comes
@@ -362,6 +368,8 @@ export interface ServerWithDetails {
   /** Root filesystem usage from the hourly check; null until the first one runs */
   diskUsedPercent: number | null;
   diskCheckedAt: Date | null;
+  /** Disk usage % that sends the one disk alert (PATCH `diskAlertPercent`; install default when unset) */
+  diskAlertPercent: number;
   ipv4: string | null;
   ipv6: string | null;
   privateIp: string | null;
@@ -477,6 +485,7 @@ function mapServerRow(
     /** From the hourly check — how full the root filesystem actually is */
     diskUsedPercent: s.diskUsedPercent,
     diskCheckedAt: s.diskCheckedAt,
+    diskAlertPercent: diskAlertPercentFor(s),
     ipv4: s.ipv4,
     ipv6: s.ipv6,
     privateIp: s.privateIp,
@@ -1409,7 +1418,13 @@ export const serverService = {
     serverId: string,
     organizationId: string,
     userId: string,
-    input: { name?: string; description?: string | null; autoSnapshotEnabled?: boolean },
+    input: {
+      name?: string;
+      description?: string | null;
+      autoSnapshotEnabled?: boolean;
+      /** null goes back to the install default */
+      diskAlertPercent?: number | null;
+    },
     locale: SupportedLocale = 'en',
   ): Promise<ServerWithDetails> {
     const membership = await organizationRepository.findMember(organizationId, userId);
@@ -1455,6 +1470,21 @@ export const serverService = {
         throw new HTTPException(400, { message: t(locale, 'servers', 'snapshotsNotSupported') });
       }
       updates.autoSnapshotEnabled = input.autoSnapshotEnabled;
+    }
+    if (input.diskAlertPercent !== undefined) {
+      if (input.diskAlertPercent !== null && !isValidDiskAlertPercent(input.diskAlertPercent)) {
+        throw new HTTPException(400, {
+          message: t(locale, 'servers', 'diskAlertPercentInvalid')
+            .replace('{min}', String(DISK_ALERT_MIN_PERCENT))
+            .replace('{max}', String(diskAlertMaxPercent())),
+        });
+      }
+      updates.diskAlertPercent = input.diskAlertPercent;
+      // A new line is a new crossing: without this, raising the threshold while an alert is out
+      // would swallow the alert at the new line until the disk had dropped under it
+      if (diskAlertPercentFor({ diskAlertPercent: input.diskAlertPercent }) !== diskAlertPercentFor(server)) {
+        updates.diskNotifiedAt = null;
+      }
     }
 
     const [updated] = await db

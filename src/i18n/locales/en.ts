@@ -298,6 +298,7 @@ export interface TranslationKeys {
     resizeInvalidState: string;
     resizeInvalidSize: string;
     snapshotsNotSupported: string;
+    diskAlertPercentInvalid: string;
     autoSnapshotPlanRequired: string;
     snapshotRequiresRunning: string;
     snapshotLimitReached: string;
@@ -740,6 +741,8 @@ export const en: TranslationKeys = {
     resizeInvalidState: 'Server cannot be resized in its current state',
     resizeInvalidSize: 'Invalid or unavailable size for upgrade',
     snapshotsNotSupported: 'Snapshots are only available for managed Hetzner servers',
+    diskAlertPercentInvalid:
+      'Disk alert threshold must be a whole number from {min} to {max} (it has to come before deploys stop), or null for the default',
     autoSnapshotPlanRequired: 'Automatic snapshots require a plan with snapshot quota (Hobby or higher).',
     snapshotRequiresRunning: 'Server must be running to create a snapshot',
     snapshotLimitReached: 'This server has as many snapshots as your plan allows. Delete one to take a new snapshot.',

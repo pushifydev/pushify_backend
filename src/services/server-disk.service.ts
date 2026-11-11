@@ -4,7 +4,7 @@ import { db } from '../db';
 import { servers } from '../db/schema/servers';
 import { getSSHConnection } from '../utils/ssh';
 import { decrypt } from '../lib/encryption';
-import { checkServerDiskSpace } from '../lib/server-disk-check';
+import { checkServerDiskSpace, diskAlertPercentFor, nextDiskAlertState } from '../lib/server-disk-check';
 import { buildDiskBreakdown, runServerDiskCleanup, type ServerDiskBreakdown } from '../lib/server-disk-cleanup';
 import { acquireServerDiskCleanupLock, releaseServerDiskCleanupLock } from '../lib/server-disk-cleanup-lock';
 import { env } from '../config/env';
@@ -23,14 +23,14 @@ import { logger } from '../lib/logger';
  * starved for as long as it took someone to deploy again, and on a box running managed databases
  * that is data loss territory, not an inconvenience.
  *
- * So: an hourly check of every reachable server, and one email when it crosses the line.
+ * So: an hourly check of every reachable server, and one email when it crosses the server's
+ * alert threshold (`diskAlertPercent`, default 85 — before deploys stop at 90). No reminders while
+ * it stays full; the next one comes only after it has dropped 5 points under the line and crossed
+ * it again (lib/server-disk-check.ts nextDiskAlertState).
  */
 
 /** Above this, a managed server gets the scheduled Docker cleanup before it is judged. */
 const CLEANUP_PERCENT = env.SERVER_DISK_CLEANUP_PERCENT;
-
-/** One mail per day while it stays full: enough to keep it in mind, not enough to be ignored. */
-const RENOTIFY_AFTER_MS = 24 * 60 * 60 * 1000;
 
 export const serverDiskService = {
   /** Check every running server with SSH credentials. Never throws — one bad host is not the run. */
@@ -106,19 +106,13 @@ export const serverDiskService = {
         };
         if (breakdown) values.diskBreakdown = breakdown;
 
-        if (result.warn) {
-          const due =
-            !server.diskNotifiedAt || now.getTime() - server.diskNotifiedAt.getTime() >= RENOTIFY_AFTER_MS;
-          if (due) {
-            values.diskNotifiedAt = now;
-            warned++;
-            await this.announce(server, { ...result, dataBytes }, now).catch((err) =>
-              logger.error({ err, serverId: server.id }, 'Server disk alert failed to send')
-            );
-          }
-        } else if (server.diskNotifiedAt) {
-          // Back under the line: forget, so the next time it fills up is a fresh warning
-          values.diskNotifiedAt = null;
+        const alert = nextDiskAlertState(server.diskNotifiedAt, result, diskAlertPercentFor(server), now);
+        if (alert.notifiedAt !== server.diskNotifiedAt) values.diskNotifiedAt = alert.notifiedAt;
+        if (alert.notify) {
+          warned++;
+          await this.announce(server, { ...result, dataBytes }, now).catch((err) =>
+            logger.error({ err, serverId: server.id }, 'Server disk alert failed to send')
+          );
         }
 
         await db.update(servers).set(values).where(eq(servers.id, server.id));
@@ -150,6 +144,8 @@ export const serverDiskService = {
         availGb: result.availGb,
         critical: result.critical,
         dataGb: result.dataBytes !== undefined ? Math.round((result.dataBytes / 1e9) * 10) / 10 : undefined,
+        deployBlockPercent: env.SERVER_DISK_DEPLOY_BLOCK_PERCENT,
+        deployMinFreeGb: env.SERVER_DISK_DEPLOY_MIN_FREE_GB,
       }).catch(() => {});
     }
 
@@ -158,6 +154,8 @@ export const serverDiskService = {
       serverId: server.id,
       usedPercent: result.usedPercent,
       availGb: result.availGb,
+      alertPercent: diskAlertPercentFor(server),
+      deployBlockPercent: env.SERVER_DISK_DEPLOY_BLOCK_PERCENT,
       critical: result.critical ? 'yes' : 'no',
     });
 

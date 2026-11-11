@@ -498,7 +498,7 @@ serverRouter.post('/:serverId/sync', requireScope('servers:write'), async (c) =>
   return c.json({ data: server });
 });
 
-// Update name / description
+// Update name / description / auto snapshots / disk alert threshold (null = install default)
 serverRouter.patch('/:serverId', requireScope('servers:write'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
@@ -508,6 +508,7 @@ serverRouter.patch('/:serverId', requireScope('servers:write'), async (c) => {
     name?: string;
     description?: string | null;
     autoSnapshotEnabled?: boolean;
+    diskAlertPercent?: number | null;
   }>();
 
   const server = await serverService.updateServer(serverId, organizationId, userId, body, locale);

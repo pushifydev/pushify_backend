@@ -352,6 +352,8 @@ export const tr: TranslationKeys = {
     resizeInvalidState: 'Sunucu mevcut durumda yeniden boyutlandırılamaz',
     resizeInvalidSize: 'Geçersiz veya yükseltme için uygun olmayan boyut',
     snapshotsNotSupported: 'Anlık görüntüler yalnızca yönetilen Hetzner sunucularında kullanılabilir',
+    diskAlertPercentInvalid:
+      'Disk uyarı eşiği {min} ile {max} arasında bir tam sayı olmalı (deploy\'lar durmadan önce gelmeli) ya da varsayılan için null',
     autoSnapshotPlanRequired: 'Otomatik anlık görüntü için anlık görüntü kotası olan bir plan gerekir (Hobby ve üzeri).',
     snapshotRequiresRunning: 'Anlık görüntü için sunucu çalışıyor olmalı',
     snapshotLimitReached: 'Bu sunucuda planınızın izin verdiği kadar anlık görüntü var. Yenisini almak için birini silin.',

@@ -55,6 +55,54 @@ export async function checkServerDiskSpace(ssh: SSHClient): Promise<ServerDiskCh
   };
 }
 
+/**
+ * The disk alert: one message when the root disk crosses the server's threshold, none while it
+ * stays up there, and the next one only after it has come back down by this many points and
+ * crossed again. No reminders — a disk hovering at the line must not mail every hour.
+ */
+export const DISK_ALERT_CLEAR_MARGIN = 5;
+/** Lowest threshold a user can set; under it the alert is noise on any real server. */
+export const DISK_ALERT_MIN_PERCENT = 50;
+
+/** Highest threshold a user can set: the alert has to come before deploys are refused. */
+export function diskAlertMaxPercent(): number {
+  return env.SERVER_DISK_DEPLOY_BLOCK_PERCENT - 1;
+}
+
+export function isValidDiskAlertPercent(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= DISK_ALERT_MIN_PERCENT &&
+    value <= diskAlertMaxPercent()
+  );
+}
+
+/** The threshold in force for a server: its own, or the install default. */
+export function diskAlertPercentFor(server: { diskAlertPercent: number | null }): number {
+  return server.diskAlertPercent ?? WARN_PERCENT;
+}
+
+/**
+ * Where one hourly reading leaves the alert state. `notifiedAt` set means "already told about
+ * this crossing". A reading that could not be measured changes nothing.
+ */
+export function nextDiskAlertState(
+  notifiedAt: Date | null,
+  disk: Pick<ServerDiskCheckResult, 'usedPercent' | 'measured'>,
+  thresholdPercent: number,
+  now: Date
+): { notify: boolean; notifiedAt: Date | null } {
+  if (!disk.measured) return { notify: false, notifiedAt };
+  if (disk.usedPercent >= thresholdPercent) {
+    return notifiedAt ? { notify: false, notifiedAt } : { notify: true, notifiedAt: now };
+  }
+  if (notifiedAt && disk.usedPercent <= thresholdPercent - DISK_ALERT_CLEAR_MARGIN) {
+    return { notify: false, notifiedAt: null };
+  }
+  return { notify: false, notifiedAt };
+}
+
 /** Prefix of the server status message written when a deploy is refused for disk space. */
 export const DISK_FULL_STATUS_PREFIX = 'Disk full:';
 

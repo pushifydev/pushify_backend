@@ -131,6 +131,12 @@ export const servers = pgTable('servers', {
   diskCheckedAt: timestamp('disk_checked_at', { withTimezone: true }),
   diskNotifiedAt: timestamp('disk_notified_at', { withTimezone: true }),
   /**
+   * Root disk usage % that sends the one disk alert (PATCH /servers/:id); null means the install
+   * default SERVER_DISK_WARN_PERCENT (85). Kept under SERVER_DISK_DEPLOY_BLOCK_PERCENT so the
+   * alert arrives before deploys are refused.
+   */
+  diskAlertPercent: smallint('disk_alert_percent'),
+  /**
    * What holds the disk (images / build cache / logs / volumes …), written by the scheduled
    * cleanup on managed servers. `userData: true` means volumes — customer data the cleanup
    * never touches — are the largest consumer.

@@ -20,10 +20,16 @@ vi.mock('../db', () => ({
 }));
 vi.mock('../utils/ssh', () => ({ getSSHConnection: async () => ({}) }));
 vi.mock('../lib/encryption', () => ({ decrypt: (s: string) => s }));
-vi.mock('../lib/server-disk-check', () => ({
+vi.mock('../lib/server-disk-check', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/server-disk-check')>()),
   checkServerDiskSpace: async () => {
     const usedPercent = h.disk.shift() ?? 0;
-    return { usedPercent, availGb: 5, mount: '/', measured: true, warn: usedPercent >= 85, critical: usedPercent >= 95, ok: true, message: '' };
+    // -1 stands for a `df` that printed nothing usable
+    const measured = usedPercent >= 0;
+    return {
+      usedPercent: measured ? usedPercent : 0, availGb: 5, mount: '/', measured,
+      warn: usedPercent >= 85, critical: usedPercent >= 95, ok: true, message: '',
+    };
   },
 }));
 vi.mock('../lib/server-disk-cleanup', async (importOriginal) => ({
@@ -151,5 +157,64 @@ describe('serverDiskService.checkAll cleanup', () => {
     expect(h.cleanupCalls).toBe(0);
     expect(res).toMatchObject({ checked: 1, cleaned: 0 });
     expect(h.updates[0]).toMatchObject({ diskUsedPercent: 86 });
+  });
+});
+
+describe('serverDiskService.checkAll alert (one per crossing, no reminders)', () => {
+  const HOUR = 60 * 60 * 1000;
+  const start = new Date('2026-11-11T00:00:00Z').getTime();
+
+  /** One hourly run per reading, carrying what the previous run stored into the next one. */
+  async function hourly(readings: number[], over: Record<string, unknown> = {}) {
+    // Bring-your-own: no cleanup, so each run reads the disk exactly once
+    let row: Record<string, unknown> = server({ isManaged: false, ...over });
+    const sent: number[] = [];
+    for (const [i, reading] of readings.entries()) {
+      h.rows = [row];
+      h.disk = [reading];
+      h.updates = [];
+      const before = h.emails.length;
+      await serverDiskService.checkAll(new Date(start + i * HOUR));
+      sent.push(h.emails.length - before);
+      row = { ...row, ...h.updates[0] };
+    }
+    return { sent, row };
+  }
+
+  it('sends one alert on the first crossing, with free GB and where deploys stop', async () => {
+    const { sent, row } = await hourly([80, 86]);
+    expect(sent).toEqual([0, 1]);
+    expect(h.emails[0]).toMatchObject({ usedPercent: 86, availGb: 5, serverId: 's1', deployBlockPercent: 90, deployMinFreeGb: 2 });
+    expect(row.diskNotifiedAt).toEqual(new Date(start + HOUR));
+  });
+
+  it('sends nothing more while the disk stays high, however long and however much higher', async () => {
+    // 30 hours over the line, climbing past critical: still the one alert, no daily reminder
+    const readings = [86, ...Array.from({ length: 29 }, (_, i) => 86 + (i % 10))];
+    const { sent } = await hourly(readings);
+    expect(sent.reduce((a, b) => a + b, 0)).toBe(1);
+    expect(sent[0]).toBe(1);
+  });
+
+  it('does not re-arm until the disk is 5 points under the threshold', async () => {
+    // 82 is under 85 but inside the margin: crossing back to 86 is the same episode
+    const { sent } = await hourly([86, 82, 86, 81, 87]);
+    expect(sent).toEqual([1, 0, 0, 0, 0]);
+  });
+
+  it('sends a new alert after it dropped 5 points under the threshold and crossed it again', async () => {
+    const { sent, row } = await hourly([86, 80, 85]);
+    expect(sent).toEqual([1, 0, 1]);
+    expect(row.diskNotifiedAt).toEqual(new Date(start + 2 * HOUR));
+  });
+
+  it('uses the threshold set on the server instead of the default', async () => {
+    const { sent } = await hourly([70, 75, 80, 69, 75], { diskAlertPercent: 75 });
+    expect(sent).toEqual([0, 1, 0, 0, 1]);
+  });
+
+  it('does not re-arm on a reading it could not measure', async () => {
+    const { sent } = await hourly([86, -1, 86]);
+    expect(sent).toEqual([1, 0, 0]);
   });
 });

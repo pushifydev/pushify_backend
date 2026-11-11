@@ -1010,6 +1010,9 @@ export async function sendServerDiskEmail(
     critical: boolean;
     /** Set when the automatic cleanup already ran: GB still held by volumes (customer data) */
     dataGb?: number;
+    /** Where deploys to this server are refused (SERVER_DISK_DEPLOY_BLOCK_PERCENT / _MIN_FREE_GB) */
+    deployBlockPercent: number;
+    deployMinFreeGb: number;
   },
   locale: 'en' | 'tr' = 'en'
 ): Promise<void> {
@@ -1018,7 +1021,8 @@ export async function sendServerDiskEmail(
     return;
   }
 
-  const { orgName, serverName, serverId, usedPercent, availGb, critical, dataGb } = details;
+  const { orgName, serverName, serverId, usedPercent, availGb, critical, dataGb, deployBlockPercent, deployMinFreeGb } =
+    details;
   const serverUrl = `${env.FRONTEND_URL}/dashboard/servers/${serverId}`;
   const cleanedUp = dataGb !== undefined;
 
@@ -1033,6 +1037,7 @@ export async function sendServerDiskEmail(
   const copy = {
     en: {
       lead: `<strong>${escapeHtml(String(serverName))}</strong> is ${usedPercent}% full — ${availGb} GB left.`,
+      deploy: `Deploys to this server stop at ${deployBlockPercent}% used (or under ${deployMinFreeGb} GB free). This is the only email about it until the disk goes back down.`,
       why: critical
         ? 'At this level deploys fail and containers start losing writes. Everything on this server is affected, databases included.'
         : 'Old Docker images are usually most of it. Running <code>docker system prune -af</code> on the server reclaims the space that unused builds are holding.',
@@ -1043,6 +1048,7 @@ export async function sendServerDiskEmail(
     },
     tr: {
       lead: `<strong>${escapeHtml(String(serverName))}</strong> diskinin %${usedPercent} kadarı dolu — ${availGb} GB kaldı.`,
+      deploy: `Bu sunucuya deploy'lar disk %${deployBlockPercent} dolduğunda (ya da ${deployMinFreeGb} GB'tan az yer kaldığında) durur. Disk yeniden boşalana kadar bu konuda başka e-posta gönderilmez.`,
       why: critical
         ? 'Bu seviyede deploy\'lar başarısız olur ve container\'lar yazma kaybetmeye başlar. Bu sunucudaki her şey etkilenir, veritabanları dahil.'
         : 'Genelde suçlu eski Docker imajlarıdır. Sunucuda <code>docker system prune -af</code> çalıştırmak, kullanılmayan build\'lerin tuttuğu yeri geri kazandırır.',
@@ -1058,8 +1064,8 @@ export async function sendServerDiskEmail(
     tone: critical ? 'danger' : 'warning',
     // After the cleanup, "run docker system prune" is no longer the advice — the critical warning is
     bodyHtml: copy.data
-      ? critical ? [copy.lead, copy.why, copy.data] : [copy.lead, copy.data]
-      : [copy.lead, copy.why],
+      ? critical ? [copy.lead, copy.deploy, copy.why, copy.data] : [copy.lead, copy.deploy, copy.data]
+      : [copy.lead, copy.deploy, copy.why],
     button: { href: serverUrl, label: copy.cta },
   });
 
