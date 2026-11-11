@@ -31,6 +31,14 @@ describe('deployDiskBlockReason', () => {
     expect(deployDiskBlockReason(disk(0, 0, false), T)).toBeNull();
   });
 
+  it('points at the health page and resizing, never at docker system prune', () => {
+    const reason = deployDiskBlockReason(disk(94, 2.3), T, 'Automatic cleanup freed 1.2 GB.')!;
+    expect(reason).toContain('free). Automatic cleanup freed 1.2 GB. See the server');
+    expect(reason).toMatch(/health page.*resize the server, then deploy again\.$/);
+    expect(reason).not.toMatch(/prune/);
+    expect(classifyDeployFailure('', reason).userHint).not.toMatch(/prune/);
+  });
+
   it('is classified as a disk-space failure in the deploy log', () => {
     const reason = deployDiskBlockReason(disk(95, 0.5), T)!;
     expect(classifyDeployFailure('', reason).category).toBe('disk_space');

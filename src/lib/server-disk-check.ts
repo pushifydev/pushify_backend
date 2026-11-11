@@ -36,7 +36,7 @@ export async function checkServerDiskSpace(ssh: SSHClient): Promise<ServerDiskCh
 
   let message: string;
   if (critical) {
-    message = `⚠️ Disk critical: ${usedPercent}% used on ${mount} (${availGb} GB free). Deploy may fail — run docker system prune on the server.`;
+    message = `⚠️ Disk critical: ${usedPercent}% used on ${mount} (${availGb} GB free). Deploy may fail — see the server's health page for what holds the space, or resize the server.`;
   } else if (warn) {
     message = `⚠️ Disk warning: ${usedPercent}% used on ${mount} (${availGb} GB free). Consider cleaning old images.`;
   } else {
@@ -71,11 +71,16 @@ const DEFAULT_DEPLOY_THRESHOLDS: DeployDiskThresholds = {
 /**
  * Should a deploy / container start be refused because the host is (nearly) out of disk?
  * Returns the user-facing reason, or null when there is enough room. A reading that could not
- * be parsed never blocks: an odd `df` must not stop every deploy.
+ * be parsed never blocks: an odd `df` must not stop every deploy. `cleanupNote` says what the
+ * automatic cleanup already did (deploy-disk-cleanup.ts).
+ *
+ * No `docker system prune` advice: with `-a` it deletes the rollback images, and `--volumes`
+ * deletes customer data.
  */
 export function deployDiskBlockReason(
   disk: Pick<ServerDiskCheckResult, 'usedPercent' | 'availGb' | 'mount' | 'measured'>,
-  thresholds: DeployDiskThresholds = DEFAULT_DEPLOY_THRESHOLDS
+  thresholds: DeployDiskThresholds = DEFAULT_DEPLOY_THRESHOLDS,
+  cleanupNote?: string
 ): string | null {
   if (!disk.measured) return null;
   const tooFull = disk.usedPercent >= thresholds.blockPercent;
@@ -84,6 +89,7 @@ export function deployDiskBlockReason(
   return (
     `${DISK_FULL_STATUS_PREFIX} ${disk.usedPercent}% used, ${disk.availGb} GB free on ${disk.mount} ` +
     `(deploys need < ${thresholds.blockPercent}% used and at least ${thresholds.minFreeGb} GB free). ` +
-    `Free space on the server (e.g. docker system prune) or resize it, then deploy again.`
+    (cleanupNote ? `${cleanupNote} ` : '') +
+    `See the server's health page for what holds the space, or resize the server, then deploy again.`
   );
 }

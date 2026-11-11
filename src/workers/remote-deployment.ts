@@ -45,6 +45,7 @@ import { getOrAssignPort, pickFreePorts, pickSwitchPort, recordPortAssignment } 
 import { generateDockerfile } from './dockerfile';
 import { normalizeRootDirectory } from '../lib/normalize-root-directory';
 import { checkServerDiskSpace, deployDiskBlockReason, DISK_FULL_STATUS_PREFIX } from '../lib/server-disk-check';
+import { describeCleanupForError, reclaimDiskBeforeDeploy } from '../lib/deploy-disk-cleanup';
 import { domainService } from '../services/domain.service';
 import { checkComposeFile, checkVolumes } from '../lib/host-access-guard';
 import { encodeRunSpec } from '../lib/run-spec';
@@ -234,17 +235,27 @@ export async function closeFirewallPort(
 
 /**
  * Refuse a deploy when the host is (nearly) out of disk, and say so on the server itself
- * (status message) as well as in the deploy log. A stale disk-full message is cleared once
- * there is room again. Writing the status message is best-effort: it never masks the reason.
+ * (status message) as well as in the deploy log. Before refusing, a one-off safe cleanup runs
+ * (build cache, dangling and old project images — never volumes, databases or the rollback
+ * images) and the disk is measured again: the deploy carries on when that made room. A stale
+ * disk-full message is cleared once there is room again. Writing the status message is
+ * best-effort: it never masks the reason.
  */
 export async function assertDiskForDeploy(
   ssh: SSHClient,
   server: Pick<typeof servers.$inferSelect, 'id' | 'statusMessage'>,
   onProgress: (msg: string) => void
 ): Promise<void> {
-  const disk = await checkServerDiskSpace(ssh);
+  let disk = await checkServerDiskSpace(ssh);
   onProgress(disk.message);
-  const reason = deployDiskBlockReason(disk);
+  let reason = deployDiskBlockReason(disk);
+
+  if (reason) {
+    const cleanup = await reclaimDiskBeforeDeploy(ssh, server.id, onProgress);
+    disk = await checkServerDiskSpace(ssh);
+    onProgress(disk.message);
+    reason = deployDiskBlockReason(disk, undefined, describeCleanupForError(cleanup));
+  }
 
   if (reason) {
     onProgress(`❌ ${reason}`);

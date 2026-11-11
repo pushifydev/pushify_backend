@@ -6,6 +6,8 @@ const h = vi.hoisted(() => ({
   disk: [] as number[],
   cleanupCalls: 0,
   cleanupRan: true,
+  lockFree: true,
+  lockReleases: 0,
   emails: [] as Array<Record<string, unknown>>,
   info: vi.fn(),
 }));
@@ -35,6 +37,10 @@ vi.mock('../lib/server-disk-cleanup', async (importOriginal) => ({
     };
   },
 }));
+vi.mock('../lib/server-disk-cleanup-lock', () => ({
+  acquireServerDiskCleanupLock: async () => h.lockFree,
+  releaseServerDiskCleanupLock: async () => { h.lockReleases++; },
+}));
 vi.mock('../lib/email', () => ({ sendServerDiskEmail: async (_to: string, d: Record<string, unknown>) => { h.emails.push(d); } }));
 vi.mock('../repositories/organization.repository', () => ({ organizationRepository: { findById: async () => ({ name: 'Org' }) } }));
 vi.mock('../repositories/deployment-alert.repository', () => ({
@@ -52,6 +58,7 @@ const server = (over: Record<string, unknown> = {}) => ({
 
 beforeEach(() => {
   h.rows = []; h.updates = []; h.disk = []; h.cleanupCalls = 0; h.cleanupRan = true; h.emails = []; h.info.mockClear();
+  h.lockFree = true; h.lockReleases = 0;
 });
 
 describe('serverDiskService.checkAll cleanup', () => {
@@ -126,5 +133,23 @@ describe('serverDiskService.checkAll cleanup', () => {
     expect(h.cleanupCalls).toBe(0);
     expect(res.cleaned).toBe(0);
     expect(h.emails[0]).toMatchObject({ usedPercent: 90, dataGb: undefined });
+  });
+
+  it('releases the cleanup lock after cleaning', async () => {
+    h.rows = [server()];
+    h.disk = [86, 72];
+    await serverDiskService.checkAll();
+    expect(h.cleanupCalls).toBe(1);
+    expect(h.lockReleases).toBe(1);
+  });
+
+  it('skips the cleanup while another one (a deploy’s) holds the server lock', async () => {
+    h.rows = [server()];
+    h.disk = [86];
+    h.lockFree = false;
+    const res = await serverDiskService.checkAll();
+    expect(h.cleanupCalls).toBe(0);
+    expect(res).toMatchObject({ checked: 1, cleaned: 0 });
+    expect(h.updates[0]).toMatchObject({ diskUsedPercent: 86 });
   });
 });

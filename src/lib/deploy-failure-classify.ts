@@ -136,7 +136,7 @@ function classifyText(text: string): ClassifiedDeployFailure {
       blame: 'server',
       label: 'Disk full',
       userHint:
-        'The server ran out of disk space. Free space (docker system prune) or use a larger server.',
+        "The server ran out of disk space. See the server's health page for what holds the space, or resize the server.",
     };
   }
 
