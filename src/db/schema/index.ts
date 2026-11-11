@@ -25,6 +25,7 @@ export * from './scale-events';
 
 // Deployments
 export * from './deployments';
+export * from './vulnerability-scans';
 
 // Integrations
 export * from './integrations';

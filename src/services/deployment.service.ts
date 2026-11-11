@@ -127,6 +127,34 @@ export const deploymentService = {
   },
 
   /**
+   * The image vulnerability scan of one deployment (viewer and up, like the deployment itself).
+   * 404 NO_VULNERABILITY_SCAN while none was recorded: not scanned yet, or not scannable.
+   */
+  async getVulnerabilityScan(
+    deploymentId: string,
+    projectId: string,
+    organizationId: string,
+    userId: string,
+    locale: SupportedLocale
+  ) {
+    await this.checkProjectAccess(projectId, organizationId, userId, locale);
+
+    const deployment = await deploymentRepository.findById(deploymentId);
+    if (!deployment || deployment.projectId !== projectId) {
+      throw new HTTPException(404, { message: t(locale, 'deployments', 'notFound') });
+    }
+
+    const scan = await deploymentRepository.findVulnerabilityScan(deploymentId);
+    if (!scan) {
+      throw new HTTPException(404, {
+        message: 'This deployment has no vulnerability scan',
+        cause: { code: 'NO_VULNERABILITY_SCAN' },
+      });
+    }
+    return scan;
+  },
+
+  /**
    * Ask a person to review a deploy the automatic Acceptable Use check stopped (member and up).
    * It goes to the admin review queue; the answer says nothing about what the check found.
    */

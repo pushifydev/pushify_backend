@@ -267,6 +267,13 @@ const envSchema = z.object({
   /** …or when less than this many GB are free on the root FS */
   SERVER_DISK_DEPLOY_MIN_FREE_GB: z.coerce.number().default(2),
 
+  /**
+   * Scanner image run on the deploy server after a successful deploy to list the known
+   * vulnerabilities of the deployed image (lib/vulnerability-scan.ts). Pinned; set a mirror for
+   * servers that cannot reach Docker Hub.
+   */
+  VULNERABILITY_SCAN_IMAGE: z.string().default('aquasec/trivy:0.58.1'),
+
   // Stripe (optional — for payment processing)
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),

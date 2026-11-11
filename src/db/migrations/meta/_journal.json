@@ -659,6 +659,13 @@
       "when": 1787270400053,
       "tag": "0094_compose_pull_policy",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1787270400054,
+      "tag": "0095_deployment_vulnerability_scans",
+      "breakpoints": true
     }
   ]
 }

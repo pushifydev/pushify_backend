@@ -2,6 +2,7 @@ import { eq, desc, and, ne, lt, isNull, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { deployments, type DeploymentBuildMetadata } from '../db/schema/deployments';
 import { projects } from '../db/schema/projects';
+import { deploymentVulnerabilityScans } from '../db/schema/vulnerability-scans';
 import type { ComposeBuildBaseline } from '../lib/compose-build-cache';
 
 type DeploymentStatus = 'pending' | 'building' | 'deploying' | 'running' | 'failed' | 'stopped' | 'cancelled';
@@ -46,6 +47,16 @@ export const deploymentRepository = {
       .where(eq(deployments.id, id))
       .limit(1);
     return result[0] || null;
+  },
+
+  /** The image vulnerability scan of a deployment (workers/vulnerability-scan.worker.ts), or null */
+  async findVulnerabilityScan(deploymentId: string) {
+    const [scan] = await db
+      .select()
+      .from(deploymentVulnerabilityScans)
+      .where(eq(deploymentVulnerabilityScans.deploymentId, deploymentId))
+      .limit(1);
+    return scan ?? null;
   },
 
   /**

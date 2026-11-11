@@ -15,6 +15,8 @@ import { invalidateOrgTwoFactorPolicy, userHasTwoFactorEnabled } from '../lib/or
 interface UpdateOrganizationInput {
   name?: string;
   slug?: string;
+  /** Image vulnerability scans after each deploy (lib/vulnerability-scan.ts); on by default */
+  vulnerabilityScanEnabled?: boolean;
 }
 
 /**
@@ -98,6 +100,12 @@ export const organizationService = {
     const changes: UpdateOrganizationInput = {};
     if (input.name !== undefined) changes.name = input.name;
     if (input.slug !== undefined) changes.slug = input.slug;
+    if (input.vulnerabilityScanEnabled !== undefined) {
+      if (typeof input.vulnerabilityScanEnabled !== 'boolean') {
+        throw new HTTPException(400, { message: t(locale, 'validation', 'invalidRequest') });
+      }
+      changes.vulnerabilityScanEnabled = input.vulnerabilityScanEnabled;
+    }
 
     const updated = await organizationRepository.update(organizationId, changes);
     logger.info({ organizationId, userId }, 'Organization updated');

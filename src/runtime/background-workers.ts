@@ -22,6 +22,7 @@ import { startAppSleepWorker, stopAppSleepWorker } from '../workers/app-sleep.wo
 import { startAbuseRuntimeWorker, stopAbuseRuntimeWorker } from '../workers/abuse-runtime.worker';
 import { startAdminNotifyWorker, stopAdminNotifyWorker } from '../workers/admin-notify.worker';
 import { startServerPatchWorker, stopServerPatchWorker } from '../workers/server-patch.worker';
+import { startVulnerabilityScanWorker, stopVulnerabilityScanWorker } from '../workers/vulnerability-scan.worker';
 import { reconcileAutoPatchSchedules } from '../lib/server-auto-patch';
 import { startDomainRenewalWorker, stopDomainRenewalWorker } from '../workers/domain-renewal.worker';
 import { startBillingReconcileWorker, stopBillingReconcileWorker } from '../workers/billing-reconcile.worker';
@@ -111,6 +112,10 @@ export async function startBackgroundWorkers(): Promise<void> {
       });
   }
 
+  if (startVulnerabilityScanWorker()) {
+    logger.info('Vulnerability scan queue worker started');
+  }
+
   const notificationWorker = startNotificationWorker();
   if (notificationWorker) {
     logger.info('Notification queue worker started');
@@ -188,6 +193,7 @@ export async function stopBackgroundWorkers(): Promise<void> {
   stopScheduledTaskWorker();
   void stopAdminNotifyWorker();
   await stopServerPatchWorker();
+  await stopVulnerabilityScanWorker();
   stopAppSleepWorker();
   stopAbuseRuntimeWorker();
   stopDomainRenewalWorker();

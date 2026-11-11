@@ -86,6 +86,7 @@ import {
   getServerDeployActiveCount,
 } from '../lib/deploy-concurrency';
 import { isQueueAvailable } from '../lib/queue';
+import { queueVulnerabilityScan } from '../lib/vulnerability-scan';
 import { registryCredentialService } from '../services/registry-credential.service';
 
 const POLL_INTERVAL = 5000; // 5 seconds
@@ -1130,6 +1131,16 @@ export async function executeDeploymentJob(job: DeploymentJob): Promise<void> {
         deploymentId: job.id,
         source: abuseSource,
         buildLog: logBuffer.join('\n'),
+      });
+
+      // Scan the image the deploy started, in its own job: never awaited here, never fails the deploy
+      void queueVulnerabilityScan({
+        deploymentId: job.id,
+        projectId: job.projectId,
+        serverId: deployTargetServerId,
+        image: remoteResult.dockerImageId,
+        projectSettings: project.settings,
+        isPreview: !!previewCtx,
       });
 
       // Update GitHub status to success
