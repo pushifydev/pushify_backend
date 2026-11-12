@@ -363,6 +363,11 @@ process, so other processes pick up a change within that time.
 non-Debian/Ubuntu server or when the patch command fails; the rest of the report is still
 returned. Managed and connected (BYOS) servers return the same fields.
 
+Scheduled runs email the organization's alert recipients (members with deployment alerts on) only
+when a run fails or leaves `rebootRequired: true`, once per condition: a failure once per `code`
+until a run applies again, a pending reboot once until a run finds `rebootRequired: false`. Clean
+and skipped runs send nothing. The response shape does not change.
+
 ### Errors
 
 | Status | `code` | `message` / when |

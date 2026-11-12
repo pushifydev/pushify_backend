@@ -60,6 +60,51 @@ export interface ServerAutoPatchLastRun {
   code: string | null;
 }
 
+/**
+ * What scheduled runs have already told the organization (servers.auto_patch_notified), so a
+ * condition is announced once and not on every run while it lasts.
+ */
+export interface ServerAutoPatchNotified {
+  /** Code of the failure announced; null once a scheduled run applies again */
+  failureCode: string | null;
+  /** A pending reboot was announced; false once a scheduled run finds no reboot needed */
+  rebootRequired: boolean;
+}
+
+/** Why a scheduled run is worth an email. A run that applied cleanly, or was skipped, is not. */
+export type AutoPatchAlert = 'failed' | 'reboot_required';
+
+/**
+ * One email per condition, never one per run. A failure is announced once per error code until a
+ * run applies again; a pending reboot once until a run finds the server no longer needs one. A
+ * skipped run, or a reboot state that could not be read, changes nothing.
+ */
+export function nextAutoPatchAlert(
+  previous: ServerAutoPatchNotified | null,
+  run: Pick<ServerAutoPatchLastRun, 'status' | 'code' | 'rebootRequired'>
+): { notified: ServerAutoPatchNotified; notify: AutoPatchAlert | null } {
+  const notified: ServerAutoPatchNotified = previous ?? { failureCode: null, rebootRequired: false };
+
+  if (run.status === 'failed') {
+    const failureCode = run.code ?? 'UNKNOWN';
+    return notified.failureCode === failureCode
+      ? { notified, notify: null }
+      : { notified: { ...notified, failureCode }, notify: 'failed' };
+  }
+
+  if (run.status !== 'applied') return { notified, notify: null };
+
+  if (run.rebootRequired === true) {
+    return notified.rebootRequired
+      ? { notified: { ...notified, failureCode: null }, notify: null }
+      : { notified: { failureCode: null, rebootRequired: true }, notify: 'reboot_required' };
+  }
+  return {
+    notified: { failureCode: null, rebootRequired: run.rebootRequired === false ? false : notified.rebootRequired },
+    notify: null,
+  };
+}
+
 export function isAutoPatchSchedule(value: unknown): value is AutoPatchSchedule {
   return typeof value === 'string' && (AUTO_PATCH_SCHEDULES as readonly string[]).includes(value);
 }

@@ -13,7 +13,7 @@ import {
 import { relations } from 'drizzle-orm';
 import { organizations } from './organizations';
 import type { ServerDiskBreakdown } from '../../lib/server-disk-cleanup';
-import type { ServerAutoPatchLastRun } from '../../lib/server-auto-patch';
+import type { ServerAutoPatchLastRun, ServerAutoPatchNotified } from '../../lib/server-auto-patch';
 
 // Enums
 export const serverStatusEnum = pgEnum('server_status', [
@@ -116,6 +116,12 @@ export const servers = pgTable('servers', {
   autoPatchWeekday: smallint('auto_patch_weekday').default(0).notNull(),
   /** Outcome of the last scheduled run, returned by the health report as `lastAutoPatch` */
   lastAutoPatch: jsonb('last_auto_patch').$type<ServerAutoPatchLastRun>(),
+  /**
+   * What scheduled runs already emailed about (a failure code, a pending reboot), so the same
+   * condition is not announced again on every run (lib/server-auto-patch.ts `nextAutoPatchAlert`).
+   * Not returned by the API.
+   */
+  autoPatchNotified: jsonb('auto_patch_notified').$type<ServerAutoPatchNotified>(),
 
   // Timestamps
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

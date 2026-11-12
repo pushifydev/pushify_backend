@@ -1084,6 +1084,86 @@ export async function sendServerDiskEmail(
   }
 }
 
+/**
+ * A scheduled security update run failed, or left the server needing a reboot. Sent once per
+ * condition (lib/server-auto-patch.ts `nextAutoPatchAlert`), never for a run that went fine.
+ */
+export async function sendServerAutoPatchEmail(
+  to: string,
+  details: {
+    orgName: string;
+    serverName: string;
+    serverId: string;
+    alert: 'failed' | 'reboot_required';
+    /** failed: the error, and its PatchApplyError code (or SSH_ERROR) */
+    error?: string | null;
+    code?: string | null;
+    /** reboot_required: the run's one-line summary */
+    summary?: string | null;
+  },
+  locale: 'en' | 'tr' = 'en'
+): Promise<void> {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    logger.warn('Email not configured — skipping server auto-patch email');
+    return;
+  }
+
+  const { orgName, serverName, serverId, alert, error, code, summary } = details;
+  const healthUrl = `${env.FRONTEND_URL}/dashboard/servers/${serverId}?tab=health`;
+  const failed = alert === 'failed';
+  const name = escapeHtml(String(serverName));
+
+  const subjects = {
+    en: failed
+      ? `Automatic security updates failed on ${serverName} (${orgName})`
+      : `${serverName} needs a reboot to finish security updates (${orgName})`,
+    tr: failed
+      ? `${serverName} sunucusunda otomatik güvenlik güncellemeleri başarısız oldu (${orgName})`
+      : `${serverName} güvenlik güncellemelerini tamamlamak için yeniden başlatılmalı (${orgName})`,
+  };
+  const copy = {
+    en: {
+      lead: failed
+        ? `The scheduled security update run on <strong>${name}</strong> failed.`
+        : `Scheduled security updates were installed on <strong>${name}</strong>, and the server needs a reboot for some of them to take effect.`,
+      detail: failed
+        ? 'The server was not rebooted and Docker / containerd were not touched. The next scheduled run tries again.'
+        : `${summary ? `${escapeHtml(String(summary))}. ` : ''}Pushify never reboots a server: restart it when it suits you. Containers stop while it restarts.`,
+      once: failed
+        ? 'This is the only email for this failure. Later runs that fail the same way are on the server timeline but are not emailed; the next email is for a different error, or a failure after a run that worked.'
+        : 'This is the only email for this pending reboot. The next one is sent only after a run finds the server no longer needs a reboot and a later run needs one again.',
+      cta: 'Open the server health page',
+    },
+    tr: {
+      lead: failed
+        ? `<strong>${name}</strong> sunucusundaki zamanlanmış güvenlik güncellemesi başarısız oldu.`
+        : `<strong>${name}</strong> sunucusuna zamanlanmış güvenlik güncellemeleri kuruldu; bazılarının etkili olması için sunucunun yeniden başlatılması gerekiyor.`,
+      detail: failed
+        ? 'Sunucu yeniden başlatılmadı, Docker / containerd paketlerine dokunulmadı. Bir sonraki zamanlanmış çalıştırma yeniden dener.'
+        : `${summary ? `${escapeHtml(String(summary))}. ` : ''}Pushify sunucuyu asla kendisi yeniden başlatmaz: size uygun bir zamanda yeniden başlatın. Bu sırada container'lar durur.`,
+      once: failed
+        ? 'Bu hata için gönderilen tek e-posta budur. Aynı şekilde başarısız olan sonraki çalıştırmalar sunucu zaman çizelgesinde görünür ama e-postayla bildirilmez; bir sonraki e-posta farklı bir hata ya da başarılı bir çalıştırmadan sonraki ilk hata içindir.'
+        : 'Bekleyen bu yeniden başlatma için gönderilen tek e-posta budur. Bir sonraki, bir çalıştırma yeniden başlatmanın artık gerekmediğini gördükten sonra başka bir çalıştırma yeniden gerektirirse gönderilir.',
+      cta: 'Sunucu sağlık sayfasını aç',
+    },
+  }[locale];
+
+  const html = renderTransactionalEmail({
+    eyebrow: locale === 'tr' ? 'Güvenlik güncellemeleri' : 'Security updates',
+    tone: failed ? 'danger' : 'warning',
+    bodyHtml: [copy.lead, copy.detail],
+    code: failed && error ? { text: code ? `${code}: ${error}` : String(error) } : undefined,
+    button: { href: healthUrl, label: copy.cta },
+    notes: [copy.once],
+  });
+
+  try {
+    await transporter.sendMail({ from: FROM_ADDRESS, to, subject: subjects[locale] ?? subjects.en, html });
+  } catch (err) {
+    logger.error({ err, to }, 'Failed to send server auto-patch email');
+  }
+}
+
 export async function sendResourceRecoveredEmail(
   to: string,
   details: { orgName: string; projectName: string; projectId: string; resource: 'memory' | 'cpu'; lastedFor: string },
