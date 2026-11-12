@@ -17,7 +17,7 @@ vi.mock('../services/apikey.service', () => ({
   },
 }));
 
-import { requireScope } from './apikey-auth';
+import { requireScope, requireScopeByMethod } from './apikey-auth';
 
 type Vars = Record<string, unknown>;
 
@@ -82,5 +82,63 @@ describe('requireScope', () => {
     const result = await run({ locale: 'en', isApiKeyAuth: true }, 'databases:read');
     expect(result.status).toBe(401);
     expect(result.nextCalled).toBe(false);
+  });
+
+  it('refuses a key with write but not delete on a delete scope', async () => {
+    const result = await run(
+      { locale: 'en', isApiKeyAuth: true, apiKey: { id: 'k', scopes: 'projects:read,projects:write' } },
+      'projects:delete'
+    );
+    expect(result.status).toBe(403);
+    expect(result.nextCalled).toBe(false);
+  });
+});
+
+/**
+ * requireScopeByMethod: GET/HEAD need `read`, DELETE needs `del` when given (else `write`), any
+ * other method `write`. `write` never stands in for `del`.
+ */
+describe('requireScopeByMethod', () => {
+  async function runMethod(
+    method: string,
+    scopes: string,
+    del?: Parameters<typeof requireScopeByMethod>[2]
+  ) {
+    const vars: Vars = { locale: 'en', isApiKeyAuth: true, apiKey: { id: 'k', scopes } };
+    const c = { get: (key: string) => vars[key], req: { method } } as unknown as Context;
+    const next = vi.fn(async () => {}) as unknown as Next;
+    try {
+      await requireScopeByMethod('projects:read', 'projects:write', del)(c, next);
+      return 'passed';
+    } catch (error) {
+      return error instanceof HTTPException ? error.status : 'threw';
+    }
+  }
+
+  it('asks DELETE for the delete scope, not write', async () => {
+    expect(await runMethod('DELETE', 'projects:read,projects:write', 'projects:delete')).toBe(403);
+    expect(await runMethod('DELETE', 'projects:delete', 'projects:delete')).toBe('passed');
+    expect(await runMethod('DELETE', '*', 'projects:delete')).toBe('passed');
+  });
+
+  it('leaves reads and other writes as they were', async () => {
+    expect(await runMethod('GET', 'projects:read', 'projects:delete')).toBe('passed');
+    expect(await runMethod('POST', 'projects:write', 'projects:delete')).toBe('passed');
+    expect(await runMethod('PATCH', 'projects:delete', 'projects:delete')).toBe(403);
+  });
+
+  it('keeps DELETE on write when no delete scope is given', async () => {
+    expect(await runMethod('DELETE', 'projects:write')).toBe('passed');
+    expect(await runMethod('DELETE', 'projects:read')).toBe(403);
+  });
+
+  it('does not apply to a session (JWT) request', async () => {
+    const c = { get: (key: string) => ({ locale: 'en', isApiKeyAuth: false } as Vars)[key], req: { method: 'DELETE' } };
+    const next = vi.fn(async () => {});
+    await requireScopeByMethod('projects:read', 'projects:write', 'projects:delete')(
+      c as unknown as Context,
+      next as unknown as Next
+    );
+    expect(next).toHaveBeenCalled();
   });
 });

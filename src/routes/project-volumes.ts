@@ -7,8 +7,8 @@ import type { AppEnv } from '../types';
 const projectVolumeRouter = new Hono<AppEnv>();
 
 projectVolumeRouter.use('*', authMiddleware);
-projectVolumeRouter.use('/:projectId/volumes', requireScopeByMethod('projects:read', 'projects:write'));
-projectVolumeRouter.use('/:projectId/volumes/*', requireScopeByMethod('projects:read', 'projects:write'));
+projectVolumeRouter.use('/:projectId/volumes', requireScopeByMethod('projects:read', 'projects:write', 'projects:delete'));
+projectVolumeRouter.use('/:projectId/volumes/*', requireScopeByMethod('projects:read', 'projects:write', 'projects:delete'));
 
 // List a project's volumes
 projectVolumeRouter.get('/:projectId/volumes', async (c) => {

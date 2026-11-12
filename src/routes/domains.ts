@@ -330,7 +330,7 @@ const deleteDomainRoute = createRoute({
   path: '/{domainId}',
   tags: ['Domains'],
   summary: 'Remove domain',
-  description: 'Remove a domain from a project',
+  description: 'Remove a domain from a project. An API key needs the `domains:delete` scope.',
   security: [{ bearerAuth: [] }],
   request: {
     params: z.object({
@@ -374,7 +374,7 @@ domainRouter.post('/:domainId/verify', requireScope('domains:write'));
 domainRouter.get('/:domainId/dns-setup', requireScope('domains:read'));
 domainRouter.get('/:domainId/nginx-settings', requireScope('domains:read'));
 domainRouter.patch('/:domainId/nginx-settings', requireScope('domains:write'));
-domainRouter.delete('/:domainId', requireScope('domains:write'));
+domainRouter.delete('/:domainId', requireScope('domains:delete'));
 
 // List domains
 domainRouter.openapi(listDomainsRoute, async (c) => {

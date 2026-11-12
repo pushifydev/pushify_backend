@@ -197,15 +197,17 @@ export function rejectApiKeyAuth() {
 }
 
 /**
- * API-key scope by HTTP method: reads need `read`, anything else needs `write`. For routers that
- * share a path prefix, mount it on the router's own paths, never on '*' (a sub-router's '*'
- * middleware applies to every route under the shared prefix).
+ * API-key scope by HTTP method: reads need `read`, DELETE needs `del` when given, anything else
+ * needs `write`. For routers that share a path prefix, mount it on the router's own paths, never on
+ * '*' (a sub-router's '*' middleware applies to every route under the shared prefix).
  */
-export function requireScopeByMethod(read: ApiKeyScope, write: ApiKeyScope) {
+export function requireScopeByMethod(read: ApiKeyScope, write: ApiKeyScope, del?: ApiKeyScope) {
   const readCheck = requireScope(read);
   const writeCheck = requireScope(write);
+  const deleteCheck = del ? requireScope(del) : writeCheck;
   return async (c: Context, next: Next) => {
     const m = c.req.method.toUpperCase();
-    return (m === 'GET' || m === 'HEAD' ? readCheck : writeCheck)(c, next);
+    if (m === 'GET' || m === 'HEAD') return readCheck(c, next);
+    return (m === 'DELETE' ? deleteCheck : writeCheck)(c, next);
   };
 }

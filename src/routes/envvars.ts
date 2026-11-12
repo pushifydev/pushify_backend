@@ -249,7 +249,7 @@ const deleteEnvVarRoute = createRoute({
   path: '/{envVarId}',
   tags: ['Environment Variables'],
   summary: 'Delete environment variable',
-  description: 'Delete an environment variable',
+  description: 'Delete an environment variable. An API key needs the `envvars:delete` scope.',
   security: [{ bearerAuth: [] }],
   request: {
     params: z.object({
@@ -281,7 +281,7 @@ envVarRouter.post('/', requireScope('envvars:write'));
 envVarRouter.post('/bulk', requireScope('envvars:write'));
 envVarRouter.get('/:envVarId', requireScope('envvars:read'));
 envVarRouter.patch('/:envVarId', requireScope('envvars:write'));
-envVarRouter.delete('/:envVarId', requireScope('envvars:write'));
+envVarRouter.delete('/:envVarId', requireScope('envvars:delete'));
 envVarRouter.post('/clone', requireScope('envvars:write'));
 
 // List environment variables

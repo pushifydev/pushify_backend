@@ -362,7 +362,7 @@ const deleteProjectRoute = createRoute({
   path: '/{projectId}',
   tags: ['Projects'],
   summary: 'Delete project',
-  description: 'Delete a project (soft delete)',
+  description: 'Delete a project (soft delete). An API key needs the `projects:delete` scope.',
   security: [{ bearerAuth: [] }],
   request: {
     params: z.object({
@@ -517,7 +517,7 @@ projectRouter.get('/', requireScope('projects:read'));
 projectRouter.get('/:projectId', requireScope('projects:read'));
 projectRouter.post('/', requireScope('projects:write'));
 projectRouter.patch('/:projectId', requireScope('projects:write'));
-projectRouter.delete('/:projectId', requireScope('projects:write'));
+projectRouter.delete('/:projectId', requireScope('projects:delete'));
 projectRouter.patch('/:projectId/status', requireScope('projects:write'));
 projectRouter.put('/:projectId/maintenance', requireScope('projects:write'));
 projectRouter.post('/:projectId/transfer', requireScope('projects:write'));

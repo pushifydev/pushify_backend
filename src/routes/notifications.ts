@@ -10,8 +10,8 @@ const notificationRouter = new Hono<AppEnv>();
 // All routes require authentication
 notificationRouter.use('*', authMiddleware);
 // API-key scopes on this router's own paths (see requireScopeByMethod).
-notificationRouter.use('/:projectId/notifications', requireScopeByMethod('projects:read', 'projects:write'));
-notificationRouter.use('/:projectId/notifications/*', requireScopeByMethod('projects:read', 'projects:write'));
+notificationRouter.use('/:projectId/notifications', requireScopeByMethod('projects:read', 'projects:write', 'projects:delete'));
+notificationRouter.use('/:projectId/notifications/*', requireScopeByMethod('projects:read', 'projects:write', 'projects:delete'));
 
 // Get all notification channels for a project
 notificationRouter.get('/:projectId/notifications', async (c) => {

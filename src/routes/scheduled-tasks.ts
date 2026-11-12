@@ -8,8 +8,8 @@ import type { AppEnv } from '../types';
 const scheduledTaskRouter = new Hono<AppEnv>();
 
 scheduledTaskRouter.use('*', authMiddleware);
-scheduledTaskRouter.use('/:projectId/scheduled-tasks', requireScopeByMethod('projects:read', 'projects:write'));
-scheduledTaskRouter.use('/:projectId/scheduled-tasks/*', requireScopeByMethod('projects:read', 'projects:write'));
+scheduledTaskRouter.use('/:projectId/scheduled-tasks', requireScopeByMethod('projects:read', 'projects:write', 'projects:delete'));
+scheduledTaskRouter.use('/:projectId/scheduled-tasks/*', requireScopeByMethod('projects:read', 'projects:write', 'projects:delete'));
 
 // List a project's scheduled tasks
 scheduledTaskRouter.get('/:projectId/scheduled-tasks', async (c) => {

@@ -31,7 +31,25 @@ The response shapes of sections 1 and 3 are checked by `src/routes/api-contracts
   `pk_live_…` (as `Authorization: Bearer pk_live_…` or `X-API-Key: pk_live_…`).
   Source: `src/middleware/auth.ts`, `src/middleware/apikey-auth.ts`.
 - **API key scopes** are only checked for API key requests (`requireScope`); a session is not
-  scope-checked. Scope list: `src/db/schema/apikeys.ts` (`API_KEY_SCOPES`).
+  scope-checked. Scope list: `src/db/schema/apikeys.ts` (`API_KEY_SCOPES`), also served by
+  `GET /api/v1/api-keys/scopes` and listed in the OpenAPI `bearerAuth` scheme. A key without the
+  scope gets `403` (`insufficientScope`); `*` is every scope.
+
+  | Resource | Read | Write | Delete |
+  |----------|------|-------|--------|
+  | Projects | `projects:read` | `projects:write` | `projects:delete` — `DELETE` of a project, its volumes, workers, scheduled tasks, notification channels and health check |
+  | Deployments | `deployments:read` | `deployments:write` (`deployments:cancel` for cancel) | — |
+  | Environment variables | `envvars:read` | `envvars:write` | `envvars:delete` |
+  | Domains | `domains:read` | `domains:write` | `domains:delete` — project domains, and a purchased domain's DNS records and email forwards |
+  | Servers | `servers:read` | `servers:write` | `servers:delete` — servers and server snapshots |
+  | Databases | `databases:read` | `databases:write` | `databases:delete` — databases, project connections and backups |
+  | Logs, metrics | `logs:read`, `metrics:read` | — | — |
+
+  `:write` does not include `:delete`: a key with `projects:write` only gets `403` on
+  `DELETE /api/v1/projects/:projectId`. Migration 0097 added the matching `:delete` scope to every
+  key that had `:write`, so keys created before still delete; a new key gets a delete scope only
+  when it is chosen. Data edits in the database studios (rows, tables, columns, indexes,
+  collections, Redis keys) stay `databases:write`.
 - **Roles**: `owner` > `admin` > `member` > `viewer` (`src/lib/org-access.ts`). A member restricted
   to some projects gets `404` for other projects (`src/lib/member-project-scope.ts`).
 - **Success body**: `{ "data": … }` (some writes add `"message"`).
@@ -563,7 +581,7 @@ volume API is only:
 |--------|------|-------|------|
 | GET | `/api/v1/projects/:projectId/volumes` | `projects:read` | viewer+ |
 | POST | `/api/v1/projects/:projectId/volumes` | `projects:write` | member+ |
-| DELETE | `/api/v1/projects/:projectId/volumes/:volumeId` | `projects:write` | member+ |
+| DELETE | `/api/v1/projects/:projectId/volumes/:volumeId` | `projects:delete` | member+ |
 
 Source: `src/routes/project-volumes.ts`, `src/services/project-volume.service.ts`,
 `src/db/schema/project-volumes.ts`. A volume is `{ id, projectId, name, containerPath, createdAt }`;
