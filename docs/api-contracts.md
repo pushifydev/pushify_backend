@@ -6,6 +6,8 @@ inferred. When one of those files changes, update this document in the same chan
 
 Most of these endpoints are plain Hono routes and therefore **do not appear** in the generated
 OpenAPI document (`/api/v1/doc`, Swagger UI at `/api/docs`). The exceptions are noted per section.
+The same document is committed as `openapi.json` at the repository root; regenerate it with
+`npm run openapi:export` (no database, Redis or network needed).
 
 The response shapes of sections 1 and 3 are checked by `src/routes/api-contracts.test.ts`.
 
