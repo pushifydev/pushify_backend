@@ -101,7 +101,7 @@ databasesRouter.patch('/:id', requireScope('databases:write'), async (c) => {
 });
 
 // Delete database
-databasesRouter.delete('/:id', requireScope('databases:write'), async (c) => {
+databasesRouter.delete('/:id', requireScope('databases:delete'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -135,7 +135,7 @@ databasesRouter.post('/:id/connect', requireScope('databases:write'), async (c) 
 });
 
 // Disconnect database from project
-databasesRouter.delete('/connections/:connectionId', requireScope('databases:write'), async (c) => {
+databasesRouter.delete('/connections/:connectionId', requireScope('databases:delete'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -288,7 +288,7 @@ databasesRouter.post('/:id/backups/:backupId/verify', requireScope('databases:wr
 });
 
 // Delete backup
-databasesRouter.delete('/:id/backups/:backupId', requireScope('databases:write'), async (c) => {
+databasesRouter.delete('/:id/backups/:backupId', requireScope('databases:delete'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');

@@ -45,8 +45,9 @@ registrarDomainRoutes.get('/public-search', domainPublicSearchRateLimiter, async
 
 registrarDomainRoutes.use('*', authMiddleware);
 // API keys: reads need domains:read, every change (DNS, nameservers, lock, forwarding, auto-renew)
-// domains:write. '*' is safe here: no other router is mounted under /api/v1/domains.
-registrarDomainRoutes.use('*', requireScopeByMethod('domains:read', 'domains:write'));
+// domains:write, and removing a DNS record or an email forward domains:delete. '*' is safe here: no
+// other router is mounted under /api/v1/domains.
+registrarDomainRoutes.use('*', requireScopeByMethod('domains:read', 'domains:write', 'domains:delete'));
 // Buying, transferring and changing domains spends the wallet or can hand the domain away:
 // admin and up. Reading is for every member, except email forwards (they list people's addresses).
 registrarDomainRoutes.use('*', async (c, next) => {

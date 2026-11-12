@@ -417,7 +417,7 @@ serverRouter.get('/:serverId', requireScope('servers:read'), async (c) => {
 });
 
 // Delete a server
-serverRouter.delete('/:serverId', requireScope('servers:write'), async (c) => {
+serverRouter.delete('/:serverId', requireScope('servers:delete'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');
@@ -585,7 +585,7 @@ serverRouter.post('/:serverId/snapshots', requireScope('servers:write'), async (
   return c.json({ data: snapshot, message: t(locale, 'servers', 'snapshotCreated') }, 201);
 });
 
-serverRouter.delete('/:serverId/snapshots/:snapshotId', requireScope('servers:write'), async (c) => {
+serverRouter.delete('/:serverId/snapshots/:snapshotId', requireScope('servers:delete'), async (c) => {
   const userId = c.get('userId')!;
   const organizationId = c.get('organizationId')!;
   const locale = c.get('locale');

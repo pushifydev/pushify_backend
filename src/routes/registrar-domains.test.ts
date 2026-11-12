@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono, type Context } from 'hono';
 
 /**
- * Purchased domains (/api/v1/domains): an API key needs domains:read to read and domains:write to
- * change anything. Nameservers, the registrar lock, DNS records and email forwards decide who
+ * Purchased domains (/api/v1/domains): an API key needs domains:read to read, domains:write to
+ * change anything and domains:delete to remove a DNS record or an email forward. Nameservers, the registrar lock, DNS records and email forwards decide who
  * controls the domain and its mail, so a key scoped to something else (metrics:read for CI) must
  * not reach them. Buying, transferring and the transfer-out code stay session-only.
  *
@@ -62,6 +62,7 @@ const KEYS: Record<string, string> = {
   pk_live_metrics_only: 'metrics:read',
   pk_live_domains_read: 'domains:read',
   pk_live_domains_write: 'domains:read,domains:write',
+  pk_live_domains_delete: 'domains:read,domains:write,domains:delete',
 };
 const SESSION = 'session-access-token';
 const INSUFFICIENT_SCOPE = t('en', 'apiKeys', 'insufficientScope');
@@ -135,12 +136,21 @@ describe('purchased domains with a domains:read key', () => {
   });
 });
 
+// Removing a DNS record or an email forward needs domains:delete; domains:write is not enough.
+const DELETES = WRITES.filter(([method]) => method === 'DELETE');
+const CHANGES = WRITES.filter(([method]) => method !== 'DELETE');
+
 describe('purchased domains with a domains:write key', () => {
-  it.each(WRITES)('allows %s %s', async (method, path, body) => {
+  it.each(CHANGES)('allows %s %s', async (method, path, body) => {
     const res = await call(method, path, 'pk_live_domains_write', body);
     expect([200, 201]).toContain(res.status);
     expect(h.service).toHaveBeenCalledTimes(1);
     expect(h.service.mock.calls[0]?.slice(0, 2)).toEqual(['org-1', 'example.com']);
+  });
+
+  it.each(DELETES)('refuses %s %s without domains:delete', async (method, path, body) => {
+    await expectRefused(await call(method, path, 'pk_live_domains_write', body), INSUFFICIENT_SCOPE);
+    expect(h.service).not.toHaveBeenCalled();
   });
 
   it('still cannot buy, transfer in or take the transfer-out code', async () => {
@@ -149,6 +159,15 @@ describe('purchased domains with a domains:write key', () => {
     await expectRefused(await call('POST', '/transfer', 'pk_live_domains_write', { domainName: 'example.com', authCode: 'x' }), SESSION_ONLY);
     await expectRefused(await call('POST', '/example.com/auth-code', 'pk_live_domains_write'), SESSION_ONLY);
     expect(h.service).not.toHaveBeenCalled();
+  });
+});
+
+describe('purchased domains with a domains:delete key', () => {
+  it.each(WRITES)('allows %s %s', async (method, path, body) => {
+    const res = await call(method, path, 'pk_live_domains_delete', body);
+    expect([200, 201]).toContain(res.status);
+    expect(h.service).toHaveBeenCalledTimes(1);
+    expect(h.service.mock.calls[0]?.slice(0, 2)).toEqual(['org-1', 'example.com']);
   });
 });
 

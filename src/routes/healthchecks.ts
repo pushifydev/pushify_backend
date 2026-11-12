@@ -21,9 +21,9 @@ const healthCheckConfigSchema = z.object({
 
 // All routes require authentication
 healthCheckRouter.use('*', authMiddleware);
-healthCheckRouter.use('/:projectId/health-check', requireScopeByMethod('projects:read', 'projects:write'));
-healthCheckRouter.use('/:projectId/health-check/*', requireScopeByMethod('projects:read', 'projects:write'));
-healthCheckRouter.use('/:projectId/health-status', requireScopeByMethod('projects:read', 'projects:write'));
+healthCheckRouter.use('/:projectId/health-check', requireScopeByMethod('projects:read', 'projects:write', 'projects:delete'));
+healthCheckRouter.use('/:projectId/health-check/*', requireScopeByMethod('projects:read', 'projects:write', 'projects:delete'));
+healthCheckRouter.use('/:projectId/health-status', requireScopeByMethod('projects:read', 'projects:write', 'projects:delete'));
 
 // What monitoring last saw (status badge on the project page)
 healthCheckRouter.get('/:projectId/health-status', async (c) => {

@@ -60,11 +60,16 @@ export type ApiKey = typeof apiKeys.$inferSelect;
 export type NewApiKey = typeof apiKeys.$inferInsert;
 
 // Scopes definition
+// `<resource>:delete` is separate from `:write`: the resource's HTTP DELETE routes ask for it, not
+// for `:write`. Migration 0097 gave it to every key that had the matching `:write`, so keys created
+// before kept deleting; a new key only gets it when chosen. The database studios' data edits (rows,
+// tables, columns, indexes, collections, Redis keys) stay `databases:write`.
 export const API_KEY_SCOPES = {
   // Projects
   'projects:read': 'Read project information',
   'projects:write': 'Create and update projects',
-  'projects:delete': 'Delete projects',
+  'projects:delete':
+    'Delete projects and their volumes, workers, scheduled tasks, notification channels and health checks',
 
   // Deployments
   'deployments:read': 'Read deployment information',
@@ -74,18 +79,22 @@ export const API_KEY_SCOPES = {
   // Environment Variables
   'envvars:read': 'Read environment variables',
   'envvars:write': 'Create and update environment variables',
+  'envvars:delete': 'Delete environment variables',
 
   // Domains
   'domains:read': 'Read domain information',
-  'domains:write': 'Add and remove domains',
+  'domains:write': 'Add and update domains',
+  'domains:delete': 'Remove domains, DNS records and email forwards',
 
   // Servers
   'servers:read': 'View servers and provider catalog',
   'servers:write': 'Create, update, and control servers',
+  'servers:delete': 'Delete servers and server snapshots',
 
   // Databases
   'databases:read': 'View databases, credentials, and backups',
   'databases:write': 'Manage databases, connections, and backups',
+  'databases:delete': 'Delete databases, project connections, and backups',
 
   // Logs
   'logs:read': 'Read deployment and container logs',
