@@ -19,11 +19,14 @@ import {
   AUTO_PATCH_DEFER_MS,
   autoPatchWindowEnd,
   hasDeployInProgress,
+  nextAutoPatchAlert,
   removeServerAutoPatchSchedule,
   toAutoPatchSettings,
+  type AutoPatchAlert,
   type ServerAutoPatchLastRun,
 } from '../lib/server-auto-patch';
 import { activityService } from '../services/activity.service';
+import { serverAutoPatchAlertService } from '../services/server-auto-patch-alert.service';
 import { SSHClient } from '../utils/ssh';
 
 let serverPatchWorker: Worker<ServerPatchJobData> | null = null;
@@ -36,13 +39,36 @@ type ServerPatchJobResult =
   | { status: 'deferred'; until: string }
   | ({ status: 'applied'; summary: string } & Omit<PatchApplyResult, 'output'>);
 
-/** Keep the outcome of a scheduled run on the server row (health report). Never throws. */
-async function recordAutoPatchRun(serverId: string, lastRun: ServerAutoPatchLastRun): Promise<void> {
+/**
+ * Keep the outcome of a scheduled run on the server row (health report) and email the organization
+ * when it failed or left a reboot pending, once per condition (`nextAutoPatchAlert`). Never throws.
+ */
+async function recordAutoPatchRun(
+  server: { id: string; name: string; organizationId: string },
+  lastRun: ServerAutoPatchLastRun
+): Promise<void> {
+  let alert: AutoPatchAlert | null;
   try {
-    await db.update(servers).set({ lastAutoPatch: lastRun }).where(eq(servers.id, serverId));
+    const [row] = await db
+      .select({ autoPatchNotified: servers.autoPatchNotified })
+      .from(servers)
+      .where(eq(servers.id, server.id))
+      .limit(1);
+    const next = nextAutoPatchAlert(row?.autoPatchNotified ?? null, lastRun);
+    await db
+      .update(servers)
+      .set({ lastAutoPatch: lastRun, autoPatchNotified: next.notified })
+      .where(eq(servers.id, server.id));
+    alert = next.notify;
   } catch (err) {
-    logger.warn({ err, serverId }, 'Could not store the outcome of the scheduled security update run');
+    logger.warn({ err, serverId: server.id }, 'Could not store the outcome of the scheduled security update run');
+    return;
   }
+
+  if (!alert) return;
+  await serverAutoPatchAlertService.announce(server, alert, lastRun).catch((err) => {
+    logger.error({ err, serverId: server.id, alert }, 'Scheduled security update alert failed to send');
+  });
 }
 
 /**
@@ -114,7 +140,7 @@ async function gateScheduledRun(job: Job<ServerPatchJobData>, now: Date = new Da
       deferrals: deferrals - 1,
     },
   });
-  await recordAutoPatchRun(serverId, {
+  await recordAutoPatchRun({ id: serverId, name: server.name, organizationId }, {
     at: now.toISOString(),
     status: 'skipped',
     packagesApplied: null,
@@ -129,7 +155,8 @@ async function gateScheduledRun(job: Job<ServerPatchJobData>, now: Date = new Da
 /**
  * One security-update run, asked for (POST /servers/:serverId/patches/apply) or scheduled: holds
  * the server's patch lock for the whole run, records the outcome on the audit log (where the server
- * timeline reads it from) and never reboots. A scheduled run also keeps its outcome on the server.
+ * timeline reads it from) and never reboots. A scheduled run also keeps its outcome on the server
+ * and emails a failure or a pending reboot, once per condition.
  */
 export async function processServerPatchJob(job: Job<ServerPatchJobData>): Promise<ServerPatchJobResult> {
   const { serverId, organizationId, requestedBy } = job.data;
@@ -175,7 +202,7 @@ export async function processServerPatchJob(job: Job<ServerPatchJobData>): Promi
         metadata: { ...metadata, summary, ...result },
       });
       if (trigger === 'auto') {
-        await recordAutoPatchRun(serverId, {
+        await recordAutoPatchRun({ id: serverId, name: server.name, organizationId }, {
           at: new Date().toISOString(),
           status: 'applied',
           packagesApplied: result.packageManager === 'apt' ? result.packages.length : null,
@@ -204,7 +231,7 @@ export async function processServerPatchJob(job: Job<ServerPatchJobData>): Promi
         },
       });
       if (trigger === 'auto') {
-        await recordAutoPatchRun(serverId, {
+        await recordAutoPatchRun({ id: serverId, name: server.name, organizationId }, {
           at: new Date().toISOString(),
           status: 'failed',
           packagesApplied: null,

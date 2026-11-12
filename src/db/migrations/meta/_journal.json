@@ -680,6 +680,13 @@
       "when": 1787270400056,
       "tag": "0097_api_key_delete_scopes",
       "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1787270400057,
+      "tag": "0098_server_auto_patch_notified",
+      "breakpoints": true
     }
   ]
 }

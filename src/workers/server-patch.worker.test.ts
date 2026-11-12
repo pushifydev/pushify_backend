@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import type { Job } from 'bullmq';
 
 /**
@@ -19,6 +21,9 @@ const { h } = vi.hoisted(() => ({
     deployInProgress: false,
     deferred: [] as Array<{ data: Record<string, unknown>; opts: Record<string, unknown> }>,
     schedulesRemoved: [] as string[],
+    notified: [] as Array<Record<string, unknown>>,
+    alerts: [] as Array<{ server: Record<string, unknown>; alert: string; run: Record<string, unknown> }>,
+    alertFails: false,
   },
 }));
 
@@ -31,12 +36,23 @@ vi.mock('../db', () => {
         set: (values: Record<string, unknown>) => ({
           where: async () => {
             h.lastAutoPatch.push(values.lastAutoPatch as Record<string, unknown>);
+            h.notified.push(values.autoPatchNotified as Record<string, unknown>);
+            // What the next run reads back
+            if (h.server) h.server.autoPatchNotified = values.autoPatchNotified;
           },
         }),
       }),
     },
   };
 });
+vi.mock('../services/server-auto-patch-alert.service', () => ({
+  serverAutoPatchAlertService: {
+    announce: async (server: Record<string, unknown>, alert: string, run: Record<string, unknown>) => {
+      if (h.alertFails) throw new Error('smtp down');
+      h.alerts.push({ server, alert, run });
+    },
+  },
+}));
 vi.mock('../lib/encryption', () => ({ decrypt: (v: string) => `decrypted(${v})` }));
 vi.mock('../lib/server-patch-lock', () => ({
   acquireServerPatchLock: async (_serverId: string, token: string) => {
@@ -123,6 +139,9 @@ beforeEach(() => {
   h.deployInProgress = false;
   h.deferred = [];
   h.schedulesRemoved = [];
+  h.notified = [];
+  h.alerts = [];
+  h.alertFails = false;
 });
 
 describe('processServerPatchJob', () => {
@@ -141,6 +160,9 @@ describe('processServerPatchJob', () => {
     ]);
     expect(h.disconnected).toBe(1);
     expect(h.released).toEqual(['tok-1']);
+    // Asked for by hand: the caller sees the outcome, nothing is emailed or kept as scheduled state
+    expect(h.alerts).toEqual([]);
+    expect(h.notified).toEqual([]);
   });
 
   it('a failed run is recorded with its code and output, the job fails and the lock is released', async () => {
@@ -345,5 +367,130 @@ describe('processServerPatchJob: scheduled runs', () => {
     expect(await processServerPatchJob(autoJob)).toEqual({ status: 'skipped', reason: 'locked' });
     expect(h.connected).toEqual([]);
     expect(h.lastAutoPatch).toEqual([]);
+    expect(h.alerts).toEqual([]);
+  });
+});
+
+/**
+ * Emails from scheduled runs: only a failure or a pending reboot, each condition once. Every run is
+ * still on the timeline and in lastAutoPatch.
+ */
+describe('processServerPatchJob: scheduled run alerts', () => {
+  const autoJob = {
+    id: 'repeat:auto-patch-s-1:1794106800000',
+    data: { serverId: 's-1', organizationId: 'org-1', requestedBy: null, trigger: 'auto' },
+  } as Job<ServerPatchJobData>;
+
+  beforeEach(() => {
+    h.server = {
+      id: 's-1',
+      name: 'web-1',
+      ipv4: '203.0.113.10',
+      sshPrivateKey: 'enc',
+      status: 'running',
+      setupStatus: 'completed',
+      autoPatch: 'daily',
+      autoPatchHour: 3,
+      autoPatchWeekday: 0,
+      autoPatchNotified: null,
+    };
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-08T03:02:00Z'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('a reboot left pending is emailed once; the next runs with it still pending are not', async () => {
+    await processServerPatchJob(autoJob);
+    expect(h.alerts).toEqual([
+      {
+        server: { id: 's-1', name: 'web-1', organizationId: 'org-1' },
+        alert: 'reboot_required',
+        run: expect.objectContaining({ status: 'applied', rebootRequired: true }),
+      },
+    ]);
+    expect(h.notified).toEqual([{ failureCode: null, rebootRequired: true }]);
+
+    await processServerPatchJob(autoJob);
+    await processServerPatchJob(autoJob);
+    expect(h.alerts).toHaveLength(1);
+    expect(h.lastAutoPatch).toHaveLength(3);
+    expect(h.audit.filter((entry) => entry.action === 'server.patches_applied')).toHaveLength(3);
+  });
+
+  it('a run that no longer needs a reboot re-arms it', async () => {
+    h.server!.autoPatchNotified = { failureCode: null, rebootRequired: true };
+    h.apply = async () => ({ ...RESULT, rebootRequired: false });
+    await processServerPatchJob(autoJob);
+    expect(h.alerts).toEqual([]);
+    expect(h.notified).toEqual([{ failureCode: null, rebootRequired: false }]);
+
+    h.apply = async () => RESULT;
+    await processServerPatchJob(autoJob);
+    expect(h.alerts.map((a) => a.alert)).toEqual(['reboot_required']);
+  });
+
+  it('a failure is emailed once; the same failure again is not; after a clean run it is again', async () => {
+    h.apply = async () => {
+      throw new PatchApplyError('DOCKER_DEPENDENCY', 'Nothing was installed: these updates would also upgrade containerd');
+    };
+    await expect(processServerPatchJob(autoJob)).rejects.toThrow('Nothing was installed');
+    expect(h.alerts).toEqual([
+      {
+        server: { id: 's-1', name: 'web-1', organizationId: 'org-1' },
+        alert: 'failed',
+        run: expect.objectContaining({ status: 'failed', code: 'DOCKER_DEPENDENCY', error: expect.stringContaining('containerd') }),
+      },
+    ]);
+    await expect(processServerPatchJob(autoJob)).rejects.toThrow('Nothing was installed');
+    expect(h.alerts).toHaveLength(1);
+    expect(h.audit.filter((entry) => entry.action === 'server.patches_failed')).toHaveLength(2);
+
+    h.apply = async () => ({ ...RESULT, rebootRequired: false });
+    await processServerPatchJob(autoJob);
+    expect(h.alerts).toHaveLength(1);
+
+    h.apply = async () => {
+      throw new PatchApplyError('DOCKER_DEPENDENCY', 'Nothing was installed');
+    };
+    await expect(processServerPatchJob(autoJob)).rejects.toThrow('Nothing was installed');
+    expect(h.alerts.map((a) => a.alert)).toEqual(['failed', 'failed']);
+  });
+
+  it('a clean run and a run skipped for a deploy send nothing', async () => {
+    h.apply = async () => ({ ...RESULT, rebootRequired: false });
+    await processServerPatchJob(autoJob);
+
+    h.deployInProgress = true;
+    vi.setSystemTime(new Date('2026-11-08T03:52:00Z'));
+    expect(await processServerPatchJob(autoJob)).toEqual({ status: 'skipped', reason: 'deploy_in_progress' });
+
+    expect(h.lastAutoPatch.map((run) => run.status)).toEqual(['applied', 'skipped']);
+    expect(h.alerts).toEqual([]);
+  });
+
+  it('an email that cannot be sent does not change the run', async () => {
+    h.alertFails = true;
+    expect(await processServerPatchJob(autoJob)).toMatchObject({ status: 'applied', rebootRequired: true });
+    expect(h.lastAutoPatch).toHaveLength(1);
+    expect(h.released).toEqual(h.lockTokens);
+  });
+});
+
+describe('migration 0098', () => {
+  const sql = readFileSync(
+    fileURLToPath(new URL('../db/migrations/0098_server_auto_patch_notified.sql', import.meta.url)),
+    'utf8'
+  );
+
+  it('adds the nullable alert state column, additively, and is in the journal', () => {
+    expect(sql).toContain('ALTER TABLE "servers" ADD COLUMN IF NOT EXISTS "auto_patch_notified" jsonb;');
+    expect(sql).not.toMatch(/\bDROP\b|NOT NULL/i);
+    const journal = JSON.parse(
+      readFileSync(fileURLToPath(new URL('../db/migrations/meta/_journal.json', import.meta.url)), 'utf8')
+    ) as { entries: Array<{ tag: string }> };
+    expect(journal.entries.map((entry) => entry.tag)).toContain('0098_server_auto_patch_notified');
   });
 });

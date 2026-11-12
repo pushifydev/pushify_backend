@@ -17,6 +17,7 @@ import {
   autoPatchSchedulerId,
   autoPatchWindowEnd,
   isWithinAutoPatchWindow,
+  nextAutoPatchAlert,
   reconcileAutoPatchSchedules,
   syncServerAutoPatchSchedule,
   toAutoPatchSettings,
@@ -69,6 +70,56 @@ describe('schedule and window', () => {
 
   it('an unknown stored value reads as off', () => {
     expect(toAutoPatchSettings({ autoPatch: 'hourly', autoPatchHour: 3, autoPatchWeekday: 0 }).autoPatch).toBe('off');
+  });
+});
+
+describe('nextAutoPatchAlert: one email per condition', () => {
+  const applied = (rebootRequired: boolean | 'unknown') => ({ status: 'applied' as const, code: null, rebootRequired });
+  const failed = (code: string | null) => ({ status: 'failed' as const, code, rebootRequired: null });
+  const skipped = { status: 'skipped' as const, code: 'DEPLOY_IN_PROGRESS', rebootRequired: null };
+
+  it('a clean run is never announced', () => {
+    expect(nextAutoPatchAlert(null, applied(false))).toEqual({
+      notified: { failureCode: null, rebootRequired: false },
+      notify: null,
+    });
+  });
+
+  it('a pending reboot is announced once, not again while it stays pending', () => {
+    const first = nextAutoPatchAlert(null, applied(true));
+    expect(first).toEqual({ notified: { failureCode: null, rebootRequired: true }, notify: 'reboot_required' });
+    const second = nextAutoPatchAlert(first.notified, applied(true));
+    expect(second.notify).toBeNull();
+    // A reboot state that could not be read, a skipped run or a failure in between change nothing
+    expect(nextAutoPatchAlert(second.notified, applied('unknown')).notified.rebootRequired).toBe(true);
+    expect(nextAutoPatchAlert(second.notified, skipped)).toEqual({ notified: second.notified, notify: null });
+    const afterFailure = nextAutoPatchAlert(second.notified, failed('SSH_ERROR'));
+    expect(afterFailure.notify).toBe('failed');
+    expect(nextAutoPatchAlert(afterFailure.notified, applied(true)).notify).toBeNull();
+  });
+
+  it('a reboot is announced again only after a run found none needed', () => {
+    const cleared = nextAutoPatchAlert({ failureCode: null, rebootRequired: true }, applied(false));
+    expect(cleared).toEqual({ notified: { failureCode: null, rebootRequired: false }, notify: null });
+    expect(nextAutoPatchAlert(cleared.notified, applied(true)).notify).toBe('reboot_required');
+  });
+
+  it('a failure is announced once per code, and again after a run that worked', () => {
+    const first = nextAutoPatchAlert(null, failed('DOCKER_DEPENDENCY'));
+    expect(first).toEqual({ notified: { failureCode: 'DOCKER_DEPENDENCY', rebootRequired: false }, notify: 'failed' });
+    expect(nextAutoPatchAlert(first.notified, failed('DOCKER_DEPENDENCY'))).toEqual({ notified: first.notified, notify: null });
+    expect(nextAutoPatchAlert(first.notified, skipped).notify).toBeNull();
+    expect(nextAutoPatchAlert(first.notified, failed('SSH_ERROR')).notify).toBe('failed');
+
+    const recovered = nextAutoPatchAlert(first.notified, applied(false));
+    expect(recovered).toEqual({ notified: { failureCode: null, rebootRequired: false }, notify: null });
+    expect(nextAutoPatchAlert(recovered.notified, failed('DOCKER_DEPENDENCY')).notify).toBe('failed');
+  });
+
+  it('a failure without a code is still announced once', () => {
+    const first = nextAutoPatchAlert(null, failed(null));
+    expect(first.notify).toBe('failed');
+    expect(nextAutoPatchAlert(first.notified, failed(null)).notify).toBeNull();
   });
 });
 
