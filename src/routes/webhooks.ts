@@ -268,13 +268,20 @@ webhookRouter.openapi(gitlabWebhookRoute, async (c) => {
 
     if (payload.object_kind === 'merge_request') {
       const mr = rawPayload as GitLabMergeRequestPayload;
+      const action = mr.object_attributes.action;
+      const prNumber = mr.object_attributes.iid;
+
+      // Teardown does not depend on the preview setting (see handlePullRequestEvent).
+      if (action === 'close' || action === 'merge') {
+        await previewService.cleanupPreview(project.id, prNumber);
+        return c.json({ message: `Preview cleaned up for MR !${prNumber}` });
+      }
+
       const previewEnabled = await previewService.isPreviewEnabled(project.id);
       if (!previewEnabled) {
         return c.json({ message: 'Preview deployments are disabled for this project' });
       }
 
-      const action = mr.object_attributes.action;
-      const prNumber = mr.object_attributes.iid;
       logger.info({ projectId, prNumber, action }, 'Processing GitLab merge_request event');
 
       if (action === 'open' || action === 'update' || action === 'reopen') {
@@ -301,11 +308,6 @@ webhookRouter.openapi(gitlabWebhookRoute, async (c) => {
           message: `Preview deployment updated for MR !${prNumber}`,
           previewId: preview.id,
         });
-      }
-
-      if (action === 'close' || action === 'merge') {
-        await previewService.cleanupPreview(project.id, prNumber);
-        return c.json({ message: `Preview cleaned up for MR !${prNumber}` });
       }
 
       return c.json({ message: `Merge request action '${action}' ignored` });

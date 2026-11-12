@@ -175,12 +175,22 @@ export async function handlePullRequestEvent(
   project: DeployTargetProject,
   payload: GitHubPullRequestPayload
 ): Promise<TriggerResult> {
+  const { action, number: prNumber, pull_request: pr } = payload;
+
+  // Teardown does not depend on the preview setting: a project that turned previews off while
+  // PRs were open still has their container, port, vhost and DNS record, and nothing else sweeps
+  // them. cleanupPreview just logs and returns when the PR has no preview.
+  if (action === 'closed') {
+    await previewService.cleanupPreview(project.id, prNumber);
+    logger.info({ projectId: project.id, prNumber }, 'Preview deployment cleaned up');
+    return { message: `Preview deployment cleaned up for PR #${prNumber}` };
+  }
+
   const previewEnabled = await previewService.isPreviewEnabled(project.id);
   if (!previewEnabled) {
     return { message: 'Preview deployments are disabled for this project' };
   }
 
-  const { action, number: prNumber, pull_request: pr } = payload;
   logger.info({ projectId: project.id, prNumber, action }, 'Processing pull_request event');
 
   switch (action) {
@@ -219,12 +229,6 @@ export async function handlePullRequestEvent(
         message: `Preview deployment ${action === 'opened' ? 'created' : 'updated'} for PR #${prNumber}`,
         previewId: preview.id,
       };
-    }
-
-    case 'closed': {
-      await previewService.cleanupPreview(project.id, prNumber);
-      logger.info({ projectId: project.id, prNumber }, 'Preview deployment cleaned up');
-      return { message: `Preview deployment cleaned up for PR #${prNumber}` };
     }
 
     default:

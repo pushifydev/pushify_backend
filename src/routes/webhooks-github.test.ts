@@ -127,3 +127,36 @@ describe('GitHub webhook while billing blocks deployments', () => {
     expect(await res.json()).toMatchObject({ previewId: 'prev-1' });
   });
 });
+
+describe('GitHub webhook while previews are disabled', () => {
+  beforeEach(() => {
+    h.findById.mockReset().mockResolvedValue({
+      id: PROJECT_ID,
+      name: 'p',
+      organizationId: 'org-1',
+      status: 'active',
+      webhookSecret: 'secret',
+      gitRepoUrl: 'https://github.com/acme/app',
+      autoDeploy: true,
+      gitBranch: 'main',
+    });
+    h.isPreviewEnabled.mockReset().mockResolvedValue(false);
+    h.createOrUpdatePreview.mockReset().mockResolvedValue({ id: 'prev-1' });
+    h.cleanupPreview.mockReset().mockResolvedValue(undefined);
+    h.canOrganizationDeploy.mockReset().mockResolvedValue(true);
+  });
+
+  it('still tears down the preview when a PR is closed', async () => {
+    const res = await pullRequest('closed');
+    expect(res.status).toBe(200);
+    expect(h.cleanupPreview).toHaveBeenCalledWith(PROJECT_ID, 7);
+    expect(((await res.json()) as { message: string }).message).toContain('cleaned up');
+  });
+
+  it.each(['opened', 'synchronize', 'reopened'])('does not build a preview on %s', async (action) => {
+    const res = await pullRequest(action);
+    expect(((await res.json()) as { message: string }).message).toContain('disabled');
+    expect(h.createOrUpdatePreview).not.toHaveBeenCalled();
+    expect(h.cleanupPreview).not.toHaveBeenCalled();
+  });
+});
