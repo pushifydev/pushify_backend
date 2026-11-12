@@ -77,6 +77,20 @@ describe('handlePullRequestEvent fork protection', () => {
     await handlePullRequestEvent(project, prPayload('closed', { full_name: 'attacker/app' }));
     expect(h.cleanupPreview).toHaveBeenCalledWith('p1', 7);
   });
+
+  it('still cleans up on close when previews were turned off', async () => {
+    h.isPreviewEnabled.mockResolvedValue(false);
+    const res = await handlePullRequestEvent(project, prPayload('closed', { full_name: 'acme/app' }));
+    expect(h.cleanupPreview).toHaveBeenCalledWith('p1', 7);
+    expect(res.message).toContain('cleaned up');
+  });
+
+  it('does not build a preview when previews are turned off', async () => {
+    h.isPreviewEnabled.mockResolvedValue(false);
+    const res = await handlePullRequestEvent(project, prPayload('opened', { full_name: 'acme/app' }));
+    expect(h.createOrUpdatePreview).not.toHaveBeenCalled();
+    expect(res.message).toContain('disabled');
+  });
 });
 
 describe('isPreviewTeardownEvent', () => {

@@ -190,3 +190,33 @@ describe('GitLab merge_request webhook while billing blocks deployments', () => 
     expect(h.create).not.toHaveBeenCalled();
   });
 });
+
+describe('GitLab merge_request webhook while previews are disabled', () => {
+  beforeEach(() => {
+    h.findById.mockReset().mockResolvedValue({
+      id: PROJECT_ID,
+      name: 'p',
+      organizationId: 'org-1',
+      status: 'active',
+      webhookSecret: 'secret',
+      autoDeploy: true,
+      gitBranch: 'main',
+    });
+    h.isPreviewEnabled.mockReset().mockResolvedValue(false);
+    h.createOrUpdatePreview.mockReset().mockResolvedValue({ id: 'prev-1' });
+  });
+
+  it.each(['close', 'merge'])('still tears down the preview on %s', async (action) => {
+    const res = await mergeRequest(action, 42, 42);
+    expect(res.status).toBe(200);
+    expect(h.cleanupPreview).toHaveBeenCalledWith(PROJECT_ID, 3);
+    expect(((await res.json()) as { message: string }).message).toContain('cleaned up');
+  });
+
+  it.each(['open', 'update', 'reopen'])('does not build a preview on %s', async (action) => {
+    const res = await mergeRequest(action, 42, 42);
+    expect(((await res.json()) as { message: string }).message).toContain('disabled');
+    expect(h.createOrUpdatePreview).not.toHaveBeenCalled();
+    expect(h.cleanupPreview).not.toHaveBeenCalled();
+  });
+});
