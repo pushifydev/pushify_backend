@@ -1,6 +1,8 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { projectService } from '../services/project.service';
 import { projectTransferService } from '../services/project-transfer.service';
+import { projectExportService } from '../services/project-export.service';
+import { ProjectExportBundleSchema, PROJECT_EXPORT_MIN_PASSPHRASE } from '../lib/project-export';
 import { activityService } from '../services/activity.service';
 import { combinedAuthMiddleware } from '../middleware/auth';
 import { requireScope } from '../middleware/apikey-auth';
@@ -505,6 +507,95 @@ const transferProjectRoute = createRoute({
   },
 });
 
+const exportProjectRoute = createRoute({
+  method: 'post',
+  path: '/{projectId}/export',
+  tags: ['Projects'],
+  summary: 'Export a project to move it to another Pushify instance',
+  description:
+    'Returns a portable bundle of the project settings: build/start and compose settings, environment variables, ' +
+    'custom domains, scheduled tasks, workers and volume mounts. Ids, servers, the webhook secret and auto-generated ' +
+    'subdomains are not included, nor volume or database data: linked databases are listed with the backup and ' +
+    'import endpoints that move their data. Secret variables are left out unless a passphrase is given (owner/admin ' +
+    'only); then they are encrypted with it. Import the bundle with POST /projects/import on the other instance.',
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: z.object({ projectId: z.string().uuid() }),
+    body: {
+      content: {
+        'application/json': {
+          schema: z
+            .object({
+              passphrase: z.string().min(PROJECT_EXPORT_MIN_PASSPHRASE).max(1024).optional().openapi({
+                description: 'Encrypt secret variables with it; without it they are left out',
+              }),
+            })
+            .openapi('ExportProject'),
+        },
+      },
+      required: false,
+    },
+  },
+  responses: {
+    200: {
+      description: 'The bundle',
+      content: { 'application/json': { schema: z.object({ data: ProjectExportBundleSchema }) } },
+    },
+  },
+});
+
+const importProjectRoute = createRoute({
+  method: 'post',
+  path: '/import',
+  tags: ['Projects'],
+  summary: 'Create a project from an exported bundle',
+  description:
+    'Creates a new project in the current organization from a bundle made by POST /projects/{projectId}/export ' +
+    '(on this or another Pushify instance). What this instance refuses (a domain already taken, a plan limit, ' +
+    'a secret without passphrase) is listed in `skipped`; a wrong passphrase stops the import before anything is created.',
+  security: [{ bearerAuth: [] }],
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: z
+            .object({
+              bundle: ProjectExportBundleSchema,
+              passphrase: z.string().max(1024).optional(),
+              name: z.string().min(1).max(255).optional().openapi({ description: 'Defaults to the exported name' }),
+              serverId: z.string().uuid().optional(),
+            })
+            .openapi('ImportProject'),
+        },
+      },
+    },
+  },
+  responses: {
+    201: {
+      description: 'Project created; deploy it to start it',
+      content: {
+        'application/json': {
+          schema: z.object({
+            data: z.object({
+              project: ProjectSchema,
+              imported: z.object({
+                envVars: z.number(),
+                domains: z.number(),
+                scheduledTasks: z.number(),
+                workers: z.number(),
+                volumes: z.number(),
+              }),
+              skipped: z.array(z.object({ kind: z.string(), name: z.string(), reason: z.string() })),
+              databases: ProjectExportBundleSchema.shape.databases,
+            }),
+            message: z.string(),
+          }),
+        },
+      },
+    },
+  },
+});
+
 // ============ Router ============
 
 const projectRouter = new OpenAPIHono<AppEnv>();
@@ -516,6 +607,8 @@ projectRouter.use('*', combinedAuthMiddleware);
 projectRouter.get('/', requireScope('projects:read'));
 projectRouter.get('/:projectId', requireScope('projects:read'));
 projectRouter.post('/', requireScope('projects:write'));
+projectRouter.post('/import', requireScope('projects:write'));
+projectRouter.post('/:projectId/export', requireScope('projects:read'));
 projectRouter.patch('/:projectId', requireScope('projects:write'));
 projectRouter.delete('/:projectId', requireScope('projects:delete'));
 projectRouter.patch('/:projectId/status', requireScope('projects:write'));
@@ -772,6 +865,46 @@ projectRouter.openapi(transferProjectRoute, async (c) => {
       message: 'The move started. The project switches to the new server once its deploy there is healthy.',
     },
     202
+  );
+});
+
+// Export to a portable bundle (another Pushify instance imports it)
+projectRouter.openapi(exportProjectRoute, async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const { projectId } = c.req.valid('param');
+  const body = (c.req.valid('json') ?? {}) as { passphrase?: string };
+
+  const bundle = await projectExportService.export(projectId, organizationId, userId, { passphrase: body.passphrase }, locale);
+  return c.json({ data: bundle }, 200);
+});
+
+// Import a bundle as a new project
+projectRouter.openapi(importProjectRoute, async (c) => {
+  const userId = c.get('userId')!;
+  const organizationId = c.get('organizationId')!;
+  const locale = c.get('locale');
+  const { bundle, passphrase, name, serverId } = c.req.valid('json');
+
+  const result = await projectExportService.import(organizationId, userId, bundle, { passphrase, name, serverId }, locale);
+
+  await activityService.logProjectCreated(
+    organizationId,
+    userId,
+    result.project.id,
+    result.project.name,
+    c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
+    c.req.header('user-agent'),
+    auditSource(c)
+  );
+
+  return c.json(
+    {
+      data: { ...result, project: omitWebhookSecret(result.project) },
+      message: 'Project imported. Deploy it to start it on this instance.',
+    },
+    201
   );
 });
 
