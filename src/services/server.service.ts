@@ -32,6 +32,7 @@ import { adminNotify } from './admin-notify.service';
 import { DOCKER_DAEMON_JSON } from '../lib/server-disk-cleanup';
 import { DISK_ALERT_PERCENT_MAX, DISK_ALERT_PERCENT_MIN, diskAlertPercentOf } from '../lib/server-disk-check';
 import { toAutoPatchSettings, type AutoPatchSchedule } from '../lib/server-auto-patch';
+import { assertServiceOpenFor } from '../lib/service-closure';
 
 /**
  * Take Pushify's SSH key off a connected (BYOS) server. Never throws: an unreachable server comes
@@ -699,6 +700,7 @@ export const serverService = {
     }
 
     // ── Managed provider flow ──
+    assertServiceOpenFor('managed-server');
     const infraLimits = getPlanInfraLimits(plan);
     if (!infraLimits.managedServersEnabled) {
       throw new HTTPException(403, {

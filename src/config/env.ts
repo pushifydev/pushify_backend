@@ -212,6 +212,11 @@ const envSchema = z.object({
    * Ban the owner automatically once this many projects in workspaces they own have been
    * suspended (Acceptable Use). 0 = never; bans stay an admin decision.
    */
+  /**
+   * The hosted service is closing on this date (YYYY-MM-DD): sign-ups, new subscriptions, top-ups,
+   * domain purchases and new managed servers are refused from now on. Unset = business as usual.
+   */
+  SERVICE_CLOSING_DATE: z.string().optional(),
   ABUSE_AUTO_BAN_AFTER: z.coerce.number().int().min(0).max(100).default(0),
   /** The rules file; defaults to config/abuse-rules.yaml in the backend directory */
   ABUSE_RULES_PATH: z.string().optional(),
