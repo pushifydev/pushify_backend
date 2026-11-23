@@ -3,6 +3,7 @@ import { and, eq, isNotNull, or } from 'drizzle-orm';
 import { db } from '../db';
 import { users } from '../db/schema/users';
 import { bannedIdentifiers } from '../db/schema/abuse';
+import { assertServiceOpenFor } from './service-closure';
 
 /**
  * Account bans. The checks live where every path has to pass: `createSession` (all sign-ins and
@@ -46,6 +47,7 @@ export function identifiersFor(identity: SignupIdentity): { kind: 'email' | 'git
 
 /** Refuse to create an account from an email or OAuth account that belonged to a banned user. */
 export async function assertSignupAllowed(identity: SignupIdentity): Promise<void> {
+  assertServiceOpenFor('signup');
   const ids = identifiersFor(identity);
   if (ids.length === 0) return;
   const [hit] = await db

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { createRateLimiter } from '../middleware/rate-limit';
 import { isPublicPriceRegion, publicPricingService } from '../services/public-pricing.service';
 import type { AppEnv } from '../types';
+import { serviceClosingDate } from '../lib/service-closure';
 
 /**
  * Anonymous, read-only prices for the marketing pricing page. Customer prices only; see
@@ -29,6 +30,12 @@ publicPricingRouter.get('/managed-server-prices', publicPricingRateLimiter, asyn
   } catch {
     return c.json({ error: { code: 'PRICES_UNAVAILABLE', message: 'Prices are temporarily unavailable' } }, 503);
   }
+});
+
+// What the site and dashboard need to show the closing notice. Null = not closing.
+publicPricingRouter.get('/service-status', (c) => {
+  c.header('Cache-Control', 'public, max-age=300');
+  return c.json({ data: { closingDate: serviceClosingDate() } });
 });
 
 export { publicPricingRouter as publicPricingRoutes };

@@ -32,6 +32,7 @@ import type Stripe from 'stripe';
 import { adminNotify } from './admin-notify.service';
 import { logger } from '../lib/logger';
 import { invoiceSubscriptionId, isPayableInvoice } from '../lib/stripe-invoices';
+import { assertServiceOpenFor } from '../lib/service-closure';
 
 /** Stripe "No such ..." error (resource_missing / 404) — e.g. a customer or price from another mode. */
 export function isStripeResourceMissing(err: unknown): boolean {
@@ -229,6 +230,7 @@ export const stripeService = {
     planType: PlanType,
     billingCycle: 'monthly' | 'yearly',
   ): Promise<string> {
+    assertServiceOpenFor('subscription');
     const stripe = getStripe();
 
     // Refuse a second subscription while one is still live: Stripe would bill both, and the
@@ -293,6 +295,7 @@ export const stripeService = {
     email: string,
     amountCents: number,
   ): Promise<string> {
+    assertServiceOpenFor('topup');
     if (!INFRA_TOPUP_AMOUNTS_CENTS.includes(amountCents as (typeof INFRA_TOPUP_AMOUNTS_CENTS)[number])) {
       throw new Error('INVALID_TOPUP_AMOUNT');
     }
@@ -347,6 +350,7 @@ export const stripeService = {
     projectId?: string;
     locale: string;
   }): Promise<string> {
+    assertServiceOpenFor('domain-purchase');
     const stripe = getStripe();
     const customerId = await this.getOrCreateCustomer(params.organizationId, params.email);
 
@@ -424,6 +428,7 @@ export const stripeService = {
     planType: PlanType,
     billingCycle: 'monthly' | 'yearly',
   ): Promise<PlanChangeResult> {
+    assertServiceOpenFor('subscription');
     const stripe = getStripe();
     const [org] = await db
       .select({
@@ -657,6 +662,7 @@ export const stripeService = {
   },
 
   async resumeSubscription(organizationId: string): Promise<void> {
+    assertServiceOpenFor('subscription');
     const stripe = getStripe();
 
     const [org] = await db
